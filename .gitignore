@@ -1,0 +1,11 @@
+node_modules/
+package-lock.json
+dist/
+tmp/
+.npm-cache/
+*.tsbuildinfo
+test-results/
+projects/*/
+!projects/.gitkeep
+.DS_Store
+.playwright-mcp/
