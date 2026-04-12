@@ -1,5 +1,7 @@
 import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join, basename } from 'path'
+import { resolveProjectRoot } from './config'
+import { getSessionAgentsRecordPath } from './paths'
 import type { AgentInfo, SessionAgentRecord, ViewerConfig } from './types'
 
 /**
@@ -34,10 +36,12 @@ export function loadAgentDefinitions(config: ViewerConfig): AgentInfo[] {
 }
 
 /**
- * gala-session-agents.jsonl からセッション-エージェント紐づけを読み取る
+ * `.kovitoboard/session-agents.jsonl` からセッション-エージェント紐づけを読み取る
+ *
+ * @param _config ViewerConfig（現状未使用だが、将来の設定拡張に備えて残す）
  */
-export function loadSessionAgentRecords(config: ViewerConfig): SessionAgentRecord[] {
-  const recordPath = join(config.claudeDir, 'gala-session-agents.jsonl')
+export function loadSessionAgentRecords(_config: ViewerConfig): SessionAgentRecord[] {
+  const recordPath = getSessionAgentsRecordPath()
   if (!existsSync(recordPath)) return []
 
   const records: SessionAgentRecord[] = []
@@ -80,10 +84,18 @@ export function buildSessionAgentMap(records: SessionAgentRecord[]): Map<string,
 
 /**
  * エージェント定義ディレクトリを探す
- * cwd → 親ディレクトリを順に遡って .claude/agents/ を検索
+ *
+ * v0.1.0 方針（R2 対応）:
+ * 1. プロジェクトルート（resolveProjectRoot()）直下の `.claude/agents/` を最優先
+ * 2. fallback: cwd から親ディレクトリを遡って `.claude/agents/` を検索
+ * 3. fallback: claudeDir 配下の `agents/`
  */
 function findAgentsDir(config: ViewerConfig): string | null {
-  // cwd から上に遡って .claude/agents/ を探す
+  // 1. プロジェクトルート直下の .claude/agents/ を最優先
+  const projectAgentsDir = join(resolveProjectRoot(), '.claude', 'agents')
+  if (existsSync(projectAgentsDir)) return projectAgentsDir
+
+  // 2. fallback: cwd から上に遡って .claude/agents/ を探す
   let dir = process.cwd()
   for (let i = 0; i < 10; i++) {
     const candidate = join(dir, '.claude', 'agents')
@@ -93,7 +105,7 @@ function findAgentsDir(config: ViewerConfig): string | null {
     dir = parent
   }
 
-  // claudeDir 内にもエージェント定義がある場合
+  // 3. fallback: claudeDir 内にエージェント定義がある場合
   const claudeAgentsDir = join(config.claudeDir, 'agents')
   if (existsSync(claudeAgentsDir)) return claudeAgentsDir
 

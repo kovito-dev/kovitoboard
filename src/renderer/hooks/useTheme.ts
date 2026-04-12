@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 
 export type Theme = 'dark' | 'light'
 
-const STORAGE_KEY = 'gala-theme'
+const STORAGE_KEY = 'kovitoboard-theme'
 
 /**
  * テーマ管理フック

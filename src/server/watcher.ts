@@ -127,7 +127,7 @@ export class Watcher {
   }
 
   /**
-   * gala-session-agents.jsonl の紐づけ情報を、
+   * `.kovitoboard/session-agents.jsonl` の紐づけ情報を、
    * agent-setting イベントがなかったセッションにフォールバック適用する
    */
   private applyFallbackAgentMapping(): void {

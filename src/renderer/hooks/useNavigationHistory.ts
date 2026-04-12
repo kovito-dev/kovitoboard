@@ -1,5 +1,5 @@
 /**
- * useNavigationHistory — ブラウザの戻る/進むボタンでGALA-UI内のナビゲーションを制御するフック
+ * useNavigationHistory — ブラウザの戻る/進むボタンで KovitoBoard 内のナビゲーションを制御するフック
  *
  * History API (pushState / popstate) を使い、ビュー遷移のたびにブラウザ履歴を積む。
  * 戻る/進むで popstate が発火したら、保存した状態を復元する。

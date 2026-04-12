@@ -29,7 +29,7 @@ export class ClaudeBridge extends EventEmitter {
 
   constructor(defaultCwd?: string) {
     super()
-    // デフォルトはプロジェクトルート（process.cwd() は gala-ui/ になるため使わない）
+    // デフォルトはプロジェクトルート（process.cwd() はサーバー起動ディレクトリになるため使わない）
     this.defaultCwd = defaultCwd || resolveProjectRoot()
   }
 

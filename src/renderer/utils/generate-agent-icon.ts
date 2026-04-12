@@ -4,7 +4,7 @@
  * エージェントIDをシード値としたハッシュから、決定論的にSVGアイコンを生成する。
  * 画像ファイルの保存は不要で、ランタイムでSVG文字列を生成してインラインレンダリングする。
  *
- * 設計書: gala-ui/docs/agent-icon-design.md
+ * 設計書: （移植元 gala-ui/docs/agent-icon-design.md 参照。KovitoBoard では未同期）
  */
 
 // --- djb2 ハッシュ関数（暗号学的強度不要） ---

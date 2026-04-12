@@ -5,6 +5,7 @@ import { join, isAbsolute, resolve, normalize } from 'path'
 import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { loadConfig, resolveProjectRoot } from './config'
+import { ensureKovitoboardDir, getUploadDir } from './paths'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
 import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap } from './agent-reader'
@@ -40,6 +41,9 @@ const tmuxBridge = new TmuxBridge()
 
 // プロジェクトルート（.claude/agents や .kovitoboard/ 等のデータ参照基点）
 const projectRoot = resolveProjectRoot()
+
+// `.kovitoboard/` ディレクトリを初回起動時に自動作成
+ensureKovitoboardDir()
 
 // データファイル監視: エージェントの直接編集を自動検知
 // === 新しいデータ Manager を追加する場合 ===
@@ -335,7 +339,7 @@ app.get('/api/settings/rules', (_req, res) => {
 
 // --- ファイルアップロード API ---
 
-const UPLOAD_DIR = '/tmp/gala-uploads'
+const UPLOAD_DIR = getUploadDir()
 const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000 // 24時間
 
@@ -490,7 +494,7 @@ claudeBridge.on('process_end', (processId: string, status: string, exitCode: num
 watcher.start()
 
 server.listen(PORT, () => {
-  console.log(`[GALA-UI] サーバー起動: http://localhost:${PORT}`)
-  console.log(`[GALA-UI] WebSocket: ws://localhost:${PORT}`)
-  console.log(`[GALA-UI] 監視対象: ${config.claudeDir}/projects/`)
+  console.log(`[kovitoboard] サーバー起動: http://localhost:${PORT}`)
+  console.log(`[kovitoboard] WebSocket: ws://localhost:${PORT}`)
+  console.log(`[kovitoboard] 監視対象: ${config.claudeDir}/projects/`)
 })

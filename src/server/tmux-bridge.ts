@@ -17,13 +17,13 @@ export function isValidTmuxName(name: string): boolean {
 
 /**
  * tmux セッション名をプロジェクト名から導出する。
- * 例: projects/my-team → "gala-my-team"
+ * 例: projects/my-team → "kovitoboard-my-team"
  * tmux セッション名に使えない文字（ドット、コロン）はハイフンに置換する。
  */
 function resolveTmuxSessionName(): string {
   const projectDir = basename(resolveProjectRoot())
   const sanitized = projectDir.replace(/[.:]/g, '-')
-  return `gala-${sanitized}`
+  return `kovitoboard-${sanitized}`
 }
 
 /** tmux セッション名（プロジェクト名ベース） */
@@ -31,7 +31,7 @@ export const TMUX_SESSION = resolveTmuxSessionName()
 
 /**
  * エージェントID → tmux ウィンドウ名のマッピング
- * GALA-BUILDER テンプレート版: エージェントIDをそのままウィンドウ名として使用
+ * KovitoBoard: エージェントIDをそのままウィンドウ名として使用
  */
 function buildAgentWindowMap(): Record<string, string> {
   // エージェントIDがそのままウィンドウ名になる（例: secretary → secretary）
@@ -63,7 +63,7 @@ export interface TmuxSendResult {
  * tmux 経由で Claude CLI エージェントにメッセージを送信する
  *
  * 前提:
- * - tmux セッション "gala" が存在する
+ * - tmux セッション "kovitoboard-{project}" が存在する
  * - 各ウィンドウにエージェントが起動済み（ウィンドウ名 = エージェントID）
  *
  * 送信方式:
@@ -97,7 +97,7 @@ export class TmuxBridge {
   }
 
   /**
-   * tmux の gala セッションが存在するか
+   * tmux の KovitoBoard セッションが存在するか
    * stdio: 'pipe' を明示してstderrがコンソールに漏れるのを防ぐ
    */
   hasSession(): boolean {
@@ -110,7 +110,7 @@ export class TmuxBridge {
   }
 
   /**
-   * gala セッションのウィンドウ一覧を取得
+   * KovitoBoard セッションのウィンドウ一覧を取得
    */
   listWindows(): TmuxWindow[] {
     try {
@@ -145,7 +145,7 @@ export class TmuxBridge {
       return { success: false, error: `無効なウィンドウ名: "${windowName}"` }
     }
 
-    // gala セッションの存在確認
+    // KovitoBoard セッションの存在確認
     if (!this.hasSession()) {
       return { success: false, error: `tmux セッション "${TMUX_SESSION}" が存在しません` }
     }
@@ -248,7 +248,7 @@ export class TmuxBridge {
    * load-buffer → paste-buffer → Enter で安全にメッセージを送信
    */
   private sendViaBuffer(tmuxTarget: string, message: string): void {
-    const tmpFile = join(tmpdir(), `gala-tmux-${randomUUID()}.txt`)
+    const tmpFile = join(tmpdir(), `kovitoboard-tmux-${randomUUID()}.txt`)
 
     try {
       const sanitized = message
@@ -277,7 +277,7 @@ export class TmuxBridge {
   }
 
   /**
-   * gala セッションを作成（存在しない場合）
+   * KovitoBoard セッションを作成（存在しない場合）
    */
   ensureSession(): void {
     if (this.hasSession()) return

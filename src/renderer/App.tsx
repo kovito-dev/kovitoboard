@@ -98,7 +98,7 @@ export function App() {
     return config.agents.default || { name: 'デフォルト', color: '#A67B5B' }
   }, [config, inlineSessionId, sessionAgentMap, selectedAgentId])
 
-  const projectName = config?.project?.name || 'GALA'
+  const projectName = config?.project?.name || 'KovitoBoard'
   const projectDescription = config?.project?.description
 
   // ブラウザタブのタイトルをプロジェクト名に設定
@@ -421,7 +421,7 @@ export function App() {
         }
         if (sessions.length === 0) {
           // 初回起動時: ウェルカムバナー表示
-          const projectName = config?.project?.name || 'GALA'
+          const projectName = config?.project?.name || 'KovitoBoard'
           const conceptVal = config?.project?.concept || null
           const agentList = config?.agents
             ? Object.entries(config.agents)
