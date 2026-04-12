@@ -524,6 +524,7 @@ const trustPromptDetector = new TrustPromptDetector(
   tmuxBridge,
   trustPatterns,
   (event) => broadcast(event),
+  fs,
 )
 trustPromptDetector.start()
 

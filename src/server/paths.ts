@@ -35,6 +35,14 @@ export function getUploadDir(): string {
 }
 
 /**
+ * デバッグダンプディレクトリ（trust-prompt 検知）
+ * `KOVITOBOARD_DEBUG_TRUST=1` 有効時にダンプファイルが書き出される。
+ */
+export function getDebugTrustDir(fs: FileAccessLayer): string {
+  return join(getKovitoboardDir(fs), 'debug', 'trust-prompt')
+}
+
+/**
  * `.kovitoboard/` ディレクトリが存在しない場合は作成する。
  * サーバー起動時に 1 回呼び出せばよい。
  */

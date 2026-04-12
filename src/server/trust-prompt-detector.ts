@@ -19,8 +19,10 @@
  *   - 除外条件・フッターマッチは検証ノート §4 のキャリブレーション結果に準拠
  */
 
+import { chmodSync } from 'fs'
 import type { TmuxBridge } from './tmux-bridge'
 import type { FileAccessLayer } from './fs-layer'
+import { getDebugTrustDir } from './paths'
 import type {
   ServerToClientEvent,
   TrustPromptChoice,
@@ -292,15 +294,20 @@ export class TrustPromptDetector {
   private windowDiscoveryTimer: NodeJS.Timeout | null = null
   private matcher: PatternMatcher
   private debug: boolean
+  private debugDumpDir: string | null = null
+  private debugDumpDirEnsured = false
 
   constructor(
     private tmux: TmuxBridge,
     patterns: TrustPattern[],
     private broadcast: BroadcastFn,
+    private fs?: FileAccessLayer,
   ) {
     this.matcher = new PatternMatcher(patterns)
-    // Phase 5e でダンプ出力等に拡張予定
     this.debug = process.env.KOVITOBOARD_DEBUG_TRUST === '1'
+    if (this.debug && this.fs) {
+      this.debugDumpDir = getDebugTrustDir(this.fs)
+    }
   }
 
   /** 検知ループを開始する（既に起動済みなら何もしない） */
@@ -498,6 +505,14 @@ export class TrustPromptDetector {
         console.error(
           `[trust-detector] matched: ${matched.pattern.id} on ${windowName} (degenerate=${matched.degenerate})`,
         )
+        this.writeDump(windowName, capture, {
+          trigger: 'detected',
+          patternId: matched.pattern.id,
+          kind: matched.pattern.kind,
+          extracted: matched.extracted,
+          degenerate: matched.degenerate,
+          footerLine: lastNonEmptyLine(capture),
+        })
       }
       return
     }
@@ -515,6 +530,14 @@ export class TrustPromptDetector {
       this.broadcast({ type: 'trust_prompt_fallback', payload })
       if (this.debug) {
         console.error(`[trust-detector] fallback (unknown pattern) on ${windowName}`)
+        this.writeDump(windowName, capture, {
+          trigger: 'fallback',
+          patternId: null,
+          kind: null,
+          extracted: null,
+          degenerate: false,
+          footerLine: lastNonEmptyLine(capture),
+        })
       }
     }
   }
@@ -526,6 +549,83 @@ export class TrustPromptDetector {
   private hasTrustFooter(capture: string): boolean {
     const line = lastNonEmptyLine(capture)
     return TRUST_FOOTER_PATTERNS.some((r) => r.test(line))
+  }
+
+  // ===== デバッグダンプ (Phase 5e) =====
+
+  /**
+   * 検知イベント発火時にダンプファイルを出力する。
+   * `KOVITOBOARD_DEBUG_TRUST=1` 有効時のみ呼ばれる。
+   *
+   * ダンプ先: `.kovitoboard/debug/trust-prompt/{timestamp}-{windowName}.json`
+   * 仕様書 §7-1 / §8-3 準拠。
+   */
+  private writeDump(
+    windowName: string,
+    capture: string,
+    result: {
+      trigger: 'detected' | 'fallback'
+      patternId: string | null
+      kind: string | null
+      extracted: Record<string, string | null> | null
+      degenerate: boolean
+      footerLine: string
+    },
+  ): void {
+    if (!this.fs || !this.debugDumpDir) return
+
+    try {
+      // ディレクトリ確保（初回のみ）
+      if (!this.debugDumpDirEnsured) {
+        this.fs.mkdirSync(this.debugDumpDir, { recursive: true })
+        // ディレクトリ権限を 0700 に設定（仕様書 §8-3: 機密情報保護）
+        // fs-layer に chmod がないため Node.js fs を直接使用（デバッグ専用のベストエフォート）
+        try {
+          chmodSync(this.debugDumpDir, 0o700)
+        } catch {
+          // 権限変更に失敗してもダンプ自体は続行
+        }
+        this.debugDumpDirEnsured = true
+      }
+
+      const now = new Date()
+      const ts = now.toISOString().replace(/[:.]/g, '-')
+      // windowName にファイル名不正文字が含まれる可能性に備えてサニタイズ
+      const safeName = windowName.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const filename = `${ts}-${safeName}.json`
+      const filepath = `${this.debugDumpDir}/${filename}`
+
+      const dump = {
+        timestamp: now.toISOString(),
+        windowName,
+        trigger: result.trigger,
+        match: {
+          patternId: result.patternId,
+          kind: result.kind,
+          extracted: result.extracted,
+          degenerate: result.degenerate,
+        },
+        footerLine: result.footerLine,
+        excludeMatched: EXCLUDE_PATTERNS.map((r) => ({
+          pattern: r.source,
+          matched: r.test(capture),
+        })),
+        footerPatterns: TRUST_FOOTER_PATTERNS.map((r) => ({
+          pattern: r.source,
+          matched: r.test(result.footerLine),
+        })),
+        captureBuffer: capture,
+        _warning:
+          'このファイルには tmux の生バッファが含まれています。' +
+          '機密情報（パスワード・トークン等）が含まれている可能性があるため、' +
+          'Issue に貼り付ける前に内容を確認してください。',
+      }
+
+      this.fs.writeFileSync(filepath, JSON.stringify(dump, null, 2), 'utf-8')
+      console.error(`[trust-detector] dump written: ${filename}`)
+    } catch (err) {
+      console.error('[trust-detector] dump write failed:', err)
+    }
   }
 }
 
