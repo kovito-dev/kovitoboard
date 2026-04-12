@@ -35,6 +35,7 @@ export function AgentList({ agents, onSelectAgent, theme = 'dark' }: AgentListPr
         <h2 className="text-lg font-semibold text-[var(--text-secondary)]">エージェント</h2>
         <p className="text-sm text-[var(--text-dim)] mt-1">
           {agents.length} エージェントが登録されています
+          <span className="ml-2 text-[10px] text-[var(--text-faint)]">（読み取り専用 · 編集は v0.2.0 以降で対応予定）</span>
         </p>
       </div>
 

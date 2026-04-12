@@ -335,6 +335,17 @@ interface ProfileTabProps {
 function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens }: ProfileTabProps) {
   return (
     <div className="p-3 md:p-6 space-y-4 md:space-y-6">
+      {/* 読み取り専用バナー */}
+      <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border)]">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-faint)] shrink-0">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+        <span className="text-xs text-[var(--text-dim)]">
+          エージェント定義は読み取り専用です。編集機能は v0.2.0 以降で追加予定です。
+        </span>
+      </div>
+
       {/* 概要カード */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-3">概要</h3>
