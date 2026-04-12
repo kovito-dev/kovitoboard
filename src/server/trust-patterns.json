@@ -1,0 +1,102 @@
+{
+  "version": "2026-04-12",
+  "compatibleClaudeCodeVersions": ["2.1.x", "2.2.x"],
+  "_description": "Claude Code の信頼プロンプト (folder-trust / edit / write / bash / sandbox-network) 検知パターン定義。仕様書 docs/specs/trust-prompt-relay.md §4-1-2 / 検証ノート §5-1 準拠。matchAny / footer / extract / degenerateForms は RegExp の source 文字列を保持し、loader 側で RegExp にコンパイルする（multiline フラグ固定）。fixture: docs/design/verification-fixtures/claude-2.1.97/",
+  "patterns": [
+    {
+      "id": "folder-trust-initial",
+      "kind": "folder-trust",
+      "priority": 100,
+      "matchAny": [
+        "Accessing workspace:",
+        "Quick safety check: Is this a project you created",
+        "Yes, I trust this folder"
+      ],
+      "footer": "Enter to confirm · Esc to cancel",
+      "extract": {
+        "workspace": "Accessing workspace:\\s*\\n\\s*\\n\\s*(.+?)\\s*\\n"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes, I trust this folder", "keys": "Enter" },
+        { "id": "no", "label": "No, exit", "keys": "2\n" }
+      ]
+    },
+    {
+      "id": "edit-update-existing",
+      "kind": "edit",
+      "priority": 90,
+      "matchAny": [
+        "Do you want to make this edit to .+\\?",
+        "^● Update\\(.+\\)",
+        "^\\s*Edit file\\s*$"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "extract": {
+        "path": "● Update\\((.+?)\\)"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n" },
+        { "id": "yes-session", "label": "Yes, allow all edits during this session", "keys": "2\n" },
+        { "id": "no", "label": "No", "keys": "3\n" }
+      ]
+    },
+    {
+      "id": "write-create-new",
+      "kind": "write",
+      "priority": 90,
+      "matchAny": [
+        "Do you want to create .+\\?",
+        "^● Write\\(.+\\)",
+        "^\\s*Create file\\s*$"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "extract": {
+        "path": "● Write\\((.+?)\\)"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n" },
+        { "id": "yes-session", "label": "Yes, and allow for this session", "keys": "2\n" },
+        { "id": "no", "label": "No", "keys": "3\n" }
+      ]
+    },
+    {
+      "id": "bash-command",
+      "kind": "bash",
+      "priority": 85,
+      "matchAny": [
+        "Do you want to proceed\\?",
+        "^\\s*Bash command\\s*$",
+        "^● Bash\\("
+      ],
+      "footer": "ctrl\\+e to explain",
+      "extract": {
+        "command": "● Bash\\((.+?)\\)"
+      },
+      "degenerateForms": ["Unhandled node type: file_redirect"],
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n" },
+        { "id": "yes-session", "label": "Yes, and allow this session", "keys": "2\n" },
+        { "id": "no", "label": "No", "keys": "3\n" }
+      ]
+    },
+    {
+      "id": "sandbox-network-escape",
+      "kind": "sandbox-network",
+      "priority": 80,
+      "matchAny": [
+        "Network request outside of sandbox",
+        "Do you want to allow this connection\\?",
+        "Host: .+$"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "extract": {
+        "host": "Host: (.+?)$"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n" },
+        { "id": "yes-session", "label": "Yes, and allow this host", "keys": "2\n" },
+        { "id": "no", "label": "No", "keys": "3\n" }
+      ]
+    }
+  ]
+}

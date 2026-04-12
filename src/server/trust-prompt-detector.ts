@@ -10,8 +10,9 @@
  *      → フォールバック UX に誘導（§4-2）
  *   4. UI から `trust_prompt_respond` を受けて `TmuxBridge.sendTrustPromptKeys` で応答送信
  *
- * 設計判断（Phase 5a 時点）:
- *   - 初期パターンは本ファイル内にハードコード（Phase 5b で `trust-patterns.json` に外部化予定）
+ * 設計判断（Phase 5b 時点）:
+ *   - 初期パターンは `src/server/trust-patterns.json` に外部化。サーバー起動時に
+ *     `loadTrustPatterns(fs, path)` で読み込み、TrustPromptDetector に注入する
  *   - tmux ウィンドウ単位で `DetectorState` を持つ（`Map<windowName, DetectorState>`）
  *   - 新規ウィンドウ発見は 1 秒間隔で `listWindows()` を再スキャン
  *   - 検知ポーリング間隔は 200ms（仕様書 §4-2-1）
@@ -19,6 +20,7 @@
  */
 
 import type { TmuxBridge } from './tmux-bridge'
+import type { FileAccessLayer } from './fs-layer'
 import type {
   ServerToClientEvent,
   TrustPromptChoice,
@@ -79,7 +81,8 @@ const TRUST_FOOTER_PATTERNS: RegExp[] = [
 
 /**
  * trust prompt のパターン定義 1 件
- * Phase 5b で `trust-patterns.json` に外部化するが、構造は揃える。
+ * ソースは `src/server/trust-patterns.json`。loader がコンパイル済み
+ * (`TrustPattern`) を返す。
  */
 export interface TrustPattern {
   id: string
@@ -97,111 +100,124 @@ export interface TrustPattern {
   choices: TrustPromptChoice[]
 }
 
+// =========================
+// パターン JSON ローダー
+// =========================
+
 /**
- * 初期パターンセット（仕様書 §4-1-2 / 検証ノート §5-1 準拠）
- *
- * Phase 5b で `trust-patterns.json` に外部化する予定。
- * 変更時は `docs/design/verification-fixtures/claude-2.1.97/` の fixture で
- * マッチ確認すること。
+ * `trust-patterns.json` のルート構造
+ * 必須フィールドは `patterns` のみ。`version` / `compatibleClaudeCodeVersions`
+ * は v0.1.0 では情報表示用で、ランタイム検証は行わない（v0.2.0 以降で追加予定）。
  */
-export const INITIAL_PATTERNS: TrustPattern[] = [
-  {
-    id: 'folder-trust-initial',
-    kind: 'folder-trust',
-    priority: 100,
-    matchAny: [
-      /Accessing workspace:/,
-      /Quick safety check: Is this a project you created/,
-      /Yes, I trust this folder/,
-    ],
-    footer: /Enter to confirm · Esc to cancel/,
-    extract: {
-      workspace: /Accessing workspace:\s*\n\s*\n\s*(.+?)\s*\n/,
-    },
-    choices: [
-      { id: 'yes', label: 'Yes, I trust this folder', keys: 'Enter' },
-      { id: 'no', label: 'No, exit', keys: '2\n' },
-    ],
-  },
-  {
-    id: 'edit-update-existing',
-    kind: 'edit',
-    priority: 90,
-    matchAny: [
-      /Do you want to make this edit to .+\?/,
-      /^● Update\(.+\)/m,
-      /^\s*Edit file\s*$/m,
-    ],
-    footer: /Esc to cancel · Tab to amend/,
-    extract: {
-      path: /● Update\((.+?)\)/,
-    },
-    choices: [
-      { id: 'yes', label: 'Yes', keys: '1\n' },
-      { id: 'yes-session', label: 'Yes, allow all edits during this session', keys: '2\n' },
-      { id: 'no', label: 'No', keys: '3\n' },
-    ],
-  },
-  {
-    id: 'write-create-new',
-    kind: 'write',
-    priority: 90,
-    matchAny: [
-      /Do you want to create .+\?/,
-      /^● Write\(.+\)/m,
-      /^\s*Create file\s*$/m,
-    ],
-    footer: /Esc to cancel · Tab to amend/,
-    extract: {
-      path: /● Write\((.+?)\)/,
-    },
-    choices: [
-      { id: 'yes', label: 'Yes', keys: '1\n' },
-      { id: 'yes-session', label: 'Yes, and allow for this session', keys: '2\n' },
-      { id: 'no', label: 'No', keys: '3\n' },
-    ],
-  },
-  {
-    id: 'bash-command',
-    kind: 'bash',
-    priority: 85,
-    matchAny: [
-      /Do you want to proceed\?/,
-      /^\s*Bash command\s*$/m,
-      /^● Bash\(/m,
-    ],
-    // Bash は共通フッターに加えて `· ctrl+e to explain` が付くため、それを footer として採用
-    footer: /ctrl\+e to explain/,
-    extract: {
-      command: /● Bash\((.+?)\)/,
-    },
-    degenerateForms: [/Unhandled node type: file_redirect/],
-    choices: [
-      { id: 'yes', label: 'Yes', keys: '1\n' },
-      { id: 'yes-session', label: 'Yes, and allow this session', keys: '2\n' },
-      { id: 'no', label: 'No', keys: '3\n' },
-    ],
-  },
-  {
-    id: 'sandbox-network-escape',
-    kind: 'sandbox-network',
-    priority: 80,
-    matchAny: [
-      /Network request outside of sandbox/,
-      /Do you want to allow this connection\?/,
-      /Host: .+$/m,
-    ],
-    footer: /Esc to cancel · Tab to amend/,
-    extract: {
-      host: /Host: (.+?)$/m,
-    },
-    choices: [
-      { id: 'yes', label: 'Yes', keys: '1\n' },
-      { id: 'yes-session', label: 'Yes, and allow this host', keys: '2\n' },
-      { id: 'no', label: 'No', keys: '3\n' },
-    ],
-  },
-]
+interface TrustPatternFile {
+  version?: string
+  compatibleClaudeCodeVersions?: string[]
+  patterns: RawTrustPattern[]
+}
+
+/**
+ * JSON 上のパターン 1 件。regex 系フィールドは string で保持する。
+ * loader が `RegExp` にコンパイルする際、multiline フラグ (`m`) を固定で付与する。
+ */
+interface RawTrustPattern {
+  id: string
+  kind: TrustPromptKind
+  priority: number
+  matchAny: string[]
+  footer: string
+  extract?: Record<string, string>
+  degenerateForms?: string[]
+  choices: TrustPromptChoice[]
+}
+
+/**
+ * `trust-patterns.json` を読み込んで `TrustPattern[]` にコンパイルする。
+ *
+ * 失敗時は例外 throw。サーバー起動を止めて検知ループが空になる事故
+ * （パターン 0 件で全プロンプトがフォールバックに流れる）を防ぐ。
+ *
+ * @param fs   FileAccessLayer（Phase 4 で導入済みの fs 抽象化）
+ * @param path JSON ファイルの絶対パス
+ */
+export function loadTrustPatterns(fs: FileAccessLayer, path: string): TrustPattern[] {
+  let text: string
+  try {
+    text = fs.readFileSync(path, 'utf-8')
+  } catch (err) {
+    throw new Error(
+      `trust-patterns.json の読み込みに失敗しました (${path}): ${(err as Error).message}`,
+    )
+  }
+
+  let parsed: TrustPatternFile
+  try {
+    parsed = JSON.parse(text) as TrustPatternFile
+  } catch (err) {
+    throw new Error(
+      `trust-patterns.json のパースに失敗しました (${path}): ${(err as Error).message}`,
+    )
+  }
+
+  if (!parsed || !Array.isArray(parsed.patterns)) {
+    throw new Error(
+      `trust-patterns.json に patterns 配列がありません (${path})`,
+    )
+  }
+  if (parsed.patterns.length === 0) {
+    throw new Error(
+      `trust-patterns.json の patterns が空です (${path})。検知ループが全件フォールバックに流れるため拒否します。`,
+    )
+  }
+
+  return parsed.patterns.map((raw) => compileTrustPattern(raw, path))
+}
+
+/**
+ * `RawTrustPattern` → `TrustPattern` へのコンパイル。
+ * RegExp は multiline (`m`) フラグ固定で構築する。fixture 設計と実装（§4-1-2）が
+ * すべて multiline 前提のため、JSON 上で flags を個別指定する必要はない。
+ */
+function compileTrustPattern(raw: RawTrustPattern, path: string): TrustPattern {
+  if (!raw || typeof raw.id !== 'string' || typeof raw.kind !== 'string' || typeof raw.priority !== 'number') {
+    throw new Error(
+      `trust-patterns.json パターン定義が不完全です (${path}): ${JSON.stringify(raw)}`,
+    )
+  }
+  if (!Array.isArray(raw.matchAny) || raw.matchAny.length === 0) {
+    throw new Error(
+      `trust-patterns.json パターン "${raw.id}" の matchAny が空です (${path})`,
+    )
+  }
+  if (typeof raw.footer !== 'string') {
+    throw new Error(
+      `trust-patterns.json パターン "${raw.id}" に footer がありません (${path})`,
+    )
+  }
+  if (!Array.isArray(raw.choices)) {
+    throw new Error(
+      `trust-patterns.json パターン "${raw.id}" の choices が配列ではありません (${path})`,
+    )
+  }
+
+  try {
+    return {
+      id: raw.id,
+      kind: raw.kind,
+      priority: raw.priority,
+      matchAny: raw.matchAny.map((s) => new RegExp(s, 'm')),
+      footer: new RegExp(raw.footer, 'm'),
+      extract: Object.fromEntries(
+        Object.entries(raw.extract ?? {}).map(([k, s]) => [k, new RegExp(s, 'm')]),
+      ),
+      degenerateForms: raw.degenerateForms?.map((s) => new RegExp(s, 'm')),
+      choices: raw.choices,
+    }
+  } catch (err) {
+    throw new Error(
+      `trust-patterns.json パターン "${raw.id}" の RegExp コンパイルに失敗しました: ${(err as Error).message}`,
+    )
+  }
+}
 
 // =========================
 // パターンマッチエンジン

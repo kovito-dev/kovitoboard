@@ -2,6 +2,7 @@ import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { join, isAbsolute, resolve, normalize } from 'path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'crypto'
 import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot } from './config'
@@ -14,7 +15,7 @@ import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
-import { TrustPromptDetector, INITIAL_PATTERNS } from './trust-prompt-detector'
+import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
 import type {
   ServerToClientEvent,
@@ -511,9 +512,17 @@ claudeBridge.on('process_end', (processId: string, status: string, exitCode: num
 // --- Trust Prompt Detector 起動 ---
 // 仕様書 `docs/specs/trust-prompt-relay.md` v1.1 準拠。
 // tmux ウィンドウ単位で信頼プロンプトを検知し、WebSocket で UI に中継する。
+//
+// パターン定義は `trust-patterns.json` から読み込む。自ファイル隣 (import.meta.url 基準)
+// で解決するため、開発時 (`src/server/`) / 本番時 (`dist/server/`) のどちらでも
+// 同階層の JSON を参照できる。
+// 本番ビルドでは `package.json` の build script で `dist/server/trust-patterns.json`
+// にコピーされる（tsc は .json を出力しないため）。
+const trustPatternsPath = fileURLToPath(new URL('./trust-patterns.json', import.meta.url))
+const trustPatterns = loadTrustPatterns(fs, trustPatternsPath)
 const trustPromptDetector = new TrustPromptDetector(
   tmuxBridge,
-  INITIAL_PATTERNS,
+  trustPatterns,
   (event) => broadcast(event),
 )
 trustPromptDetector.start()
