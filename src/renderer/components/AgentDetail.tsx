@@ -1,0 +1,594 @@
+import { useState, useCallback } from 'react'
+import type { AgentInfo, SessionSummary, Session, AgentConfig } from '../types'
+import { AgentAvatar } from './AgentAvatar'
+import { ChatTimeline } from './ChatTimeline'
+import { MessageInput } from './MessageInput'
+import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../utils/format'
+
+interface AgentDetailProps {
+  agent: AgentInfo
+  /** このエージェントに紐づくセッション一覧 */
+  sessions: SessionSummary[]
+  /** インラインで表示中のセッション（新規セッション開始後に自動セット） */
+  inlineSession: Session | null
+  /** エージェント表示用の config */
+  agentConfig: AgentConfig
+  /** ユーザー表示用の config */
+  userConfig: AgentConfig
+  onBack: () => void
+  onSelectSession: (sessionId: string) => void
+  onStartNewSession?: (agentId: string, message: string) => Promise<void>
+  /** インラインセッションへのメッセージ送信 */
+  onSendMessage?: (sessionId: string, message: string) => Promise<void>
+  /** インラインセッション表示を閉じてエージェント情報に戻る */
+  onCloseInlineSession?: () => void
+  /** セッションがメッセージ送信可能か判定 */
+  isSessionSendable?: (sessionId: string) => boolean
+  /** 新規セッション検出待機中 */
+  isPendingNewSession?: boolean
+  /** UIテーマ */
+  theme?: 'dark' | 'light'
+}
+
+type TabId = 'profile' | 'sessions'
+
+/** アクティブセッション検出時の確認状態 */
+interface ActiveSessionConfirm {
+  /** 検出されたアクティブセッション */
+  activeSession: SessionSummary
+}
+
+export function AgentDetail({
+  agent, sessions, inlineSession, agentConfig, userConfig,
+  onBack, onSelectSession, onStartNewSession, onSendMessage,
+  onCloseInlineSession, isSessionSendable, isPendingNewSession,
+  theme = 'dark',
+}: AgentDetailProps) {
+  const [activeTab, setActiveTab] = useState<TabId>('profile')
+  const [showNewSession, setShowNewSession] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  // アクティブセッション確認ダイアログの状態
+  const [activeConfirm, setActiveConfirm] = useState<ActiveSessionConfirm | null>(null)
+
+  // 「新規セッション」ボタン押下時: アクティブセッションがあれば確認UIを表示
+  const handleNewSessionClick = useCallback(() => {
+    if (showNewSession) {
+      // 既に開いていたら閉じる
+      setShowNewSession(false)
+      setActiveConfirm(null)
+      return
+    }
+
+    // このエージェントにアクティブなセッションがあるか確認
+    const activeSession = sessions.find((s) => s.status !== 'idle')
+    if (activeSession) {
+      // 確認UIを表示（メッセージ入力前）
+      setActiveConfirm({ activeSession })
+      setShowNewSession(true)
+      return
+    }
+
+    // アクティブなセッションがなければ直接メッセージ入力欄を表示
+    setShowNewSession(true)
+  }, [showNewSession, sessions])
+
+  const handleStartSession = useCallback(async (message: string) => {
+    if (!onStartNewSession) return
+
+    setIsStarting(true)
+    try {
+      await onStartNewSession(agent.id, message)
+      setShowNewSession(false)
+    } finally {
+      setIsStarting(false)
+    }
+  }, [onStartNewSession, agent.id])
+
+  // 確認UI: 新規セッション開始を選択 → メッセージ入力欄を表示
+  const handleConfirmNewSession = useCallback(() => {
+    setActiveConfirm(null)
+    // showNewSession は true のまま → MessageInput が表示される
+  }, [])
+
+  // 確認UI: アクティブセッションを開く
+  const handleOpenActiveSession = useCallback(() => {
+    if (!activeConfirm) return
+    const { activeSession } = activeConfirm
+    setActiveConfirm(null)
+    setShowNewSession(false)
+    onSelectSession(activeSession.id)
+  }, [activeConfirm, onSelectSession])
+
+  // 確認UI: キャンセル
+  const handleConfirmCancel = useCallback(() => {
+    setActiveConfirm(null)
+    setShowNewSession(false)
+  }, [])
+
+  // インラインセッション表示中かどうか
+  const showingInlineSession = inlineSession !== null
+
+  const tabs: { id: TabId; label: string; count?: number }[] = [
+    { id: 'profile', label: 'プロフィール' },
+    { id: 'sessions', label: 'セッション履歴', count: sessions.length }
+  ]
+
+  // セッション統計集計
+  const totalMessages = sessions.reduce((sum, s) => sum + s.stats.userMessages + s.stats.assistantMessages, 0)
+  const totalToolCalls = sessions.reduce((sum, s) => sum + s.stats.toolCalls, 0)
+  const totalTokens = sessions.reduce((sum, s) => sum + s.stats.totalInputTokens + s.stats.totalOutputTokens, 0)
+
+  // インラインセッションでメッセージ送信可能かの判定
+  const canSendInline = inlineSession && onSendMessage && isSessionSendable
+    ? (isSessionSendable(inlineSession.id) || inlineSession.status !== 'idle')
+    : false
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* コンパクトヘッダー（インラインセッション表示中） or 通常ヘッダー */}
+      <div
+        className="shrink-0 border-b border-[var(--border)]"
+        style={{
+          background: `linear-gradient(135deg, ${agent.color}15, ${agent.color}05)`
+        }}
+      >
+        <div className={`px-3 md:px-6 ${showingInlineSession ? 'py-2' : 'pt-3 md:pt-4 pb-2 md:pb-3'}`}>
+          {showingInlineSession ? (
+            /* --- インラインセッション時: コンパクトヘッダー --- */
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onCloseInlineSession}
+                className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+                エージェント情報
+              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                <AgentAvatar name={agent.displayName} color={agent.color} size={28} avatar={agent.avatar} agentId={agent.id} theme={theme} />
+                <span className="text-sm font-medium text-[var(--text-tertiary)]">{agent.displayName}</span>
+                <span className="text-[10px] text-[var(--text-faint)] font-mono">{inlineSession.id.slice(0, 8)}</span>
+              </div>
+            </div>
+          ) : (
+            /* --- 通常時: フルヘッダー --- */
+            <>
+              <button
+                onClick={onBack}
+                className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors mb-3"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+                エージェント一覧
+              </button>
+
+              <div className="flex items-center gap-3 md:gap-4">
+                <AgentAvatar name={agent.displayName} color={agent.color} size={56} avatar={agent.avatar} agentId={agent.id} theme={theme} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+                    <h2 className="text-lg md:text-xl font-bold text-[var(--text-primary)]">{agent.displayName}</h2>
+                    {agent.activeSessionCount > 0 && (
+                      <div className="flex items-center gap-1.5 bg-green-500/20 text-green-400 text-[10px] font-medium px-2 py-0.5 rounded-full">
+                        <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                        Active
+                      </div>
+                    )}
+                  </div>
+                  {agent.role && (
+                    <p className="text-sm text-[var(--text-muted)] mt-0.5">{agent.role}</p>
+                  )}
+                  {agent.origin && (
+                    <p className="text-xs text-[var(--text-dim)] mt-0.5">{agent.origin}</p>
+                  )}
+                </div>
+
+                {/* 新規セッション開始ボタン */}
+                {onStartNewSession && (
+                  <button
+                    onClick={handleNewSessionClick}
+                    className={`
+                      shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      transition-all duration-200
+                      ${showNewSession
+                        ? 'bg-gray-700 text-[var(--text-tertiary)]'
+                        : 'bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-shadow)]'
+                      }
+                    `}
+                  >
+                    {showNewSession ? (
+                      <>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                        キャンセル
+                      </>
+                    ) : (
+                      <>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        新規セッション
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {/* 新規セッション入力欄 or アクティブセッション確認UI */}
+              {showNewSession && !isPendingNewSession && (
+                <div className="mt-3">
+                  {activeConfirm ? (
+                    /* --- アクティブセッション確認UI --- */
+                    <ActiveSessionConfirmDialog
+                      confirm={activeConfirm}
+                      agentName={agent.displayName}
+                      onNewSession={handleConfirmNewSession}
+                      onOpenActive={handleOpenActiveSession}
+                      onCancel={handleConfirmCancel}
+                    />
+                  ) : (
+                    <MessageInput
+                      onSend={handleStartSession}
+                      isSending={isStarting}
+                      placeholder={`${agent.displayName} に最初のメッセージを送信... (Ctrl+Enter)`}
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* 新規セッション検出待機中のパルスアニメーション */}
+              {isPendingNewSession && (
+                <div className="mt-3 flex items-center gap-3 px-4 py-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border)]">
+                  <div className="relative flex items-center justify-center w-5 h-5">
+                    <div
+                      className="absolute w-5 h-5 rounded-full animate-ping opacity-30"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                    <div
+                      className="w-2.5 h-2.5 rounded-full animate-pulse"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                  </div>
+                  <span className="text-sm text-[var(--text-muted)]">新規セッション作成中...</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* タブ（インラインセッション表示中は非表示） */}
+        {!showingInlineSession && (
+          <div className="flex gap-0 px-3 md:px-6">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`
+                  px-4 py-2 text-sm font-medium border-b-2 transition-colors
+                  ${activeTab === tab.id
+                    ? 'border-[var(--accent-border)] text-[var(--accent-text)]'
+                    : 'border-transparent text-[var(--text-dim)] hover:text-[var(--text-tertiary)]'
+                  }
+                `}
+              >
+                {tab.label}
+                {tab.count !== undefined && (
+                  <span className={`ml-1.5 text-xs ${activeTab === tab.id ? 'text-[var(--accent-text-vivid)]' : 'text-[var(--text-faint)]'}`}>
+                    ({tab.count})
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* メインコンテンツ */}
+      {showingInlineSession ? (
+        /* --- インラインセッションビュー: ChatTimeline を埋め込み --- */
+        <ChatTimeline
+          session={inlineSession}
+          agentConfig={agentConfig}
+          userConfig={userConfig}
+          onSendMessage={canSendInline && onSendMessage ? onSendMessage : undefined}
+          theme={theme}
+        />
+      ) : (
+        /* --- 通常のタブコンテンツ --- */
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'profile' && (
+            <ProfileTab
+              agent={agent}
+              totalSessions={sessions.length}
+              totalMessages={totalMessages}
+              totalToolCalls={totalToolCalls}
+              totalTokens={totalTokens}
+            />
+          )}
+          {activeTab === 'sessions' && (
+            <SessionsTab
+              sessions={sessions}
+              agentColor={agent.color}
+              onSelectSession={onSelectSession}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --- プロフィールタブ ---
+
+interface ProfileTabProps {
+  agent: AgentInfo
+  totalSessions: number
+  totalMessages: number
+  totalToolCalls: number
+  totalTokens: number
+}
+
+function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens }: ProfileTabProps) {
+  return (
+    <div className="p-3 md:p-6 space-y-4 md:space-y-6">
+      {/* 概要カード */}
+      <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
+        <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-3">概要</h3>
+        {agent.summary && (
+          <p className="text-sm text-[var(--text-tertiary)] mb-2 font-medium">{agent.summary}</p>
+        )}
+        <p className="text-sm text-[var(--text-muted)] leading-relaxed">{agent.description}</p>
+      </div>
+
+      {/* 基本情報 */}
+      <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
+        <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">基本情報</h3>
+        <div className="space-y-3">
+          {agent.employeeId && (
+            <InfoRow label="社員番号" value={agent.employeeId} />
+          )}
+          <InfoRow label="エージェントID" value={agent.id} />
+          <InfoRow label="モデル" value={shortModel(agent.model)} subValue={agent.model} />
+          <InfoRow label="起動コマンド" value={agent.command} mono />
+          <InfoRow label="テーマカラー" value={agent.color} color={agent.color} />
+        </div>
+      </div>
+
+      {/* 累計統計 */}
+      <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
+        <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">累計統計</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StatCard label="セッション" value={String(totalSessions)} icon="sessions" color="#8B5CF6" />
+          <StatCard label="メッセージ" value={String(totalMessages)} icon="messages" color="#3B82F6" />
+          <StatCard label="ツール実行" value={String(totalToolCalls)} icon="tools" color="#10B981" />
+          <StatCard label="トークン" value={formatTokens(totalTokens)} icon="tokens" color="#F59E0B" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function InfoRow({ label, value, subValue, mono, color }: {
+  label: string
+  value: string
+  subValue?: string
+  mono?: boolean
+  color?: string
+}) {
+  return (
+    <div className="flex items-center justify-between py-1.5 border-b border-[var(--border)] last:border-0">
+      <span className="text-xs text-[var(--text-dim)]">{label}</span>
+      <div className="flex items-center gap-2">
+        {color && (
+          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+        )}
+        <span className={`text-sm text-[var(--text-tertiary)] ${mono ? 'font-mono text-xs bg-[var(--bg-surface)] px-2 py-0.5 rounded' : ''}`}>
+          {value}
+        </span>
+        {subValue && (
+          <span className="text-[10px] text-[var(--text-faint)] hidden lg:inline">({subValue})</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StatCard({ label, value, icon, color }: {
+  label: string
+  value: string
+  icon: string
+  color: string
+}) {
+  const icons: Record<string, React.ReactNode> = {
+    sessions: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
+    ),
+    messages: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
+      </svg>
+    ),
+    tools: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+      </svg>
+    ),
+    tokens: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+      </svg>
+    )
+  }
+
+  return (
+    <div className="bg-[var(--bg-surface)] rounded-lg p-3 text-center">
+      <div className="flex justify-center mb-2" style={{ color }}>
+        {icons[icon]}
+      </div>
+      <div className="text-lg font-bold text-[var(--text-secondary)]">{value}</div>
+      <div className="text-[10px] text-[var(--text-dim)] mt-0.5">{label}</div>
+    </div>
+  )
+}
+
+// --- アクティブセッション確認ダイアログ ---
+
+interface ActiveSessionConfirmDialogProps {
+  confirm: ActiveSessionConfirm
+  agentName: string
+  onNewSession: () => void
+  onOpenActive: () => void
+  onCancel: () => void
+}
+
+function ActiveSessionConfirmDialog({
+  confirm, agentName, onNewSession, onOpenActive, onCancel,
+}: ActiveSessionConfirmDialogProps) {
+  const statusIndicator = STATUS_INDICATORS[confirm.activeSession.status] || STATUS_INDICATORS.idle
+
+  return (
+    <div className="bg-[var(--bg-elevated)] rounded-xl border border-[var(--border)] p-4 space-y-3">
+      {/* 警告メッセージ */}
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-400">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm text-[var(--text-secondary)] font-medium">
+            {agentName} にアクティブなセッションがあります
+          </p>
+          <div className="flex items-center gap-2 mt-1.5">
+            <div className={`w-2 h-2 rounded-full ${statusIndicator.dot}`} />
+            <span className="text-xs text-[var(--text-muted)]">{confirm.activeSession.id.slice(0, 8)}</span>
+            <span className="text-xs text-[var(--text-dim)]">
+              {confirm.activeSession.lastMessage
+                ? `"${confirm.activeSession.lastMessage.slice(0, 40)}${confirm.activeSession.lastMessage.length > 40 ? '...' : ''}"`
+                : confirm.activeSession.projectName
+              }
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 3択ボタン */}
+      <div className="flex flex-col gap-2">
+        {/* 新規セッション開始 */}
+        <button
+          onClick={onNewSession}
+          className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
+            bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          新規セッションを開始
+        </button>
+
+        {/* アクティブセッションを開く */}
+        <button
+          onClick={onOpenActive}
+          className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
+            bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-blue-300 border border-[var(--border)] transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          アクティブなセッションを開く
+        </button>
+
+        {/* キャンセル */}
+        <button
+          onClick={onCancel}
+          className="w-full px-4 py-2 rounded-lg text-sm text-[var(--text-dim)] hover:text-[var(--text-tertiary)]
+            hover:bg-[var(--bg-surface)] transition-colors"
+        >
+          キャンセル
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// --- セッション履歴タブ ---
+
+interface SessionsTabProps {
+  sessions: SessionSummary[]
+  agentColor: string
+  onSelectSession: (sessionId: string) => void
+}
+
+function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps) {
+  if (sessions.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-[var(--text-dim)]">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 text-[var(--text-faint)]">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        <p className="text-sm">セッション履歴がありません</p>
+        <p className="text-xs text-[var(--text-faint)] mt-1">このエージェントのセッションがHookで記録されると表示されます</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="divide-y divide-[var(--bg-hover)]">
+      {sessions.map((s) => {
+        const indicator = STATUS_INDICATORS[s.status] || STATUS_INDICATORS.idle
+        return (
+          <button
+            key={s.id}
+            onClick={() => onSelectSession(s.id)}
+            className="w-full text-left px-6 py-4 hover:bg-[var(--bg-elevated)] transition-colors group"
+          >
+            <div className="flex items-start justify-between mb-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`w-2 h-2 rounded-full shrink-0 ${indicator.dot}`} />
+                <span className="text-sm font-medium text-[var(--text-secondary)] truncate">{s.projectName}</span>
+                <span className="text-[10px] text-[var(--text-faint)] shrink-0">{s.id.slice(0, 8)}</span>
+              </div>
+              <span className="text-xs text-[var(--text-dim)] shrink-0 ml-3">{relativeTime(s.lastEventAt)}</span>
+            </div>
+
+            {/* 最後のメッセージ */}
+            {s.lastMessage && (
+              <p className="text-xs text-[var(--text-dim)] mb-2 truncate pl-4">{s.lastMessage}</p>
+            )}
+
+            {/* 統計バー */}
+            <div className="flex items-center gap-4 pl-4">
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {s.stats.userMessages + s.stats.assistantMessages} msgs
+              </span>
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {s.stats.toolCalls} tools
+              </span>
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {formatTokens(s.stats.totalInputTokens + s.stats.totalOutputTokens)} tokens
+              </span>
+              {/* アクセント */}
+              <div className="flex-1" />
+              <svg
+                width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                className="text-gray-700 group-hover:text-[var(--text-muted)] transition-colors"
+                style={{ color: undefined }}
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}

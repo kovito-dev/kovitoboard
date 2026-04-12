@@ -1,0 +1,196 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { MarkdownPreview } from './MarkdownPreview'
+
+interface FilePreviewProps {
+  /** プレビュー対象のファイルパス */
+  filePath: string
+  /** パネルを閉じるコールバック */
+  onClose: () => void
+}
+
+/** 画像系拡張子の判定 */
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico']
+
+function isImageFile(path: string): boolean {
+  const lower = path.toLowerCase()
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/** 拡張子から表示ラベルを取得 */
+function getFileTypeLabel(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  const labels: Record<string, string> = {
+    md: 'Markdown',
+    ts: 'TypeScript',
+    tsx: 'TSX',
+    js: 'JavaScript',
+    jsx: 'JSX',
+    py: 'Python',
+    json: 'JSON',
+    yaml: 'YAML',
+    yml: 'YAML',
+    html: 'HTML',
+    css: 'CSS',
+    sh: 'Shell',
+    png: 'PNG',
+    jpg: 'JPEG',
+    jpeg: 'JPEG',
+    gif: 'GIF',
+    svg: 'SVG',
+    webp: 'WebP',
+  }
+  return labels[ext] || ext.toUpperCase()
+}
+
+/** ファイル名を抽出 */
+function getFileName(path: string): string {
+  return path.split('/').pop() || path
+}
+
+const MIN_WIDTH = 300
+const MAX_WIDTH = 800
+const DEFAULT_WIDTH = 420
+
+export function FilePreview({ filePath, onClose }: FilePreviewProps) {
+  const [content, setContent] = useState<string>('')
+  const [language, setLanguage] = useState<string>('text')
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [width, setWidth] = useState(DEFAULT_WIDTH)
+  const [isDragging, setIsDragging] = useState(false)
+  const dragStartX = useRef(0)
+  const dragStartWidth = useRef(0)
+
+  // ドラッグによるリサイズ処理
+  useEffect(() => {
+    if (!isDragging) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // 左方向にドラッグ = 幅を広げる（右パネルなので逆方向）
+      const delta = dragStartX.current - e.clientX
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, dragStartWidth.current + delta))
+      setWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsDragging(false)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    // ドラッグ中のテキスト選択を防止
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+  }, [isDragging])
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragStartX.current = e.clientX
+    dragStartWidth.current = width
+    setIsDragging(true)
+  }, [width])
+
+  const fetchContent = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/artifact?path=${encodeURIComponent(filePath)}`)
+      if (!res.ok) {
+        setError('ファイルを読み込めませんでした')
+        return
+      }
+      const data = await res.json()
+      setContent(data.content)
+      setLanguage(data.language)
+    } catch {
+      setError('ファイルの取得に失敗しました')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [filePath])
+
+  useEffect(() => {
+    // 画像はAPIで取得せずブラウザで直接表示
+    if (isImageFile(filePath)) {
+      setIsLoading(false)
+      return
+    }
+    fetchContent()
+  }, [filePath, fetchContent])
+
+  const isImage = isImageFile(filePath)
+
+  return (
+    <div
+      className="shrink-0 flex flex-col border-l border-[var(--border)] bg-[var(--bg-surface)] overflow-hidden relative"
+      style={{ width: `${width}px` }}
+    >
+      {/* ドラッグハンドル（左端） */}
+      <div
+        onMouseDown={handleDragStart}
+        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 transition-colors ${
+          isDragging ? 'bg-[var(--accent)]/60' : 'hover:bg-[var(--accent)]/40'
+        }`}
+      />
+      {/* ヘッダー */}
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-base)]">
+        <div className="flex items-center gap-2 min-w-0">
+          {/* ファイルタイプバッジ */}
+          <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono">
+            {getFileTypeLabel(filePath)}
+          </span>
+          {/* ファイル名 */}
+          <span className="text-xs text-[var(--text-tertiary)] truncate" title={filePath}>
+            {getFileName(filePath)}
+          </span>
+        </div>
+        {/* 閉じるボタン */}
+        <button
+          onClick={onClose}
+          className="shrink-0 ml-2 text-[var(--text-dim)] hover:text-[var(--text-tertiary)] transition-colors"
+          title="プレビューを閉じる"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      {/* ファイルパス（フルパス表示） */}
+      <div className="shrink-0 px-3 py-1.5 border-b border-[var(--border)]">
+        <span className="text-[10px] text-[var(--text-faint)] font-mono break-all">{filePath}</span>
+      </div>
+
+      {/* コンテンツ領域 */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {isLoading ? (
+          <div className="text-sm text-[var(--text-dim)] animate-pulse">読み込み中...</div>
+        ) : error ? (
+          <div className="text-sm text-red-400">{error}</div>
+        ) : isImage ? (
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={`/api/artifact/raw?path=${encodeURIComponent(filePath)}`}
+              alt={getFileName(filePath)}
+              className="max-w-full rounded-lg border border-[var(--border)]"
+            />
+          </div>
+        ) : language === 'markdown' ? (
+          <MarkdownPreview content={content} variant="document" />
+        ) : (
+          <pre className="text-xs text-[var(--text-tertiary)] font-mono whitespace-pre-wrap leading-relaxed">
+            <code>{content}</code>
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}

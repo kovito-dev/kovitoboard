@@ -1,0 +1,38 @@
+{
+  "name": "@kovito/kovitoboard",
+  "version": "0.1.0-dev",
+  "description": "KovitoBoard - Claude Code 上で動作する自己拡張型 AI エージェントチームシステム",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
+    "build": "vite build && tsc -p tsconfig.node.json",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "express": "^5.2.1",
+    "gray-matter": "^4.0.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/express": "^5.0.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.4",
+    "concurrently": "^9.2.1",
+    "tailwindcss": "^4.2.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

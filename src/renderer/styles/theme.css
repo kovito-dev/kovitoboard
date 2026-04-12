@@ -1,0 +1,146 @@
+/* =============================================
+   テーマ定義 — ダークモード / ライトモード
+   =============================================
+   data-theme 属性で切り替え。デフォルトはダーク。
+*/
+
+:root,
+[data-theme="dark"] {
+  /* 背景色 */
+  --bg-base: #1a1a2e;       /* メインの背景 */
+  --bg-surface: #16162a;    /* ヘッダー、サイドバー、入力エリア */
+  --bg-elevated: #1e1e38;   /* カード、ホバー状態 */
+  --bg-nav: #111122;        /* ナビゲーション */
+  --bg-inset: #0e0e1e;      /* 深い凹み（入力欄） */
+  --bg-hover: #24243e;      /* ホバー時の背景 */
+
+  /* ボーダー */
+  --border: #2a2a4a;
+  --border-subtle: #1e1e38;
+  --border-strong: #3a3a5a;
+
+  /* テキスト */
+  --text-primary: #f3f4f6;    /* 最も明るい */
+  --text-secondary: #e5e7eb;
+  --text-tertiary: #d1d5db;
+  --text-muted: #9ca3af;
+  --text-dim: #6b7280;
+  --text-faint: #4b5563;
+
+  /* アクセントカラー（青系） */
+  --accent: #3b82f6;                    /* blue-500: 基本アクセント */
+  --accent-hover: #60a5fa;              /* blue-400: ホバー時 */
+  --accent-strong: #2563eb;             /* blue-600: ボタン背景等 */
+  --accent-text: #93c5fd;               /* blue-300: アクセントテキスト */
+  --accent-text-vivid: #60a5fa;         /* blue-400: 強調テキスト */
+  --accent-bg: rgba(29, 78, 216, 0.35); /* blue-700/35: アクティブ背景 */
+  --accent-bg-subtle: rgba(29, 78, 216, 0.18); /* blue-700/18: 薄い背景 */
+  --accent-bg-strong: rgba(29, 78, 216, 0.55); /* blue-700/55: 強い背景 */
+  --accent-badge-bg: rgba(59, 130, 246, 0.2);  /* blue-500/20: バッジ背景 */
+  --accent-border: #60a5fa;             /* blue-400: ボーダー */
+  --accent-border-subtle: rgba(37, 99, 235, 0.3); /* blue-600/30: 薄いボーダー */
+  --accent-shadow: rgba(30, 58, 138, 0.3);        /* blue-900/30: シャドウ */
+  --accent-ring: rgba(59, 130, 246, 0.3);         /* blue-500/30: フォーカスリング */
+
+  /* スクロールバー */
+  --scrollbar-thumb: #4a4a6a;
+  --scrollbar-thumb-hover: #6a6a8a;
+
+  /* Markdown */
+  --md-code-bg: #2d2d4a;
+  --md-pre-bg: #16162a;
+  --md-th-bg: #2a2a4a;
+  --md-table-border: #3a3a5a;
+  --md-blockquote-border: #4a4a6a;
+  --md-blockquote-text: #a0a0c0;
+
+  /* Markdown (document variant) */
+  --md-doc-text: #d4d4e0;
+  --md-doc-h1-border: #E94560;
+  --md-doc-h1-text: #f0f0f5;
+  --md-doc-h2-text: #e8e8f0;
+  --md-doc-h2-border: #2a2a4a;
+  --md-doc-h3-text: #e0e0ec;
+  --md-doc-h4-text: #d8d8e8;
+  --md-doc-pre-bg: #12122a;
+  --md-doc-code-bg: #2a2a48;
+  --md-doc-code-text: #bfdbfe;
+  --md-doc-th-bg: #252548;
+  --md-doc-th-text: #d0d0e0;
+  --md-doc-table-border: #33335a;
+  --md-doc-row-even: #1a1a36;
+  --md-doc-row-hover: #22224a;
+  --md-doc-strong: #ececf5;
+  --md-doc-hr: #2a2a4a;
+  --md-doc-marker: #6a6a8a;
+}
+
+[data-theme="light"] {
+  /* 背景色 */
+  --bg-base: #f3f4f6;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e9eaef;
+  --bg-nav: #ebedf2;
+  --bg-inset: #e2e4e9;
+  --bg-hover: #dcdee5;
+
+  /* ボーダー */
+  --border: #d1d5db;
+  --border-subtle: #e5e7eb;
+  --border-strong: #9ca3af;
+
+  /* テキスト */
+  --text-primary: #111827;
+  --text-secondary: #1f2937;
+  --text-tertiary: #374151;
+  --text-muted: #4b5563;
+  --text-dim: #6b7280;
+  --text-faint: #9ca3af;
+
+  /* アクセントカラー（青系 — ライトモード用: 高コントラスト） */
+  --accent: #2563eb;                    /* blue-600 */
+  --accent-hover: #1d4ed8;              /* blue-700 */
+  --accent-strong: #2563eb;             /* blue-600 */
+  --accent-text: #1d4ed8;              /* blue-700: 明るい背景でも読みやすい */
+  --accent-text-vivid: #2563eb;         /* blue-600 */
+  --accent-bg: rgba(37, 99, 235, 0.12); /* 薄い青背景 */
+  --accent-bg-subtle: rgba(37, 99, 235, 0.07);
+  --accent-bg-strong: rgba(37, 99, 235, 0.2);
+  --accent-badge-bg: rgba(37, 99, 235, 0.1);
+  --accent-border: #2563eb;             /* blue-600 */
+  --accent-border-subtle: rgba(37, 99, 235, 0.25);
+  --accent-shadow: rgba(37, 99, 235, 0.12);
+  --accent-ring: rgba(37, 99, 235, 0.3);
+
+  /* スクロールバー */
+  --scrollbar-thumb: #b0b4c0;
+  --scrollbar-thumb-hover: #8a8e9a;
+
+  /* Markdown */
+  --md-code-bg: #e2e4ea;
+  --md-pre-bg: #ebedf2;
+  --md-th-bg: #dfe1e6;
+  --md-table-border: #c8cad0;
+  --md-blockquote-border: #b0b4c0;
+  --md-blockquote-text: #4b5563;
+
+  /* Markdown (document variant) */
+  --md-doc-text: #1f2937;
+  --md-doc-h1-border: #E94560;
+  --md-doc-h1-text: #111827;
+  --md-doc-h2-text: #1f2937;
+  --md-doc-h2-border: #d1d5db;
+  --md-doc-h3-text: #374151;
+  --md-doc-h4-text: #4b5563;
+  --md-doc-pre-bg: #ebedf2;
+  --md-doc-code-bg: #dfe1e8;
+  --md-doc-code-text: #1e40af;
+  --md-doc-th-bg: #e2e4ea;
+  --md-doc-th-text: #374151;
+  --md-doc-table-border: #c8cad0;
+  --md-doc-row-even: #f0f1f5;
+  --md-doc-row-hover: #e5e7ed;
+  --md-doc-strong: #111827;
+  --md-doc-hr: #d1d5db;
+  --md-doc-marker: #9ca3af;
+}
