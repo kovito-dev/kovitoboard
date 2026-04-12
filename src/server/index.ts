@@ -38,7 +38,7 @@ const watcher = new Watcher(config, sessionManager)
 const claudeBridge = new ClaudeBridge()
 const tmuxBridge = new TmuxBridge()
 
-// プロジェクトルート（tasks/tasks.json 等の参照先）
+// プロジェクトルート（.claude/agents や .kovitoboard/ 等のデータ参照基点）
 const projectRoot = resolveProjectRoot()
 
 // データファイル監視: エージェントの直接編集を自動検知

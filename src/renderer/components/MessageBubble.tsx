@@ -70,7 +70,7 @@ function UserMessageText({ text, onFilePathClick }: { text: string; onFilePathCl
 }
 
 /** メッセージアクションバー（ホバー時表示、メッセージ下部に配置） */
-function MessageActions({ onCopy, onAddTask }: { onCopy: () => void; onAddTask?: () => void }) {
+function MessageActions({ onCopy }: { onCopy: () => void }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = useCallback((e: React.MouseEvent) => {
@@ -99,23 +99,6 @@ function MessageActions({ onCopy, onAddTask }: { onCopy: () => void; onAddTask?:
         )}
         <span className="text-xs">{copied ? 'コピー済み' : 'コピー'}</span>
       </button>
-
-      {/* タスク追加ボタン */}
-      {onAddTask && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onAddTask()
-          }}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[var(--text-dim)] hover:text-green-400 hover:bg-green-500/10 transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-          <span className="text-xs">タスク追加</span>
-        </button>
-      )}
     </div>
   )
 }
@@ -126,8 +109,6 @@ interface MessageBubbleProps {
   userConfig: AgentConfig
   /** ファイルパスクリック時のコールバック */
   onFilePathClick?: (path: string) => void
-  /** メッセージからタスク追加するコールバック */
-  onAddTask?: (messageText: string) => void
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
@@ -171,7 +152,7 @@ function SmallCopyButton({ onClick, size = 12 }: { onClick: () => void; size?: n
   )
 }
 
-export function MessageBubble({ event, agentConfig, userConfig, onFilePathClick, onAddTask, theme = 'dark' }: MessageBubbleProps) {
+export function MessageBubble({ event, agentConfig, userConfig, onFilePathClick, theme = 'dark' }: MessageBubbleProps) {
   const getSpeakerName = () => {
     if (event.type === 'user') return userConfig.name
     if (event.type === 'assistant') return agentConfig.name
@@ -248,10 +229,7 @@ export function MessageBubble({ event, agentConfig, userConfig, onFilePathClick,
           )}
         </div>
         {/* アクションバー（メッセージ下部、ホバーで表示） */}
-        <MessageActions
-          onCopy={handleCopy}
-          onAddTask={onAddTask && event.content.text ? () => onAddTask(event.content.text!) : undefined}
-        />
+        <MessageActions onCopy={handleCopy} />
       </div>
     </div>
   )

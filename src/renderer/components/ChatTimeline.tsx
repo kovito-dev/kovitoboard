@@ -42,15 +42,13 @@ interface ChatTimelineProps {
   onContinueSession?: (agentId: string, message: string) => Promise<void>
   /** ファイルパスクリック時のコールバック */
   onFilePathClick?: (path: string) => void
-  /** メッセージからタスク追加するコールバック */
-  onAddTask?: (messageText: string) => void
   /** 送信失敗時のコールバック（オプティミスティックメッセージのロールバック用） */
   onSendError?: (error: Error) => void
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
 
-export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onAddTask, onSendError, theme = 'dark' }: ChatTimelineProps) {
+export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onSendError, theme = 'dark' }: ChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const wasAtBottomRef = useRef(true)
@@ -303,7 +301,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
       {/* メッセージ一覧（スクロール領域） */}
       <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-2 md:px-4 py-3">
         {visibleEvents.map((event) => (
-          <MessageBubble key={event.id} event={event} agentConfig={agentConfig} userConfig={userConfig} onFilePathClick={onFilePathClick} onAddTask={onAddTask} theme={theme} />
+          <MessageBubble key={event.id} event={event} agentConfig={agentConfig} userConfig={userConfig} onFilePathClick={onFilePathClick} theme={theme} />
         ))}
 
         {/* タイピングインジケーター: エージェントが応答準備中の表示 */}
