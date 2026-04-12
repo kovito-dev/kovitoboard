@@ -14,7 +14,13 @@ import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
+import { TrustPromptDetector, INITIAL_PATTERNS } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
+import type {
+  ServerToClientEvent,
+  ClientToServerEvent,
+  TrustPromptRespondPayload,
+} from '../shared/ws-events'
 
 const PORT = Number(process.env.PORT) || 3001
 
@@ -472,8 +478,13 @@ app.get('/api/artifact/raw', (req, res) => {
 app.use(express.static(join(__dirname, '../../dist')))
 
 // --- WebSocket: リアルタイムイベント配信 ---
-function broadcast(type: string, payload: unknown) {
-  const msg = JSON.stringify({ type, payload })
+function broadcast(type: string, payload: unknown): void
+function broadcast(event: ServerToClientEvent): void
+function broadcast(typeOrEvent: string | ServerToClientEvent, payload?: unknown): void {
+  const msg =
+    typeof typeOrEvent === 'string'
+      ? JSON.stringify({ type: typeOrEvent, payload })
+      : JSON.stringify(typeOrEvent)
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(msg)
@@ -496,6 +507,56 @@ sessionManager.on('new_session', (summary: unknown) => {
 claudeBridge.on('process_end', (processId: string, status: string, exitCode: number) => {
   broadcast('process_end', { processId, status, exitCode })
 })
+
+// --- Trust Prompt Detector 起動 ---
+// 仕様書 `docs/specs/trust-prompt-relay.md` v1.1 準拠。
+// tmux ウィンドウ単位で信頼プロンプトを検知し、WebSocket で UI に中継する。
+const trustPromptDetector = new TrustPromptDetector(
+  tmuxBridge,
+  INITIAL_PATTERNS,
+  (event) => broadcast(event),
+)
+trustPromptDetector.start()
+
+// --- WebSocket: クライアント → サーバー（trust prompt 応答受信） ---
+wss.on('connection', (ws) => {
+  ws.on('message', (data) => {
+    let parsed: ClientToServerEvent
+    try {
+      parsed = JSON.parse(data.toString()) as ClientToServerEvent
+    } catch {
+      console.warn('[WS] 不正な JSON を受信')
+      return
+    }
+
+    if (parsed.type === 'trust_prompt_respond') {
+      handleTrustPromptRespond(parsed.payload)
+    }
+  })
+})
+
+function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
+  const { promptId, windowName, response } = payload
+
+  if (response.mode === 'choice') {
+    // UI は choiceId のみを送り、実際のキー列への変換は detector が
+    // 直近通知時の choices（state.lastChoices）から行う。
+    // これにより UI 側から任意のキーを送り込めない設計とする。
+    const ok = trustPromptDetector.respondChoice(windowName, promptId, response.choiceId)
+    if (!ok) {
+      console.warn(
+        `[WS] trust_prompt_respond (choice) 失敗: ${windowName} ${promptId}`,
+      )
+    }
+  } else if (response.mode === 'raw-keys') {
+    const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
+    if (!ok) {
+      console.warn(
+        `[WS] trust_prompt_respond (raw-keys) 失敗: ${windowName} ${promptId}`,
+      )
+    }
+  }
+}
 
 // --- 起動 ---
 watcher.start()

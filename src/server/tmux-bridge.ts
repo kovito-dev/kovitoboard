@@ -291,7 +291,10 @@ export class TmuxBridge {
 
   /**
    * エージェントを新しいウィンドウで起動
-   * 起動後、Claude CLI の信頼確認プロンプトを自動承認する
+   *
+   * Phase 5 以降: 起動時の信頼確認プロンプト自動承認は撤去済み（仕様書 §3-3 / §5-3-3）。
+   * 初回フォルダ信頼プロンプトが表示された場合は、検知ループ (trust-prompt-detector) が
+   * 拾って UI に中継する。
    */
   async startAgent(agentId: string, windowName?: string, cwd?: string): Promise<TmuxSendResult> {
     if (!isValidTmuxName(agentId)) {
@@ -317,9 +320,6 @@ export class TmuxBridge {
       ], { stdio: 'pipe' })
       console.log(`[tmux-bridge] エージェント起動: ${name} (${agentId}) in ${workDir}`)
 
-      // 信頼確認プロンプトを自動承認
-      await this.handleTrustPrompt(name)
-
       return { success: true }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
@@ -329,46 +329,10 @@ export class TmuxBridge {
   }
 
   /**
-   * Claude CLI 起動時の信頼確認プロンプトを検出し、自動で承認する。
-   * プロンプトが表示されない場合（既に信頼済み等）はタイムアウトでスキップする。
-   */
-  private async handleTrustPrompt(windowName: string, timeoutMs = 10000): Promise<void> {
-    const tmuxTarget = `${this.sessionName}:${windowName}`
-    const startTime = Date.now()
-    const pollInterval = 500
-
-    while (Date.now() - startTime < timeoutMs) {
-      try {
-        const output = execFileSync('tmux', [
-          'capture-pane', '-t', tmuxTarget, '-p',
-        ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-
-        // 信頼確認プロンプトを検出（"Yes, I trust this folder" の選択肢）
-        if (output.includes('Yes, I trust this folder')) {
-          execFileSync('tmux', ['send-keys', '-t', tmuxTarget, 'Enter'], { stdio: 'pipe' })
-          console.log(`[tmux-bridge] 信頼確認プロンプトを自動承認: ${tmuxTarget}`)
-          return
-        }
-
-        // 既にプロンプト（❯）が表示されていれば信頼確認は不要
-        const lines = output.split('\n').filter((l) => l.trim())
-        const lastLines = lines.slice(-3).join(' ')
-        if (lastLines.includes('❯')) {
-          console.log(`[tmux-bridge] 信頼確認プロンプトなし（スキップ）: ${tmuxTarget}`)
-          return
-        }
-      } catch {
-        // capture-pane 失敗は無視
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, pollInterval))
-    }
-
-    console.warn(`[tmux-bridge] 信頼確認プロンプト検出タイムアウト: ${tmuxTarget}`)
-  }
-
-  /**
-   * ウィンドウの現在のペイン内容を取得（デバッグ用）
+   * ウィンドウの現在のペイン内容を取得
+   *
+   * Phase 5 の検知ループから呼ばれる（capture-pane -p -S -<lines> -E -）。
+   * デバッグ用にも使える。
    */
   capturePane(windowName: string, lines?: number): string | null {
     if (!isValidTmuxName(windowName)) return null
@@ -382,4 +346,59 @@ export class TmuxBridge {
       return null
     }
   }
+
+  /**
+   * trust-prompt-detector からユーザー応答を受け取って tmux に send-keys する
+   *
+   * @param windowName 対象ウィンドウ名
+   * @param keys 送信するキー列（末尾 `\n` は `Enter` キーに変換する）
+   * @param literal `true` の場合 `send-keys -l`（literal モード）で送信する（fallback UX 用）
+   * @returns 送信成功可否
+   */
+  sendTrustPromptKeys(windowName: string, keys: string, literal = false): boolean {
+    if (!isValidTmuxName(windowName)) {
+      console.warn(`[tmux-bridge] 無効なウィンドウ名: "${windowName}"`)
+      return false
+    }
+    if (!this.hasSession()) {
+      console.warn(`[tmux-bridge] tmux セッション "${this.sessionName}" が存在しません`)
+      return false
+    }
+
+    const tmuxTarget = `${this.sessionName}:${windowName}`
+
+    try {
+      const args = ['send-keys', '-t', tmuxTarget]
+      if (literal) {
+        args.push('-l', '--', keys)
+      } else {
+        // 末尾 `\n` は Enter キーに変換
+        const parts = parseKeysForSendKeys(keys)
+        args.push('--', ...parts)
+      }
+      execFileSync('tmux', args, { stdio: 'pipe' })
+      console.log(`[tmux-bridge] trust-prompt 応答送信: ${tmuxTarget} keys=${JSON.stringify(keys)} literal=${literal}`)
+      return true
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[tmux-bridge] trust-prompt 応答送信エラー: ${tmuxTarget}`, errorMsg)
+      return false
+    }
+  }
+}
+
+/**
+ * `"1\n"` → `["1", "Enter"]` / `"Enter"` → `["Enter"]` の変換
+ *
+ * tmux `send-keys` はキー名（`Enter`, `Escape` 等）と通常文字を複数引数で
+ * 受け取る。仕様書 §5-1 の `choices[].keys` は `"2\n"` 形式だが、
+ * 生 `\n` を送るとエスケープ解釈が面倒なため、末尾 `\n` は `Enter` に変換する。
+ */
+export function parseKeysForSendKeys(keys: string): string[] {
+  if (keys.length === 0) return []
+  if (keys.endsWith('\n')) {
+    const prefix = keys.slice(0, -1)
+    return prefix ? [prefix, 'Enter'] : ['Enter']
+  }
+  return [keys]
 }
