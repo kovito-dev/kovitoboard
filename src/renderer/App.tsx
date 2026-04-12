@@ -10,6 +10,7 @@ import { ChatTimeline } from './components/ChatTimeline'
 import { AgentList } from './components/AgentList'
 import { AgentDetail } from './components/AgentDetail'
 import { SettingsModal } from './components/SettingsModal'
+import { TrustPromptModal } from './components/TrustPromptModal'
 import { WelcomeBanner } from './components/WelcomeBanner'
 import { FilePreview } from './components/FilePreview'
 import type { Session } from './types'
@@ -32,7 +33,7 @@ const menuEntries: MenuEntry[] = [
 const API_BASE = '/api'
 
 export function App() {
-  const { sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading, selectSession, reloadCurrentSession, sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent, isSessionSendable, rollbackOptimisticMessage } = useIPC()
+  const { sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading, selectSession, reloadCurrentSession, sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent, isSessionSendable, rollbackOptimisticMessage, currentTrustPrompt, respondTrustPromptChoice, dismissTrustPrompt } = useIPC()
   const { theme, toggleTheme } = useTheme()
   const [activeMenuId, setActiveMenuId] = useState('agents')
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -539,6 +540,23 @@ export function App() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+      />
+
+      {/* 信頼プロンプト中継モーダル（Phase 5c） */}
+      <TrustPromptModal
+        event={currentTrustPrompt}
+        onChoice={(choiceId) => {
+          if (!currentTrustPrompt) return
+          respondTrustPromptChoice(
+            currentTrustPrompt.promptId,
+            currentTrustPrompt.windowName,
+            choiceId,
+          )
+        }}
+        onDismiss={() => {
+          if (!currentTrustPrompt) return
+          dismissTrustPrompt(currentTrustPrompt.promptId)
+        }}
       />
     </div>
   )
