@@ -13,6 +13,16 @@ const API_BASE = '/api'
 const OPTIMISTIC_ID_PREFIX = 'optimistic_'
 
 /**
+ * 信頼プロンプト queue の要素 (Phase 5d)
+ *
+ * detected / fallback を同一 queue に混在させ、モーダル側で kind を分岐する。
+ * Phase 5c では detected のみだったが 5d で fallback を追加した。
+ */
+export type TrustPromptItem =
+  | { kind: 'detected'; payload: TrustPromptDetectedPayload }
+  | { kind: 'fallback'; payload: TrustPromptFallbackPayload }
+
+/**
  * メッセージテキストを正規化して比較用にする
  * サーバー側のサニタイズ（改行→\nリテラル、制御文字除去等）と一致させるため
  * オプティミスティックUI（改行あり）とサーバーイベント（\nリテラル）を同一視する
@@ -49,11 +59,12 @@ export function useIPC() {
   const [isLoading, setIsLoading] = useState(true)
   const selectedIdRef = useRef<string | null>(null)
 
-  // --- 信頼プロンプト中継 (Phase 5c) ---
+  // --- 信頼プロンプト中継 (Phase 5c / 5d) ---
   // 複数ウィンドウで同時発生した場合は FIFO queue で 1 件ずつ表示する。
-  // queue の先頭 (index 0) が現在モーダルに表示中のイベント。
-  // Phase 5c 時点では detected のみ扱う。fallback は Phase 5d で拡張する。
-  const [trustPromptQueue, setTrustPromptQueue] = useState<TrustPromptDetectedPayload[]>([])
+  // queue の先頭 (index 0) が現在モーダルに表示中のアイテム。
+  // Phase 5d で fallback (raw-keys 入力) にも対応。同一 queue に
+  // discriminated union として格納し、モーダル側で kind を分岐する。
+  const [trustPromptQueue, setTrustPromptQueue] = useState<TrustPromptItem[]>([])
   // WebSocket 参照（trust-prompt 応答送信用）
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -253,22 +264,27 @@ export function useIPC() {
         } else if (type === 'process_end') {
           // Claude CLI プロセス完了通知
         } else if (type === 'trust_prompt_detected') {
-          // 信頼プロンプト検知: queue に追加（同一 promptId の重複は抑止）
+          // 信頼プロンプト検知: queue に detected として追加（同一 promptId 重複抑止）
           const detectedPayload = payload as TrustPromptDetectedPayload
           setTrustPromptQueue((prev) => {
-            if (prev.some((p) => p.promptId === detectedPayload.promptId)) {
+            if (prev.some((p) => p.payload.promptId === detectedPayload.promptId)) {
               return prev
             }
-            return [...prev, detectedPayload]
+            return [...prev, { kind: 'detected', payload: detectedPayload }]
           })
         } else if (type === 'trust_prompt_fallback') {
-          // Phase 5c では fallback UI は未実装（5d で対応）
+          // Phase 5d: 未知プロンプトを fallback として queue に追加
           const fallbackPayload = payload as TrustPromptFallbackPayload
-          console.log('[WS] trust_prompt_fallback (Phase 5d で対応予定):', fallbackPayload.promptId)
+          setTrustPromptQueue((prev) => {
+            if (prev.some((p) => p.payload.promptId === fallbackPayload.promptId)) {
+              return prev
+            }
+            return [...prev, { kind: 'fallback', payload: fallbackPayload }]
+          })
         } else if (type === 'trust_prompt_resolved') {
           // サーバー側でプロンプトが消えた → queue から該当 promptId を除去
           const resolvedPayload = payload as TrustPromptResolvedPayload
-          setTrustPromptQueue((prev) => prev.filter((p) => p.promptId !== resolvedPayload.promptId))
+          setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== resolvedPayload.promptId))
         }
       } catch {
         // ignore parse errors
@@ -420,7 +436,7 @@ export function useIPC() {
     }
   }, [])
 
-  // --- 信頼プロンプト応答送信 (Phase 5c) ---
+  // --- 信頼プロンプト応答送信 (Phase 5c / 5d) ---
   /**
    * 現在モーダル表示中のプロンプトに choice で応答する。
    * サーバー側は choiceId → keys 変換を detector 側で行う（UI から任意キー
@@ -431,7 +447,7 @@ export function useIPC() {
     (promptId: string, windowName: string, choiceId: string) => {
       const ws = wsRef.current
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        console.warn('[trust-prompt] WebSocket 未接続のため応答送信をスキップ')
+        console.warn('[trust-prompt] WebSocket 未接続のため choice 応答送信をスキップ')
         return
       }
       const msg: ClientToServerEvent = {
@@ -448,13 +464,43 @@ export function useIPC() {
   )
 
   /**
+   * fallback モーダルから raw-keys で応答する (Phase 5d)。
+   * サーバー側では send-keys -l（literal モード）で送信され、1024 文字の
+   * 上限もサーバー側で検査される。UI 側でも事前検査を行い、上限超過なら
+   * warn を出して noop する。
+   */
+  const respondTrustPromptRawKeys = useCallback(
+    (promptId: string, windowName: string, rawKeys: string) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn('[trust-prompt] WebSocket 未接続のため raw-keys 応答送信をスキップ')
+        return
+      }
+      if (rawKeys.length > 1024) {
+        console.warn(`[trust-prompt] raw-keys が長すぎます (${rawKeys.length} 文字 > 1024): 送信中止`)
+        return
+      }
+      const msg: ClientToServerEvent = {
+        type: 'trust_prompt_respond',
+        payload: {
+          promptId,
+          windowName,
+          response: { mode: 'raw-keys', rawKeys },
+        },
+      }
+      ws.send(JSON.stringify(msg))
+    },
+    [],
+  )
+
+  /**
    * ユーザーが ESC / オーバーレイクリックでモーダルを閉じた場合、
    * queue から該当 promptId だけ除去する。サーバー側の lastDetectedPromptId は
    * 残ったままなので、capture が変わって resolved されるか、次の tick で
-   * 再度同じ promptId が通知されるまで待つ。
+   * 再度同じ promptId が通知されるまで待つ。detected / fallback 共通。
    */
   const dismissTrustPrompt = useCallback((promptId: string) => {
-    setTrustPromptQueue((prev) => prev.filter((p) => p.promptId !== promptId))
+    setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== promptId))
   }, [])
 
   // tmux ステータスを更新
@@ -467,7 +513,7 @@ export function useIPC() {
     }
   }, [])
 
-  // queue の先頭が現在モーダルに表示すべきイベント（Phase 5c）
+  // queue の先頭が現在モーダルに表示すべきアイテム（Phase 5c / 5d）
   const currentTrustPrompt = trustPromptQueue[0] ?? null
 
   return {
@@ -475,7 +521,7 @@ export function useIPC() {
     selectSession, refreshSessions, reloadCurrentSession, refreshAgents, refreshTmuxStatus,
     sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent,
     isSessionSendable, rollbackOptimisticMessage,
-    // 信頼プロンプト中継 (Phase 5c)
-    currentTrustPrompt, respondTrustPromptChoice, dismissTrustPrompt,
+    // 信頼プロンプト中継 (Phase 5c / 5d)
+    currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
   }
 }

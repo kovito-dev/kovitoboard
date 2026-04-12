@@ -33,7 +33,7 @@ const menuEntries: MenuEntry[] = [
 const API_BASE = '/api'
 
 export function App() {
-  const { sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading, selectSession, reloadCurrentSession, sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent, isSessionSendable, rollbackOptimisticMessage, currentTrustPrompt, respondTrustPromptChoice, dismissTrustPrompt } = useIPC()
+  const { sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading, selectSession, reloadCurrentSession, sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent, isSessionSendable, rollbackOptimisticMessage, currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt } = useIPC()
   const { theme, toggleTheme } = useTheme()
   const [activeMenuId, setActiveMenuId] = useState('agents')
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -542,20 +542,28 @@ export function App() {
         onClose={() => setIsSettingsOpen(false)}
       />
 
-      {/* 信頼プロンプト中継モーダル（Phase 5c） */}
+      {/* 信頼プロンプト中継モーダル（Phase 5c / 5d） */}
       <TrustPromptModal
-        event={currentTrustPrompt}
+        item={currentTrustPrompt}
         onChoice={(choiceId) => {
           if (!currentTrustPrompt) return
           respondTrustPromptChoice(
-            currentTrustPrompt.promptId,
-            currentTrustPrompt.windowName,
+            currentTrustPrompt.payload.promptId,
+            currentTrustPrompt.payload.windowName,
             choiceId,
+          )
+        }}
+        onRawKeys={(rawKeys) => {
+          if (!currentTrustPrompt) return
+          respondTrustPromptRawKeys(
+            currentTrustPrompt.payload.promptId,
+            currentTrustPrompt.payload.windowName,
+            rawKeys,
           )
         }}
         onDismiss={() => {
           if (!currentTrustPrompt) return
-          dismissTrustPrompt(currentTrustPrompt.promptId)
+          dismissTrustPrompt(currentTrustPrompt.payload.promptId)
         }}
       />
     </div>
