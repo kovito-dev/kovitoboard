@@ -549,6 +549,10 @@ wss.on('connection', (ws) => {
 })
 
 function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
+  if (!payload?.promptId || !payload?.windowName || !payload?.response) {
+    console.warn('[WS] trust_prompt_respond: 必須フィールドが不足')
+    return
+  }
   const { promptId, windowName, response } = payload
 
   if (response.mode === 'choice') {
