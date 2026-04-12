@@ -25,12 +25,11 @@
  *
  *   private save(): void {
  *     this.watcher.notifySelfWrite(this.filePath)
- *     writeFileSync(this.filePath, ...)
+ *     fs.writeFileSync(this.filePath, ...)
  *   }
  */
 
-import { watch, type FSWatcher } from 'chokidar'
-import { statSync } from 'fs'
+import type { FileAccessLayer, WatchHandle } from './fs-layer'
 
 interface WatchEntry {
   /** 外部変更時に呼ばれるコールバック */
@@ -46,11 +45,16 @@ const DEBOUNCE_MS = 300
 
 export class DataFileWatcher {
   private entries = new Map<string, WatchEntry>()
-  private watchers: FSWatcher[] = []
+  private watchHandles: WatchHandle[] = []
   private usePolling: boolean
   private pollInterval: number
+  private fs: FileAccessLayer
 
-  constructor(options?: { usePolling?: boolean; pollInterval?: number }) {
+  constructor(
+    fs: FileAccessLayer,
+    options?: { usePolling?: boolean; pollInterval?: number }
+  ) {
+    this.fs = fs
     this.usePolling = options?.usePolling ?? true
     this.pollInterval = options?.pollInterval ?? 1500
   }
@@ -68,21 +72,23 @@ export class DataFileWatcher {
       debounceTimer: null,
     })
 
-    const watcher = watch(filePath, {
-      usePolling: this.usePolling,
-      interval: this.usePolling ? this.pollInterval : undefined,
-      ignoreInitial: true,
-    })
+    const handle = this.fs.watch(
+      filePath,
+      (event) => {
+        if (event.type === 'change') {
+          this.handleChange(event.path)
+        } else if (event.type === 'error') {
+          console.error(`[DataFileWatcher] 監視エラー: ${filePath}`, event.error)
+        }
+      },
+      {
+        usePolling: this.usePolling,
+        pollInterval: this.pollInterval,
+        ignoreInitial: true,
+      }
+    )
 
-    watcher.on('change', (changedPath) => {
-      this.handleChange(changedPath)
-    })
-
-    watcher.on('error', (err) => {
-      console.error(`[DataFileWatcher] 監視エラー: ${filePath}`, err)
-    })
-
-    this.watchers.push(watcher)
+    this.watchHandles.push(handle)
     console.log(`[DataFileWatcher] 登録: ${filePath}`)
   }
 
@@ -99,10 +105,10 @@ export class DataFileWatcher {
 
   /** 全監視を停止 */
   close(): void {
-    for (const w of this.watchers) {
-      w.close()
+    for (const h of this.watchHandles) {
+      h.close()
     }
-    this.watchers = []
+    this.watchHandles = []
     // デバウンスタイマーをクリア
     for (const entry of this.entries.values()) {
       if (entry.debounceTimer) {

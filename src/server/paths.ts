@@ -11,19 +11,19 @@
  * `resolveProjectRoot()` は `__dirname` に依存するため、
  * モジュールロード時に即時評価するとテスト時にパスがずれる可能性がある。
  */
-import { mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
 
 /** プロジェクトルート直下の `.kovitoboard/` ディレクトリ */
-export function getKovitoboardDir(): string {
-  return join(resolveProjectRoot(), '.kovitoboard')
+export function getKovitoboardDir(fs: FileAccessLayer): string {
+  return join(resolveProjectRoot(fs), '.kovitoboard')
 }
 
 /** セッション↔エージェント紐付け記録ファイル */
-export function getSessionAgentsRecordPath(): string {
-  return join(getKovitoboardDir(), 'session-agents.jsonl')
+export function getSessionAgentsRecordPath(fs: FileAccessLayer): string {
+  return join(getKovitoboardDir(fs), 'session-agents.jsonl')
 }
 
 /**
@@ -38,10 +38,10 @@ export function getUploadDir(): string {
  * `.kovitoboard/` ディレクトリが存在しない場合は作成する。
  * サーバー起動時に 1 回呼び出せばよい。
  */
-export function ensureKovitoboardDir(): void {
-  const dir = getKovitoboardDir()
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
+export function ensureKovitoboardDir(fs: FileAccessLayer): void {
+  const dir = getKovitoboardDir(fs)
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true })
     console.log(`[paths] .kovitoboard/ を作成しました: ${dir}`)
   }
 }

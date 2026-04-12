@@ -1,9 +1,9 @@
 import { execFileSync } from 'child_process'
-import { writeFileSync, unlinkSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { resolveProjectRoot } from './config'
+import type { FileAccessLayer } from './fs-layer'
 
 /**
  * tmux ウィンドウ名 / エージェントID として有効な文字列かを検証する。
@@ -20,30 +20,11 @@ export function isValidTmuxName(name: string): boolean {
  * 例: projects/my-team → "kovitoboard-my-team"
  * tmux セッション名に使えない文字（ドット、コロン）はハイフンに置換する。
  */
-function resolveTmuxSessionName(): string {
-  const projectDir = basename(resolveProjectRoot())
+function resolveTmuxSessionName(fs: FileAccessLayer): string {
+  const projectDir = basename(resolveProjectRoot(fs))
   const sanitized = projectDir.replace(/[.:]/g, '-')
   return `kovitoboard-${sanitized}`
 }
-
-/** tmux セッション名（プロジェクト名ベース） */
-export const TMUX_SESSION = resolveTmuxSessionName()
-
-/**
- * エージェントID → tmux ウィンドウ名のマッピング
- * KovitoBoard: エージェントIDをそのままウィンドウ名として使用
- */
-function buildAgentWindowMap(): Record<string, string> {
-  // エージェントIDがそのままウィンドウ名になる（例: secretary → secretary）
-  // 動的にウィンドウ一覧から構築することも可能だが、
-  // 現時点ではパススルーで十分
-  return new Proxy({} as Record<string, string>, {
-    get: (_target, prop: string) => prop,
-    has: () => true,
-  })
-}
-
-export const AGENT_TO_WINDOW = buildAgentWindowMap()
 
 export interface TmuxWindow {
   /** ウィンドウインデックス */
@@ -71,10 +52,29 @@ export interface TmuxSendResult {
  * - 長文/特殊文字含む: tmpファイル → load-buffer → paste-buffer で安全に送信
  */
 export class TmuxBridge {
+  private fs: FileAccessLayer
+  private _sessionName: string | null = null
+
+  constructor(fs: FileAccessLayer) {
+    this.fs = fs
+  }
+
+  /**
+   * tmux セッション名（プロジェクト名ベース、lazy 評価）
+   *
+   * 初回アクセス時に resolveProjectRoot(fs) から導出する。
+   * モジュールロード時に即時評価しないのは、fs 依存の順序問題を避けるため。
+   */
+  get sessionName(): string {
+    if (!this._sessionName) {
+      this._sessionName = resolveTmuxSessionName(this.fs)
+    }
+    return this._sessionName
+  }
 
   /**
    * エージェントID → tmux ウィンドウ名の変換
-   * テンプレート版: エージェントIDをそのままウィンドウ名として返す
+   * KovitoBoard: エージェントIDをそのままウィンドウ名として返す
    */
   resolveWindowName(agentId: string): string {
     return agentId
@@ -82,7 +82,7 @@ export class TmuxBridge {
 
   /**
    * マッピングテーブルを取得
-   * テンプレート版: 実際のウィンドウ一覧からマッピングを動的構築
+   * 実際のウィンドウ一覧からマッピングを動的構築
    */
   getAgentWindowMap(): Record<string, string> {
     const windows = this.listWindows()
@@ -102,7 +102,7 @@ export class TmuxBridge {
    */
   hasSession(): boolean {
     try {
-      execFileSync('tmux', ['has-session', '-t', TMUX_SESSION], { stdio: 'pipe' })
+      execFileSync('tmux', ['has-session', '-t', this.sessionName], { stdio: 'pipe' })
       return true
     } catch {
       return false
@@ -115,7 +115,7 @@ export class TmuxBridge {
   listWindows(): TmuxWindow[] {
     try {
       const output = execFileSync('tmux', [
-        'list-windows', '-t', TMUX_SESSION,
+        'list-windows', '-t', this.sessionName,
         '-F', '#{window_index}|#{window_name}|#{window_active}',
       ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
 
@@ -147,7 +147,7 @@ export class TmuxBridge {
 
     // KovitoBoard セッションの存在確認
     if (!this.hasSession()) {
-      return { success: false, error: `tmux セッション "${TMUX_SESSION}" が存在しません` }
+      return { success: false, error: `tmux セッション "${this.sessionName}" が存在しません` }
     }
 
     // ウィンドウの存在確認
@@ -160,7 +160,7 @@ export class TmuxBridge {
       }
     }
 
-    const tmuxTarget = `${TMUX_SESSION}:${windowName}`
+    const tmuxTarget = `${this.sessionName}:${windowName}`
 
     try {
       this.sendViaBuffer(tmuxTarget, message)
@@ -183,7 +183,7 @@ export class TmuxBridge {
     }
 
     if (!this.hasSession()) {
-      return { success: false, error: `tmux セッション "${TMUX_SESSION}" が存在しません` }
+      return { success: false, error: `tmux セッション "${this.sessionName}" が存在しません` }
     }
 
     const windows = this.listWindows()
@@ -195,7 +195,7 @@ export class TmuxBridge {
       }
     }
 
-    const tmuxTarget = `${TMUX_SESSION}:${windowName}`
+    const tmuxTarget = `${this.sessionName}:${windowName}`
 
     try {
       execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '/clear', 'Enter'], { stdio: 'pipe' })
@@ -264,7 +264,7 @@ export class TmuxBridge {
 
       console.log(`[tmux-bridge] 送信準備: ${sanitized.length}文字`)
 
-      writeFileSync(tmpFile, sanitized, 'utf-8')
+      this.fs.writeFileSync(tmpFile, sanitized, 'utf-8')
 
       execFileSync('tmux', [
         'load-buffer', tmpFile,
@@ -272,7 +272,7 @@ export class TmuxBridge {
         ';', 'send-keys', '-t', tmuxTarget, 'Enter',
       ], { stdio: 'pipe' })
     } finally {
-      try { unlinkSync(tmpFile) } catch { /* ignore */ }
+      try { this.fs.unlinkSync(tmpFile) } catch { /* ignore */ }
     }
   }
 
@@ -282,11 +282,11 @@ export class TmuxBridge {
   ensureSession(): void {
     if (this.hasSession()) return
 
-    const projectRoot = resolveProjectRoot()
+    const projectRoot = resolveProjectRoot(this.fs)
     execFileSync('tmux', [
-      'new-session', '-d', '-s', TMUX_SESSION, '-n', 'main', '-c', projectRoot,
+      'new-session', '-d', '-s', this.sessionName, '-n', 'main', '-c', projectRoot,
     ], { stdio: 'pipe' })
-    console.log(`[tmux-bridge] セッション "${TMUX_SESSION}" を作成しました (cwd: ${projectRoot})`)
+    console.log(`[tmux-bridge] セッション "${this.sessionName}" を作成しました (cwd: ${projectRoot})`)
   }
 
   /**
@@ -301,7 +301,7 @@ export class TmuxBridge {
     if (windowName && !isValidTmuxName(windowName)) {
       return { success: false, error: `無効なウィンドウ名: "${windowName}"` }
     }
-    const workDir = cwd || resolveProjectRoot()
+    const workDir = cwd || resolveProjectRoot(this.fs)
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === name)) {
@@ -312,7 +312,7 @@ export class TmuxBridge {
 
     try {
       execFileSync('tmux', [
-        'new-window', '-t', TMUX_SESSION, '-n', name, '-c', workDir,
+        'new-window', '-t', this.sessionName, '-n', name, '-c', workDir,
         'claude', '--agent', agentId,
       ], { stdio: 'pipe' })
       console.log(`[tmux-bridge] エージェント起動: ${name} (${agentId}) in ${workDir}`)
@@ -333,7 +333,7 @@ export class TmuxBridge {
    * プロンプトが表示されない場合（既に信頼済み等）はタイムアウトでスキップする。
    */
   private async handleTrustPrompt(windowName: string, timeoutMs = 10000): Promise<void> {
-    const tmuxTarget = `${TMUX_SESSION}:${windowName}`
+    const tmuxTarget = `${this.sessionName}:${windowName}`
     const startTime = Date.now()
     const pollInterval = 500
 
@@ -375,7 +375,7 @@ export class TmuxBridge {
     try {
       const lineCount = lines || 50
       const output = execFileSync('tmux', [
-        'capture-pane', '-t', `${TMUX_SESSION}:${windowName}`, '-p', '-S', `-${lineCount}`,
+        'capture-pane', '-t', `${this.sessionName}:${windowName}`, '-p', '-S', `-${lineCount}`,
       ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
       return output
     } catch {

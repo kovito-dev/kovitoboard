@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'fs'
 import { extname } from 'path'
+import type { FileAccessLayer } from './fs-layer'
 
 export interface ArtifactReadResult {
   content: string
@@ -32,9 +32,9 @@ const LANGUAGE_MAP: Record<string, string> = {
 
 const MAX_FILE_SIZE = 1024 * 1024 // 1MB
 
-export function readArtifact(filePath: string): ArtifactReadResult | null {
+export function readArtifact(fs: FileAccessLayer, filePath: string): ArtifactReadResult | null {
   try {
-    const stat = statSync(filePath)
+    const stat = fs.statSync(filePath)
     if (stat.size > MAX_FILE_SIZE) {
       return {
         content: `[ファイルサイズが大きすぎます: ${(stat.size / 1024).toFixed(0)}KB]`,
@@ -44,7 +44,7 @@ export function readArtifact(filePath: string): ArtifactReadResult | null {
       }
     }
 
-    const content = readFileSync(filePath, 'utf-8')
+    const content = fs.readFileSync(filePath, 'utf-8')
     const ext = extname(filePath).toLowerCase()
     const language = LANGUAGE_MAP[ext] || 'text'
 

@@ -1,7 +1,6 @@
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
-import { resolveProjectRoot } from './config'
 
 interface ManagedProcess {
   id: string
@@ -27,10 +26,14 @@ export class ClaudeBridge extends EventEmitter {
   private processes = new Map<string, ManagedProcess>()
   private defaultCwd: string
 
-  constructor(defaultCwd?: string) {
+  /**
+   * @param defaultCwd セッション起動時のデフォルト作業ディレクトリ。
+   *                   通常はプロジェクトルートを呼び出し側から渡す。
+   */
+  constructor(defaultCwd: string) {
     super()
-    // デフォルトはプロジェクトルート（process.cwd() はサーバー起動ディレクトリになるため使わない）
-    this.defaultCwd = defaultCwd || resolveProjectRoot()
+    // process.cwd() はサーバー起動ディレクトリになるため、呼び出し側が明示的に指定する
+    this.defaultCwd = defaultCwd
   }
 
   /**

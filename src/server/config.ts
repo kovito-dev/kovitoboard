@@ -1,5 +1,5 @@
-import { readFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
+import type { FileAccessLayer } from './fs-layer'
 import type { ViewerConfig } from './types'
 
 const DEFAULT_CONFIG: ViewerConfig = {
@@ -27,19 +27,19 @@ const DEFAULT_CONFIG: ViewerConfig = {
 }
 
 /** プロジェクトルート（CLAUDE.md が存在するディレクトリ）を動的に解決 */
-export function resolveProjectRoot(): string {
+export function resolveProjectRoot(fs: FileAccessLayer): string {
   // tsx 実行時: src/server/ → 3階層上がプロジェクトルート
   // ビルド後:  dist/        → 2階層上がプロジェクトルート
   const candidates = [
     resolve(__dirname, '..', '..', '..'),
     resolve(__dirname, '..', '..'),
   ]
-  return candidates.find(p => existsSync(join(p, 'CLAUDE.md'))) || candidates[0]
+  return candidates.find(p => fs.existsSync(join(p, 'CLAUDE.md'))) || candidates[0]
 }
 
-export function loadConfig(): ViewerConfig {
+export function loadConfig(fs: FileAccessLayer): ViewerConfig {
   try {
-    const projectRoot = resolveProjectRoot()
+    const projectRoot = resolveProjectRoot(fs)
     const candidates = [
       join(projectRoot, 'config/viewer.config.json'),
       join(__dirname, '../../config/viewer.config.json'),
@@ -47,7 +47,7 @@ export function loadConfig(): ViewerConfig {
     ]
     let raw: string | null = null
     for (const p of candidates) {
-      try { raw = readFileSync(p, 'utf-8'); break } catch { /* next */ }
+      try { raw = fs.readFileSync(p, 'utf-8'); break } catch { /* next */ }
     }
     if (!raw) throw new Error('config file not found')
     const fileConfig = JSON.parse(raw)

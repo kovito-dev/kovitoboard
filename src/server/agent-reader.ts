@@ -1,28 +1,28 @@
-import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { resolveProjectRoot } from './config'
 import { getSessionAgentsRecordPath } from './paths'
+import type { FileAccessLayer } from './fs-layer'
 import type { AgentInfo, SessionAgentRecord, ViewerConfig } from './types'
 
 /**
  * .claude/agents/*.md からエージェント定義を読み取る
  * デフォルトアシスタント（--agent なし起動）は含めない
  */
-export function loadAgentDefinitions(config: ViewerConfig): AgentInfo[] {
+export function loadAgentDefinitions(fs: FileAccessLayer, config: ViewerConfig): AgentInfo[] {
   // CLAUDE_PROJECT_DIR に相当するパスからエージェント定義を探す
   // config.claudeDir は ~/.claude なので、そこからプロジェクト設定のエージェントを探す
   // エージェント定義は anode-workspace/.claude/agents/ にある
-  const agentsDir = findAgentsDir(config)
+  const agentsDir = findAgentsDir(fs, config)
   if (!agentsDir) return []
 
   const agents: AgentInfo[] = []
 
   try {
-    const files = readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
+    const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
 
     for (const file of files) {
       const filePath = join(agentsDir, file)
-      const content = readFileSync(filePath, 'utf-8')
+      const content = fs.readFileSync(filePath, 'utf-8')
       const agent = parseAgentDefinition(file, content, config)
       if (agent) {
         agents.push(agent)
@@ -40,13 +40,13 @@ export function loadAgentDefinitions(config: ViewerConfig): AgentInfo[] {
  *
  * @param _config ViewerConfig（現状未使用だが、将来の設定拡張に備えて残す）
  */
-export function loadSessionAgentRecords(_config: ViewerConfig): SessionAgentRecord[] {
-  const recordPath = getSessionAgentsRecordPath()
-  if (!existsSync(recordPath)) return []
+export function loadSessionAgentRecords(fs: FileAccessLayer, _config: ViewerConfig): SessionAgentRecord[] {
+  const recordPath = getSessionAgentsRecordPath(fs)
+  if (!fs.existsSync(recordPath)) return []
 
   const records: SessionAgentRecord[] = []
   try {
-    const content = readFileSync(recordPath, 'utf-8')
+    const content = fs.readFileSync(recordPath, 'utf-8')
     const lines = content.split('\n').filter((l) => l.trim())
 
     for (const line of lines) {
@@ -90,16 +90,16 @@ export function buildSessionAgentMap(records: SessionAgentRecord[]): Map<string,
  * 2. fallback: cwd から親ディレクトリを遡って `.claude/agents/` を検索
  * 3. fallback: claudeDir 配下の `agents/`
  */
-function findAgentsDir(config: ViewerConfig): string | null {
+function findAgentsDir(fs: FileAccessLayer, config: ViewerConfig): string | null {
   // 1. プロジェクトルート直下の .claude/agents/ を最優先
-  const projectAgentsDir = join(resolveProjectRoot(), '.claude', 'agents')
-  if (existsSync(projectAgentsDir)) return projectAgentsDir
+  const projectAgentsDir = join(resolveProjectRoot(fs), '.claude', 'agents')
+  if (fs.existsSync(projectAgentsDir)) return projectAgentsDir
 
   // 2. fallback: cwd から上に遡って .claude/agents/ を探す
   let dir = process.cwd()
   for (let i = 0; i < 10; i++) {
     const candidate = join(dir, '.claude', 'agents')
-    if (existsSync(candidate)) return candidate
+    if (fs.existsSync(candidate)) return candidate
     const parent = join(dir, '..')
     if (parent === dir) break // ルートに到達
     dir = parent
@@ -107,7 +107,7 @@ function findAgentsDir(config: ViewerConfig): string | null {
 
   // 3. fallback: claudeDir 内にエージェント定義がある場合
   const claudeAgentsDir = join(config.claudeDir, 'agents')
-  if (existsSync(claudeAgentsDir)) return claudeAgentsDir
+  if (fs.existsSync(claudeAgentsDir)) return claudeAgentsDir
 
   return null
 }

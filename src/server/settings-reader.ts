@@ -3,8 +3,8 @@
  * CLAUDE.md や .claude/ 配下の設定ファイルを読み取り、構造化データとして返す
  */
 
-import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
+import type { FileAccessLayer } from './fs-layer'
 
 // --- 型定義 ---
 
@@ -53,7 +53,7 @@ export interface RuleInfo {
  * viewer.config.json の project セクション + agents セクションを主データソースにし、
  * CLAUDE.md は補完用に使用
  */
-export function readBasicSettings(projectRoot: string): BasicSettings {
+export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): BasicSettings {
   const settings: BasicSettings = {
     projectName: '',
     description: '',
@@ -65,9 +65,9 @@ export function readBasicSettings(projectRoot: string): BasicSettings {
 
   // viewer.config.json から読み取り（主データソース）
   const configPath = join(projectRoot, 'config', 'viewer.config.json')
-  if (existsSync(configPath)) {
+  if (fs.existsSync(configPath)) {
     try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
 
       // project セクション
       if (config.project) {
@@ -100,9 +100,9 @@ export function readBasicSettings(projectRoot: string): BasicSettings {
 
   // CLAUDE.md から補完（viewer.config.json にない情報を取得）
   const claudeMdPath = join(projectRoot, 'CLAUDE.md')
-  if (existsSync(claudeMdPath)) {
+  if (fs.existsSync(claudeMdPath)) {
     try {
-      const content = readFileSync(claudeMdPath, 'utf-8')
+      const content = fs.readFileSync(claudeMdPath, 'utf-8')
 
       // プロジェクト名（未取得の場合）
       if (!settings.projectName) {
@@ -134,11 +134,11 @@ export function readBasicSettings(projectRoot: string): BasicSettings {
 
       // エージェント情報をチーム構成テーブルから補完（employee_id）
       const agentsDir = join(projectRoot, '.claude', 'agents')
-      if (existsSync(agentsDir)) {
-        const files = readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
+      if (fs.existsSync(agentsDir)) {
+        const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
         for (const file of files) {
           const agentId = file.replace('.md', '')
-          const agentContent = readFileSync(join(agentsDir, file), 'utf-8')
+          const agentContent = fs.readFileSync(join(agentsDir, file), 'utf-8')
           const empIdMatch = agentContent.match(/employee_id:\s*"?(\d+)"?/)
           if (empIdMatch) {
             const existing = settings.agents.find((a) => a.id === agentId)
@@ -159,21 +159,21 @@ export function readBasicSettings(projectRoot: string): BasicSettings {
 /**
  * スキル一覧を読み取る
  */
-export function readSkills(projectRoot: string): SkillInfo[] {
+export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[] {
   const skillsDir = join(projectRoot, '.claude', 'skills')
-  if (!existsSync(skillsDir)) return []
+  if (!fs.existsSync(skillsDir)) return []
 
   const skills: SkillInfo[] = []
 
   try {
-    const dirs = readdirSync(skillsDir)
+    const dirs = fs.readdirSync(skillsDir)
     for (const dirName of dirs) {
       const skillDir = join(skillsDir, dirName)
       const skillFile = join(skillDir, 'SKILL.md')
-      if (!existsSync(skillFile)) continue
+      if (!fs.existsSync(skillFile)) continue
 
       try {
-        const content = readFileSync(skillFile, 'utf-8')
+        const content = fs.readFileSync(skillFile, 'utf-8')
 
         // YAML フロントマターからメタデータを抽出
         let description = ''
@@ -214,14 +214,14 @@ export function readSkills(projectRoot: string): SkillInfo[] {
 /**
  * 自動処理設定を読み取る（hooks + cron）
  */
-export function readAutomations(projectRoot: string): AutomationSettings {
+export function readAutomations(fs: FileAccessLayer, projectRoot: string): AutomationSettings {
   const result: AutomationSettings = { hooks: [], crons: [] }
 
   const settingsPath = join(projectRoot, '.claude', 'settings.json')
-  if (!existsSync(settingsPath)) return result
+  if (!fs.existsSync(settingsPath)) return result
 
   try {
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
 
     // hooks セクション
     if (settings.hooks) {
@@ -249,14 +249,14 @@ export function readAutomations(projectRoot: string): AutomationSettings {
 /**
  * 外部連携設定を読み取る（MCP サーバー等）
  */
-export function readIntegrations(projectRoot: string): IntegrationInfo[] {
+export function readIntegrations(fs: FileAccessLayer, projectRoot: string): IntegrationInfo[] {
   const integrations: IntegrationInfo[] = []
 
   const settingsPath = join(projectRoot, '.claude', 'settings.json')
-  if (!existsSync(settingsPath)) return integrations
+  if (!fs.existsSync(settingsPath)) return integrations
 
   try {
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
 
     if (settings.mcpServers) {
       for (const name of Object.keys(settings.mcpServers)) {
@@ -277,17 +277,17 @@ export function readIntegrations(projectRoot: string): IntegrationInfo[] {
 /**
  * ルール一覧を読み取る
  */
-export function readRules(projectRoot: string): RuleInfo[] {
+export function readRules(fs: FileAccessLayer, projectRoot: string): RuleInfo[] {
   const rulesDir = join(projectRoot, '.claude', 'rules')
-  if (!existsSync(rulesDir)) return []
+  if (!fs.existsSync(rulesDir)) return []
 
   const rules: RuleInfo[] = []
 
   try {
-    const files = readdirSync(rulesDir).filter((f) => f.endsWith('.md'))
+    const files = fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md'))
     for (const file of files) {
       try {
-        const content = readFileSync(join(rulesDir, file), 'utf-8')
+        const content = fs.readFileSync(join(rulesDir, file), 'utf-8')
         rules.push({
           name: file.replace('.md', ''),
           content: content.trim(),

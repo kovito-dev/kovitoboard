@@ -1,9 +1,8 @@
-import { watch, type FSWatcher } from 'chokidar'
-import { readFileSync, statSync, existsSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { parseLine } from './parser'
 import { loadSessionAgentRecords, buildSessionAgentMap } from './agent-reader'
 import { resolveProjectRoot } from './config'
+import type { FileAccessLayer, WatchEvent, WatchHandle } from './fs-layer'
 import type { SessionManager } from './session-manager'
 import type { ViewerConfig } from './types'
 
@@ -16,24 +15,26 @@ function projectPathToClaudeDirName(projectRoot: string): string {
 }
 
 export class Watcher {
-  private watcher: FSWatcher | null = null
+  private watchHandle: WatchHandle | null = null
   // ファイルごとの読み取り済みバイト位置
   private filePositions = new Map<string, number>()
   private claudeDir: string
   private fullConfig: ViewerConfig
   private config: ViewerConfig['watcher']
   private sessionManager: SessionManager
+  private fs: FileAccessLayer
 
-  constructor(config: ViewerConfig, sessionManager: SessionManager) {
+  constructor(config: ViewerConfig, sessionManager: SessionManager, fs: FileAccessLayer) {
     this.claudeDir = config.claudeDir
     this.fullConfig = config
     this.config = config.watcher
     this.sessionManager = sessionManager
+    this.fs = fs
   }
 
   start(): void {
     // 現在のプロジェクトに対応する Claude のセッションディレクトリのみ監視
-    const projectRoot = resolveProjectRoot()
+    const projectRoot = resolveProjectRoot(this.fs)
     const claudeDirName = projectPathToClaudeDirName(projectRoot)
     const projectSessionsDir = join(this.claudeDir, 'projects', claudeDirName)
 
@@ -45,35 +46,39 @@ export class Watcher {
     console.log(`[Watcher] モード: ${usePolling ? `ポーリング (${pollInterval}ms)` : 'inotify (ネイティブ)'}`)
 
     // ディレクトリが存在しない場合（まだセッションがない）は作成を待つ
-    if (!existsSync(projectSessionsDir)) {
+    if (!this.fs.existsSync(projectSessionsDir)) {
       console.log(`[Watcher] セッションディレクトリが未作成です。親ディレクトリを監視して待機します。`)
       const projectsDir = join(this.claudeDir, 'projects')
       // 親ディレクトリを監視し、対象ディレクトリが現れたら切り替える
-      this.watcher = watch(projectsDir, {
-        usePolling,
-        interval: usePolling ? pollInterval : undefined,
-        ignoreInitial: false,
-        depth: 0,
-      })
-      this.watcher.on('addDir', (dirPath) => {
-        if (basename(dirPath) === claudeDirName) {
-          console.log(`[Watcher] セッションディレクトリ検出: ${dirPath}`)
-          this.watcher?.close()
-          this.watcher = null
-          this.startWatching(projectSessionsDir, usePolling, pollInterval)
+      this.watchHandle = this.fs.watch(
+        projectsDir,
+        (event: WatchEvent) => {
+          if (event.type === 'addDir') {
+            if (basename(event.path) === claudeDirName) {
+              console.log(`[Watcher] セッションディレクトリ検出: ${event.path}`)
+              this.watchHandle?.close()
+              this.watchHandle = null
+              this.startWatching(projectSessionsDir, usePolling, pollInterval)
+            }
+          } else if (event.type === 'ready') {
+            // ディレクトリが ready 時点で存在するか再確認
+            if (this.fs.existsSync(projectSessionsDir)) {
+              this.watchHandle?.close()
+              this.watchHandle = null
+              this.startWatching(projectSessionsDir, usePolling, pollInterval)
+            } else {
+              console.log('[Watcher] 初期スキャン完了（セッションなし）')
+              this.sessionManager.setInitialized()
+            }
+          }
+        },
+        {
+          usePolling,
+          pollInterval,
+          ignoreInitial: false,
+          depth: 0,
         }
-      })
-      this.watcher.on('ready', () => {
-        // ディレクトリが ready 時点で存在するか再確認
-        if (existsSync(projectSessionsDir)) {
-          this.watcher?.close()
-          this.watcher = null
-          this.startWatching(projectSessionsDir, usePolling, pollInterval)
-        } else {
-          console.log('[Watcher] 初期スキャン完了（セッションなし）')
-          this.sessionManager.setInitialized()
-        }
-      })
+      )
       return
     }
 
@@ -81,49 +86,50 @@ export class Watcher {
   }
 
   private startWatching(watchDir: string, usePolling: boolean, pollInterval: number): void {
-    // chokidar v5: glob 非対応、ディレクトリ直接指定
-    this.watcher = watch(watchDir, {
-      usePolling,
-      interval: usePolling ? pollInterval : undefined,
-      ignoreInitial: false,
-    })
-
-    this.watcher.on('add', (filePath) => {
-      if (filePath.endsWith('.jsonl')) this.handleFile(filePath)
-    })
-    this.watcher.on('change', (filePath) => {
-      if (filePath.endsWith('.jsonl')) this.handleFile(filePath)
-    })
-    this.watcher.on('ready', () => {
-      console.log('[Watcher] 初期スキャン完了')
-      this.applyFallbackAgentMapping()
-      this.sessionManager.setInitialized()
-    })
-    this.watcher.on('error', (err) => {
-      console.error('[Watcher] エラー:', err)
-      // inotify エラー時はポーリングへフォールバック
-      if (!usePolling) {
-        console.log('[Watcher] inotify エラーのためポーリングにフォールバックします')
-        this.watcher?.close()
-        this.watcher = watch(watchDir, {
-          usePolling: true,
-          interval: 500,
-          ignoreInitial: false,
-        })
-        this.watcher.on('add', (filePath) => {
-          if (filePath.endsWith('.jsonl')) this.handleFile(filePath)
-        })
-        this.watcher.on('change', (filePath) => {
-          if (filePath.endsWith('.jsonl')) this.handleFile(filePath)
-        })
-        this.watcher.on('error', (fallbackErr) => console.error('[Watcher] フォールバックエラー:', fallbackErr))
+    this.watchHandle = this.fs.watch(
+      watchDir,
+      (event: WatchEvent) => {
+        if (event.type === 'add' || event.type === 'change') {
+          if (event.path.endsWith('.jsonl')) this.handleFile(event.path)
+        } else if (event.type === 'ready') {
+          console.log('[Watcher] 初期スキャン完了')
+          this.applyFallbackAgentMapping()
+          this.sessionManager.setInitialized()
+        } else if (event.type === 'error') {
+          console.error('[Watcher] エラー:', event.error)
+          // inotify エラー時はポーリングへフォールバック
+          if (!usePolling) {
+            console.log('[Watcher] inotify エラーのためポーリングにフォールバックします')
+            this.watchHandle?.close()
+            this.watchHandle = this.fs.watch(
+              watchDir,
+              (ev: WatchEvent) => {
+                if (ev.type === 'add' || ev.type === 'change') {
+                  if (ev.path.endsWith('.jsonl')) this.handleFile(ev.path)
+                } else if (ev.type === 'error') {
+                  console.error('[Watcher] フォールバックエラー:', ev.error)
+                }
+              },
+              {
+                usePolling: true,
+                pollInterval: 500,
+                ignoreInitial: false,
+              }
+            )
+          }
+        }
+      },
+      {
+        usePolling,
+        pollInterval,
+        ignoreInitial: false,
       }
-    })
+    )
   }
 
   stop(): void {
-    this.watcher?.close()
-    this.watcher = null
+    this.watchHandle?.close()
+    this.watchHandle = null
   }
 
   /**
@@ -131,7 +137,7 @@ export class Watcher {
    * agent-setting イベントがなかったセッションにフォールバック適用する
    */
   private applyFallbackAgentMapping(): void {
-    const records = loadSessionAgentRecords(this.fullConfig)
+    const records = loadSessionAgentRecords(this.fs, this.fullConfig)
     if (records.length === 0) return
 
     const fallbackMap = buildSessionAgentMap(records)
@@ -152,7 +158,7 @@ export class Watcher {
 
   private handleFile(filePath: string): void {
     try {
-      const stat = statSync(filePath)
+      const stat = this.fs.statSync(filePath)
       const currentSize = stat.size
       const previousPosition = this.filePositions.get(filePath) || 0
 
@@ -168,11 +174,12 @@ export class Watcher {
 
       this.sessionManager.ensureSession(sessionId, projectPath, filePath)
 
-      // 差分読み取り
-      const buffer = Buffer.alloc(currentSize - previousPosition)
-      const fd = require('fs').openSync(filePath, 'r')
-      require('fs').readSync(fd, buffer, 0, buffer.length, previousPosition)
-      require('fs').closeSync(fd)
+      // 差分読み取り（fs-layer 経由）
+      const buffer = this.fs.readBytesSync(
+        filePath,
+        previousPosition,
+        currentSize - previousPosition
+      )
 
       const newContent = buffer.toString('utf-8')
       const lines = newContent.split('\n').filter((l: string) => l.trim())

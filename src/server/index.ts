@@ -2,15 +2,15 @@ import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { join, isAbsolute, resolve, normalize } from 'path'
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { randomUUID } from 'crypto'
+import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot } from './config'
 import { ensureKovitoboardDir, getUploadDir } from './paths'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
 import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap } from './agent-reader'
 import { ClaudeBridge } from './claude-bridge'
-import { TmuxBridge, TMUX_SESSION as TMUX_SESSION_NAME, isValidTmuxName } from './tmux-bridge'
+import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
@@ -33,17 +33,24 @@ app.use((_req, res, next) => {
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
-const config = loadConfig()
-const sessionManager = new SessionManager()
-const watcher = new Watcher(config, sessionManager)
-const claudeBridge = new ClaudeBridge()
-const tmuxBridge = new TmuxBridge()
+// --- ファイルアクセス抽象化レイヤ ---
+// v0.1.0 では DirectFsLayer（Node.js fs / chokidar 直接呼び出し）のみ提供。
+// Plugin 対応（v0.2.0 以降）で差し替え可能にするため、全モジュールに DI する。
+const fs = new DirectFsLayer()
+
+const config = loadConfig(fs)
 
 // プロジェクトルート（.claude/agents や .kovitoboard/ 等のデータ参照基点）
-const projectRoot = resolveProjectRoot()
+// ClaudeBridge がデフォルト cwd として利用するため、先に解決する
+const projectRoot = resolveProjectRoot(fs)
 
 // `.kovitoboard/` ディレクトリを初回起動時に自動作成
-ensureKovitoboardDir()
+ensureKovitoboardDir(fs)
+
+const sessionManager = new SessionManager()
+const watcher = new Watcher(config, sessionManager, fs)
+const claudeBridge = new ClaudeBridge(projectRoot)
+const tmuxBridge = new TmuxBridge(fs)
 
 // データファイル監視: エージェントの直接編集を自動検知
 // === 新しいデータ Manager を追加する場合 ===
@@ -51,7 +58,7 @@ ensureKovitoboardDir()
 // 詳細は data-file-watcher.ts のファイル冒頭コメントを参照。
 // NOTE (v0.1.0): タスク管理機能は v0.1.0 スコープ外のため、現状 DataFileWatcher に
 //                register() する Manager は存在しない。v0.1.1 以降で追加予定。
-const _dataFileWatcher = new DataFileWatcher({
+const _dataFileWatcher = new DataFileWatcher(fs, {
   usePolling: config.watcher.usePolling,
   pollInterval: config.watcher.pollInterval,
 })
@@ -90,8 +97,8 @@ app.get('/api/config', (_req, res) => {
 
 // エージェント一覧（定義 + セッション統計付き）
 app.get('/api/agents', (_req, res) => {
-  const agents = loadAgentDefinitions(config)
-  const records = loadSessionAgentRecords(config)
+  const agents = loadAgentDefinitions(fs, config)
+  const records = loadSessionAgentRecords(fs, config)
   const sessionAgentMap = buildSessionAgentMap(records)
 
   // 各セッションのステータスを取得してエージェントごとに集計
@@ -221,7 +228,7 @@ app.get('/api/tmux/status', (_req, res) => {
   const hasSession = tmuxBridge.hasSession()
   const windows = hasSession ? tmuxBridge.listWindows() : []
   const agentWindowMap = hasSession ? tmuxBridge.getAgentWindowMap() : {}
-  res.json({ hasSession, sessionName: TMUX_SESSION_NAME, windows, agentWindowMap })
+  res.json({ hasSession, sessionName: tmuxBridge.sessionName, windows, agentWindowMap })
 })
 
 app.post('/api/tmux/send', (req, res) => {
@@ -289,7 +296,7 @@ app.get('/api/tmux/capture/:windowName', (req, res) => {
 
 app.get('/api/settings/basic', (_req, res) => {
   try {
-    const settings = readBasicSettings(projectRoot)
+    const settings = readBasicSettings(fs, projectRoot)
     res.json(settings)
   } catch (err) {
     console.error('[API] 基本設定読み取りエラー:', err)
@@ -299,7 +306,7 @@ app.get('/api/settings/basic', (_req, res) => {
 
 app.get('/api/settings/skills', (_req, res) => {
   try {
-    const skills = readSkills(projectRoot)
+    const skills = readSkills(fs, projectRoot)
     res.json({ skills })
   } catch (err) {
     console.error('[API] スキル読み取りエラー:', err)
@@ -309,7 +316,7 @@ app.get('/api/settings/skills', (_req, res) => {
 
 app.get('/api/settings/automations', (_req, res) => {
   try {
-    const automations = readAutomations(projectRoot)
+    const automations = readAutomations(fs, projectRoot)
     res.json(automations)
   } catch (err) {
     console.error('[API] 自動処理読み取りエラー:', err)
@@ -319,7 +326,7 @@ app.get('/api/settings/automations', (_req, res) => {
 
 app.get('/api/settings/integrations', (_req, res) => {
   try {
-    const integrations = readIntegrations(projectRoot)
+    const integrations = readIntegrations(fs, projectRoot)
     res.json({ integrations })
   } catch (err) {
     console.error('[API] 外部連携読み取りエラー:', err)
@@ -329,7 +336,7 @@ app.get('/api/settings/integrations', (_req, res) => {
 
 app.get('/api/settings/rules', (_req, res) => {
   try {
-    const rules = readRules(projectRoot)
+    const rules = readRules(fs, projectRoot)
     res.json({ rules })
   } catch (err) {
     console.error('[API] ルール読み取りエラー:', err)
@@ -344,20 +351,20 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000 // 24時間
 
 // アップロードディレクトリの初期化
-if (!existsSync(UPLOAD_DIR)) {
-  mkdirSync(UPLOAD_DIR, { recursive: true })
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 }
 
 // 古いアップロードファイルを定期的に削除
 function cleanupUploads() {
   try {
-    if (!existsSync(UPLOAD_DIR)) return
+    if (!fs.existsSync(UPLOAD_DIR)) return
     const now = Date.now()
-    for (const file of readdirSync(UPLOAD_DIR)) {
+    for (const file of fs.readdirSync(UPLOAD_DIR)) {
       const filePath = join(UPLOAD_DIR, file)
-      const stat = statSync(filePath)
+      const stat = fs.statSync(filePath)
       if (now - stat.mtimeMs > UPLOAD_TTL_MS) {
-        unlinkSync(filePath)
+        fs.unlinkSync(filePath)
       }
     }
   } catch { /* クリーンアップ失敗は無視 */ }
@@ -407,7 +414,7 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '20mb' }), (req, res) 
     const fileName = `upload-${uuid}${ext}`
     const filePath = join(UPLOAD_DIR, fileName)
 
-    writeFileSync(filePath, body)
+    fs.writeFileSync(filePath, body)
 
     res.json({
       success: true,
@@ -435,7 +442,7 @@ app.get('/api/artifact', (req, res) => {
     res.status(403).json({ error: 'Access denied: path is outside project root' })
     return
   }
-  const result = readArtifact(resolved)
+  const result = readArtifact(fs, resolved)
   if (!result) {
     res.status(404).json({ error: 'File not found' })
     return
@@ -454,7 +461,7 @@ app.get('/api/artifact/raw', (req, res) => {
     res.status(403).json({ error: 'Access denied: path is outside project root' })
     return
   }
-  if (!existsSync(resolved)) {
+  if (!fs.existsSync(resolved)) {
     res.status(404).json({ error: 'File not found' })
     return
   }
