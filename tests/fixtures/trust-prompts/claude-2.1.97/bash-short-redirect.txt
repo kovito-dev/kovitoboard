@@ -1,0 +1,50 @@
+claude
+Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
+irikura@Zenbook2:/tmp/kb-test-t2-1775904860$ claude
+╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                          │
+│                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                                                    │ ───────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ Recent activity                                                   │
+│                      ▝▜█████▛▘                     │ No recent activity                                                │
+│                        ▘▘ ▝▝                       │                                                                   │
+│        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
+│        orolira@gmail.com's Organization            │                                                                   │
+│             /tmp/kb-test-t2-1775904860             │                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ Run the command: echo hello > test.txt
+
+● Bash(echo hello > test.txt)
+  ⎿  Running…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   echo hello > test.txt
+   Write hello to test.txt
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to kb-test-t2-1775904860/ from this project
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

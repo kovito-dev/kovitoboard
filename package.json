@@ -9,7 +9,9 @@
     "dev": "concurrently -n server,client -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
     "build": "vite build && tsc -b tsconfig.node.json --force && mkdir -p dist/server && cp src/server/trust-patterns.json dist/server/trust-patterns.json",
     "start": "node dist/server/index.js",
-    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json"
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "chokidar": "^5.0.0",
@@ -33,6 +35,7 @@
     "concurrently": "^9.2.1",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.4"
   }
 }

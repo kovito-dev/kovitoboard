@@ -58,8 +58,13 @@ const RAW_BUFFER_FALLBACK_TAIL_LINES = 50
 // =========================
 
 /**
- * 除外条件: 末尾非空行や capture 全体がこれらにマッチする場合、通常状態とみなす。
+ * 除外条件: capture の **末尾 5 行** がこれらにマッチする場合、通常状態とみなす。
  * 検証ノート §4-2 発見 3 / §4-3 除外条件の 3 つを採用。
+ *
+ * 注意: capture 全体ではなく末尾行のみを検査する。
+ * trust prompt が表示された capture でも、スクロールバック上部に
+ * `Running…` 等の過去行が残っているため（sandbox-network-escape 等）、
+ * 全体検査だと偽陽性で trust prompt を見逃す。
  */
 const EXCLUDE_PATTERNS: RegExp[] = [
   /\? for shortcuts/, // 通常入力待ち
@@ -67,14 +72,18 @@ const EXCLUDE_PATTERNS: RegExp[] = [
   /✢\s+\w+…\s+\(thinking\)/, // thinking 中
 ]
 
+/** 除外条件を末尾行だけで判定するための行数 */
+const EXCLUDE_CHECK_TAIL_LINES = 5
+
 /**
  * trust prompt のフッターパターン。末尾非空行がこれらのいずれかにマッチしたら
  * 「trust prompt 状態候補」と判定する。
  */
 const TRUST_FOOTER_PATTERNS: RegExp[] = [
-  /Esc to cancel · Tab to amend/, // Write / Edit / Bash / Sandbox-Network
+  /Esc to cancel · Tab to amend/, // Write / Edit / Bash
   /Enter to confirm · Esc to cancel/, // Folder Trust
   /ctrl\+e to explain/, // Bash 専用の追加フッター
+  /tell Claude what to do differently/, // Sandbox Network Escape
 ]
 
 // =========================
@@ -543,7 +552,8 @@ export class TrustPromptDetector {
   }
 
   private isExcluded(capture: string): boolean {
-    return EXCLUDE_PATTERNS.some((r) => r.test(capture))
+    const tail = tailLines(capture, EXCLUDE_CHECK_TAIL_LINES)
+    return EXCLUDE_PATTERNS.some((r) => r.test(tail))
   }
 
   private hasTrustFooter(capture: string): boolean {
