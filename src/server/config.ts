@@ -1,6 +1,10 @@
-import { join, resolve } from 'path'
+import { join, resolve, dirname } from 'path'
+import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from './fs-layer'
 import type { ViewerConfig } from './types'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 const DEFAULT_CONFIG: ViewerConfig = {
   claudeDir: join(process.env.HOME || '', '.claude'),

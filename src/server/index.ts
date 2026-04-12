@@ -1,8 +1,11 @@
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
-import { join, isAbsolute, resolve, normalize } from 'path'
+import { join, isAbsolute, resolve, normalize, dirname } from 'path'
 import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 import { randomUUID } from 'crypto'
 import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot } from './config'
