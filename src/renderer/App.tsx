@@ -12,6 +12,7 @@ import { AgentsPage } from './pages/AgentsPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
+import { RecipesPage } from './pages/RecipesPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import type { AppMenuEntry } from './types/app-types'
 
@@ -26,6 +27,11 @@ const menuEntries: MenuEntry[] = [
     id: 'sessions',
     label: 'セッション',
     icon: Icons.sessions,
+  },
+  {
+    id: 'recipes',
+    label: 'レシピ',
+    icon: Icons.seeds,
   },
 ]
 
@@ -71,6 +77,7 @@ export function App() {
   // Active menu determined by URL path
   const activeMenuId = useMemo(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
+    if (location.pathname.startsWith('/recipes')) return 'recipes'
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
@@ -200,6 +207,7 @@ export function App() {
                 theme={theme}
               />
             } />
+            <Route path="/recipes" element={<RecipesPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/sessions/:id" element={
               <SessionDetailPage

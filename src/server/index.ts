@@ -21,6 +21,12 @@ import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
 import { mountAppApiRoutes } from './app-api-loader'
+import { parseRecipe } from './recipe-parser'
+import { inspectRecipe } from './recipe-inspector'
+import { applyRecipe } from './recipe-applicator'
+import { readRecipeHistory, appendRecipeHistory, generateHistoryId } from './recipe-history'
+import { scanAppDirectory, exportAsDirectory, exportAsMarkdown } from './recipe-exporter'
+import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
   ServerToClientEvent,
   ClientToServerEvent,
@@ -473,6 +479,143 @@ app.get('/api/settings/rules', (_req, res) => {
   } catch (err) {
     console.error('[API] Rules read error:', err)
     res.status(500).json({ error: 'Failed to read rules' })
+  }
+})
+
+// --- Recipe API ---
+
+app.post('/api/recipes/parse', async (req, res) => {
+  try {
+    const { source } = req.body as RecipeParseRequest
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      res.status(400).json({ error: 'source must be a non-empty string' })
+      return
+    }
+
+    const recipe = parseRecipe(source.trim(), fs)
+    const inspection = await inspectRecipe(recipe)
+
+    res.json({ recipe, inspection })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to parse recipe'
+    console.error('[API] Recipe parse error:', err)
+    res.status(400).json({ error: message })
+  }
+})
+
+app.post('/api/recipes/apply', async (req, res) => {
+  try {
+    const { recipe, inspection, agentId } = req.body as RecipeApplyRequest
+
+    if (!recipe || !recipe.metadata) {
+      res.status(400).json({ error: 'recipe is required' })
+      return
+    }
+    if (!inspection) {
+      res.status(400).json({ error: 'inspection is required' })
+      return
+    }
+    // Re-validate: blocked recipes cannot be applied
+    if (inspection.verdict === 'blocked') {
+      res.status(403).json({ error: 'Cannot apply a recipe with blocked verdict' })
+      return
+    }
+
+    // Determine tmux window to send to
+    const windowName = agentId || tmuxBridge.listWindows()[0]?.name
+    if (!windowName) {
+      res.status(400).json({ error: 'No tmux window available. Start an agent first.' })
+      return
+    }
+
+    const result = await applyRecipe(recipe, tmuxBridge, windowName)
+    if (!result.success) {
+      res.status(500).json({ error: result.error || 'Failed to apply recipe' })
+      return
+    }
+
+    // Record history
+    const historyId = generateHistoryId(fs)
+    appendRecipeHistory(fs, {
+      id: historyId,
+      name: recipe.metadata.name,
+      version: recipe.metadata.version,
+      author: recipe.metadata.author,
+      source: recipe.sourcePath,
+      hash: recipe.hash,
+      appliedAt: new Date().toISOString(),
+      artifacts: recipe.artifacts.map((a) => a.path),
+      menu: recipe.menu.map((m) => m.id),
+    })
+
+    res.json({ success: true, historyId })
+  } catch (err) {
+    console.error('[API] Recipe apply error:', err)
+    res.status(500).json({ error: 'Failed to apply recipe' })
+  }
+})
+
+app.get('/api/recipes/history', (_req, res) => {
+  try {
+    const history = readRecipeHistory(fs)
+    res.json(history)
+  } catch (err) {
+    console.error('[API] Recipe history error:', err)
+    res.status(500).json({ error: 'Failed to read recipe history' })
+  }
+})
+
+app.post('/api/recipes/export', (req, res) => {
+  try {
+    const { metadata, format, outputPath } = req.body as RecipeExportRequest
+
+    if (!metadata || typeof metadata.name !== 'string' || metadata.name.trim().length === 0) {
+      res.status(400).json({ error: 'metadata.name is required' })
+      return
+    }
+    if (!metadata.description || typeof metadata.description !== 'string') {
+      res.status(400).json({ error: 'metadata.description is required' })
+      return
+    }
+    if (!metadata.version || typeof metadata.version !== 'string') {
+      res.status(400).json({ error: 'metadata.version is required' })
+      return
+    }
+    if (format !== 'directory' && format !== 'markdown') {
+      res.status(400).json({ error: 'format must be "directory" or "markdown"' })
+      return
+    }
+    if (typeof outputPath !== 'string' || outputPath.trim().length === 0) {
+      res.status(400).json({ error: 'outputPath is required' })
+      return
+    }
+
+    const scan = scanAppDirectory(fs)
+    if (scan.artifacts.length === 0) {
+      res.status(400).json({ error: 'No artifacts found in app/ directory' })
+      return
+    }
+
+    if (format === 'directory') {
+      exportAsDirectory(fs, scan, metadata, outputPath.trim())
+    } else {
+      exportAsMarkdown(fs, scan, metadata, outputPath.trim())
+    }
+
+    res.json({ success: true, outputPath: outputPath.trim() })
+  } catch (err) {
+    console.error('[API] Recipe export error:', err)
+    res.status(500).json({ error: 'Failed to export recipe' })
+  }
+})
+
+app.get('/api/recipes/app-scan', (_req, res) => {
+  try {
+    const result = scanAppDirectory(fs)
+    res.json(result)
+  } catch (err) {
+    console.error('[API] App scan error:', err)
+    res.status(500).json({ error: 'Failed to scan app/ directory' })
   }
 })
 
