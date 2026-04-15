@@ -20,7 +20,6 @@ export function AgentsPage({ agents, sessions, config, theme }: AgentsPageProps)
   // Initial launch: show welcome banner if no sessions exist
   if (sessions.length === 0) {
     const projectName = config?.project?.name || 'KovitoBoard'
-    const conceptVal = config?.project?.concept || null
     const agentList = config?.agents
       ? Object.entries(config.agents)
           .filter(([id]) => id !== 'default')
@@ -30,19 +29,12 @@ export function AgentsPage({ agents, sessions, config, theme }: AgentsPageProps)
             summary: cfg.summary || '',
           }))
       : []
-    const secretaryEntry = config?.agents
-      ? Object.entries(config.agents).find(([id]) => id !== 'default')
-      : null
-    const secName = secretaryEntry ? secretaryEntry[1].name : '秘書'
-    const secId = secretaryEntry ? secretaryEntry[0] : ''
 
     return (
       <WelcomeBanner
         projectName={projectName}
-        concept={conceptVal || null}
         agents={agentList}
-        secretaryName={secName}
-        onNavigateToAgents={() => handleAgentSelect(secId)}
+        onNavigateToAgents={() => navigate('/agents')}
       />
     )
   }
