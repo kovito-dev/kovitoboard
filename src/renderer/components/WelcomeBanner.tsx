@@ -55,29 +55,47 @@ export function WelcomeBanner({ projectName, concept, agents, secretaryName, onN
           <div className="border-t border-[var(--border)]" />
 
           {/* はじめの一歩 */}
-          <div className="space-y-3">
-            <p className="text-sm font-medium text-[var(--text-tertiary)]">
-              💡 はじめの一歩:
-            </p>
-            <p className="text-sm text-[var(--text-muted)]">
-              下のボタンから{secretaryName}を選んで、話しかけてみましょう。
-            </p>
+          {agents.length > 0 ? (
+            <div className="space-y-3">
+              <p className="text-sm font-medium text-[var(--text-tertiary)]">
+                💡 はじめの一歩:
+              </p>
+              <p className="text-sm text-[var(--text-muted)]">
+                下のボタンから{secretaryName}を選んで、話しかけてみましょう。
+              </p>
 
-            <div className="space-y-1.5">
-              <p className="text-xs text-[var(--text-dim)]">こんなことを頼めます:</p>
-              <div className="space-y-1">
-                <p className="text-xs text-[var(--text-muted)] pl-3">「新しいエージェントを追加したい」</p>
-                <p className="text-xs text-[var(--text-muted)] pl-3">「チームの現状を教えて」</p>
+              <div className="space-y-1.5">
+                <p className="text-xs text-[var(--text-dim)]">こんなことを頼めます:</p>
+                <div className="space-y-1">
+                  <p className="text-xs text-[var(--text-muted)] pl-3">「新しいエージェントを追加したい」</p>
+                  <p className="text-xs text-[var(--text-muted)] pl-3">「チームの現状を教えて」</p>
+                </div>
               </div>
-            </div>
 
-            <button
-              onClick={onNavigateToAgents}
-              className="w-full mt-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white transition-colors"
-            >
-              {secretaryName}と話す
-            </button>
-          </div>
+              <button
+                onClick={onNavigateToAgents}
+                className="w-full mt-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white transition-colors"
+              >
+                {secretaryName}と話す
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm font-medium text-[var(--text-tertiary)]">
+                💡 はじめの一歩:
+              </p>
+              <p className="text-sm text-[var(--text-muted)]">
+                まずはエージェント定義ファイルを作成しましょう。
+              </p>
+              <p className="text-xs text-[var(--text-dim)]">
+                プロジェクトの <code className="bg-[var(--bg-surface)] px-1 py-0.5 rounded">.claude/agents/</code> ディレクトリに
+                Markdown ファイルを配置すると、KovitoBoard がエージェントとして認識します。
+              </p>
+              <p className="text-xs text-[var(--text-faint)]">
+                詳しくは「エージェント」メニューの空状態ガイドをご覧ください。
+              </p>
+            </div>
+          )}
 
           {/* 設定ヒント */}
           <p className="text-center text-xs text-[var(--text-faint)]">
@@ -85,7 +103,7 @@ export function WelcomeBanner({ projectName, concept, agents, secretaryName, onN
           </p>
 
           {/* コンセプト未設定の場合の追加案内 */}
-          {!concept && (
+          {!concept && agents.length > 0 && (
             <div className="bg-[var(--bg-surface)] rounded-lg p-4 border border-[var(--border)]">
               <p className="text-xs text-yellow-400/70 font-medium mb-1">
                 💡 コンセプトがまだ設定されていません。

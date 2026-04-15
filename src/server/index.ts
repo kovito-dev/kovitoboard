@@ -12,7 +12,7 @@ import { loadConfig, resolveProjectRoot } from './config'
 import { ensureKovitoboardDir, getUploadDir } from './paths'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
-import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap } from './agent-reader'
+import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent } from './agent-reader'
 import { ClaudeBridge } from './claude-bridge'
 import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
@@ -168,6 +168,17 @@ app.get('/api/agents', (_req, res) => {
   }
 
   res.json(agents)
+})
+
+// Agent definition raw content
+app.get('/api/agents/:id/definition', (req, res) => {
+  const agentId = req.params.id
+  const content = getAgentDefinitionContent(fs, config, agentId)
+  if (content === null) {
+    res.status(404).json({ error: 'Agent definition not found' })
+    return
+  }
+  res.json({ content })
 })
 
 // Session-agent association mapping
@@ -590,6 +601,15 @@ app.get('/api/artifact/raw', (req, res) => {
 
 // Production: serve built static files
 app.use(express.static(join(__dirname, '../../dist')))
+
+// SPA fallback: serve index.html for all non-API, non-WS routes
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  res.sendFile(join(__dirname, '../../dist/index.html'))
+})
 
 // --- WebSocket: real-time event broadcasting ---
 function broadcast(type: string, payload: unknown): void

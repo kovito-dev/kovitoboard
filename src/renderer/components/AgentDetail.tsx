@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
-import type { AgentInfo, SessionSummary, Session, AgentConfig } from '../types'
+import { useState, useEffect, useCallback } from 'react'
+import type { AgentInfo, SessionSummary } from '../types'
 import { AgentAvatar } from './AgentAvatar'
-import { ChatTimeline } from './ChatTimeline'
+import { MarkdownPreview } from './MarkdownPreview'
 import { MessageInput } from './MessageInput'
 import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../utils/format'
 
@@ -9,28 +9,16 @@ interface AgentDetailProps {
   agent: AgentInfo
   /** このエージェントに紐づくセッション一覧 */
   sessions: SessionSummary[]
-  /** インラインで表示中のセッション（新規セッション開始後に自動セット） */
-  inlineSession: Session | null
-  /** エージェント表示用の config */
-  agentConfig: AgentConfig
-  /** ユーザー表示用の config */
-  userConfig: AgentConfig
   onBack: () => void
   onSelectSession: (sessionId: string) => void
   onStartNewSession?: (agentId: string, message: string) => Promise<void>
-  /** インラインセッションへのメッセージ送信 */
-  onSendMessage?: (sessionId: string, message: string) => Promise<void>
-  /** インラインセッション表示を閉じてエージェント情報に戻る */
-  onCloseInlineSession?: () => void
-  /** セッションがメッセージ送信可能か判定 */
-  isSessionSendable?: (sessionId: string) => boolean
   /** 新規セッション検出待機中 */
   isPendingNewSession?: boolean
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
 
-type TabId = 'profile' | 'sessions'
+type TabId = 'profile' | 'sessions' | 'definition'
 
 /** アクティブセッション検出時の確認状態 */
 interface ActiveSessionConfirm {
@@ -39,9 +27,9 @@ interface ActiveSessionConfirm {
 }
 
 export function AgentDetail({
-  agent, sessions, inlineSession, agentConfig, userConfig,
-  onBack, onSelectSession, onStartNewSession, onSendMessage,
-  onCloseInlineSession, isSessionSendable, isPendingNewSession,
+  agent, sessions,
+  onBack, onSelectSession, onStartNewSession,
+  isPendingNewSession,
   theme = 'dark',
 }: AgentDetailProps) {
   const [activeTab, setActiveTab] = useState<TabId>('profile')
@@ -105,12 +93,10 @@ export function AgentDetail({
     setShowNewSession(false)
   }, [])
 
-  // インラインセッション表示中かどうか
-  const showingInlineSession = inlineSession !== null
-
   const tabs: { id: TabId; label: string; count?: number }[] = [
     { id: 'profile', label: 'プロフィール' },
-    { id: 'sessions', label: 'セッション履歴', count: sessions.length }
+    { id: 'sessions', label: 'セッション履歴', count: sessions.length },
+    { id: 'definition', label: '定義ファイル' },
   ]
 
   // セッション統計集計
@@ -118,42 +104,16 @@ export function AgentDetail({
   const totalToolCalls = sessions.reduce((sum, s) => sum + s.stats.toolCalls, 0)
   const totalTokens = sessions.reduce((sum, s) => sum + s.stats.totalInputTokens + s.stats.totalOutputTokens, 0)
 
-  // インラインセッションでメッセージ送信可能かの判定
-  const canSendInline = inlineSession && onSendMessage && isSessionSendable
-    ? (isSessionSendable(inlineSession.id) || inlineSession.status !== 'idle')
-    : false
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* コンパクトヘッダー（インラインセッション表示中） or 通常ヘッダー */}
+      {/* ヘッダー */}
       <div
         className="shrink-0 border-b border-[var(--border)]"
         style={{
           background: `linear-gradient(135deg, ${agent.color}15, ${agent.color}05)`
         }}
       >
-        <div className={`px-3 md:px-6 ${showingInlineSession ? 'py-2' : 'pt-3 md:pt-4 pb-2 md:pb-3'}`}>
-          {showingInlineSession ? (
-            /* --- インラインセッション時: コンパクトヘッダー --- */
-            <div className="flex items-center gap-3">
-              <button
-                onClick={onCloseInlineSession}
-                className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-                エージェント情報
-              </button>
-              <div className="flex items-center gap-2 ml-auto">
-                <AgentAvatar name={agent.displayName} color={agent.color} size={28} avatar={agent.avatar} agentId={agent.id} theme={theme} />
-                <span className="text-sm font-medium text-[var(--text-tertiary)]">{agent.displayName}</span>
-                <span className="text-[10px] text-[var(--text-faint)] font-mono">{inlineSession.id.slice(0, 8)}</span>
-              </div>
-            </div>
-          ) : (
-            /* --- 通常時: フルヘッダー --- */
-            <>
+        <div className="px-3 md:px-6 pt-3 md:pt-4 pb-2 md:pb-3">
               <button
                 onClick={onBack}
                 className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors mb-3"
@@ -256,12 +216,9 @@ export function AgentDetail({
                   <span className="text-sm text-[var(--text-muted)]">新規セッション作成中...</span>
                 </div>
               )}
-            </>
-          )}
         </div>
 
-        {/* タブ（インラインセッション表示中は非表示） */}
-        {!showingInlineSession && (
+        {/* タブ */}
           <div className="flex gap-0 px-3 md:px-6">
             {tabs.map((tab) => (
               <button
@@ -284,21 +241,9 @@ export function AgentDetail({
               </button>
             ))}
           </div>
-        )}
       </div>
 
       {/* メインコンテンツ */}
-      {showingInlineSession ? (
-        /* --- インラインセッションビュー: ChatTimeline を埋め込み --- */
-        <ChatTimeline
-          session={inlineSession}
-          agentConfig={agentConfig}
-          userConfig={userConfig}
-          onSendMessage={canSendInline && onSendMessage ? onSendMessage : undefined}
-          theme={theme}
-        />
-      ) : (
-        /* --- 通常のタブコンテンツ --- */
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'profile' && (
             <ProfileTab
@@ -316,8 +261,10 @@ export function AgentDetail({
               onSelectSession={onSelectSession}
             />
           )}
+          {activeTab === 'definition' && (
+            <DefinitionTab agentId={agent.id} />
+          )}
         </div>
-      )}
     </div>
   )
 }
@@ -600,6 +547,59 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
           </button>
         )
       })}
+    </div>
+  )
+}
+
+// --- 定義ファイルタブ ---
+
+function DefinitionTab({ agentId }: { agentId: string }) {
+  const [content, setContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(false)
+    fetch(`/api/agents/${agentId}/definition`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Not found')
+        return res.json()
+      })
+      .then((data: { content: string }) => setContent(data.content))
+      .catch(() => {
+        setContent(null)
+        setError(true)
+      })
+      .finally(() => setLoading(false))
+  }, [agentId])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16 text-[var(--text-dim)] text-sm">
+        読み込み中...
+      </div>
+    )
+  }
+
+  if (error || !content) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-[var(--text-dim)]">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 text-[var(--text-faint)]">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+        <p className="text-sm">定義ファイルが見つかりません</p>
+        <p className="text-xs text-[var(--text-faint)] mt-1">.claude/agents/{agentId}.md</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-3 md:p-6">
+      <div className="bg-[var(--bg-elevated)] rounded-xl border border-[var(--border)] p-5 overflow-auto">
+        <MarkdownPreview content={content} variant="document" />
+      </div>
     </div>
   )
 }

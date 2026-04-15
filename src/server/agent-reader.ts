@@ -83,6 +83,28 @@ export function buildSessionAgentMap(records: SessionAgentRecord[]): Map<string,
 }
 
 /**
+ * Get the raw content of a specific agent's definition file.
+ * Returns null if the agent or file is not found.
+ */
+export function getAgentDefinitionContent(
+  fs: FileAccessLayer,
+  config: ViewerConfig,
+  agentId: string,
+): string | null {
+  const agentsDir = findAgentsDir(fs, config)
+  if (!agentsDir) return null
+
+  const filePath = join(agentsDir, `${agentId}.md`)
+  if (!fs.existsSync(filePath)) return null
+
+  try {
+    return fs.readFileSync(filePath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
  * Find the agent definitions directory.
  *
  * v0.1.0 strategy (R2 support):

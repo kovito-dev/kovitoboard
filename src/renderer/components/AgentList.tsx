@@ -135,15 +135,61 @@ export function AgentList({ agents, onSelectAgent, theme = 'dark' }: AgentListPr
       </div>
 
       {agents.length === 0 && (
-        <div className="text-center text-[var(--text-dim)] mt-16">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-4 text-[var(--text-faint)]">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-          <p className="text-sm">エージェントが見つかりません</p>
-          <p className="text-xs text-[var(--text-faint)] mt-1">.claude/agents/ にエージェント定義ファイルを配置してください</p>
+        <div className="max-w-lg mx-auto mt-12">
+          <div className="bg-[var(--bg-elevated)] rounded-xl border border-[var(--border)] p-6 space-y-5">
+            {/* Icon + heading */}
+            <div className="text-center">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-3 text-[var(--text-faint)]">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <h3 className="text-base font-semibold text-[var(--text-secondary)]">エージェントが見つかりません</h3>
+              <p className="text-sm text-[var(--text-dim)] mt-1">
+                <code className="text-xs bg-[var(--bg-surface)] px-1.5 py-0.5 rounded">.claude/agents/</code> にエージェント定義ファイルを配置してください
+              </p>
+            </div>
+
+            {/* Steps */}
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-[var(--text-tertiary)]">作成手順</h4>
+              <ol className="space-y-2 text-sm text-[var(--text-muted)]">
+                <li className="flex gap-2">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-bg)] text-[var(--accent-text)] text-xs font-bold flex items-center justify-center">1</span>
+                  <span>プロジェクトルートに <code className="text-xs bg-[var(--bg-surface)] px-1 py-0.5 rounded">.claude/agents/</code> ディレクトリを作成</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-bg)] text-[var(--accent-text)] text-xs font-bold flex items-center justify-center">2</span>
+                  <span>Markdown ファイルを作成（例: <code className="text-xs bg-[var(--bg-surface)] px-1 py-0.5 rounded">my-agent.md</code>）</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-bg)] text-[var(--accent-text)] text-xs font-bold flex items-center justify-center">3</span>
+                  <span>YAML フロントマターで name と description を定義</span>
+                </li>
+              </ol>
+            </div>
+
+            {/* Template example */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium text-[var(--text-tertiary)]">テンプレート例</h4>
+              <pre className="text-xs text-[var(--text-muted)] bg-[var(--bg-surface)] rounded-lg p-4 overflow-x-auto border border-[var(--border)]">
+{`---
+name: my-agent
+description: "Your agent description"
+model: sonnet
+---
+
+# My Agent
+
+Your agent's system prompt goes here.`}
+              </pre>
+            </div>
+
+            <p className="text-xs text-[var(--text-faint)] text-center">
+              ファイルを配置したら KovitoBoard を再起動してください
+            </p>
+          </div>
         </div>
       )}
     </div>

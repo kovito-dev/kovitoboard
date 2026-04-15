@@ -44,11 +44,15 @@ interface ChatTimelineProps {
   onFilePathClick?: (path: string) => void
   /** 送信失敗時のコールバック（オプティミスティックメッセージのロールバック用） */
   onSendError?: (error: Error) => void
+  /** エージェント名（ヘッダー表示用） */
+  agentName?: string
+  /** エージェントカラー（ヘッダー表示用） */
+  agentColor?: string
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
 
-export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onSendError, theme = 'dark' }: ChatTimelineProps) {
+export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onSendError, agentName, agentColor, theme = 'dark' }: ChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const wasAtBottomRef = useRef(true)
@@ -138,6 +142,12 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
       {/* セッション情報ヘッダー（固定表示） */}
       <div className="shrink-0 flex justify-center py-2 md:py-3 border-b border-[var(--border)] bg-[var(--bg-base)] px-2">
         <div className="text-xs md:text-sm text-[var(--text-dim)] bg-[var(--bg-surface)] px-3 md:px-5 py-1.5 md:py-2 rounded-full flex items-center gap-2 md:gap-3 flex-wrap justify-center">
+          {agentName && (
+            <>
+              <span className="font-medium" style={agentColor ? { color: agentColor } : undefined}>{agentName}</span>
+              <span>|</span>
+            </>
+          )}
           <span className="hidden sm:inline">{session.projectName}</span>
           <span className="hidden sm:inline">|</span>
           <span>{session.id.slice(0, 8)}</span>
