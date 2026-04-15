@@ -62,6 +62,32 @@ const watcher = new Watcher(config, sessionManager, fs)
 const claudeBridge = new ClaudeBridge(projectRoot)
 const tmuxBridge = new TmuxBridge(fs)
 
+/**
+ * 指定エージェントの tmux ウィンドウを確保する。
+ * ウィンドウが存在しなければ自動で tmux セッション＋ウィンドウを作成し、
+ * Claude Code エージェントを起動する。
+ *
+ * @returns { windowName, justStarted } — justStarted=true は今回新規起動したことを示す
+ */
+async function ensureTmuxAgent(agentId: string): Promise<{ windowName: string; justStarted: boolean } | null> {
+  // 既に起動済みならそのウィンドウ名を返す
+  if (tmuxBridge.hasSession()) {
+    const windows = tmuxBridge.listWindows()
+    const existing = windows.find((w) => w.name === agentId)
+    if (existing) return { windowName: existing.name, justStarted: false }
+  }
+
+  // tmux セッション＋エージェントウィンドウを自動作成
+  const result = await tmuxBridge.startAgent(agentId)
+  if (result.success) {
+    console.log(`[auto-tmux] エージェント "${agentId}" を tmux で自動起動しました`)
+    return { windowName: agentId, justStarted: true }
+  }
+
+  console.warn(`[auto-tmux] エージェント "${agentId}" の tmux 起動に失敗: ${result.error}`)
+  return null
+}
+
 // データファイル監視: エージェントの直接編集を自動検知
 // === 新しいデータ Manager を追加する場合 ===
 // DataFileWatcher をコンストラクタに渡して register() を呼ぶこと。
@@ -172,7 +198,7 @@ app.post('/api/agents/:agentId/deactivate-sessions', (req, res) => {
 // --- Claude CLI 連携 API ---
 
 // 既存セッションにメッセージを送信
-app.post('/api/sessions/:id/send', (req, res) => {
+app.post('/api/sessions/:id/send', async (req, res) => {
   const sessionId = req.params.id
   const { message } = req.body as SendMessageRequest
 
@@ -187,11 +213,26 @@ app.post('/api/sessions/:id/send', (req, res) => {
     return
   }
 
+  // tmux 自動起動: セッションに紐づくエージェントがあれば tmux 経由を試みる
+  const agentId = session.agentId
+  if (agentId) {
+    const tmuxAgent = await ensureTmuxAgent(agentId)
+    if (tmuxAgent) {
+      const result = tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
+      if (result.success) {
+        res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
+        return
+      }
+      console.warn(`[API] tmux 送信失敗、ClaudeBridge にフォールバック: ${result.error}`)
+    }
+  }
+
+  // フォールバック: ClaudeBridge (--print モード)
   const sessionCwd = session.events.find(e => e.metadata.cwd)?.metadata.cwd
 
   try {
     const processId = claudeBridge.sendToSession(sessionId, message.trim(), sessionCwd)
-    res.json({ success: true, processId })
+    res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     console.error('[API] セッション送信エラー:', err)
     res.status(500).json({ error: 'Failed to send message' })
@@ -199,7 +240,7 @@ app.post('/api/sessions/:id/send', (req, res) => {
 })
 
 // 新規セッションを開始
-app.post('/api/sessions/new', (req, res) => {
+app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd } = req.body as NewSessionRequest
 
   if (!message || !message.trim()) {
@@ -207,9 +248,35 @@ app.post('/api/sessions/new', (req, res) => {
     return
   }
 
+  // tmux 自動起動: agentId が指定されていれば tmux 経由を試みる
+  if (agentId) {
+    const tmuxAgent = await ensureTmuxAgent(agentId)
+    if (tmuxAgent) {
+      let result: { success: boolean; error?: string }
+      if (tmuxAgent.justStarted) {
+        // 今回新規起動: エージェント起動自体が新セッション開始になるので、
+        // プロンプト待機後にメッセージを直接送信する
+        const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 15000)
+        if (!ready) {
+          console.warn(`[API] エージェント "${agentId}" のプロンプト待機タイムアウト`)
+        }
+        result = tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
+      } else {
+        // 既に起動済み: /clear で既存セッションを終了してから新規メッセージ送信
+        result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
+      }
+      if (result.success) {
+        res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
+        return
+      }
+      console.warn(`[API] tmux 送信失敗、ClaudeBridge にフォールバック: ${result.error}`)
+    }
+  }
+
+  // フォールバック: ClaudeBridge (--print モード)
   try {
     const processId = claudeBridge.startNewSession(message.trim(), agentId, cwd)
-    res.json({ success: true, processId })
+    res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     console.error('[API] 新規セッション開始エラー:', err)
     res.status(500).json({ error: 'Failed to start new session' })

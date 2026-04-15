@@ -218,6 +218,15 @@ export class TmuxBridge {
   }
 
   /**
+   * エージェント起動後、入力プロンプトが表示されるまで待機する。
+   * index.ts から新規起動直後のメッセージ送信前に呼び出される。
+   */
+  async waitForAgentReady(windowName: string, timeoutMs: number): Promise<boolean> {
+    const tmuxTarget = `${this.sessionName}:${windowName}`
+    return this.waitForPrompt(tmuxTarget, timeoutMs)
+  }
+
+  /**
    * プロンプトの出現を待機
    */
   private async waitForPrompt(tmuxTarget: string, timeoutMs: number): Promise<boolean> {
