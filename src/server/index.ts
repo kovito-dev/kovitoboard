@@ -37,6 +37,13 @@ app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY')
   res.setHeader('X-XSS-Protection', '0')  // Disabled as recommended for modern browsers
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",  // Tailwind inline styles
+    "img-src 'self' data:",
+  ].join('; '))
   next()
 })
 
@@ -202,8 +209,12 @@ app.post('/api/sessions/:id/send', async (req, res) => {
   const sessionId = req.params.id
   const { message } = req.body as SendMessageRequest
 
-  if (!message || !message.trim()) {
-    res.status(400).json({ error: 'message is required' })
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    res.status(400).json({ error: 'message must be a non-empty string' })
+    return
+  }
+  if (message.length > 100000) {
+    res.status(400).json({ error: 'message exceeds maximum length (100000 chars)' })
     return
   }
 
@@ -243,8 +254,16 @@ app.post('/api/sessions/:id/send', async (req, res) => {
 app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd } = req.body as NewSessionRequest
 
-  if (!message || !message.trim()) {
-    res.status(400).json({ error: 'message is required' })
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    res.status(400).json({ error: 'message must be a non-empty string' })
+    return
+  }
+  if (message.length > 100000) {
+    res.status(400).json({ error: 'message exceeds maximum length (100000 chars)' })
+    return
+  }
+  if (agentId !== undefined && typeof agentId !== 'string') {
+    res.status(400).json({ error: 'agentId must be a string' })
     return
   }
 
@@ -311,8 +330,16 @@ app.get('/api/tmux/status', (_req, res) => {
 app.post('/api/tmux/send', (req, res) => {
   const { windowName, message } = req.body as TmuxSendRequest
 
-  if (!windowName || !message?.trim()) {
-    res.status(400).json({ error: 'windowName and message are required' })
+  if (typeof windowName !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(windowName)) {
+    res.status(400).json({ error: 'windowName must match /^[a-zA-Z0-9_-]+$/' })
+    return
+  }
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    res.status(400).json({ error: 'message must be a non-empty string' })
+    return
+  }
+  if (message.length > 100000) {
+    res.status(400).json({ error: 'message exceeds maximum length (100000 chars)' })
     return
   }
 
@@ -327,8 +354,16 @@ app.post('/api/tmux/send', (req, res) => {
 app.post('/api/tmux/clear-and-send', async (req, res) => {
   const { windowName, message } = req.body as TmuxSendRequest
 
-  if (!windowName || !message?.trim()) {
-    res.status(400).json({ error: 'windowName and message are required' })
+  if (typeof windowName !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(windowName)) {
+    res.status(400).json({ error: 'windowName must match /^[a-zA-Z0-9_-]+$/' })
+    return
+  }
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    res.status(400).json({ error: 'message must be a non-empty string' })
+    return
+  }
+  if (message.length > 100000) {
+    res.status(400).json({ error: 'message exceeds maximum length (100000 chars)' })
     return
   }
 
@@ -343,8 +378,16 @@ app.post('/api/tmux/clear-and-send', async (req, res) => {
 app.post('/api/tmux/start-agent', async (req, res) => {
   const { agentId, windowName, cwd } = req.body as TmuxStartAgentRequest
 
-  if (!agentId) {
-    res.status(400).json({ error: 'agentId is required' })
+  if (!agentId || typeof agentId !== 'string') {
+    res.status(400).json({ error: 'agentId is required and must be a string' })
+    return
+  }
+  if (!isValidTmuxName(agentId)) {
+    res.status(400).json({ error: 'agentId contains invalid characters for tmux' })
+    return
+  }
+  if (windowName !== undefined && (typeof windowName !== 'string' || !isValidTmuxName(windowName))) {
+    res.status(400).json({ error: 'windowName contains invalid characters for tmux' })
     return
   }
 
@@ -598,31 +641,67 @@ const trustPromptDetector = new TrustPromptDetector(
 )
 trustPromptDetector.start()
 
+// Known client-to-server event types (whitelist)
+const KNOWN_WS_EVENT_TYPES = new Set<ClientToServerEvent['type']>([
+  'trust_prompt_respond',
+])
+
 // --- WebSocket: client -> server (trust prompt response handling) ---
 wss.on('connection', (ws) => {
   ws.on('message', (data) => {
-    let parsed: ClientToServerEvent
+    let parsed: Record<string, unknown>
     try {
-      parsed = JSON.parse(data.toString()) as ClientToServerEvent
+      parsed = JSON.parse(data.toString()) as Record<string, unknown>
     } catch {
-      console.warn('[WS] Received invalid JSON')
+      console.warn('[WS] Received invalid JSON, ignoring')
+      return
+    }
+
+    // Validate top-level structure: must have a string `type` field
+    if (typeof parsed.type !== 'string') {
+      console.warn('[WS] Message missing string "type" field, ignoring')
+      return
+    }
+
+    // Ignore unknown event types
+    if (!KNOWN_WS_EVENT_TYPES.has(parsed.type as ClientToServerEvent['type'])) {
+      console.warn(`[WS] Unknown event type: "${parsed.type}", ignoring`)
       return
     }
 
     if (parsed.type === 'trust_prompt_respond') {
-      handleTrustPromptRespond(parsed.payload)
+      handleTrustPromptRespond(parsed.payload as TrustPromptRespondPayload)
     }
   })
 })
 
 function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
-  if (!payload?.promptId || !payload?.windowName || !payload?.response) {
-    console.warn('[WS] trust_prompt_respond: missing required fields')
+  // Validate required fields and their types
+  if (!payload || typeof payload !== 'object') {
+    console.warn('[WS] trust_prompt_respond: payload must be an object')
     return
   }
+  if (typeof payload.promptId !== 'string' || payload.promptId.length === 0) {
+    console.warn('[WS] trust_prompt_respond: promptId must be a non-empty string')
+    return
+  }
+  if (typeof payload.windowName !== 'string' || payload.windowName.length === 0) {
+    console.warn('[WS] trust_prompt_respond: windowName must be a non-empty string')
+    return
+  }
+  if (!payload.response || typeof payload.response !== 'object') {
+    console.warn('[WS] trust_prompt_respond: response must be an object')
+    return
+  }
+
   const { promptId, windowName, response } = payload
 
   if (response.mode === 'choice') {
+    // Validate choiceId is a non-empty string
+    if (typeof response.choiceId !== 'string' || response.choiceId.length === 0) {
+      console.warn('[WS] trust_prompt_respond: choiceId must be a non-empty string')
+      return
+    }
     // The UI sends only choiceId; the actual key sequence conversion is performed
     // by the detector using choices (state.lastChoices) from the most recent notification.
     // This design prevents the UI from injecting arbitrary keys.
@@ -633,12 +712,19 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
       )
     }
   } else if (response.mode === 'raw-keys') {
+    // Validate rawKeys is a string within the allowed length range
+    if (typeof response.rawKeys !== 'string' || response.rawKeys.length < 1 || response.rawKeys.length > 500) {
+      console.warn('[WS] trust_prompt_respond: rawKeys must be a string (1-500 chars)')
+      return
+    }
     const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
     if (!ok) {
       console.warn(
         `[WS] trust_prompt_respond (raw-keys) failed: ${windowName} ${promptId}`,
       )
     }
+  } else {
+    console.warn(`[WS] trust_prompt_respond: unknown response mode: "${(response as { mode: string }).mode}"`)
   }
 }
 
