@@ -77,25 +77,25 @@ describe('loadTrustPatterns 異常系', () => {
       readFileSync: () => { throw new Error('ENOENT') },
     }
     expect(() => loadTrustPatterns(fs, '/nonexistent.json'))
-      .toThrow('trust-patterns.json の読み込みに失敗しました')
+      .toThrow('Failed to read trust-patterns.json')
   })
 
   it('不正な JSON は例外', () => {
     const fs = mockFs('{ invalid json }}}')
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('trust-patterns.json のパースに失敗しました')
+      .toThrow('Failed to parse trust-patterns.json')
   })
 
   it('patterns 配列がない場合は例外', () => {
     const fs = mockFs('{"version": "test"}')
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('patterns 配列がありません')
+      .toThrow('has no patterns array')
   })
 
   it('patterns が空配列の場合は例外', () => {
     const fs = mockFs('{"patterns": []}')
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('patterns が空です')
+      .toThrow('patterns array is empty')
   })
 
   it('パターンの必須フィールドが欠損している場合は例外', () => {
@@ -104,7 +104,7 @@ describe('loadTrustPatterns 異常系', () => {
     })
     const fs = mockFs(json)
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('パターン定義が不完全です')
+      .toThrow('pattern definition is incomplete')
   })
 
   it('matchAny が空配列の場合は例外', () => {
@@ -120,7 +120,7 @@ describe('loadTrustPatterns 異常系', () => {
     })
     const fs = mockFs(json)
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('matchAny が空です')
+      .toThrow('has empty matchAny')
   })
 
   it('不正な RegExp は例外', () => {
@@ -136,6 +136,6 @@ describe('loadTrustPatterns 異常系', () => {
     })
     const fs = mockFs(json)
     expect(() => loadTrustPatterns(fs, '/test.json'))
-      .toThrow('RegExp コンパイルに失敗しました')
+      .toThrow('RegExp compilation failed')
   })
 })
