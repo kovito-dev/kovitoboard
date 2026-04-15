@@ -750,7 +750,8 @@ await mountAppApiRoutes(app, fs)
 app.use(express.static(join(__dirname, '../../dist')))
 
 // SPA fallback: serve index.html for all non-API, non-WS routes
-app.get('*', (req, res) => {
+// Express 5 requires named wildcard parameters (path-to-regexp v8)
+app.get('{*path}', (req, res) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
     res.status(404).json({ error: 'Not found' })
     return
