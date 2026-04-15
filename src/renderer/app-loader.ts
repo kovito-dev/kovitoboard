@@ -1,3 +1,17 @@
+/**
+ * Stable API: Frontend extension loader.
+ *
+ * Discovers and loads user-defined menu entries and styles from app/.
+ * These functions are the sole entry points for FE extensions.
+ *
+ * Public interface:
+ *   - loadUserMenuEntries(): Promise<AppMenuEntry[]>
+ *   - loadUserStyles(): Promise<void>
+ *
+ * @stable v0.1.0
+ * @see DEC-005 (Specification-Driven Architecture)
+ */
+
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 
 /**

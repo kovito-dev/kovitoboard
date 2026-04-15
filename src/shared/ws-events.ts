@@ -1,11 +1,19 @@
 /**
- * WebSocket イベント型定義（一元管理）
+ * Stable API: WebSocket event type definitions.
  *
- * 本ファイルは server / renderer の両方から参照されるため、Node.js / DOM
- * どちらの型にも依存しないこと。実装上の都合で type-only import 推奨。
+ * Defines the server ⇔ client event contract.
+ * Both server and renderer import this file — do NOT depend on
+ * Node.js or DOM-specific types. Use type-only imports.
  *
- * Phase 5 で追加。既存の broadcast 呼び出し（new_event / status_change 等）
- * との互換性を保ちつつ、trust-prompt-relay 関連のイベントを追加する。
+ * Stability classification:
+ *   @stable  — ServerToClientEvent, ClientToServerEvent (union shapes)
+ *   @stable  — TrustPromptDetectedPayload, TrustPromptRespondPayload
+ *   @stable  — TrustPromptKind, TrustPromptChoice
+ *   @internal — Individual event payload fields may be extended
+ *               (new optional fields are non-breaking)
+ *
+ * @stable v0.1.0
+ * @see DEC-005 (Specification-Driven Architecture)
  */
 
 // =========================

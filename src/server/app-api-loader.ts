@@ -1,16 +1,25 @@
+/**
+ * Stable API: Backend API extension loader.
+ *
+ * Scans app/api/ and mounts each file as an Express Router
+ * under /api/ext/{filename}. This mount convention is part of
+ * the stable API contract.
+ *
+ * Public interface:
+ *   - mountAppApiRoutes(app: Express, fs: FileAccessLayer): Promise<void>
+ *
+ * Mount convention:
+ *   - app/api/example.ts → /api/ext/example
+ *   - app/api/_helpers.ts → skipped (underscore prefix = internal helper)
+ *
+ * @stable v0.1.0
+ * @see DEC-005 (Specification-Driven Architecture)
+ */
+
 import { join, basename } from 'path'
 import type { Express } from 'express'
 import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
-
-/**
- * Scan app/api/ directory and mount each file as an Express Router
- * under /api/ext/{filename-without-extension}.
- *
- * - Files starting with '_' are skipped (convention for helpers/shared modules).
- * - Each file must export default as an Express Router.
- * - Gracefully handles missing app/api/ directory.
- */
 export async function mountAppApiRoutes(
   app: Express,
   fs: FileAccessLayer,

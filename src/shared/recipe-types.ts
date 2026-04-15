@@ -1,6 +1,17 @@
 /**
- * Recipe system type definitions.
+ * Stable API: Recipe system type definitions.
  * Shared between server and renderer — no React/DOM dependencies.
+ *
+ * Stability classification:
+ *   @stable  — ArtifactType, ArtifactEntry, RecipeMenuEntry
+ *   @stable  — RecipeMetadata, ParsedRecipe (shape)
+ *   @stable  — InspectionVerdict, InspectionResult (shape)
+ *   @stable  — RecipeHistoryEntry (shape)
+ *   @stable  — API request/response types
+ *   @internal — Finding (individual fields may change)
+ *
+ * @stable v0.1.0
+ * @see DEC-005 (Specification-Driven Architecture)
  */
 
 // --- Artifact types ---

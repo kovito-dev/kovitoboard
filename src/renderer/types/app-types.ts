@@ -1,17 +1,21 @@
 /**
- * Type definitions for the app/ extension system.
- * Renderer-only — these types are NOT imported by server code
- * because the `component` field depends on React types.
+ * Stable API: app/ extension type definitions (renderer-side).
+ *
+ * These types extend the shared definitions with React-specific fields.
+ * Backward-compatible within the same major version.
+ *
+ * @stable v0.1.0
+ * @see src/shared/app-types.ts for React-independent base types
+ * @see DEC-005 (Specification-Driven Architecture)
  */
 
-/** A single user-defined menu entry from app/menu.ts */
-export interface AppMenuEntry {
-  /** Unique page ID. Used as route parameter: /ext/{id} */
-  id: string
-  /** Display label for the nav menu */
-  label: string
-  /** Key from NavMenu Icons dictionary (e.g., 'content', 'dashboard'). Falls back to 'folder'. */
-  icon: string
+import type { AppMenuEntryMeta } from '../../shared/app-types'
+
+/**
+ * A single user-defined menu entry from app/menu.ts.
+ * Extends AppMenuEntryMeta with the React component loader.
+ */
+export interface AppMenuEntry extends AppMenuEntryMeta {
   /** Dynamic import function returning the page component (must use export default) */
   component: () => Promise<{ default: React.ComponentType }>
 }
