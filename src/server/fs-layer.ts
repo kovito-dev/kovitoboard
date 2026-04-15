@@ -1,15 +1,15 @@
 /**
- * ファイルアクセス抽象化レイヤ
+ * File access abstraction layer
  *
- * KovitoBoard は将来の Claude Code Plugin 対応（v0.2.0 以降）で
- * MCP 経由のファイルアクセスを必要とする可能性がある。そのため、
- * コア機能から fs 直接呼び出しを全て排除し、本レイヤ経由に集約する。
+ * KovitoBoard may require MCP-based file access for future Claude Code Plugin
+ * support (v0.2.0+). Therefore, all direct fs calls are eliminated from core
+ * functionality and consolidated through this layer.
  *
- * v0.1.0 では DirectFsLayer（Node.js fs / chokidar を直接使うデフォルト実装）のみ提供する。
- * v0.1.0 内では Sync API のみ提供する（既存コードが全て Sync で書かれているため）。
- * Promise 版 API は Plugin 対応が必要になる v0.2.0 以降で追加する方針。
+ * v0.1.0 provides only DirectFsLayer (default implementation using Node.js fs / chokidar).
+ * v0.1.0 provides only Sync APIs (since all existing code is synchronous).
+ * Promise-based APIs will be added in v0.2.0+ when Plugin support is needed.
  *
- * 詳細な設計根拠は kovitoboard-dev の docs/design/v0.1.0-fs-layer-notes.md を参照。
+ * For detailed design rationale, see kovitoboard-dev docs/design/v0.1.0-fs-layer-notes.md.
  */
 
 import {
@@ -26,16 +26,16 @@ import {
 } from 'fs'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 
-// --- 型定義 ---
+// --- Type definitions ---
 
-/** stat 情報の抽象化（Node.js fs.Stats から必要最小限のフィールドのみ抽出） */
+/** Abstracted stat info (minimal fields extracted from Node.js fs.Stats) */
 export interface FileStat {
   size: number
   mtime: Date
   mtimeMs: number
 }
 
-/** watch イベントの抽象化（chokidar のサブセット） */
+/** Abstracted watch event (subset of chokidar) */
 export type WatchEvent =
   | { type: 'add'; path: string }
   | { type: 'change'; path: string }
@@ -44,12 +44,12 @@ export type WatchEvent =
   | { type: 'ready' }
   | { type: 'error'; error: unknown }
 
-/** watch ハンドル（close のみ提供） */
+/** Watch handle (provides close only) */
 export interface WatchHandle {
   close(): void
 }
 
-/** watch オプション（chokidar のサブセット） */
+/** Watch options (subset of chokidar) */
 export interface WatchOptions {
   usePolling?: boolean
   pollInterval?: number
@@ -57,32 +57,32 @@ export interface WatchOptions {
   depth?: number
 }
 
-// --- FileAccessLayer インターフェース ---
+// --- FileAccessLayer interface ---
 
 /**
- * ファイルアクセス抽象化レイヤ
+ * File access abstraction layer
  *
- * v0.1.0 では Sync API のみ提供する。
- * 既存コードが全て Sync で書かれているため、挙動変更を避けるための判断。
- * Promise 版 API は v0.2.0 以降で必要になった時点で追加する。
+ * v0.1.0 provides only Sync APIs.
+ * This decision avoids behavioral changes since all existing code is synchronous.
+ * Promise-based APIs will be added in v0.2.0+ when needed.
  */
 export interface FileAccessLayer {
-  // --- 読み取り ---
+  // --- Read ---
   readFileSync(path: string, encoding?: BufferEncoding): string
-  /** 低レベル差分読み取り（watcher.ts の JSONL 差分パース用） */
+  /** Low-level byte-range read (for watcher.ts JSONL differential parsing) */
   readBytesSync(path: string, offset: number, length: number): Buffer
 
-  // --- 書き込み ---
+  // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
   unlinkSync(path: string): void
 
-  // --- メタデータ ---
+  // --- Metadata ---
   existsSync(path: string): boolean
   statSync(path: string): FileStat
   readdirSync(path: string): string[]
   mkdirSync(path: string, options?: { recursive?: boolean }): void
 
-  // --- 監視 ---
+  // --- Watch ---
   watch(
     path: string,
     handler: (event: WatchEvent) => void,
@@ -90,11 +90,11 @@ export interface FileAccessLayer {
   ): WatchHandle
 }
 
-// --- DirectFsLayer 実装 ---
+// --- DirectFsLayer implementation ---
 
 /**
- * Node.js 標準 fs / chokidar を直接呼び出すデフォルト実装。
- * v0.1.0 ではこれだけを使用する。
+ * Default implementation that directly calls Node.js standard fs / chokidar.
+ * Only this implementation is used in v0.1.0.
  */
 export class DirectFsLayer implements FileAccessLayer {
   readFileSync(path: string, encoding: BufferEncoding = 'utf-8'): string {

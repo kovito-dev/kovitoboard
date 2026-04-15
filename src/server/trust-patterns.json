@@ -1,7 +1,7 @@
 {
   "version": "2026-04-12",
   "compatibleClaudeCodeVersions": ["2.1.x", "2.2.x"],
-  "_description": "Claude Code の信頼プロンプト (folder-trust / edit / write / bash / sandbox-network) 検知パターン定義。仕様書 docs/specs/trust-prompt-relay.md §4-1-2 / 検証ノート §5-1 準拠。matchAny / footer / extract / degenerateForms は RegExp の source 文字列を保持し、loader 側で RegExp にコンパイルする（multiline フラグ固定）。fixture: docs/design/verification-fixtures/claude-2.1.97/",
+  "_description": "Trust prompt detection patterns for Claude Code (folder-trust / edit / write / bash / sandbox-network). Based on docs/specs/trust-prompt-relay.md §4-1-2 and verification notes §5-1. matchAny / footer / extract / degenerateForms hold RegExp source strings; compiled to RegExp by the loader (multiline flag). Fixtures: docs/design/verification-fixtures/claude-2.1.97/",
   "patterns": [
     {
       "id": "folder-trust-initial",

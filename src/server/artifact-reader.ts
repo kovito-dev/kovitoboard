@@ -37,7 +37,7 @@ export function readArtifact(fs: FileAccessLayer, filePath: string): ArtifactRea
     const stat = fs.statSync(filePath)
     if (stat.size > MAX_FILE_SIZE) {
       return {
-        content: `[ファイルサイズが大きすぎます: ${(stat.size / 1024).toFixed(0)}KB]`,
+        content: `[File too large: ${(stat.size / 1024).toFixed(0)}KB]`,
         filePath,
         language: 'text',
         size: stat.size,

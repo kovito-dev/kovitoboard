@@ -1,22 +1,23 @@
 /**
- * Trust Prompt 検知ループ
+ * Trust Prompt Detection Loop
  *
- * 仕様書 `docs/specs/trust-prompt-relay.md` v1.1 に準拠した実装。
+ * Implementation conforming to spec `docs/specs/trust-prompt-relay.md` v1.1.
  *
- * 責務:
- *   1. tmux ウィンドウごとに一定間隔で `capture-pane` を実行
- *   2. パターンマッチ（§4-1 / 初期セットは §4-1-2）で既知プロンプトを検出
- *   3. パターン不一致でも「idle + trust footer マッチ + 除外条件不成立」で入力待ちを検知
- *      → フォールバック UX に誘導（§4-2）
- *   4. UI から `trust_prompt_respond` を受けて `TmuxBridge.sendTrustPromptKeys` で応答送信
+ * Responsibilities:
+ *   1. Execute `capture-pane` at regular intervals for each tmux window
+ *   2. Detect known prompts via pattern matching (§4-1 / initial set §4-1-2)
+ *   3. Even without pattern match, detect input-waiting state when
+ *      "idle + trust footer match + no exclusion condition" holds
+ *      → Route to fallback UX (§4-2)
+ *   4. Receive `trust_prompt_respond` from UI and send response via `TmuxBridge.sendTrustPromptKeys`
  *
- * 設計判断（Phase 5b 時点）:
- *   - 初期パターンは `src/server/trust-patterns.json` に外部化。サーバー起動時に
- *     `loadTrustPatterns(fs, path)` で読み込み、TrustPromptDetector に注入する
- *   - tmux ウィンドウ単位で `DetectorState` を持つ（`Map<windowName, DetectorState>`）
- *   - 新規ウィンドウ発見は 1 秒間隔で `listWindows()` を再スキャン
- *   - 検知ポーリング間隔は 200ms（仕様書 §4-2-1）
- *   - 除外条件・フッターマッチは検証ノート §4 のキャリブレーション結果に準拠
+ * Design decisions (as of Phase 5b):
+ *   - Initial patterns are externalized in `src/server/trust-patterns.json`. Loaded at
+ *     server startup via `loadTrustPatterns(fs, path)` and injected into TrustPromptDetector
+ *   - Each tmux window has its own `DetectorState` (`Map<windowName, DetectorState>`)
+ *   - New window discovery rescans `listWindows()` at 1-second intervals
+ *   - Detection polling interval is 200ms (spec §4-2-1)
+ *   - Exclusion conditions and footer matching follow calibration results from verification notes §4
  */
 
 import { chmodSync } from 'fs'
@@ -32,93 +33,95 @@ import type {
 } from '../shared/ws-events'
 
 // =========================
-// 設定
+// Configuration
 // =========================
 
-/** 検知ポーリング間隔 (ms)。仕様書 §4-2-1 */
+/** Detection polling interval (ms). Spec §4-2-1 */
 export const POLL_INTERVAL_MS = 200
 
-/** ウィンドウ一覧再スキャン間隔 (ms) */
+/** Window list rescan interval (ms) */
 export const WINDOW_DISCOVERY_INTERVAL_MS = 1000
 
-/** idle 判定に必要な連続一致回数（2 回で 400ms 以上の無変化と判定） */
+/** Consecutive match count required for idle detection (2 means 400ms+ of no change) */
 export const IDLE_CONFIRMATIONS = 2
 
-/** `capture-pane -S -<lines>` で取得する行数（仕様書 §4-1-3） */
+/** Number of lines to capture via `capture-pane -S -<lines>` (spec §4-1-3) */
 export const CAPTURE_LINES = 200
 
-/** 検知済みイベントに含める rawBuffer の末尾行数 */
+/** Number of tail lines to include in rawBuffer for detected events */
 const RAW_BUFFER_DETECTED_TAIL_LINES = 30
 
-/** フォールバックイベントに含める rawBuffer の末尾行数 */
+/** Number of tail lines to include in rawBuffer for fallback events */
 const RAW_BUFFER_FALLBACK_TAIL_LINES = 50
 
 // =========================
-// 除外条件・フッター regex（状態ベース検知 §4-2-1）
+// Exclusion conditions & footer regex (state-based detection §4-2-1)
 // =========================
 
 /**
- * 除外条件: capture の **末尾 5 行** がこれらにマッチする場合、通常状態とみなす。
- * 検証ノート §4-2 発見 3 / §4-3 除外条件の 3 つを採用。
+ * Exclusion conditions: if the **last 5 lines** of capture match any of these,
+ * treat it as a normal state. Uses the 3 conditions from verification notes
+ * §4-2 finding 3 / §4-3 exclusion conditions.
  *
- * 注意: capture 全体ではなく末尾行のみを検査する。
- * trust prompt が表示された capture でも、スクロールバック上部に
- * `Running…` 等の過去行が残っているため（sandbox-network-escape 等）、
- * 全体検査だと偽陽性で trust prompt を見逃す。
+ * Note: Only the tail lines are inspected, not the entire capture.
+ * Even in captures showing a trust prompt, past lines like `Running…` may
+ * remain in the scrollback above (e.g., sandbox-network-escape), so
+ * full-capture inspection would cause false negatives (missing trust prompts).
  */
 const EXCLUDE_PATTERNS: RegExp[] = [
-  /\? for shortcuts/, // 通常入力待ち
-  /⎿\s+Running…/, // 処理中
-  /✢\s+\w+…\s+\(thinking\)/, // thinking 中
+  /\? for shortcuts/, // Normal input waiting
+  /⎿\s+Running…/, // Processing
+  /✢\s+\w+…\s+\(thinking\)/, // Thinking
 ]
 
-/** 除外条件を末尾行だけで判定するための行数 */
+/** Number of tail lines to check for exclusion conditions */
 const EXCLUDE_CHECK_TAIL_LINES = 5
 
 /**
- * trust prompt のフッターパターン。末尾非空行がこれらのいずれかにマッチしたら
- * 「trust prompt 状態候補」と判定する。
+ * Trust prompt footer patterns. If the last non-empty line matches any of these,
+ * it is considered a "trust prompt state candidate".
  */
 const TRUST_FOOTER_PATTERNS: RegExp[] = [
   /Esc to cancel · Tab to amend/, // Write / Edit / Bash
   /Enter to confirm · Esc to cancel/, // Folder Trust
-  /ctrl\+e to explain/, // Bash 専用の追加フッター
+  /ctrl\+e to explain/, // Bash-specific additional footer
   /tell Claude what to do differently/, // Sandbox Network Escape
 ]
 
 // =========================
-// パターン定義
+// Pattern definitions
 // =========================
 
 /**
- * trust prompt のパターン定義 1 件
- * ソースは `src/server/trust-patterns.json`。loader がコンパイル済み
- * (`TrustPattern`) を返す。
+ * A single trust prompt pattern definition.
+ * Source is `src/server/trust-patterns.json`. The loader returns compiled
+ * `TrustPattern` instances.
  */
 export interface TrustPattern {
   id: string
   kind: TrustPromptKind
   priority: number
-  /** いずれか 1 つにマッチで確定 */
+  /** Confirmed if any one matches */
   matchAny: RegExp[]
-  /** 末尾非空行のマッチ用フッター regex（先行フィルタ） */
+  /** Footer regex for matching last non-empty line (pre-filter) */
   footer: RegExp
-  /** capture group による付加情報抽出（失敗しても ID は確定する） */
+  /** Additional info extraction via capture groups (ID is confirmed even if extraction fails) */
   extract: Record<string, RegExp>
-  /** 縮退表示を示す追加指標（存在すれば `degenerate: true` を UI に伝える） */
+  /** Additional indicator for degenerate display (if present, sends `degenerate: true` to UI) */
   degenerateForms?: RegExp[]
-  /** UI 表示用の選択肢（送信キー付き） */
+  /** Choices for UI display (with send keys) */
   choices: TrustPromptChoice[]
 }
 
 // =========================
-// パターン JSON ローダー
+// Pattern JSON loader
 // =========================
 
 /**
- * `trust-patterns.json` のルート構造
- * 必須フィールドは `patterns` のみ。`version` / `compatibleClaudeCodeVersions`
- * は v0.1.0 では情報表示用で、ランタイム検証は行わない（v0.2.0 以降で追加予定）。
+ * Root structure of `trust-patterns.json`.
+ * Only `patterns` is required. `version` / `compatibleClaudeCodeVersions`
+ * are for informational display in v0.1.0 with no runtime validation
+ * (to be added in v0.2.0+).
  */
 interface TrustPatternFile {
   version?: string
@@ -127,8 +130,8 @@ interface TrustPatternFile {
 }
 
 /**
- * JSON 上のパターン 1 件。regex 系フィールドは string で保持する。
- * loader が `RegExp` にコンパイルする際、multiline フラグ (`m`) を固定で付与する。
+ * A single pattern as stored in JSON. Regex fields are stored as strings.
+ * The loader compiles them to `RegExp` with the multiline flag (`m`) always set.
  */
 interface RawTrustPattern {
   id: string
@@ -142,13 +145,13 @@ interface RawTrustPattern {
 }
 
 /**
- * `trust-patterns.json` を読み込んで `TrustPattern[]` にコンパイルする。
+ * Load `trust-patterns.json` and compile it into `TrustPattern[]`.
  *
- * 失敗時は例外 throw。サーバー起動を止めて検知ループが空になる事故
- * （パターン 0 件で全プロンプトがフォールバックに流れる）を防ぐ。
+ * Throws on failure to prevent the server from starting with an empty detection loop
+ * (where all prompts would fall through to fallback with 0 patterns).
  *
- * @param fs   FileAccessLayer（Phase 4 で導入済みの fs 抽象化）
- * @param path JSON ファイルの絶対パス
+ * @param fs   FileAccessLayer (fs abstraction introduced in Phase 4)
+ * @param path Absolute path to the JSON file
  */
 export function loadTrustPatterns(fs: FileAccessLayer, path: string): TrustPattern[] {
   let text: string
@@ -156,7 +159,7 @@ export function loadTrustPatterns(fs: FileAccessLayer, path: string): TrustPatte
     text = fs.readFileSync(path, 'utf-8')
   } catch (err) {
     throw new Error(
-      `trust-patterns.json の読み込みに失敗しました (${path}): ${(err as Error).message}`,
+      `Failed to read trust-patterns.json (${path}): ${(err as Error).message}`,
     )
   }
 
@@ -165,18 +168,18 @@ export function loadTrustPatterns(fs: FileAccessLayer, path: string): TrustPatte
     parsed = JSON.parse(text) as TrustPatternFile
   } catch (err) {
     throw new Error(
-      `trust-patterns.json のパースに失敗しました (${path}): ${(err as Error).message}`,
+      `Failed to parse trust-patterns.json (${path}): ${(err as Error).message}`,
     )
   }
 
   if (!parsed || !Array.isArray(parsed.patterns)) {
     throw new Error(
-      `trust-patterns.json に patterns 配列がありません (${path})`,
+      `trust-patterns.json has no patterns array (${path})`,
     )
   }
   if (parsed.patterns.length === 0) {
     throw new Error(
-      `trust-patterns.json の patterns が空です (${path})。検知ループが全件フォールバックに流れるため拒否します。`,
+      `trust-patterns.json patterns array is empty (${path}). Rejected to prevent all prompts from falling through to fallback.`,
     )
   }
 
@@ -184,29 +187,30 @@ export function loadTrustPatterns(fs: FileAccessLayer, path: string): TrustPatte
 }
 
 /**
- * `RawTrustPattern` → `TrustPattern` へのコンパイル。
- * RegExp は multiline (`m`) フラグ固定で構築する。fixture 設計と実装（§4-1-2）が
- * すべて multiline 前提のため、JSON 上で flags を個別指定する必要はない。
+ * Compile `RawTrustPattern` into `TrustPattern`.
+ * RegExp is always constructed with the multiline (`m`) flag. Since fixture design
+ * and implementation (§4-1-2) all assume multiline, there is no need to specify
+ * flags individually in the JSON.
  */
 function compileTrustPattern(raw: RawTrustPattern, path: string): TrustPattern {
   if (!raw || typeof raw.id !== 'string' || typeof raw.kind !== 'string' || typeof raw.priority !== 'number') {
     throw new Error(
-      `trust-patterns.json パターン定義が不完全です (${path}): ${JSON.stringify(raw)}`,
+      `trust-patterns.json pattern definition is incomplete (${path}): ${JSON.stringify(raw)}`,
     )
   }
   if (!Array.isArray(raw.matchAny) || raw.matchAny.length === 0) {
     throw new Error(
-      `trust-patterns.json パターン "${raw.id}" の matchAny が空です (${path})`,
+      `trust-patterns.json pattern "${raw.id}" has empty matchAny (${path})`,
     )
   }
   if (typeof raw.footer !== 'string') {
     throw new Error(
-      `trust-patterns.json パターン "${raw.id}" に footer がありません (${path})`,
+      `trust-patterns.json pattern "${raw.id}" is missing footer (${path})`,
     )
   }
   if (!Array.isArray(raw.choices)) {
     throw new Error(
-      `trust-patterns.json パターン "${raw.id}" の choices が配列ではありません (${path})`,
+      `trust-patterns.json pattern "${raw.id}" choices is not an array (${path})`,
     )
   }
 
@@ -225,13 +229,13 @@ function compileTrustPattern(raw: RawTrustPattern, path: string): TrustPattern {
     }
   } catch (err) {
     throw new Error(
-      `trust-patterns.json パターン "${raw.id}" の RegExp コンパイルに失敗しました: ${(err as Error).message}`,
+      `trust-patterns.json pattern "${raw.id}" RegExp compilation failed: ${(err as Error).message}`,
     )
   }
 }
 
 // =========================
-// パターンマッチエンジン
+// Pattern matching engine
 // =========================
 
 export interface MatchResult {
@@ -241,21 +245,21 @@ export interface MatchResult {
 }
 
 /**
- * capture 文字列に対して優先度順にパターンマッチを試みる。
- * 先行フィルタとして末尾非空行 (`footer`) を使い、マッチ候補を絞り込む。
+ * Attempt pattern matching against a capture string in priority order.
+ * Uses the last non-empty line (`footer`) as a pre-filter to narrow down candidates.
  */
 export class PatternMatcher {
   private patterns: TrustPattern[]
 
   constructor(patterns: TrustPattern[]) {
-    // 優先度降順でソート
+    // Sort by priority descending
     this.patterns = [...patterns].sort((a, b) => b.priority - a.priority)
   }
 
   match(capture: string): MatchResult | null {
     const footerLine = lastNonEmptyLine(capture)
 
-    // footer で候補を絞る（高速化）
+    // Filter candidates by footer (optimization)
     const candidates = this.patterns.filter((p) => p.footer.test(footerLine))
     if (candidates.length === 0) return null
 
@@ -277,22 +281,22 @@ export class PatternMatcher {
 }
 
 // =========================
-// 検知状態
+// Detection state
 // =========================
 
 interface DetectorState {
-  /** 直近 capture のハッシュ（idle 判定用） */
+  /** Hash of the most recent capture (for idle detection) */
   lastCaptureHash: string
-  /** 連続 idle 回数 */
+  /** Consecutive idle count */
   consecutiveIdleCount: number
-  /** 直近で通知済みの promptId（重複検出抑止） */
+  /** promptId of the last notified prompt (to suppress duplicate detection) */
   lastDetectedPromptId: string | null
-  /** 直近通知時の choices（choiceId → keys 変換に使用） */
+  /** Choices from the last notification (used for choiceId → keys conversion) */
   lastChoices: TrustPromptChoice[]
 }
 
 // =========================
-// 検知ループ本体
+// Detection loop main
 // =========================
 
 export type BroadcastFn = (event: ServerToClientEvent) => void
@@ -319,10 +323,10 @@ export class TrustPromptDetector {
     }
   }
 
-  /** 検知ループを開始する（既に起動済みなら何もしない） */
+  /** Start the detection loop (no-op if already running) */
   start(): void {
     if (this.tickTimer || this.windowDiscoveryTimer) return
-    this.refreshWindows() // 初回即時反映
+    this.refreshWindows() // Immediate first refresh
     this.tickTimer = setInterval(() => this.tick(), POLL_INTERVAL_MS)
     this.windowDiscoveryTimer = setInterval(
       () => this.refreshWindows(),
@@ -333,7 +337,7 @@ export class TrustPromptDetector {
     }
   }
 
-  /** 検知ループを停止する（テスト・シャットダウン用） */
+  /** Stop the detection loop (for testing and shutdown) */
   stop(): void {
     if (this.tickTimer) {
       clearInterval(this.tickTimer)
@@ -347,30 +351,30 @@ export class TrustPromptDetector {
   }
 
   /**
-   * UI からの choice モード応答を受けて tmux に送信する
+   * Receive a choice-mode response from UI and send it to tmux.
    *
-   * UI は `choiceId` のみを送り、実際の送信キー列は detector が
-   * 直近通知時に保持した `lastChoices` から解決する。
-   * これにより UI 側から任意のキーを送り込めない設計とする。
+   * The UI sends only the `choiceId`; the actual key sequence is resolved
+   * from `lastChoices` held at the time of the last notification.
+   * This design prevents the UI from injecting arbitrary keys.
    *
-   * @returns 送信成否（promptId 不整合・choice 未知も false を返す）
+   * @returns Whether the send succeeded (returns false for promptId mismatch or unknown choice)
    */
   respondChoice(windowName: string, promptId: string, choiceId: string): boolean {
     const state = this.states.get(windowName)
     if (!state) {
-      console.warn(`[trust-detector] 未知のウィンドウ: ${windowName}`)
+      console.warn(`[trust-detector] unknown window: ${windowName}`)
       return false
     }
     if (state.lastDetectedPromptId !== promptId) {
       console.warn(
-        `[trust-detector] promptId 不一致（破棄）: expected=${state.lastDetectedPromptId} got=${promptId}`,
+        `[trust-detector] promptId mismatch (discarded): expected=${state.lastDetectedPromptId} got=${promptId}`,
       )
       return false
     }
     const choice = state.lastChoices.find((c) => c.id === choiceId)
     if (!choice) {
       console.warn(
-        `[trust-detector] 未知の choiceId: ${choiceId} (available: ${state.lastChoices.map((c) => c.id).join(', ')})`,
+        `[trust-detector] unknown choiceId: ${choiceId} (available: ${state.lastChoices.map((c) => c.id).join(', ')})`,
       )
       return false
     }
@@ -378,33 +382,33 @@ export class TrustPromptDetector {
   }
 
   /**
-   * fallback UX からの raw-keys 応答
+   * Raw-keys response from fallback UX.
    *
-   * 文字列長上限 1024 文字（仕様書 §5-2-2）を課し、
-   * literal モードで送信する。
+   * Enforces a 1024 character length limit (spec §5-2-2)
+   * and sends in literal mode.
    */
   respondRawKeys(windowName: string, promptId: string, rawKeys: string): boolean {
     const state = this.states.get(windowName)
     if (!state) {
-      console.warn(`[trust-detector] 未知のウィンドウ: ${windowName}`)
+      console.warn(`[trust-detector] unknown window: ${windowName}`)
       return false
     }
     if (state.lastDetectedPromptId !== promptId) {
       console.warn(
-        `[trust-detector] promptId 不一致（破棄）: expected=${state.lastDetectedPromptId} got=${promptId}`,
+        `[trust-detector] promptId mismatch (discarded): expected=${state.lastDetectedPromptId} got=${promptId}`,
       )
       return false
     }
     if (rawKeys.length > 1024) {
-      console.warn(`[trust-detector] raw-keys 長すぎ (${rawKeys.length}): 破棄`)
+      console.warn(`[trust-detector] raw-keys too long (${rawKeys.length}): discarded`)
       return false
     }
     return this.tmux.sendTrustPromptKeys(windowName, rawKeys, true)
   }
 
-  // ===== 内部実装 =====
+  // ===== Internal implementation =====
 
-  /** tmux セッションの現在ウィンドウに合わせて state を同期する */
+  /** Synchronize state with current tmux session windows */
   private refreshWindows(): void {
     if (!this.tmux.hasSession()) {
       if (this.states.size > 0) this.states.clear()
@@ -416,7 +420,7 @@ export class TrustPromptDetector {
       windows.map((w) => w.name).filter((n) => n !== 'main'),
     )
 
-    // 消えたウィンドウを削除
+    // Remove disappeared windows
     for (const name of Array.from(this.states.keys())) {
       if (!liveNames.has(name)) {
         this.states.delete(name)
@@ -426,7 +430,7 @@ export class TrustPromptDetector {
       }
     }
 
-    // 新規ウィンドウを追加
+    // Add new windows
     for (const name of liveNames) {
       if (!this.states.has(name)) {
         this.states.set(name, {
@@ -442,13 +446,13 @@ export class TrustPromptDetector {
     }
   }
 
-  /** 全ウィンドウに対して 1 tick 分の検知を実行 */
+  /** Execute one tick of detection across all windows */
   private tick(): void {
     for (const [windowName, state] of this.states) {
       try {
         this.detectForWindow(windowName, state)
       } catch (err) {
-        console.error(`[trust-detector] detectForWindow エラー (${windowName}):`, err)
+        console.error(`[trust-detector] detectForWindow error (${windowName}):`, err)
       }
     }
   }
@@ -464,7 +468,7 @@ export class TrustPromptDetector {
       state.lastCaptureHash = hash
       state.consecutiveIdleCount = 0
 
-      // capture が変化した場合、既に通知済みのプロンプトは「消えた」とみなす
+      // If capture changed, consider the previously notified prompt as "resolved"
       if (state.lastDetectedPromptId) {
         this.broadcast({
           type: 'trust_prompt_resolved',
@@ -481,19 +485,19 @@ export class TrustPromptDetector {
       return
     }
 
-    // capture 変化なし → idle カウント増
+    // No capture change → increment idle count
     state.consecutiveIdleCount += 1
 
-    // idle 判定に至らない場合は何もしない
+    // Do nothing if idle threshold not yet reached
     if (state.consecutiveIdleCount < IDLE_CONFIRMATIONS) return
 
-    // 既に通知済みならこれ以上何もしない（応答待ち）
+    // Do nothing if already notified (waiting for response)
     if (state.lastDetectedPromptId) return
 
-    // 除外条件: 通常入力待ち・処理中・thinking 中は無視
+    // Exclusion: ignore normal input waiting, processing, and thinking states
     if (this.isExcluded(capture)) return
 
-    // パターンマッチ (S-1)
+    // Pattern match (S-1)
     const matched = this.matcher.match(capture)
     if (matched) {
       const promptId = generatePromptId(windowName)
@@ -526,11 +530,11 @@ export class TrustPromptDetector {
       return
     }
 
-    // パターン不一致 + footer マッチ → fallback UX へ誘導 (S-2)
+    // No pattern match + footer match → route to fallback UX (S-2)
     if (this.hasTrustFooter(capture)) {
       const promptId = generatePromptId(windowName, 'fallback')
       state.lastDetectedPromptId = promptId
-      state.lastChoices = [] // fallback 時は raw-keys 応答のみ受け付ける
+      state.lastChoices = [] // Only raw-keys responses accepted in fallback
       const payload: TrustPromptFallbackPayload = {
         promptId,
         windowName,
@@ -561,14 +565,14 @@ export class TrustPromptDetector {
     return TRUST_FOOTER_PATTERNS.some((r) => r.test(line))
   }
 
-  // ===== デバッグダンプ (Phase 5e) =====
+  // ===== Debug dump (Phase 5e) =====
 
   /**
-   * 検知イベント発火時にダンプファイルを出力する。
-   * `KOVITOBOARD_DEBUG_TRUST=1` 有効時のみ呼ばれる。
+   * Output a dump file when a detection event fires.
+   * Only called when `KOVITOBOARD_DEBUG_TRUST=1` is enabled.
    *
-   * ダンプ先: `.kovitoboard/debug/trust-prompt/{timestamp}-{windowName}.json`
-   * 仕様書 §7-1 / §8-3 準拠。
+   * Dump location: `.kovitoboard/debug/trust-prompt/{timestamp}-{windowName}.json`
+   * Conforming to spec §7-1 / §8-3.
    */
   private writeDump(
     windowName: string,
@@ -585,22 +589,22 @@ export class TrustPromptDetector {
     if (!this.fs || !this.debugDumpDir) return
 
     try {
-      // ディレクトリ確保（初回のみ）
+      // Ensure directory exists (first time only)
       if (!this.debugDumpDirEnsured) {
         this.fs.mkdirSync(this.debugDumpDir, { recursive: true })
-        // ディレクトリ権限を 0700 に設定（仕様書 §8-3: 機密情報保護）
-        // fs-layer に chmod がないため Node.js fs を直接使用（デバッグ専用のベストエフォート）
+        // Set directory permissions to 0700 (spec §8-3: sensitive data protection)
+        // Using Node.js fs directly since fs-layer lacks chmod (best-effort for debug only)
         try {
           chmodSync(this.debugDumpDir, 0o700)
         } catch {
-          // 権限変更に失敗してもダンプ自体は続行
+          // Continue dumping even if permission change fails
         }
         this.debugDumpDirEnsured = true
       }
 
       const now = new Date()
       const ts = now.toISOString().replace(/[:.]/g, '-')
-      // windowName にファイル名不正文字が含まれる可能性に備えてサニタイズ
+      // Sanitize windowName in case it contains invalid filename characters
       const safeName = windowName.replace(/[^a-zA-Z0-9_-]/g, '_')
       const filename = `${ts}-${safeName}.json`
       const filepath = `${this.debugDumpDir}/${filename}`
@@ -626,9 +630,9 @@ export class TrustPromptDetector {
         })),
         captureBuffer: capture,
         _warning:
-          'このファイルには tmux の生バッファが含まれています。' +
-          '機密情報（パスワード・トークン等）が含まれている可能性があるため、' +
-          'Issue に貼り付ける前に内容を確認してください。',
+          'This file contains the raw tmux buffer. ' +
+          'It may include sensitive information (passwords, tokens, etc.). ' +
+          'Please review the contents before pasting into an issue.',
       }
 
       this.fs.writeFileSync(filepath, JSON.stringify(dump, null, 2), 'utf-8')
@@ -640,10 +644,10 @@ export class TrustPromptDetector {
 }
 
 // =========================
-// ユーティリティ
+// Utilities
 // =========================
 
-/** capture 末尾から最初の非空行を返す */
+/** Return the last non-empty line from the end of capture */
 export function lastNonEmptyLine(capture: string): string {
   const lines = capture.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -652,13 +656,13 @@ export function lastNonEmptyLine(capture: string): string {
   return ''
 }
 
-/** capture の末尾 n 行を結合して返す */
+/** Join and return the last n lines of capture */
 export function tailLines(capture: string, n: number): string {
   const lines = capture.split('\n')
   return lines.slice(-n).join('\n')
 }
 
-/** 軽量な文字列ハッシュ（変化検出のみが目的、衝突耐性は不要） */
+/** Lightweight string hash (for change detection only; collision resistance not required) */
 function simpleHash(s: string): string {
   let h = 0
   for (let i = 0; i < s.length; i++) {

@@ -1,4 +1,4 @@
-// JSONL から読み取ったイベントの共通フィールド
+// Common fields of events read from JSONL
 export interface RawEvent {
   type: string
   sessionId?: string
@@ -49,7 +49,7 @@ export interface TokenUsage {
   cache_read_input_tokens?: number
 }
 
-// パース済みイベント
+// Parsed event
 export interface ParsedEvent {
   id: string
   sessionId: string
@@ -78,18 +78,18 @@ export interface EventMetadata {
   parentUuid?: string | null
   cwd?: string
   gitBranch?: string
-  /** assistant メッセージの終了理由（"end_turn" で応答完了） */
+  /** Stop reason for assistant message ("end_turn" = response complete) */
   stopReason?: string
 }
 
-// セッション
+// Session
 export interface Session {
   id: string
   projectPath: string
   projectName: string
   filePath: string
   status: 'active' | 'thinking' | 'waiting' | 'ready' | 'idle'
-  /** エージェントID（agent-setting イベントから取得） */
+  /** Agent ID (obtained from agent-setting event) */
   agentId?: string
   events: ParsedEvent[]
   lastEventAt: string
@@ -110,7 +110,7 @@ export interface SessionSummary {
   projectName: string
   projectPath: string
   status: string
-  /** エージェントID */
+  /** Agent ID */
   agentId?: string
   lastEventAt: string
   startedAt: string
@@ -118,7 +118,7 @@ export interface SessionSummary {
   lastMessage?: string
 }
 
-// 設定
+// Configuration
 export interface ViewerConfig {
   claudeDir: string
   watcher: {
@@ -152,37 +152,37 @@ export interface AgentConfig {
   summary?: string
 }
 
-// エージェント情報（定義ファイル + セッション紐づけ）
+// Agent info (definition file + session association)
 export interface AgentInfo {
-  /** エージェントID（ファイル名から拡張子を除いたもの） */
+  /** Agent ID (filename without extension) */
   id: string
-  /** 社員番号（フロントマターの employee_id） */
+  /** Employee ID (from frontmatter employee_id) */
   employeeId?: string
-  /** 表示名（日本語名） */
+  /** Display name */
   displayName: string
-  /** 説明 */
+  /** Description */
   description: string
-  /** ロール（見出しから抽出） */
+  /** Role (extracted from heading) */
   role: string
-  /** 使用モデル */
+  /** Model used */
   model: string
-  /** テーマカラー */
+  /** Theme color */
   color: string
-  /** アバター画像ファイル名 */
+  /** Avatar image filename */
   avatar?: string
-  /** 星座・星名の由来 */
+  /** Origin (constellation / star name) */
   origin: string
-  /** 起動コマンド */
+  /** Launch command */
   command: string
-  /** アクティブセッション数 */
+  /** Active session count */
   activeSessionCount: number
-  /** 総セッション数 */
+  /** Total session count */
   totalSessionCount: number
-  /** サマリー（viewer.config.json から） */
+  /** Summary (from viewer.config.json) */
   summary?: string
 }
 
-// セッション-エージェント紐づけ記録
+// Session-agent association record
 export interface SessionAgentRecord {
   sessionId: string
   agentType: string
@@ -190,56 +190,56 @@ export interface SessionAgentRecord {
   startedAt: string
 }
 
-// Claude CLI プロセス管理
+// Claude CLI process management
 export interface ClaudeProcess {
-  /** セッションID（既存セッション再開時はそのID、新規は起動後に判明） */
+  /** Session ID (existing session ID on resume, determined after launch for new sessions) */
   sessionId: string | null
-  /** エージェントID（新規セッション時） */
+  /** Agent ID (for new sessions) */
   agentId?: string
-  /** プロセスの状態 */
+  /** Process status */
   status: 'starting' | 'running' | 'completed' | 'error'
-  /** 起動時刻 */
+  /** Start time */
   startedAt: string
-  /** エラーメッセージ */
+  /** Error message */
   error?: string
 }
 
-// メッセージ送信リクエスト
+// Send message request
 export interface SendMessageRequest {
   message: string
 }
 
-// 新規セッション開始リクエスト
+// New session start request
 export interface NewSessionRequest {
   agentId?: string
   message: string
   cwd?: string
 }
 
-// 新規セッション開始レスポンス
+// New session start response
 export interface NewSessionResponse {
   success: boolean
   processId: string
   error?: string
 }
 
-// tmux 送信リクエスト
+// tmux send request
 export interface TmuxSendRequest {
-  /** 送信先ウィンドウ名（エージェントID） */
+  /** Target window name (agent ID) */
   windowName: string
-  /** 送信メッセージ */
+  /** Message to send */
   message: string
 }
 
-// tmux エージェント起動リクエスト
+// tmux agent start request
 export interface TmuxStartAgentRequest {
-  /** エージェントID */
+  /** Agent ID */
   agentId: string
-  /** ウィンドウ名（省略時は agentId） */
+  /** Window name (defaults to agentId if omitted) */
   windowName?: string
-  /** 作業ディレクトリ */
+  /** Working directory */
   cwd?: string
 }
 
-// NOTE (v0.1.0): タスク管理機能は v0.1.0 スコープ外のため、Task 関連の型定義は削除済み。
-// v0.1.1 以降で Claude Code 標準のタスク管理機能（TaskCreate 系）をベースに再導入予定。
+// NOTE (v0.1.0): Task management is out of scope for v0.1.0; Task-related type definitions have been removed.
+// Will be reintroduced in v0.1.1+ based on Claude Code's built-in task management (TaskCreate etc.).

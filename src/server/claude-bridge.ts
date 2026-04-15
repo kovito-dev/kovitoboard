@@ -14,31 +14,31 @@ interface ManagedProcess {
 }
 
 /**
- * Claude CLI プロセスの起動・管理を担当
+ * Manages spawning and lifecycle of Claude CLI processes.
  *
- * - 既存セッションへのメッセージ送信: claude --print --resume <sessionId> "<message>"
- * - 新規セッション開始: claude --print [--agent <agentId>] "<message>"
+ * - Send to existing session: claude --print --resume <sessionId> "<message>"
+ * - Start new session: claude --print [--agent <agentId>] "<message>"
  *
- * --print モードは1ターンで完了するため、メッセージ送信ごとに新しいプロセスを起動する。
- * JSOBNLファイルへの書き出しは Claude CLI が行い、既存の watcher が検知してUIに反映する。
+ * Since --print mode completes in one turn, a new process is spawned for each message.
+ * The Claude CLI writes to JSONL files, which the existing watcher detects and reflects in the UI.
  */
 export class ClaudeBridge extends EventEmitter {
   private processes = new Map<string, ManagedProcess>()
   private defaultCwd: string
 
   /**
-   * @param defaultCwd セッション起動時のデフォルト作業ディレクトリ。
-   *                   通常はプロジェクトルートを呼び出し側から渡す。
+   * @param defaultCwd Default working directory for session launch.
+   *                   Usually the project root, passed by the caller.
    */
   constructor(defaultCwd: string) {
     super()
-    // process.cwd() はサーバー起動ディレクトリになるため、呼び出し側が明示的に指定する
+    // process.cwd() returns the server startup directory, so the caller must explicitly specify
     this.defaultCwd = defaultCwd
   }
 
   /**
-   * 既存セッションにメッセージを送信
-   * @param cwd セッションが作成されたプロジェクトのパス（--resume がcwdからプロジェクトを特定するため必須）
+   * Send a message to an existing session.
+   * @param cwd Path to the project where the session was created (required because --resume identifies the project from cwd)
    */
   sendToSession(sessionId: string, message: string, cwd?: string): string {
     const args = [
@@ -51,7 +51,7 @@ export class ClaudeBridge extends EventEmitter {
   }
 
   /**
-   * 新規セッションを開始
+   * Start a new session.
    */
   startNewSession(message: string, agentId?: string, cwd?: string): string {
     const args = ['--print']
@@ -66,14 +66,14 @@ export class ClaudeBridge extends EventEmitter {
   }
 
   /**
-   * プロセスの状態を取得
+   * Get the status of a process.
    */
   getProcess(processId: string): ManagedProcess | undefined {
     return this.processes.get(processId)
   }
 
   /**
-   * アクティブなプロセス数
+   * Number of active processes.
    */
   getActiveCount(): number {
     let count = 0
@@ -84,7 +84,7 @@ export class ClaudeBridge extends EventEmitter {
   }
 
   /**
-   * Claude CLI をspawnする共通処理
+   * Common routine to spawn a Claude CLI process.
    */
   private spawnClaude(
     args: string[],
@@ -94,12 +94,12 @@ export class ClaudeBridge extends EventEmitter {
   ): string {
     const processId = randomUUID()
 
-    // メッセージ本文（最後の引数）はログに出さない
+    // Do not log the message body (last argument)
     const safeArgs = args.slice(0, -1).join(' ')
-    console.log(`[claude-bridge] 起動: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`)
+    console.log(`[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`)
     console.log(`[claude-bridge] cwd: ${cwd}`)
 
-    // Claude Code 関連の環境変数を除去してネスト検知を回避
+    // Remove Claude Code related env vars to avoid nested instance detection
     const env = { ...process.env }
     for (const key of Object.keys(env)) {
       if (key.startsWith('CLAUDE') || key.startsWith('ANTHROPIC')) {
@@ -135,22 +135,22 @@ export class ClaudeBridge extends EventEmitter {
     child.stderr?.on('data', (data: Buffer) => {
       const text = data.toString()
       managed.stderr += text
-      // stderr はデバッグ情報として出力
+      // Output stderr as debug information
       console.log(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
     })
 
     child.on('close', (code) => {
       if (code === 0) {
         managed.status = 'completed'
-        console.log(`[claude-bridge] 完了(${processId.slice(0, 8)}): exit ${code}`)
+        console.log(`[claude-bridge] Completed(${processId.slice(0, 8)}): exit ${code}`)
       } else {
         managed.status = 'error'
         managed.stdout += managed.stderr
-        console.error(`[claude-bridge] エラー(${processId.slice(0, 8)}): exit ${code}`)
+        console.error(`[claude-bridge] Error(${processId.slice(0, 8)}): exit ${code}`)
       }
       this.emit('process_end', processId, managed.status, code)
 
-      // 完了したプロセスは10分後にクリーンアップ
+      // Clean up completed processes after 10 minutes
       setTimeout(() => {
         this.processes.delete(processId)
       }, 10 * 60 * 1000)
@@ -158,7 +158,7 @@ export class ClaudeBridge extends EventEmitter {
 
     child.on('error', (err) => {
       managed.status = 'error'
-      console.error(`[claude-bridge] プロセスエラー(${processId.slice(0, 8)}):`, err.message)
+      console.error(`[claude-bridge] Process error(${processId.slice(0, 8)}):`, err.message)
       this.emit('process_end', processId, 'error', -1)
     })
 

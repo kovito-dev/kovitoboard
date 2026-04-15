@@ -7,8 +7,8 @@ import type { SessionManager } from './session-manager'
 import type { ViewerConfig } from './types'
 
 /**
- * プロジェクトルートパスを Claude のプロジェクトディレクトリ名に変換する
- * 例: "/home/user/my-project" → "-home-user-my-project"
+ * Convert a project root path to a Claude project directory name.
+ * Example: "/home/user/my-project" → "-home-user-my-project"
  */
 function projectPathToClaudeDirName(projectRoot: string): string {
   return projectRoot.replace(/\//g, '-')
@@ -16,7 +16,7 @@ function projectPathToClaudeDirName(projectRoot: string): string {
 
 export class Watcher {
   private watchHandle: WatchHandle | null = null
-  // ファイルごとの読み取り済みバイト位置
+  // Read byte position per file
   private filePositions = new Map<string, number>()
   private claudeDir: string
   private fullConfig: ViewerConfig
@@ -33,7 +33,7 @@ export class Watcher {
   }
 
   start(): void {
-    // 現在のプロジェクトに対応する Claude のセッションディレクトリのみ監視
+    // Watch only the Claude session directory corresponding to the current project
     const projectRoot = resolveProjectRoot(this.fs)
     const claudeDirName = projectPathToClaudeDirName(projectRoot)
     const projectSessionsDir = join(this.claudeDir, 'projects', claudeDirName)
@@ -41,33 +41,33 @@ export class Watcher {
     const usePolling = this.config.usePolling
     const pollInterval = this.config.pollInterval
 
-    console.log(`[Watcher] プロジェクトルート: ${projectRoot}`)
-    console.log(`[Watcher] 監視開始: ${projectSessionsDir}`)
-    console.log(`[Watcher] モード: ${usePolling ? `ポーリング (${pollInterval}ms)` : 'inotify (ネイティブ)'}`)
+    console.log(`[Watcher] Project root: ${projectRoot}`)
+    console.log(`[Watcher] Watching: ${projectSessionsDir}`)
+    console.log(`[Watcher] Mode: ${usePolling ? `polling (${pollInterval}ms)` : 'inotify (native)'}`)
 
-    // ディレクトリが存在しない場合（まだセッションがない）は作成を待つ
+    // If the directory does not exist (no sessions yet), wait for it to be created
     if (!this.fs.existsSync(projectSessionsDir)) {
-      console.log(`[Watcher] セッションディレクトリが未作成です。親ディレクトリを監視して待機します。`)
+      console.log(`[Watcher] Session directory not yet created. Watching parent directory and waiting.`)
       const projectsDir = join(this.claudeDir, 'projects')
-      // 親ディレクトリを監視し、対象ディレクトリが現れたら切り替える
+      // Watch the parent directory and switch when the target directory appears
       this.watchHandle = this.fs.watch(
         projectsDir,
         (event: WatchEvent) => {
           if (event.type === 'addDir') {
             if (basename(event.path) === claudeDirName) {
-              console.log(`[Watcher] セッションディレクトリ検出: ${event.path}`)
+              console.log(`[Watcher] Session directory detected: ${event.path}`)
               this.watchHandle?.close()
               this.watchHandle = null
               this.startWatching(projectSessionsDir, usePolling, pollInterval)
             }
           } else if (event.type === 'ready') {
-            // ディレクトリが ready 時点で存在するか再確認
+            // Re-check if the directory exists at ready time
             if (this.fs.existsSync(projectSessionsDir)) {
               this.watchHandle?.close()
               this.watchHandle = null
               this.startWatching(projectSessionsDir, usePolling, pollInterval)
             } else {
-              console.log('[Watcher] 初期スキャン完了（セッションなし）')
+              console.log('[Watcher] Initial scan complete (no sessions)')
               this.sessionManager.setInitialized()
             }
           }
@@ -92,14 +92,14 @@ export class Watcher {
         if (event.type === 'add' || event.type === 'change') {
           if (event.path.endsWith('.jsonl')) this.handleFile(event.path)
         } else if (event.type === 'ready') {
-          console.log('[Watcher] 初期スキャン完了')
+          console.log('[Watcher] Initial scan complete')
           this.applyFallbackAgentMapping()
           this.sessionManager.setInitialized()
         } else if (event.type === 'error') {
-          console.error('[Watcher] エラー:', event.error)
-          // inotify エラー時はポーリングへフォールバック
+          console.error('[Watcher] Error:', event.error)
+          // Fall back to polling on inotify error
           if (!usePolling) {
-            console.log('[Watcher] inotify エラーのためポーリングにフォールバックします')
+            console.log('[Watcher] Falling back to polling due to inotify error')
             this.watchHandle?.close()
             this.watchHandle = this.fs.watch(
               watchDir,
@@ -107,7 +107,7 @@ export class Watcher {
                 if (ev.type === 'add' || ev.type === 'change') {
                   if (ev.path.endsWith('.jsonl')) this.handleFile(ev.path)
                 } else if (ev.type === 'error') {
-                  console.error('[Watcher] フォールバックエラー:', ev.error)
+                  console.error('[Watcher] Fallback error:', ev.error)
                 }
               },
               {
@@ -133,8 +133,8 @@ export class Watcher {
   }
 
   /**
-   * `.kovitoboard/session-agents.jsonl` の紐づけ情報を、
-   * agent-setting イベントがなかったセッションにフォールバック適用する
+   * Apply fallback agent mapping from `.kovitoboard/session-agents.jsonl`
+   * to sessions that had no agent-setting event.
    */
   private applyFallbackAgentMapping(): void {
     const records = loadSessionAgentRecords(this.fs, this.fullConfig)
@@ -152,7 +152,7 @@ export class Watcher {
     }
 
     if (applied > 0) {
-      console.log(`[Watcher] フォールバック紐づけ適用: ${applied} セッション`)
+      console.log(`[Watcher] Fallback agent mapping applied: ${applied} sessions`)
     }
   }
 
@@ -164,17 +164,17 @@ export class Watcher {
 
       if (currentSize <= previousPosition) return
 
-      // セッションID: ファイル名（拡張子なし）
+      // Session ID: filename without extension
       const sessionId = basename(filePath, '.jsonl')
-      // プロジェクトパス: 親ディレクトリ名
+      // Project path: parent directory name
       const projectPath = basename(dirname(filePath))
 
-      // subagents ディレクトリ内のファイルはスキップ（今後対応）
+      // Skip files in the subagents directory (to be supported later)
       if (filePath.includes('/subagents/')) return
 
       this.sessionManager.ensureSession(sessionId, projectPath, filePath)
 
-      // 差分読み取り（fs-layer 経由）
+      // Incremental read (via fs-layer)
       const buffer = this.fs.readBytesSync(
         filePath,
         previousPosition,
@@ -185,13 +185,13 @@ export class Watcher {
       const lines = newContent.split('\n').filter((l: string) => l.trim())
 
       for (const line of lines) {
-        // agent-setting イベントからエージェントIDを抽出
+        // Extract agent ID from agent-setting event
         try {
           const raw = JSON.parse(line)
           if (raw.type === 'agent-setting' && raw.agentSetting) {
             this.sessionManager.setAgentId(sessionId, raw.agentSetting)
           }
-        } catch { /* パース失敗は無視 */ }
+        } catch { /* ignore parse failure */ }
 
         const events = parseLine(line, sessionId)
         if (events.length > 0) {
@@ -201,7 +201,7 @@ export class Watcher {
 
       this.filePositions.set(filePath, currentSize)
     } catch (err) {
-      console.error(`[Watcher] ファイル処理エラー: ${filePath}`, err)
+      console.error(`[Watcher] File processing error: ${filePath}`, err)
     }
   }
 }

@@ -4,7 +4,7 @@ import type { Session, SessionSummary, SessionStats, ParsedEvent } from './types
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>()
   private statusTimers = new Map<string, NodeJS.Timeout>()
-  // 初期読み込み中フラグ: true の間はステータス更新をスキップ（既存セッションを idle のまま保つ）
+  // Initializing flag: while true, skip status updates (keep existing sessions as idle)
   private initializing = true
 
   getSessions(): SessionSummary[] {
@@ -21,7 +21,7 @@ export class SessionManager extends EventEmitter {
   ensureSession(sessionId: string, projectPath: string, filePath: string): Session {
     let session = this.sessions.get(sessionId)
     if (!session) {
-      // プロジェクト名: パスハッシュからディレクトリ名を復元
+      // Project name: restore directory name from path hash
       const projectName = this.extractProjectName(projectPath)
       const now = new Date().toISOString()
       session = {
@@ -42,7 +42,7 @@ export class SessionManager extends EventEmitter {
         }
       }
       this.sessions.set(sessionId, session)
-      // new_session イベントはメッセージ追加時に発火（空セッションをリストに出さないため）
+      // new_session event fires on first message addition (to exclude empty sessions from the list)
     }
     return session
   }
@@ -55,15 +55,15 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 指定エージェントのアクティブセッションをすべて idle に変更する
-   * 新規セッション開始時に既存セッションを終了させるために使用
+   * Set all active sessions for the specified agent to idle.
+   * Used to terminate existing sessions when a new session starts.
    */
   deactivateAgentSessions(agentId: string): string[] {
     const deactivated: string[] = []
     for (const [id, session] of this.sessions) {
       if (session.agentId === agentId && session.status !== 'idle') {
         session.status = 'idle'
-        // idle タイマーもクリア（既に idle なので不要）
+        // Clear idle timer as well (no longer needed since already idle)
         const timerId = this.statusTimers.get(id)
         if (timerId) {
           clearTimeout(timerId)
@@ -77,15 +77,15 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 初期読み込み完了を通知する
-   * Watcher の ready イベント後に呼び出す
+   * Notify that initial loading is complete.
+   * Called after the Watcher's ready event.
    */
   setInitialized(): void {
     this.initializing = false
-    console.log(`[SessionManager] 初期化完了: ${this.sessions.size} セッション読み込み済み`)
+    console.log(`[SessionManager] Initialization complete: ${this.sessions.size} sessions loaded`)
   }
 
-  /** セッションID → エージェントID のマップを返す */
+  /** Returns a map of session ID to agent ID */
   getSessionAgentMap(): Record<string, string> {
     const map: Record<string, string> = {}
     for (const [id, session] of this.sessions) {
@@ -100,23 +100,23 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    // 初回メッセージ追加時に new_session を発火するかどうか判定
+    // Determine whether to fire new_session on first message addition
     const wasEmpty = session.stats.userMessages === 0 && session.stats.assistantMessages === 0
 
     for (const event of events) {
       session.events.push(event)
       session.lastEventAt = event.timestamp
 
-      // 統計更新
+      // Update stats
       this.updateStats(session.stats, event)
 
-      // ステータス更新
+      // Update status
       this.updateStatus(session, event)
 
       this.emit('new_event', sessionId, event)
     }
 
-    // 空だったセッションに初めてメッセージが入った → new_session を通知
+    // First message added to a previously empty session → notify new_session
     if (wasEmpty && (session.stats.userMessages > 0 || session.stats.assistantMessages > 0)) {
       const summary = this.toSummary(session)
       this.emit('new_session', summary)
@@ -140,7 +140,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private updateStatus(session: Session, event: ParsedEvent): void {
-    // 初期読み込み中はステータス更新をスキップ（既存セッションは idle のまま）
+    // Skip status updates during initial loading (existing sessions remain idle)
     if (this.initializing) return
 
     const oldStatus = session.status
@@ -148,8 +148,8 @@ export class SessionManager extends EventEmitter {
     if (event.type === 'user') {
       session.status = 'waiting'
     } else if (event.type === 'assistant' || event.type === 'tool_use') {
-      // stop_reason が end_turn → 応答完了、次の入力待ち（ready）
-      // それ以外 → まだ処理中（thinking）
+      // stop_reason is end_turn → response complete, awaiting next input (ready)
+      // Otherwise → still processing (thinking)
       if (event.metadata.stopReason === 'end_turn') {
         session.status = 'ready'
       } else {
@@ -157,7 +157,7 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    // idle タイマー: 5分イベントなしで idle に
+    // Idle timer: transition to idle after 5 minutes of no events
     const timerId = this.statusTimers.get(session.id)
     if (timerId) clearTimeout(timerId)
 
@@ -179,7 +179,7 @@ export class SessionManager extends EventEmitter {
   private extractProjectName(projectPath: string): string {
     // "-home-irikura-anode-workspace" → "anode-workspace"
     const parts = projectPath.replace(/^-/, '').split('-')
-    // 最後の意味のある部分を取得
+    // Extract the last meaningful parts
     if (parts.length >= 2) {
       return parts.slice(-2).join('-')
     }

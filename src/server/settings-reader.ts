@@ -1,12 +1,12 @@
 /**
  * settings-reader.ts
- * CLAUDE.md や .claude/ 配下の設定ファイルを読み取り、構造化データとして返す
+ * Reads CLAUDE.md and configuration files under .claude/ and returns structured data
  */
 
 import { join } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 
-// --- 型定義 ---
+// --- Type definitions ---
 
 export interface BasicSettings {
   projectName: string
@@ -46,12 +46,12 @@ export interface RuleInfo {
   content: string
 }
 
-// --- 実装 ---
+// --- Implementation ---
 
 /**
- * プロジェクト基本情報を読み取る
- * viewer.config.json の project セクション + agents セクションを主データソースにし、
- * CLAUDE.md は補完用に使用
+ * Read project basic settings.
+ * Uses the project + agents sections of viewer.config.json as the primary data source,
+ * with CLAUDE.md as a supplementary fallback.
  */
 export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): BasicSettings {
   const settings: BasicSettings = {
@@ -63,25 +63,25 @@ export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): Bas
     agents: [],
   }
 
-  // viewer.config.json から読み取り（主データソース）
+  // Read from viewer.config.json (primary data source)
   const configPath = join(projectRoot, 'config', 'viewer.config.json')
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
 
-      // project セクション
+      // project section
       if (config.project) {
         settings.projectName = config.project.name || ''
         settings.description = config.project.description || ''
         settings.concept = config.project.concept || ''
       }
 
-      // user セクション
+      // user section
       if (config.user?.name) {
         settings.userName = config.user.name
       }
 
-      // agents セクション
+      // agents section
       if (config.agents) {
         for (const [id, agentCfg] of Object.entries(config.agents)) {
           if (id === 'default') continue
@@ -94,29 +94,29 @@ export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): Bas
         }
       }
     } catch {
-      // 読み取り失敗時はフォールバック
+      // Fallback on read failure
     }
   }
 
-  // CLAUDE.md から補完（viewer.config.json にない情報を取得）
+  // Supplement from CLAUDE.md (retrieve info not available in viewer.config.json)
   const claudeMdPath = join(projectRoot, 'CLAUDE.md')
   if (fs.existsSync(claudeMdPath)) {
     try {
       const content = fs.readFileSync(claudeMdPath, 'utf-8')
 
-      // プロジェクト名（未取得の場合）
+      // Project name (if not yet obtained)
       if (!settings.projectName) {
         const nameMatch = content.match(/プロジェクト名:\s*(.+)/)
         if (nameMatch) settings.projectName = nameMatch[1].trim()
       }
 
-      // 説明（未取得の場合）
+      // Description (if not yet obtained)
       if (!settings.description) {
         const descMatch = content.match(/説明:\s*(.+)/)
         if (descMatch) settings.description = descMatch[1].trim()
       }
 
-      // コンセプト（未取得の場合）
+      // Concept (if not yet obtained)
       if (!settings.concept) {
         const conceptMatch = content.match(/システムコンセプト:\s*(.+)/)
         if (conceptMatch) {
@@ -125,14 +125,14 @@ export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): Bas
         }
       }
 
-      // 言語設定
+      // Language setting
       if (content.includes('常に日本語で会話する')) {
         settings.language = '日本語'
       } else if (content.includes('Always communicate in English')) {
         settings.language = 'English'
       }
 
-      // エージェント情報をチーム構成テーブルから補完（employee_id）
+      // Supplement agent info with employee_id from team composition table
       const agentsDir = join(projectRoot, '.claude', 'agents')
       if (fs.existsSync(agentsDir)) {
         const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
@@ -149,7 +149,7 @@ export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): Bas
         }
       }
     } catch {
-      // 読み取り失敗時は無視
+      // Ignore read failures
     }
   }
 
@@ -157,7 +157,7 @@ export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): Bas
 }
 
 /**
- * スキル一覧を読み取る
+ * Read the list of skills.
  */
 export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[] {
   const skillsDir = join(projectRoot, '.claude', 'skills')
@@ -175,7 +175,7 @@ export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[
       try {
         const content = fs.readFileSync(skillFile, 'utf-8')
 
-        // YAML フロントマターからメタデータを抽出
+        // Extract metadata from YAML frontmatter
         let description = ''
         let category: SkillInfo['category'] = 'procedure'
 
@@ -186,7 +186,7 @@ export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[
           const descMatch = fm.match(/description:\s*"?(.+?)"?\s*$/m)
           if (descMatch) description = descMatch[1].trim()
 
-          // カテゴリ判定
+          // Category determination
           if (fm.includes('disable-model-invocation: true')) {
             category = 'operation'
           } else if (fm.includes('user-invocable: false')) {
@@ -201,18 +201,18 @@ export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[
           invocation: `/${dirName}`,
         })
       } catch {
-        // 個別スキルの読み取り失敗はスキップ
+        // Skip individual skill read failures
       }
     }
   } catch {
-    // ディレクトリ読み取り失敗
+    // Directory read failure
   }
 
   return skills
 }
 
 /**
- * 自動処理設定を読み取る（hooks + cron）
+ * Read automation settings (hooks + cron).
  */
 export function readAutomations(fs: FileAccessLayer, projectRoot: string): AutomationSettings {
   const result: AutomationSettings = { hooks: [], crons: [] }
@@ -223,7 +223,7 @@ export function readAutomations(fs: FileAccessLayer, projectRoot: string): Autom
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
 
-    // hooks セクション
+    // hooks section
     if (settings.hooks) {
       for (const [event, hookList] of Object.entries(settings.hooks)) {
         if (!Array.isArray(hookList)) continue
@@ -240,14 +240,14 @@ export function readAutomations(fs: FileAccessLayer, projectRoot: string): Autom
       }
     }
   } catch {
-    // 読み取り失敗時は空を返す
+    // Return empty on read failure
   }
 
   return result
 }
 
 /**
- * 外部連携設定を読み取る（MCP サーバー等）
+ * Read external integration settings (MCP servers, etc.).
  */
 export function readIntegrations(fs: FileAccessLayer, projectRoot: string): IntegrationInfo[] {
   const integrations: IntegrationInfo[] = []
@@ -268,14 +268,14 @@ export function readIntegrations(fs: FileAccessLayer, projectRoot: string): Inte
       }
     }
   } catch {
-    // 読み取り失敗時は空を返す
+    // Return empty on read failure
   }
 
   return integrations
 }
 
 /**
- * ルール一覧を読み取る
+ * Read the list of rules.
  */
 export function readRules(fs: FileAccessLayer, projectRoot: string): RuleInfo[] {
   const rulesDir = join(projectRoot, '.claude', 'rules')
@@ -293,11 +293,11 @@ export function readRules(fs: FileAccessLayer, projectRoot: string): RuleInfo[] 
           content: content.trim(),
         })
       } catch {
-        // 個別ファイル読み取り失敗はスキップ
+        // Skip individual file read failures
       }
     }
   } catch {
-    // ディレクトリ読み取り失敗
+    // Directory read failure
   }
 
   return rules

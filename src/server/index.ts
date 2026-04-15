@@ -31,11 +31,11 @@ const PORT = Number(process.env.PORT) || 3001
 const app = express()
 app.use(express.json())
 
-// セキュリティヘッダー
+// Security headers
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('X-Frame-Options', 'DENY')
-  res.setHeader('X-XSS-Protection', '0')  // 最新ブラウザでは無効化が推奨
+  res.setHeader('X-XSS-Protection', '0')  // Disabled as recommended for modern browsers
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
   next()
 })
@@ -43,18 +43,18 @@ app.use((_req, res, next) => {
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
-// --- ファイルアクセス抽象化レイヤ ---
-// v0.1.0 では DirectFsLayer（Node.js fs / chokidar 直接呼び出し）のみ提供。
-// Plugin 対応（v0.2.0 以降）で差し替え可能にするため、全モジュールに DI する。
+// --- File access abstraction layer ---
+// v0.1.0 only provides DirectFsLayer (direct Node.js fs / chokidar calls).
+// All modules receive it via DI so it can be swapped for Plugin support (v0.2.0+).
 const fs = new DirectFsLayer()
 
 const config = loadConfig(fs)
 
-// プロジェクトルート（.claude/agents や .kovitoboard/ 等のデータ参照基点）
-// ClaudeBridge がデフォルト cwd として利用するため、先に解決する
+// Project root (base path for .claude/agents, .kovitoboard/, etc.)
+// Resolved first because ClaudeBridge uses it as its default cwd
 const projectRoot = resolveProjectRoot(fs)
 
-// `.kovitoboard/` ディレクトリを初回起動時に自動作成
+// Auto-create `.kovitoboard/` directory on first launch
 ensureKovitoboardDir(fs)
 
 const sessionManager = new SessionManager()
@@ -63,37 +63,37 @@ const claudeBridge = new ClaudeBridge(projectRoot)
 const tmuxBridge = new TmuxBridge(fs)
 
 /**
- * 指定エージェントの tmux ウィンドウを確保する。
- * ウィンドウが存在しなければ自動で tmux セッション＋ウィンドウを作成し、
- * Claude Code エージェントを起動する。
+ * Ensure a tmux window exists for the specified agent.
+ * If the window does not exist, automatically creates a tmux session + window
+ * and starts a Claude Code agent.
  *
- * @returns { windowName, justStarted } — justStarted=true は今回新規起動したことを示す
+ * @returns { windowName, justStarted } — justStarted=true indicates the agent was newly started
  */
 async function ensureTmuxAgent(agentId: string): Promise<{ windowName: string; justStarted: boolean } | null> {
-  // 既に起動済みならそのウィンドウ名を返す
+  // Return existing window name if already running
   if (tmuxBridge.hasSession()) {
     const windows = tmuxBridge.listWindows()
     const existing = windows.find((w) => w.name === agentId)
     if (existing) return { windowName: existing.name, justStarted: false }
   }
 
-  // tmux セッション＋エージェントウィンドウを自動作成
+  // Auto-create tmux session + agent window
   const result = await tmuxBridge.startAgent(agentId)
   if (result.success) {
-    console.log(`[auto-tmux] エージェント "${agentId}" を tmux で自動起動しました`)
+    console.log(`[auto-tmux] Agent "${agentId}" auto-started via tmux`)
     return { windowName: agentId, justStarted: true }
   }
 
-  console.warn(`[auto-tmux] エージェント "${agentId}" の tmux 起動に失敗: ${result.error}`)
+  console.warn(`[auto-tmux] Failed to start agent "${agentId}" via tmux: ${result.error}`)
   return null
 }
 
-// データファイル監視: エージェントの直接編集を自動検知
-// === 新しいデータ Manager を追加する場合 ===
-// DataFileWatcher をコンストラクタに渡して register() を呼ぶこと。
-// 詳細は data-file-watcher.ts のファイル冒頭コメントを参照。
-// NOTE (v0.1.0): タスク管理機能は v0.1.0 スコープ外のため、現状 DataFileWatcher に
-//                register() する Manager は存在しない。v0.1.1 以降で追加予定。
+// Data file watcher: auto-detect direct edits to agent files
+// === When adding a new data Manager ===
+// Pass DataFileWatcher to its constructor and call register().
+// See the file header comment in data-file-watcher.ts for details.
+// NOTE (v0.1.0): Task management is out of scope for v0.1.0, so currently no
+//                Manager is registered with DataFileWatcher. To be added in v0.1.1+.
 const _dataFileWatcher = new DataFileWatcher(fs, {
   usePolling: config.watcher.usePolling,
   pollInterval: config.watcher.pollInterval,
@@ -101,15 +101,15 @@ const _dataFileWatcher = new DataFileWatcher(fs, {
 void _dataFileWatcher
 
 /**
- * リクエストされたファイルパスを解決し、projectRoot 配下であることを検証する。
- * 安全な絶対パスを返す。不正なパスの場合は null を返す。
+ * Resolve the requested file path and verify it is within projectRoot.
+ * Returns a safe absolute path, or null if the path is invalid.
  */
 function resolveAndValidatePath(requestedPath: string): string | null {
   const resolved = isAbsolute(requestedPath)
     ? normalize(requestedPath)
     : normalize(resolve(projectRoot, requestedPath))
 
-  // projectRoot 配下であることを確認（projectRoot 自体も許可）
+  // Verify the path is under projectRoot (projectRoot itself is also allowed)
   if (!resolved.startsWith(projectRoot + '/') && resolved !== projectRoot) {
     return null
   }
@@ -131,13 +131,13 @@ app.get('/api/config', (_req, res) => {
   res.json(config)
 })
 
-// エージェント一覧（定義 + セッション統計付き）
+// Agent list (definitions + session statistics)
 app.get('/api/agents', (_req, res) => {
   const agents = loadAgentDefinitions(fs, config)
   const records = loadSessionAgentRecords(fs, config)
   const sessionAgentMap = buildSessionAgentMap(records)
 
-  // 各セッションのステータスを取得してエージェントごとに集計
+  // Get session statuses and aggregate per agent
   const sessions = sessionManager.getSessions()
   const agentSessionCounts = new Map<string, { active: number; total: number }>()
 
@@ -153,7 +153,7 @@ app.get('/api/agents', (_req, res) => {
     agentSessionCounts.set(agentType, counts)
   }
 
-  // エージェント情報にセッション統計を反映
+  // Attach session statistics to agent info
   for (const agent of agents) {
     const counts = agentSessionCounts.get(agent.id) || { active: 0, total: 0 }
     agent.activeSessionCount = counts.active
@@ -163,12 +163,12 @@ app.get('/api/agents', (_req, res) => {
   res.json(agents)
 })
 
-// セッション-エージェント紐づけマッピング
+// Session-agent association mapping
 app.get('/api/session-agent-map', (_req, res) => {
   res.json(sessionManager.getSessionAgentMap())
 })
 
-// セッションに agentId を手動設定
+// Manually set agentId on a session
 app.post('/api/sessions/:id/set-agent', (req, res) => {
   const sessionId = req.params.id
   const { agentId } = req.body as { agentId: string }
@@ -188,16 +188,16 @@ app.post('/api/sessions/:id/set-agent', (req, res) => {
   res.json({ success: true })
 })
 
-// エージェントのアクティブセッションをすべて idle に変更
+// Deactivate all active sessions for an agent (set to idle)
 app.post('/api/agents/:agentId/deactivate-sessions', (req, res) => {
   const { agentId } = req.params
   const deactivated = sessionManager.deactivateAgentSessions(agentId)
   res.json({ success: true, deactivated })
 })
 
-// --- Claude CLI 連携 API ---
+// --- Claude CLI integration API ---
 
-// 既存セッションにメッセージを送信
+// Send message to an existing session
 app.post('/api/sessions/:id/send', async (req, res) => {
   const sessionId = req.params.id
   const { message } = req.body as SendMessageRequest
@@ -213,7 +213,7 @@ app.post('/api/sessions/:id/send', async (req, res) => {
     return
   }
 
-  // tmux 自動起動: セッションに紐づくエージェントがあれば tmux 経由を試みる
+  // Auto-start tmux: if the session is associated with an agent, try sending via tmux
   const agentId = session.agentId
   if (agentId) {
     const tmuxAgent = await ensureTmuxAgent(agentId)
@@ -223,23 +223,23 @@ app.post('/api/sessions/:id/send', async (req, res) => {
         res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
         return
       }
-      console.warn(`[API] tmux 送信失敗、ClaudeBridge にフォールバック: ${result.error}`)
+      console.warn(`[API] tmux send failed, falling back to ClaudeBridge: ${result.error}`)
     }
   }
 
-  // フォールバック: ClaudeBridge (--print モード)
+  // Fallback: ClaudeBridge (--print mode)
   const sessionCwd = session.events.find(e => e.metadata.cwd)?.metadata.cwd
 
   try {
     const processId = claudeBridge.sendToSession(sessionId, message.trim(), sessionCwd)
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
-    console.error('[API] セッション送信エラー:', err)
+    console.error('[API] Session send error:', err)
     res.status(500).json({ error: 'Failed to send message' })
   }
 })
 
-// 新規セッションを開始
+// Start a new session
 app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd } = req.body as NewSessionRequest
 
@@ -248,42 +248,42 @@ app.post('/api/sessions/new', async (req, res) => {
     return
   }
 
-  // tmux 自動起動: agentId が指定されていれば tmux 経由を試みる
+  // Auto-start tmux: if agentId is specified, try sending via tmux
   if (agentId) {
     const tmuxAgent = await ensureTmuxAgent(agentId)
     if (tmuxAgent) {
       let result: { success: boolean; error?: string }
       if (tmuxAgent.justStarted) {
-        // 今回新規起動: エージェント起動自体が新セッション開始になるので、
-        // プロンプト待機後にメッセージを直接送信する
+        // Just started: the agent launch itself starts a new session,
+        // so send the message directly after waiting for the prompt
         const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 15000)
         if (!ready) {
-          console.warn(`[API] エージェント "${agentId}" のプロンプト待機タイムアウト`)
+          console.warn(`[API] Prompt wait timeout for agent "${agentId}"`)
         }
         result = tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
       } else {
-        // 既に起動済み: /clear で既存セッションを終了してから新規メッセージ送信
+        // Already running: end existing session with /clear then send new message
         result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
       }
       if (result.success) {
         res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
         return
       }
-      console.warn(`[API] tmux 送信失敗、ClaudeBridge にフォールバック: ${result.error}`)
+      console.warn(`[API] tmux send failed, falling back to ClaudeBridge: ${result.error}`)
     }
   }
 
-  // フォールバック: ClaudeBridge (--print モード)
+  // Fallback: ClaudeBridge (--print mode)
   try {
     const processId = claudeBridge.startNewSession(message.trim(), agentId, cwd)
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
-    console.error('[API] 新規セッション開始エラー:', err)
+    console.error('[API] New session start error:', err)
     res.status(500).json({ error: 'Failed to start new session' })
   }
 })
 
-// プロセス状態取得
+// Get process status
 app.get('/api/process/:id', (req, res) => {
   const proc = claudeBridge.getProcess(req.params.id)
   if (!proc) {
@@ -299,7 +299,7 @@ app.get('/api/process/:id', (req, res) => {
   })
 })
 
-// --- tmux 連携 API ---
+// --- tmux integration API ---
 
 app.get('/api/tmux/status', (_req, res) => {
   const hasSession = tmuxBridge.hasSession()
@@ -369,14 +369,14 @@ app.get('/api/tmux/capture/:windowName', (req, res) => {
   res.json({ content })
 })
 
-// --- 設定 API ---
+// --- Settings API ---
 
 app.get('/api/settings/basic', (_req, res) => {
   try {
     const settings = readBasicSettings(fs, projectRoot)
     res.json(settings)
   } catch (err) {
-    console.error('[API] 基本設定読み取りエラー:', err)
+    console.error('[API] Basic settings read error:', err)
     res.status(500).json({ error: 'Failed to read basic settings' })
   }
 })
@@ -386,7 +386,7 @@ app.get('/api/settings/skills', (_req, res) => {
     const skills = readSkills(fs, projectRoot)
     res.json({ skills })
   } catch (err) {
-    console.error('[API] スキル読み取りエラー:', err)
+    console.error('[API] Skills read error:', err)
     res.status(500).json({ error: 'Failed to read skills' })
   }
 })
@@ -396,7 +396,7 @@ app.get('/api/settings/automations', (_req, res) => {
     const automations = readAutomations(fs, projectRoot)
     res.json(automations)
   } catch (err) {
-    console.error('[API] 自動処理読み取りエラー:', err)
+    console.error('[API] Automations read error:', err)
     res.status(500).json({ error: 'Failed to read automations' })
   }
 })
@@ -406,7 +406,7 @@ app.get('/api/settings/integrations', (_req, res) => {
     const integrations = readIntegrations(fs, projectRoot)
     res.json({ integrations })
   } catch (err) {
-    console.error('[API] 外部連携読み取りエラー:', err)
+    console.error('[API] Integrations read error:', err)
     res.status(500).json({ error: 'Failed to read integrations' })
   }
 })
@@ -416,23 +416,23 @@ app.get('/api/settings/rules', (_req, res) => {
     const rules = readRules(fs, projectRoot)
     res.json({ rules })
   } catch (err) {
-    console.error('[API] ルール読み取りエラー:', err)
+    console.error('[API] Rules read error:', err)
     res.status(500).json({ error: 'Failed to read rules' })
   }
 })
 
-// --- ファイルアップロード API ---
+// --- File upload API ---
 
 const UPLOAD_DIR = getUploadDir()
 const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
-const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000 // 24時間
+const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
-// アップロードディレクトリの初期化
+// Initialize upload directory
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 }
 
-// 古いアップロードファイルを定期的に削除
+// Periodically delete old uploaded files
 function cleanupUploads() {
   try {
     if (!fs.existsSync(UPLOAD_DIR)) return
@@ -444,18 +444,18 @@ function cleanupUploads() {
         fs.unlinkSync(filePath)
       }
     }
-  } catch { /* クリーンアップ失敗は無視 */ }
+  } catch { /* Ignore cleanup failures */ }
 }
 cleanupUploads()
-setInterval(cleanupUploads, 60 * 60 * 1000) // 1時間ごと
+setInterval(cleanupUploads, 60 * 60 * 1000) // Every hour
 
 function getExtFromContentType(contentType: string, originalName?: string): string {
-  // オリジナルファイル名から拡張子を取得
+  // Get extension from original filename
   if (originalName) {
     const dotIdx = originalName.lastIndexOf('.')
     if (dotIdx > 0) return originalName.slice(dotIdx)
   }
-  // Content-Type から推定
+  // Infer from Content-Type
   const map: Record<string, string> = {
     'image/png': '.png',
     'image/jpeg': '.jpg',
@@ -501,12 +501,12 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '20mb' }), (req, res) 
       contentType,
     })
   } catch (err) {
-    console.error('[API] アップロードエラー:', err)
+    console.error('[API] Upload error:', err)
     res.status(500).json({ error: 'Upload failed' })
   }
 })
 
-// --- ファイルプレビュー API ---
+// --- File preview API ---
 
 app.get('/api/artifact', (req, res) => {
   const filePath = req.query.path as string
@@ -545,10 +545,10 @@ app.get('/api/artifact/raw', (req, res) => {
   res.sendFile(resolved)
 })
 
-// 本番時: ビルド済みの静的ファイルを配信
+// Production: serve built static files
 app.use(express.static(join(__dirname, '../../dist')))
 
-// --- WebSocket: リアルタイムイベント配信 ---
+// --- WebSocket: real-time event broadcasting ---
 function broadcast(type: string, payload: unknown): void
 function broadcast(event: ServerToClientEvent): void
 function broadcast(typeOrEvent: string | ServerToClientEvent, payload?: unknown): void {
@@ -579,15 +579,15 @@ claudeBridge.on('process_end', (processId: string, status: string, exitCode: num
   broadcast('process_end', { processId, status, exitCode })
 })
 
-// --- Trust Prompt Detector 起動 ---
-// 仕様書 `docs/specs/trust-prompt-relay.md` v1.1 準拠。
-// tmux ウィンドウ単位で信頼プロンプトを検知し、WebSocket で UI に中継する。
+// --- Trust Prompt Detector startup ---
+// Follows spec `docs/specs/trust-prompt-relay.md` v1.1.
+// Detects trust prompts per tmux window and relays them to the UI via WebSocket.
 //
-// パターン定義は `trust-patterns.json` から読み込む。自ファイル隣 (import.meta.url 基準)
-// で解決するため、開発時 (`src/server/`) / 本番時 (`dist/server/`) のどちらでも
-// 同階層の JSON を参照できる。
-// 本番ビルドでは `package.json` の build script で `dist/server/trust-patterns.json`
-// にコピーされる（tsc は .json を出力しないため）。
+// Pattern definitions are loaded from `trust-patterns.json`, resolved relative to
+// this file (import.meta.url), so it works in both dev (`src/server/`) and
+// production (`dist/server/`) by referencing the JSON in the same directory.
+// For production builds, `package.json` build script copies to `dist/server/trust-patterns.json`
+// (since tsc does not emit .json files).
 const trustPatternsPath = fileURLToPath(new URL('./trust-patterns.json', import.meta.url))
 const trustPatterns = loadTrustPatterns(fs, trustPatternsPath)
 const trustPromptDetector = new TrustPromptDetector(
@@ -598,14 +598,14 @@ const trustPromptDetector = new TrustPromptDetector(
 )
 trustPromptDetector.start()
 
-// --- WebSocket: クライアント → サーバー（trust prompt 応答受信） ---
+// --- WebSocket: client -> server (trust prompt response handling) ---
 wss.on('connection', (ws) => {
   ws.on('message', (data) => {
     let parsed: ClientToServerEvent
     try {
       parsed = JSON.parse(data.toString()) as ClientToServerEvent
     } catch {
-      console.warn('[WS] 不正な JSON を受信')
+      console.warn('[WS] Received invalid JSON')
       return
     }
 
@@ -617,36 +617,36 @@ wss.on('connection', (ws) => {
 
 function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
   if (!payload?.promptId || !payload?.windowName || !payload?.response) {
-    console.warn('[WS] trust_prompt_respond: 必須フィールドが不足')
+    console.warn('[WS] trust_prompt_respond: missing required fields')
     return
   }
   const { promptId, windowName, response } = payload
 
   if (response.mode === 'choice') {
-    // UI は choiceId のみを送り、実際のキー列への変換は detector が
-    // 直近通知時の choices（state.lastChoices）から行う。
-    // これにより UI 側から任意のキーを送り込めない設計とする。
+    // The UI sends only choiceId; the actual key sequence conversion is performed
+    // by the detector using choices (state.lastChoices) from the most recent notification.
+    // This design prevents the UI from injecting arbitrary keys.
     const ok = trustPromptDetector.respondChoice(windowName, promptId, response.choiceId)
     if (!ok) {
       console.warn(
-        `[WS] trust_prompt_respond (choice) 失敗: ${windowName} ${promptId}`,
+        `[WS] trust_prompt_respond (choice) failed: ${windowName} ${promptId}`,
       )
     }
   } else if (response.mode === 'raw-keys') {
     const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
     if (!ok) {
       console.warn(
-        `[WS] trust_prompt_respond (raw-keys) 失敗: ${windowName} ${promptId}`,
+        `[WS] trust_prompt_respond (raw-keys) failed: ${windowName} ${promptId}`,
       )
     }
   }
 }
 
-// --- 起動 ---
+// --- Startup ---
 watcher.start()
 
 server.listen(PORT, () => {
-  console.log(`[kovitoboard] サーバー起動: http://localhost:${PORT}`)
+  console.log(`[kovitoboard] Server started: http://localhost:${PORT}`)
   console.log(`[kovitoboard] WebSocket: ws://localhost:${PORT}`)
-  console.log(`[kovitoboard] 監視対象: ${config.claudeDir}/projects/`)
+  console.log(`[kovitoboard] Watching: ${config.claudeDir}/projects/`)
 })

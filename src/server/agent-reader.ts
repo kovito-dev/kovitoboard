@@ -5,13 +5,13 @@ import type { FileAccessLayer } from './fs-layer'
 import type { AgentInfo, SessionAgentRecord, ViewerConfig } from './types'
 
 /**
- * .claude/agents/*.md からエージェント定義を読み取る
- * デフォルトアシスタント（--agent なし起動）は含めない
+ * Read agent definitions from .claude/agents/*.md
+ * Does not include the default assistant (launched without --agent)
  */
 export function loadAgentDefinitions(fs: FileAccessLayer, config: ViewerConfig): AgentInfo[] {
-  // CLAUDE_PROJECT_DIR に相当するパスからエージェント定義を探す
-  // config.claudeDir は ~/.claude なので、そこからプロジェクト設定のエージェントを探す
-  // エージェント定義は anode-workspace/.claude/agents/ にある
+  // Look for agent definitions from the path equivalent to CLAUDE_PROJECT_DIR
+  // config.claudeDir is ~/.claude, so look for project-configured agents from there
+  // Agent definitions are in <project>/.claude/agents/
   const agentsDir = findAgentsDir(fs, config)
   if (!agentsDir) return []
 
@@ -29,16 +29,16 @@ export function loadAgentDefinitions(fs: FileAccessLayer, config: ViewerConfig):
       }
     }
   } catch (err) {
-    console.error('[agent-reader] エージェント定義の読み取りエラー:', err)
+    console.error('[agent-reader] Error reading agent definitions:', err)
   }
 
   return agents
 }
 
 /**
- * `.kovitoboard/session-agents.jsonl` からセッション-エージェント紐づけを読み取る
+ * Read session-agent associations from `.kovitoboard/session-agents.jsonl`
  *
- * @param _config ViewerConfig（現状未使用だが、将来の設定拡張に備えて残す）
+ * @param _config ViewerConfig (currently unused, kept for future config extensibility)
  */
 export function loadSessionAgentRecords(fs: FileAccessLayer, _config: ViewerConfig): SessionAgentRecord[] {
   const recordPath = getSessionAgentsRecordPath(fs)
@@ -56,26 +56,26 @@ export function loadSessionAgentRecords(fs: FileAccessLayer, _config: ViewerConf
           records.push(record)
         }
       } catch {
-        // 不正な行はスキップ
+        // Skip invalid lines
       }
     }
   } catch (err) {
-    console.error('[agent-reader] セッション-エージェント記録の読み取りエラー:', err)
+    console.error('[agent-reader] Error reading session-agent records:', err)
   }
 
   return records
 }
 
 /**
- * セッションID → エージェントID のマッピングを構築
- * 同一セッションに複数エントリがある場合（/clear による再記録）、
- * 具体的なエージェント名（default 以外）を優先する
+ * Build a sessionId -> agentId mapping.
+ * When multiple entries exist for the same session (re-recorded via /clear),
+ * a specific agent name (other than 'default') takes priority.
  */
 export function buildSessionAgentMap(records: SessionAgentRecord[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const record of records) {
     const existing = map.get(record.sessionId)
-    // 既に具体的なエージェントが記録済みなら default で上書きしない
+    // Do not overwrite with 'default' if a specific agent is already recorded
     if (existing && existing !== 'default' && record.agentType === 'default') continue
     map.set(record.sessionId, record.agentType)
   }
@@ -83,29 +83,29 @@ export function buildSessionAgentMap(records: SessionAgentRecord[]): Map<string,
 }
 
 /**
- * エージェント定義ディレクトリを探す
+ * Find the agent definitions directory.
  *
- * v0.1.0 方針（R2 対応）:
- * 1. プロジェクトルート（resolveProjectRoot()）直下の `.claude/agents/` を最優先
- * 2. fallback: cwd から親ディレクトリを遡って `.claude/agents/` を検索
- * 3. fallback: claudeDir 配下の `agents/`
+ * v0.1.0 strategy (R2 support):
+ * 1. Prefer `.claude/agents/` directly under the project root (resolveProjectRoot())
+ * 2. Fallback: traverse parent directories from cwd looking for `.claude/agents/`
+ * 3. Fallback: `agents/` under claudeDir
  */
 function findAgentsDir(fs: FileAccessLayer, config: ViewerConfig): string | null {
-  // 1. プロジェクトルート直下の .claude/agents/ を最優先
+  // 1. Prefer .claude/agents/ directly under project root
   const projectAgentsDir = join(resolveProjectRoot(fs), '.claude', 'agents')
   if (fs.existsSync(projectAgentsDir)) return projectAgentsDir
 
-  // 2. fallback: cwd から上に遡って .claude/agents/ を探す
+  // 2. Fallback: traverse upward from cwd looking for .claude/agents/
   let dir = process.cwd()
   for (let i = 0; i < 10; i++) {
     const candidate = join(dir, '.claude', 'agents')
     if (fs.existsSync(candidate)) return candidate
     const parent = join(dir, '..')
-    if (parent === dir) break // ルートに到達
+    if (parent === dir) break // Reached filesystem root
     dir = parent
   }
 
-  // 3. fallback: claudeDir 内にエージェント定義がある場合
+  // 3. Fallback: agent definitions inside claudeDir
   const claudeAgentsDir = join(config.claudeDir, 'agents')
   if (fs.existsSync(claudeAgentsDir)) return claudeAgentsDir
 
@@ -113,20 +113,20 @@ function findAgentsDir(fs: FileAccessLayer, config: ViewerConfig): string | null
 }
 
 /**
- * エージェント定義ファイルをパース
+ * Parse an agent definition file.
  */
 function parseAgentDefinition(
   filename: string,
   content: string,
   config: ViewerConfig
 ): AgentInfo | null {
-  // YAML フロントマターを抽出
+  // Extract YAML frontmatter
   const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/)
   if (!frontmatterMatch) return null
 
   const frontmatter = frontmatterMatch[1]
 
-  // name, description, model を取得
+  // Extract name, description, model
   const nameMatch = frontmatter.match(/^name:\s*(.+)$/m)
   const descMatch = frontmatter.match(/^description:\s*"?(.+?)"?\s*$/m)
   const modelMatch = frontmatter.match(/^model:\s*(.+)$/m)
@@ -140,8 +140,8 @@ function parseAgentDefinition(
   const model = modelMatch ? modelMatch[1].trim() : 'default'
   const employeeId = employeeIdMatch ? employeeIdMatch[1].trim() : undefined
 
-  // 本文から日本語名とロールを抽出
-  // パターン: "# リラ（Lyra）— 編集長 / コンテンツディレクター"
+  // Extract display name and role from body
+  // Pattern: "# Name（EnglishName）— Role / Title"
   const headingMatch = content.match(/^#\s+(.+?)(?:（(.+?)）)?(?:\s*[—-]+\s*(.+))?$/m)
 
   let displayName = ''
@@ -150,7 +150,7 @@ function parseAgentDefinition(
 
   if (headingMatch) {
     displayName = headingMatch[1].trim()
-    // 英語名がある場合は括弧内から由来を推定
+    // If an English name exists, infer origin from parenthesized content
     if (headingMatch[2]) {
       origin = headingMatch[2].trim()
     }
@@ -159,26 +159,26 @@ function parseAgentDefinition(
     }
   }
 
-  // 由来をペルソナセクションから抽出
-  // パターン: "- **名前:** リラ（Lyra / こと座）"
+  // Extract origin from persona section
+  // Pattern: "- **名前:** Name（EnglishName / Origin）"
   const originMatch = content.match(/\*\*名前:\*\*\s*.+?[/／]\s*(.+?)\)/)
   if (originMatch) {
     origin = originMatch[1].trim()
   }
 
-  // config からカラーを取得
+  // Get color from config
   const agentConfig = config.agents[id] || config.agents[name]
   const color = agentConfig?.color || '#6B7280'
 
-  // config に日本語名があればそちらを優先
+  // Prefer display name from config if available
   if (agentConfig?.name) {
     displayName = agentConfig.name
   }
 
-  // config からアバターを取得
+  // Get avatar from config
   const avatar = agentConfig?.avatar
 
-  // config から summary を取得
+  // Get summary from config
   const summary = agentConfig?.summary || ''
 
   return {

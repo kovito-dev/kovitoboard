@@ -30,10 +30,10 @@ const DEFAULT_CONFIG: ViewerConfig = {
   project: undefined,
 }
 
-/** プロジェクトルート（CLAUDE.md が存在するディレクトリ）を動的に解決 */
+/** Dynamically resolve the project root (the directory containing CLAUDE.md) */
 export function resolveProjectRoot(fs: FileAccessLayer): string {
-  // tsx 実行時: src/server/ → 3階層上がプロジェクトルート
-  // ビルド後:  dist/        → 2階層上がプロジェクトルート
+  // When running via tsx: src/server/ → 3 levels up is the project root
+  // After build:          dist/      → 2 levels up is the project root
   const candidates = [
     resolve(__dirname, '..', '..', '..'),
     resolve(__dirname, '..', '..'),

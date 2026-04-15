@@ -55,7 +55,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
       const content = raw.message.content
       const text = typeof content === 'string' ? content : extractTextFromContent(content)
 
-      // tool_result ブロックを抽出
+      // Extract tool_result blocks
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'tool_result') {
@@ -112,7 +112,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
 
       if (!Array.isArray(content)) break
 
-      // テキストブロックをまとめる
+      // Aggregate text blocks
       const textParts: string[] = []
       const thinkingParts: string[] = []
 
@@ -122,7 +122,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
         } else if (block.type === 'thinking' && block.thinking) {
           thinkingParts.push(block.thinking)
         } else if (block.type === 'tool_use') {
-          // テキストがたまっていたら先に出す
+          // Flush accumulated text first
           if (textParts.length > 0) {
             events.push({
               id: nextId(),
@@ -143,7 +143,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
             toolName: block.name,
             toolInput: block.input
           }
-          // Write/Edit からファイルパスを抽出
+          // Extract file path from Write/Edit
           if (block.input && ('file_path' in block.input || 'path' in block.input)) {
             mc.filePath = (block.input.file_path || block.input.path) as string
           }
@@ -159,7 +159,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
         }
       }
 
-      // 残りのテキスト
+      // Remaining text
       if (textParts.length > 0 || (thinkingParts.length > 0 && events.length === 0)) {
         events.push({
           id: nextId(),
@@ -189,10 +189,10 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
     }
 
     case 'progress': {
-      // hook_progress 等 — UIではスキップ可能だが一応保持
+      // hook_progress etc. — can be skipped in UI but retained for now
       const data = raw.data as Record<string, unknown> | undefined
       if (data?.type === 'hook_progress') {
-        // フック進行状況は表示しない
+        // Do not display hook progress
         break
       }
       events.push({
@@ -206,7 +206,7 @@ export function parseLine(line: string, sessionId: string): ParsedEvent[] {
       break
     }
 
-    // file-history-snapshot, last-prompt は表示不要
+    // file-history-snapshot, last-prompt do not need to be displayed
     default:
       break
   }

@@ -1,20 +1,20 @@
 /**
- * data-file-watcher.ts — データファイルの外部変更検知ユーティリティ
+ * data-file-watcher.ts — Utility for detecting external changes to data files
  *
- * エージェントが直接 JSON ファイルを書き換えた場合に、
- * サーバー再起動なしでインメモリ状態を自動更新するための汎用監視機構。
+ * A general-purpose file watching mechanism for automatically updating in-memory
+ * state without server restart when agents directly modify JSON files.
  *
- * === 新しいデータ Manager を追加する開発者へ ===
+ * === For developers adding a new data Manager ===
  *
- * JSON ファイルで状態を管理する Manager を新設する場合、
- * このクラスを使ってファイル監視を必ず組み込んでください。
+ * When creating a new Manager that manages state via JSON files,
+ * always integrate file watching using this class.
  *
- * 手順:
- *   1. Manager のコンストラクタで DataFileWatcher.register() を呼ぶ
- *   2. save() の前後で notifySelfWrite() を呼ぶ
- *   3. コールバックで load() + イベント発火を行う
+ * Steps:
+ *   1. Call DataFileWatcher.register() in the Manager constructor
+ *   2. Call notifySelfWrite() before save()
+ *   3. Perform load() + event emission in the callback
  *
- * 例:
+ * Example:
  *   constructor(workspaceDir: string, watcher: DataFileWatcher) {
  *     this.filePath = join(workspaceDir, 'data', 'my-data.json')
  *     watcher.register(this.filePath, () => {
@@ -32,15 +32,15 @@
 import type { FileAccessLayer, WatchHandle } from './fs-layer'
 
 interface WatchEntry {
-  /** 外部変更時に呼ばれるコールバック */
+  /** Callback invoked on external change */
   onReload: () => void
-  /** 自己書き込みの直後か（true なら次の change イベントを無視） */
+  /** Whether a self-write just occurred (if true, ignore the next change event) */
   selfWritePending: boolean
-  /** デバウンスタイマー */
+  /** Debounce timer */
   debounceTimer: ReturnType<typeof setTimeout> | null
 }
 
-/** デバウンス間隔（ms）: エージェントの連続書き込みをまとめる */
+/** Debounce interval (ms): coalesces consecutive writes by agents */
 const DEBOUNCE_MS = 300
 
 export class DataFileWatcher {
@@ -60,10 +60,10 @@ export class DataFileWatcher {
   }
 
   /**
-   * 監視対象ファイルを登録する
+   * Register a file to watch.
    *
-   * @param filePath 監視するファイルの絶対パス
-   * @param onReload 外部変更検知時に呼ばれるコールバック
+   * @param filePath Absolute path of the file to watch
+   * @param onReload Callback invoked when an external change is detected
    */
   register(filePath: string, onReload: () => void): void {
     this.entries.set(filePath, {
@@ -78,7 +78,7 @@ export class DataFileWatcher {
         if (event.type === 'change') {
           this.handleChange(event.path)
         } else if (event.type === 'error') {
-          console.error(`[DataFileWatcher] 監視エラー: ${filePath}`, event.error)
+          console.error(`[DataFileWatcher] watch error: ${filePath}`, event.error)
         }
       },
       {
@@ -89,12 +89,12 @@ export class DataFileWatcher {
     )
 
     this.watchHandles.push(handle)
-    console.log(`[DataFileWatcher] 登録: ${filePath}`)
+    console.log(`[DataFileWatcher] registered: ${filePath}`)
   }
 
   /**
-   * 自己書き込みを通知する
-   * save() の直前に呼ぶことで、直後の change イベントを無視する
+   * Notify of a self-write.
+   * Call before save() to ignore the immediately following change event.
    */
   notifySelfWrite(filePath: string): void {
     const entry = this.entries.get(filePath)
@@ -103,13 +103,13 @@ export class DataFileWatcher {
     }
   }
 
-  /** 全監視を停止 */
+  /** Stop all watchers */
   close(): void {
     for (const h of this.watchHandles) {
       h.close()
     }
     this.watchHandles = []
-    // デバウンスタイマーをクリア
+    // Clear debounce timers
     for (const entry of this.entries.values()) {
       if (entry.debounceTimer) {
         clearTimeout(entry.debounceTimer)
@@ -122,24 +122,24 @@ export class DataFileWatcher {
     const entry = this.entries.get(filePath)
     if (!entry) return
 
-    // 自己書き込みの場合はスキップ
+    // Skip if this is a self-write
     if (entry.selfWritePending) {
       entry.selfWritePending = false
       return
     }
 
-    // デバウンス: 連続変更をまとめる
+    // Debounce: coalesce consecutive changes
     if (entry.debounceTimer) {
       clearTimeout(entry.debounceTimer)
     }
 
     entry.debounceTimer = setTimeout(() => {
       entry.debounceTimer = null
-      console.log(`[DataFileWatcher] 外部変更検知: ${filePath}`)
+      console.log(`[DataFileWatcher] external change detected: ${filePath}`)
       try {
         entry.onReload()
       } catch (err) {
-        console.error(`[DataFileWatcher] リロードエラー: ${filePath}`, err)
+        console.error(`[DataFileWatcher] reload error: ${filePath}`, err)
       }
     }, DEBOUNCE_MS)
   }

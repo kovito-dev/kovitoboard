@@ -6,8 +6,8 @@ import { resolveProjectRoot } from './config'
 import type { FileAccessLayer } from './fs-layer'
 
 /**
- * tmux ウィンドウ名 / エージェントID として有効な文字列かを検証する。
- * 許可: 英数字、ハイフン、アンダースコア（1〜64文字）
+ * Validate a string as a tmux window name / agent ID.
+ * Allowed: alphanumeric, hyphens, underscores (1-64 chars)
  */
 const VALID_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
 
@@ -16,9 +16,9 @@ export function isValidTmuxName(name: string): boolean {
 }
 
 /**
- * tmux セッション名をプロジェクト名から導出する。
- * 例: projects/my-team → "kovitoboard-my-team"
- * tmux セッション名に使えない文字（ドット、コロン）はハイフンに置換する。
+ * Derive tmux session name from the project name.
+ * Example: projects/my-team -> "kovitoboard-my-team"
+ * Characters not allowed in tmux session names (dots, colons) are replaced with hyphens.
  */
 function resolveTmuxSessionName(fs: FileAccessLayer): string {
   const projectDir = basename(resolveProjectRoot(fs))
@@ -27,11 +27,11 @@ function resolveTmuxSessionName(fs: FileAccessLayer): string {
 }
 
 export interface TmuxWindow {
-  /** ウィンドウインデックス */
+  /** Window index */
   index: number
-  /** ウィンドウ名（= エージェントID） */
+  /** Window name (= agent ID) */
   name: string
-  /** アクティブかどうか */
+  /** Whether the window is active */
   active: boolean
 }
 
@@ -41,15 +41,15 @@ export interface TmuxSendResult {
 }
 
 /**
- * tmux 経由で Claude CLI エージェントにメッセージを送信する
+ * Send messages to Claude CLI agents via tmux
  *
- * 前提:
- * - tmux セッション "kovitoboard-{project}" が存在する
- * - 各ウィンドウにエージェントが起動済み（ウィンドウ名 = エージェントID）
+ * Prerequisites:
+ * - tmux session "kovitoboard-{project}" exists
+ * - Each window has an agent running (window name = agent ID)
  *
- * 送信方式:
- * - 短いメッセージ: tmux send-keys で直接送信
- * - 長文/特殊文字含む: tmpファイル → load-buffer → paste-buffer で安全に送信
+ * Send methods:
+ * - Short messages: sent directly via tmux send-keys
+ * - Long/special characters: safely sent via tmp file -> load-buffer -> paste-buffer
  */
 export class TmuxBridge {
   private fs: FileAccessLayer
@@ -60,10 +60,10 @@ export class TmuxBridge {
   }
 
   /**
-   * tmux セッション名（プロジェクト名ベース、lazy 評価）
+   * tmux session name (project-name-based, lazily evaluated)
    *
-   * 初回アクセス時に resolveProjectRoot(fs) から導出する。
-   * モジュールロード時に即時評価しないのは、fs 依存の順序問題を避けるため。
+   * Derived from resolveProjectRoot(fs) on first access.
+   * Not evaluated at module load time to avoid fs dependency ordering issues.
    */
   get sessionName(): string {
     if (!this._sessionName) {
@@ -73,23 +73,23 @@ export class TmuxBridge {
   }
 
   /**
-   * エージェントID → tmux ウィンドウ名の変換
-   * KovitoBoard: エージェントIDをそのままウィンドウ名として返す
+   * Convert agent ID to tmux window name.
+   * KovitoBoard: returns the agent ID as-is for the window name.
    */
   resolveWindowName(agentId: string): string {
     return agentId
   }
 
   /**
-   * マッピングテーブルを取得
-   * 実際のウィンドウ一覧からマッピングを動的構築
+   * Get the mapping table.
+   * Dynamically built from the actual window list.
    */
   getAgentWindowMap(): Record<string, string> {
     const windows = this.listWindows()
     const map: Record<string, string> = {}
     for (const w of windows) {
       if (w.name !== 'main') {
-        // ウィンドウ名 = エージェントID = マッピング先
+        // window name = agent ID = mapping target
         map[w.name] = w.name
       }
     }
@@ -97,8 +97,8 @@ export class TmuxBridge {
   }
 
   /**
-   * tmux の KovitoBoard セッションが存在するか
-   * stdio: 'pipe' を明示してstderrがコンソールに漏れるのを防ぐ
+   * Check if the KovitoBoard tmux session exists.
+   * Explicitly sets stdio: 'pipe' to prevent stderr from leaking to the console.
    */
   hasSession(): boolean {
     try {
@@ -110,7 +110,7 @@ export class TmuxBridge {
   }
 
   /**
-   * KovitoBoard セッションのウィンドウ一覧を取得
+   * Get the window list for the KovitoBoard session.
    */
   listWindows(): TmuxWindow[] {
     try {
@@ -135,28 +135,28 @@ export class TmuxBridge {
   }
 
   /**
-   * 指定ウィンドウ（エージェント）にメッセージを送信
+   * Send a message to the specified window (agent).
    *
-   * @param windowName ウィンドウ名（エージェントID）
-   * @param message 送信するメッセージ
+   * @param windowName Window name (agent ID)
+   * @param message Message to send
    */
   sendMessage(windowName: string, message: string): TmuxSendResult {
     if (!isValidTmuxName(windowName)) {
-      return { success: false, error: `無効なウィンドウ名: "${windowName}"` }
+      return { success: false, error: `Invalid window name: "${windowName}"` }
     }
 
-    // KovitoBoard セッションの存在確認
+    // Check KovitoBoard session exists
     if (!this.hasSession()) {
-      return { success: false, error: `tmux セッション "${this.sessionName}" が存在しません` }
+      return { success: false, error: `tmux session "${this.sessionName}" does not exist` }
     }
 
-    // ウィンドウの存在確認
+    // Check window exists
     const windows = this.listWindows()
     const target = windows.find((w) => w.name === windowName)
     if (!target) {
       return {
         success: false,
-        error: `ウィンドウ "${windowName}" が見つかりません。存在するウィンドウ: ${windows.map((w) => w.name).join(', ') || '(なし)'}`,
+        error: `Window "${windowName}" not found. Existing windows: ${windows.map((w) => w.name).join(', ') || '(none)'}`,
       }
     }
 
@@ -165,25 +165,25 @@ export class TmuxBridge {
     try {
       this.sendViaBuffer(tmuxTarget, message)
 
-      console.log(`[tmux-bridge] 送信完了: ${tmuxTarget} (${message.length}文字)`)
+      console.log(`[tmux-bridge] Send complete: ${tmuxTarget} (${message.length} chars)`)
       return { success: true }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      console.error(`[tmux-bridge] 送信エラー: ${tmuxTarget}`, errorMsg)
+      console.error(`[tmux-bridge] Send error: ${tmuxTarget}`, errorMsg)
       return { success: false, error: errorMsg }
     }
   }
 
   /**
-   * 既存セッションをクリアしてから新規メッセージを送信
+   * Clear the existing session then send a new message.
    */
   async clearAndSendMessage(windowName: string, message: string): Promise<TmuxSendResult> {
     if (!isValidTmuxName(windowName)) {
-      return { success: false, error: `無効なウィンドウ名: "${windowName}"` }
+      return { success: false, error: `Invalid window name: "${windowName}"` }
     }
 
     if (!this.hasSession()) {
-      return { success: false, error: `tmux セッション "${this.sessionName}" が存在しません` }
+      return { success: false, error: `tmux session "${this.sessionName}" does not exist` }
     }
 
     const windows = this.listWindows()
@@ -191,7 +191,7 @@ export class TmuxBridge {
     if (!target) {
       return {
         success: false,
-        error: `ウィンドウ "${windowName}" が見つかりません。存在するウィンドウ: ${windows.map((w) => w.name).join(', ') || '(なし)'}`,
+        error: `Window "${windowName}" not found. Existing windows: ${windows.map((w) => w.name).join(', ') || '(none)'}`,
       }
     }
 
@@ -199,27 +199,27 @@ export class TmuxBridge {
 
     try {
       execFileSync('tmux', ['send-keys', '-t', tmuxTarget, '/clear', 'Enter'], { stdio: 'pipe' })
-      console.log(`[tmux-bridge] /clear 送信: ${tmuxTarget}`)
+      console.log(`[tmux-bridge] /clear sent: ${tmuxTarget}`)
 
       const ready = await this.waitForPrompt(tmuxTarget, 15000)
       if (!ready) {
-        console.warn(`[tmux-bridge] プロンプト検出タイムアウト: ${tmuxTarget}（フォールバックで送信続行）`)
+        console.warn(`[tmux-bridge] Prompt detection timeout: ${tmuxTarget} (proceeding with fallback send)`)
       }
 
       this.sendViaBuffer(tmuxTarget, message)
 
-      console.log(`[tmux-bridge] clear+送信完了: ${tmuxTarget} (${message.length}文字)`)
+      console.log(`[tmux-bridge] clear+send complete: ${tmuxTarget} (${message.length} chars)`)
       return { success: true }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      console.error(`[tmux-bridge] clear+送信エラー: ${tmuxTarget}`, errorMsg)
+      console.error(`[tmux-bridge] clear+send error: ${tmuxTarget}`, errorMsg)
       return { success: false, error: errorMsg }
     }
   }
 
   /**
-   * エージェント起動後、入力プロンプトが表示されるまで待機する。
-   * index.ts から新規起動直後のメッセージ送信前に呼び出される。
+   * Wait for the input prompt to appear after agent startup.
+   * Called from index.ts before sending a message right after a new launch.
    */
   async waitForAgentReady(windowName: string, timeoutMs: number): Promise<boolean> {
     const tmuxTarget = `${this.sessionName}:${windowName}`
@@ -227,7 +227,7 @@ export class TmuxBridge {
   }
 
   /**
-   * プロンプトの出現を待機
+   * Wait for prompt to appear.
    */
   private async waitForPrompt(tmuxTarget: string, timeoutMs: number): Promise<boolean> {
     const startTime = Date.now()
@@ -241,11 +241,11 @@ export class TmuxBridge {
         const lines = output.split('\n').filter((l) => l.trim())
         const lastLines = lines.slice(-3).join(' ')
         if (lastLines.includes('❯') && lastLines.includes('⏵')) {
-          console.log(`[tmux-bridge] プロンプト検出: ${tmuxTarget} (${Date.now() - startTime}ms)`)
+          console.log(`[tmux-bridge] Prompt detected: ${tmuxTarget} (${Date.now() - startTime}ms)`)
           return true
         }
       } catch {
-        // capture-pane 失敗は無視して続行
+        // Ignore capture-pane failures and continue
       }
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
     }
@@ -254,7 +254,7 @@ export class TmuxBridge {
   }
 
   /**
-   * load-buffer → paste-buffer → Enter で安全にメッセージを送信
+   * Safely send a message via load-buffer -> paste-buffer -> Enter.
    */
   private sendViaBuffer(tmuxTarget: string, message: string): void {
     const tmpFile = join(tmpdir(), `kovitoboard-tmux-${randomUUID()}.txt`)
@@ -268,10 +268,10 @@ export class TmuxBridge {
         .trim()
 
       if (!sanitized) {
-        throw new Error('サニタイズ後のメッセージが空です')
+        throw new Error('Message is empty after sanitization')
       }
 
-      console.log(`[tmux-bridge] 送信準備: ${sanitized.length}文字`)
+      console.log(`[tmux-bridge] Preparing to send: ${sanitized.length} chars`)
 
       this.fs.writeFileSync(tmpFile, sanitized, 'utf-8')
 
@@ -286,7 +286,7 @@ export class TmuxBridge {
   }
 
   /**
-   * KovitoBoard セッションを作成（存在しない場合）
+   * Create the KovitoBoard session if it does not exist.
    */
   ensureSession(): void {
     if (this.hasSession()) return
@@ -295,29 +295,29 @@ export class TmuxBridge {
     execFileSync('tmux', [
       'new-session', '-d', '-s', this.sessionName, '-n', 'main', '-c', projectRoot,
     ], { stdio: 'pipe' })
-    console.log(`[tmux-bridge] セッション "${this.sessionName}" を作成しました (cwd: ${projectRoot})`)
+    console.log(`[tmux-bridge] Session "${this.sessionName}" created (cwd: ${projectRoot})`)
   }
 
   /**
-   * エージェントを新しいウィンドウで起動
+   * Start an agent in a new window.
    *
-   * Phase 5 以降: 起動時の信頼確認プロンプト自動承認は撤去済み（仕様書 §3-3 / §5-3-3）。
-   * 初回フォルダ信頼プロンプトが表示された場合は、検知ループ (trust-prompt-detector) が
-   * 拾って UI に中継する。
+   * Phase 5+: Auto-approval of the trust prompt at startup has been removed (spec sections 3-3 / 5-3-3).
+   * If an initial folder trust prompt appears, it is picked up by the detection loop
+   * (trust-prompt-detector) and relayed to the UI.
    */
   async startAgent(agentId: string, windowName?: string, cwd?: string): Promise<TmuxSendResult> {
     if (!isValidTmuxName(agentId)) {
-      return { success: false, error: `無効なエージェントID: "${agentId}"` }
+      return { success: false, error: `Invalid agent ID: "${agentId}"` }
     }
     const name = windowName || agentId
     if (windowName && !isValidTmuxName(windowName)) {
-      return { success: false, error: `無効なウィンドウ名: "${windowName}"` }
+      return { success: false, error: `Invalid window name: "${windowName}"` }
     }
     const workDir = cwd || resolveProjectRoot(this.fs)
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === name)) {
-      return { success: false, error: `ウィンドウ "${name}" は既に存在します` }
+      return { success: false, error: `Window "${name}" already exists` }
     }
 
     this.ensureSession()
@@ -327,21 +327,21 @@ export class TmuxBridge {
         'new-window', '-t', this.sessionName, '-n', name, '-c', workDir,
         'claude', '--agent', agentId,
       ], { stdio: 'pipe' })
-      console.log(`[tmux-bridge] エージェント起動: ${name} (${agentId}) in ${workDir}`)
+      console.log(`[tmux-bridge] Agent started: ${name} (${agentId}) in ${workDir}`)
 
       return { success: true }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      console.error(`[tmux-bridge] エージェント起動エラー:`, errorMsg)
+      console.error(`[tmux-bridge] Agent start error:`, errorMsg)
       return { success: false, error: errorMsg }
     }
   }
 
   /**
-   * ウィンドウの現在のペイン内容を取得
+   * Get the current pane content of a window.
    *
-   * Phase 5 の検知ループから呼ばれる（capture-pane -p -S -<lines> -E -）。
-   * デバッグ用にも使える。
+   * Called from the Phase 5 detection loop (capture-pane -p -S -<lines> -E -).
+   * Also useful for debugging.
    */
   capturePane(windowName: string, lines?: number): string | null {
     if (!isValidTmuxName(windowName)) return null
@@ -357,20 +357,20 @@ export class TmuxBridge {
   }
 
   /**
-   * trust-prompt-detector からユーザー応答を受け取って tmux に send-keys する
+   * Receive a user response from trust-prompt-detector and send-keys to tmux.
    *
-   * @param windowName 対象ウィンドウ名
-   * @param keys 送信するキー列（末尾 `\n` は `Enter` キーに変換する）
-   * @param literal `true` の場合 `send-keys -l`（literal モード）で送信する（fallback UX 用）
-   * @returns 送信成功可否
+   * @param windowName Target window name
+   * @param keys Key sequence to send (trailing `\n` is converted to `Enter` key)
+   * @param literal If `true`, send via `send-keys -l` (literal mode, for fallback UX)
+   * @returns Whether the send was successful
    */
   sendTrustPromptKeys(windowName: string, keys: string, literal = false): boolean {
     if (!isValidTmuxName(windowName)) {
-      console.warn(`[tmux-bridge] 無効なウィンドウ名: "${windowName}"`)
+      console.warn(`[tmux-bridge] Invalid window name: "${windowName}"`)
       return false
     }
     if (!this.hasSession()) {
-      console.warn(`[tmux-bridge] tmux セッション "${this.sessionName}" が存在しません`)
+      console.warn(`[tmux-bridge] tmux session "${this.sessionName}" does not exist`)
       return false
     }
 
@@ -381,27 +381,28 @@ export class TmuxBridge {
       if (literal) {
         args.push('-l', '--', keys)
       } else {
-        // 末尾 `\n` は Enter キーに変換
+        // Convert trailing `\n` to Enter key
         const parts = parseKeysForSendKeys(keys)
         args.push('--', ...parts)
       }
       execFileSync('tmux', args, { stdio: 'pipe' })
-      console.log(`[tmux-bridge] trust-prompt 応答送信: ${tmuxTarget} keys=${JSON.stringify(keys)} literal=${literal}`)
+      console.log(`[tmux-bridge] trust-prompt response sent: ${tmuxTarget} keys=${JSON.stringify(keys)} literal=${literal}`)
       return true
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      console.error(`[tmux-bridge] trust-prompt 応答送信エラー: ${tmuxTarget}`, errorMsg)
+      console.error(`[tmux-bridge] trust-prompt response send error: ${tmuxTarget}`, errorMsg)
       return false
     }
   }
 }
 
 /**
- * `"1\n"` → `["1", "Enter"]` / `"Enter"` → `["Enter"]` の変換
+ * Convert `"1\n"` -> `["1", "Enter"]` / `"Enter"` -> `["Enter"]`
  *
- * tmux `send-keys` はキー名（`Enter`, `Escape` 等）と通常文字を複数引数で
- * 受け取る。仕様書 §5-1 の `choices[].keys` は `"2\n"` 形式だが、
- * 生 `\n` を送るとエスケープ解釈が面倒なため、末尾 `\n` は `Enter` に変換する。
+ * tmux `send-keys` accepts key names (`Enter`, `Escape`, etc.) and regular characters
+ * as multiple arguments. The spec section 5-1 `choices[].keys` uses `"2\n"` format,
+ * but since sending raw `\n` complicates escape interpretation, trailing `\n` is
+ * converted to `Enter`.
  */
 export function parseKeysForSendKeys(keys: string): string[] {
   if (keys.length === 0) return []
