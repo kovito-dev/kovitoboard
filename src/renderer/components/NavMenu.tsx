@@ -135,6 +135,11 @@ export const Icons = {
   ),
 } as const
 
+/** Look up an icon by string key, with fallback to 'folder' */
+export function getIcon(key: string): ReactNode {
+  return (Icons as Record<string, ReactNode>)[key] ?? Icons.folder
+}
+
 // --- コンポーネント ---
 
 interface NavMenuProps {

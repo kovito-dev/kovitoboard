@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useIPC } from './hooks/useIPC'
 import { useTheme } from './hooks/useTheme'
 import { TitleBar, type AgentStatus } from './components/TitleBar'
 import { Layout } from './components/Layout'
-import { NavMenu, Icons, type MenuEntry } from './components/NavMenu'
+import { NavMenu, Icons, getIcon, type MenuEntry } from './components/NavMenu'
 import { SessionList } from './components/SessionList'
 import { SettingsModal } from './components/SettingsModal'
 import { TrustPromptModal } from './components/TrustPromptModal'
@@ -12,6 +12,8 @@ import { AgentsPage } from './pages/AgentsPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
+import { loadUserMenuEntries, loadUserStyles } from './app-loader'
+import type { AppMenuEntry } from './types/app-types'
 
 // --- Menu definition ---
 const menuEntries: MenuEntry[] = [
@@ -39,8 +41,42 @@ export function App() {
   const navigate = useNavigate()
   const location = useLocation()
 
+  // User extension menu entries from app/menu.ts
+  const [userMenuEntries, setUserMenuEntries] = useState<AppMenuEntry[]>([])
+
+  useEffect(() => {
+    loadUserMenuEntries().then(setUserMenuEntries)
+    loadUserStyles()
+  }, [])
+
+  // Merge builtin + user menu entries for NavMenu
+  const allMenuEntries: MenuEntry[] = useMemo(() => {
+    const userEntries: MenuEntry[] = userMenuEntries.map((entry) => ({
+      id: `ext/${entry.id}`,
+      label: entry.label,
+      icon: getIcon(entry.icon),
+    }))
+    return [...menuEntries, ...userEntries]
+  }, [userMenuEntries])
+
+  // Lazy components for user pages
+  const userPageComponents = useMemo(() => {
+    const map = new Map<string, React.LazyExoticComponent<React.ComponentType>>()
+    for (const entry of userMenuEntries) {
+      map.set(entry.id, lazy(entry.component))
+    }
+    return map
+  }, [userMenuEntries])
+
   // Active menu determined by URL path
-  const activeMenuId = location.pathname.startsWith('/sessions') ? 'sessions' : 'agents'
+  const activeMenuId = useMemo(() => {
+    if (location.pathname.startsWith('/sessions')) return 'sessions'
+    if (location.pathname.startsWith('/ext/')) {
+      const parts = location.pathname.split('/')
+      return `ext/${parts[2] ?? ''}`
+    }
+    return 'agents'
+  }, [location.pathname])
 
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -132,7 +168,7 @@ export function App() {
         <Layout
           nav={
             <NavMenu
-              entries={menuEntries}
+              entries={allMenuEntries}
               activeId={activeMenuId}
               onSelect={(id) => navigate(`/${id}`)}
             />
@@ -187,13 +223,33 @@ export function App() {
                 theme={theme}
               />
             } />
+            {/* User extension pages */}
+            {userMenuEntries.map((entry) => {
+              const LazyPage = userPageComponents.get(entry.id)
+              if (!LazyPage) return null
+              return (
+                <Route
+                  key={`ext-${entry.id}`}
+                  path={`/ext/${entry.id}`}
+                  element={
+                    <Suspense fallback={
+                      <div className="flex-1 flex items-center justify-center text-[var(--text-dim)] text-sm">
+                        読み込み中...
+                      </div>
+                    }>
+                      <LazyPage />
+                    </Suspense>
+                  }
+                />
+              )
+            })}
             <Route path="*" element={<Navigate to="/agents" replace />} />
           </Routes>
         </Layout>
 
         {/* Mobile bottom nav */}
         <div className="md:hidden shrink-0 bg-[var(--bg-nav)] border-t border-[var(--border)] flex items-center justify-around py-1.5 px-2">
-          {menuEntries.map((entry) => {
+          {allMenuEntries.map((entry) => {
             const isActive = activeMenuId === entry.id
             return (
               <button

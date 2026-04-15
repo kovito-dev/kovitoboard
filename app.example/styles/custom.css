@@ -1,0 +1,14 @@
+/**
+ * Example custom styles.
+ *
+ * All CSS files in app/styles/ are auto-loaded after core styles.
+ * You can override CSS variables to customize the theme.
+ */
+
+/* Example: override accent color
+:root {
+  --accent-bg: rgba(16, 185, 129, 0.12);
+  --accent-text: #10b981;
+  --accent-border: #059669;
+}
+*/

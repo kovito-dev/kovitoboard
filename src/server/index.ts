@@ -20,6 +20,7 @@ import { readBasicSettings, readSkills, readAutomations, readIntegrations, readR
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
+import { mountAppApiRoutes } from './app-api-loader'
 import type {
   ServerToClientEvent,
   ClientToServerEvent,
@@ -598,6 +599,9 @@ app.get('/api/artifact/raw', (req, res) => {
   }
   res.sendFile(resolved)
 })
+
+// Mount user-defined API routes from app/api/
+await mountAppApiRoutes(app, fs)
 
 // Production: serve built static files
 app.use(express.static(join(__dirname, '../../dist')))

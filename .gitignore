@@ -9,3 +9,4 @@ projects/*/
 !projects/.gitkeep
 .DS_Store
 .playwright-mcp/
+app/
