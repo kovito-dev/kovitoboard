@@ -49,6 +49,9 @@ case "$key" in
     echo ""
     echo "  User rejected the request."
     echo ""
+    # Give the detector time to observe the capture change before exit
+    # so the UI receives trust_prompt_resolved and dismisses the modal.
+    sleep 1
     exit 1
     ;;
   *)

@@ -18,10 +18,13 @@ source "$SCRIPT_DIR/../lib/render-fixture.sh"
 render_fixture "folder-trust-initial.txt"
 
 # State 2: wait for key input (30-second timeout)
+# In raw mode, pressing Enter yields an empty string (bash read behaviour).
+# The KB detector sends "Enter" for the Yes choice on folder-trust prompts,
+# so we accept both "1" and empty (Enter) as Yes.
 read -rsn1 -t 30 key || exit 124
 
 case "$key" in
-  "1")
+  "1"|"")
     # Yes: trust accepted, proceed to ready state
     printf '\033[3J\033[H\033[2J'
     echo ""
@@ -38,6 +41,7 @@ case "$key" in
     echo ""
     echo "  Folder not trusted. Exiting."
     echo ""
+    sleep 1
     exit 1
     ;;
   *)

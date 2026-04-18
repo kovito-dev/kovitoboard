@@ -48,6 +48,7 @@ case "$key" in
     echo ""
     echo "  User rejected the Bash command."
     echo ""
+    sleep 1
     exit 1
     ;;
   *)

@@ -30,6 +30,8 @@ case "$key" in
     echo ""
     echo "  User rejected the request."
     echo ""
+    # Give the detector time to broadcast trust_prompt_resolved before exit
+    sleep 1
     exit 1
     ;;
   *)

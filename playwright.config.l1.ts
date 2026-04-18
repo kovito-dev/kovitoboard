@@ -80,6 +80,7 @@ export default defineConfig({
         onboardingState: 'completed',
         port: 3001,
         vitePort: 5174,
+        sessionName: 'kb-e2e-shared-default',
       },
       // Exclude tests tagged for other projects
       grepInvert: /@rich-project|@preonboarding/,
@@ -94,6 +95,7 @@ export default defineConfig({
         onboardingState: 'preonboarding',
         port: 3002,
         vitePort: 5175,
+        sessionName: 'kb-e2e-shared-preonboarding',
       },
       grep: /@preonboarding/,
     },
@@ -107,6 +109,7 @@ export default defineConfig({
         onboardingState: 'completed',
         port: 3003,
         vitePort: 5176,
+        sessionName: 'kb-e2e-shared-rich',
       },
       grep: /@rich-project/,
     },
@@ -121,7 +124,7 @@ export default defineConfig({
       env: {
         PORT: '3001',
         VITE_PORT: '5174',
-        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared',
+        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-default',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_DEFAULT,
       },
     },
@@ -133,7 +136,7 @@ export default defineConfig({
       env: {
         PORT: '3002',
         VITE_PORT: '5175',
-        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared',
+        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-preonboarding',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_PREONBOARDING,
       },
     },
@@ -145,7 +148,7 @@ export default defineConfig({
       env: {
         PORT: '3003',
         VITE_PORT: '5176',
-        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared',
+        KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-rich',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_RICH,
       },
     },
