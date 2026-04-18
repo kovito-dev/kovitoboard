@@ -24,6 +24,7 @@ import {
   validatePathForScope,
   validateScopeOnly,
 } from './scopeValidator.js'
+import { writeAuditLog, createAuditEntry } from './auditLogger.js'
 
 // =========================================
 // Dispatch request / response
@@ -263,16 +264,49 @@ export async function dispatch(
     return handlerError('RateLimited', `Rate limit exceeded for "${callId}"`)
   }
 
-  // 8. handler 実行
+  // 8. handler 実行 + 監査ログ
+  const startTime = Date.now()
   try {
     const result = await handlerDef.execute(expandedArgs, {
       projectRoot,
       recipeId,
       approvedScopes,
     })
+    const durationMs = Date.now() - startTime
+
+    // 監査ログ（成功 / handler 内エラー）
+    writeAuditLog(
+      createAuditEntry({
+        recipeId,
+        callId,
+        handler: handlerName,
+        args: expandedArgs,
+        result: result.ok ? 'ok' : 'error',
+        errorCode: result.ok ? undefined : result.error.code as HandlerErrorCode,
+        durationMs,
+      }),
+      projectRoot,
+    )
+
     return result
   } catch (err) {
+    const durationMs = Date.now() - startTime
     console.error(`[dispatcher] Handler "${handlerName}" threw:`, err)
+
+    // 監査ログ（例外）
+    writeAuditLog(
+      createAuditEntry({
+        recipeId,
+        callId,
+        handler: handlerName,
+        args: expandedArgs,
+        result: 'error',
+        errorCode: 'Internal',
+        durationMs,
+      }),
+      projectRoot,
+    )
+
     return handlerError('Internal', `Handler execution failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
