@@ -182,10 +182,11 @@ function TemplateSelector({ templates, isLoading, error, onSelect }: TemplateSel
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div data-testid="agent-template-selector" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {templates.map((template) => (
         <button
           key={template.id}
+          data-testid={`agent-template-${template.id}`}
           onClick={() => onSelect(template)}
           className="text-left bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 hover:bg-[var(--bg-hover)] hover:border-[var(--accent-border)] transition-all duration-200 group"
         >
@@ -262,6 +263,7 @@ function ConfigureStep({
           </label>
           <input
             type="text"
+            data-testid="agent-id-input"
             value={agentId}
             onChange={(e) => onAgentIdChange(e.target.value)}
             placeholder="my-agent"
@@ -282,6 +284,7 @@ function ConfigureStep({
           </label>
           <input
             type="text"
+            data-testid="agent-display-name-input"
             value={displayName}
             onChange={(e) => onDisplayNameChange(e.target.value)}
             placeholder={template.name}
@@ -303,6 +306,7 @@ function ConfigureStep({
       {/* Create button */}
       <div className="mt-6 flex items-center gap-3">
         <button
+          data-testid="agent-create-button"
           onClick={onCreate}
           disabled={!idValidation.valid || isCreating}
           className={`
