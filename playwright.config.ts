@@ -13,5 +13,10 @@ export default defineConfig({
     url: 'http://127.0.0.1:3001/api/config',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
+    env: {
+      // Fake Claude E2E テスト用: tmux-bridge が参照するセッション名を固定
+      // @see docs/design/fake-claude-design.md §5-3 方式 A
+      KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared',
+    },
   },
 })

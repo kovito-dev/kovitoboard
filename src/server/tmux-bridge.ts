@@ -64,10 +64,15 @@ export class TmuxBridge {
    *
    * Derived from resolveProjectRoot(fs) on first access.
    * Not evaluated at module load time to avoid fs dependency ordering issues.
+   *
+   * E2E テスト時: KOVITOBOARD_E2E_TMUX_SESSION 環境変数が設定されていれば
+   * そのセッション名を使用する。本番モードでは noop（env 未設定時は現行動作）。
+   * @see docs/design/fake-claude-design.md §5-3 方式 A
    */
   get sessionName(): string {
     if (!this._sessionName) {
-      this._sessionName = resolveTmuxSessionName(this.fs)
+      const e2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+      this._sessionName = e2eSession || resolveTmuxSessionName(this.fs)
     }
     return this._sessionName
   }

@@ -157,6 +157,7 @@ export function TrustPromptModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="trust-prompt-modal-title"
+        data-testid="trust-prompt-modal"
       >
         {/* ヘッダー */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
@@ -167,7 +168,7 @@ export function TrustPromptModal({
             <span className="text-2xl leading-none" aria-hidden>
               ❓
             </span>
-            <span>未知の入力待ち</span>
+            <span data-testid="trust-prompt-kind-label">未知の入力待ち</span>
           </h2>
           <CloseButton onClick={onDismiss} />
         </div>
@@ -312,6 +313,7 @@ function DetectedModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="trust-prompt-modal-title"
+        data-testid="trust-prompt-modal"
       >
         {/* ヘッダー */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
@@ -322,7 +324,7 @@ function DetectedModal({
             <span className="text-2xl leading-none" aria-hidden>
               {kindIcon}
             </span>
-            <span>信頼確認: {kindLabel}</span>
+            <span data-testid="trust-prompt-kind-label">信頼確認: {kindLabel}</span>
           </h2>
           <CloseButton onClick={onDismiss} />
         </div>
@@ -364,7 +366,10 @@ function DetectedModal({
                     <dt className="w-28 shrink-0 text-[var(--text-dim)] font-mono text-xs pt-0.5">
                       {key}
                     </dt>
-                    <dd className="flex-1 min-w-0 text-[var(--text-tertiary)] font-mono text-xs break-all">
+                    <dd
+                      className="flex-1 min-w-0 text-[var(--text-tertiary)] font-mono text-xs break-all"
+                      data-testid={key === 'path' ? 'trust-prompt-target-file' : undefined}
+                    >
                       {value}
                     </dd>
                   </div>
@@ -394,6 +399,7 @@ function DetectedModal({
               return (
                 <button
                   key={choice.id}
+                  data-testid={`trust-prompt-choice-${choice.id}`}
                   onClick={() => onChoice(choice.id)}
                   className={
                     isPrimary
