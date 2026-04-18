@@ -1,8 +1,8 @@
 /**
- * Recipe API section type definitions (宣言的 handler モデル).
+ * Recipe API section type definitions (declarative handler model).
  *
- * recipe.yaml の api: セクション、インストール manifest、
- * dispatcher で使う呼び出し宣言の型を定義する。
+ * Defines types for the recipe.yaml api: section, install manifest,
+ * and call declarations used by the dispatcher.
  *
  * @see recipe-system.md §12-4 (install approval)
  * @see recipe-system.md §12-5 (dispatcher flow)
@@ -17,8 +17,8 @@ import { HANDLER_REQUIRED_SCOPES } from '../handlers/types.js'
 // =========================================
 
 /**
- * recipe.yaml api.calls[] の 1 エントリ.
- * FE からは callId で呼び出し、dispatcher が handler にルーティングする。
+ * A single entry in recipe.yaml api.calls[].
+ * The frontend invokes it via callId, and the dispatcher routes it to the handler.
  *
  * @example
  * ```yaml
@@ -37,19 +37,19 @@ import { HANDLER_REQUIRED_SCOPES } from '../handlers/types.js'
  * @see recipe-system.md §12-5-1
  */
 export interface HandlerCallDeclaration {
-  /** 一意な呼び出し ID（FE: window.kb.call(id, input)） */
+  /** Unique call ID (FE: window.kb.call(id, input)) */
   id: string
-  /** 呼び出す handler 名 */
+  /** Handler name to invoke */
   handler: CategoryAHandlerName
   /**
-   * 静的 / テンプレート引数.
-   * `${input.xxx}` は実行時に FE から渡された input で解決される。
+   * Static or template arguments.
+   * `${input.xxx}` placeholders are resolved at runtime with the input provided by the frontend.
    */
   args?: Record<string, unknown>
 }
 
 /**
- * recipe.yaml の api: セクション全体.
+ * The complete api: section of recipe.yaml.
  *
  * @example
  * ```yaml
@@ -67,9 +67,9 @@ export interface HandlerCallDeclaration {
  * @see recipe-system.md §12-2, §12-3
  */
 export interface ApiSection {
-  /** このレシピが要求する scope */
+  /** Scopes required by this recipe */
   scopes: Scope[]
-  /** handler 呼び出し宣言 */
+  /** Handler call declarations */
   calls: HandlerCallDeclaration[]
 }
 
@@ -78,23 +78,23 @@ export interface ApiSection {
 // =========================================
 
 /**
- * インストール済みレシピの manifest.
- * 保存先: .kovitoboard/recipes-installed/{recipe-id}/manifest.json
+ * Manifest for an installed recipe.
+ * Stored at: .kovitoboard/recipes-installed/{recipe-id}/manifest.json
  *
  * @see recipe-system.md §12-5-1
  */
 export interface RecipeManifest {
-  /** レシピ ID */
+  /** Recipe ID */
   recipeId: string
-  /** レシピバージョン */
+  /** Recipe version */
   version: string
-  /** レシピコンテンツの SHA-256 ハッシュ */
+  /** SHA-256 hash of the recipe content */
   hash: string
-  /** インストール日時（ISO 8601） */
+  /** Installation timestamp (ISO 8601) */
   installedAt: string
-  /** ユーザーが承認した scope（api.scopes と同一、v0.1.0 は一括承認のため） */
+  /** User-approved scopes (identical to api.scopes; v0.1.0 uses bulk approval) */
   approvedScopes: Scope[]
-  /** レシピの API 宣言（recipe.yaml から転記） */
+  /** Recipe API declarations (transcribed from recipe.yaml) */
   api: ApiSection
 }
 
@@ -103,30 +103,30 @@ export interface RecipeManifest {
 // =========================================
 
 /**
- * FE → BE への handler 呼び出しリクエスト.
- * WebSocket の kb-call メッセージペイロードとして送信される。
+ * Handler call request from frontend to backend.
+ * Sent as the payload of a kb-call WebSocket message.
  * @see recipe-system.md §12-5-2
  */
 export interface KbCallRequest {
-  /** リクエスト ID（FE が採番、レスポンスとの照合に使用） */
+  /** Request ID (assigned by frontend, used to correlate with response) */
   requestId: string
-  /** レシピ ID */
+  /** Recipe ID */
   recipeId: string
-  /** 呼び出し ID（api.calls[].id） */
+  /** Call ID (api.calls[].id) */
   callId: string
-  /** FE から渡される入力値 */
+  /** Input values passed from the frontend */
   input: Record<string, unknown>
 }
 
 /**
- * BE → FE への handler 呼び出しレスポンス.
- * WebSocket の kb-call-response メッセージペイロードとして返却される。
+ * Handler call response from backend to frontend.
+ * Returned as the payload of a kb-call-response WebSocket message.
  * @see recipe-system.md §12-5-2
  */
 export interface KbCallResponse {
-  /** リクエスト ID（KbCallRequest.requestId と一致） */
+  /** Request ID (matches KbCallRequest.requestId) */
   requestId: string
-  /** handler の実行結果 */
+  /** Handler execution result */
   result: { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } }
 }
 
@@ -134,7 +134,7 @@ export interface KbCallResponse {
 // Validation helpers
 // =========================================
 
-/** 有効な scope 名かを判定するタイプガード */
+/** Type guard to check whether a value is a valid scope name */
 const VALID_SCOPES = new Set<string>([
   'project-read',
   'project-write',
@@ -149,7 +149,7 @@ export function isValidScope(value: unknown): value is Scope {
   return typeof value === 'string' && VALID_SCOPES.has(value)
 }
 
-/** 有効な Category A handler 名かを判定するタイプガード */
+/** Type guard to check whether a value is a valid Category A handler name */
 const VALID_HANDLER_NAMES = new Set<string>([
   'list-files',
   'read-file',
@@ -167,15 +167,15 @@ export function isValidHandlerName(value: unknown): value is CategoryAHandlerNam
 }
 
 /**
- * recipe.yaml の api: セクションをバリデーションする.
- * パース後のオブジェクトが ApiSection の形を満たすか検証する。
+ * Validate the api: section of recipe.yaml.
+ * Verifies that a parsed object conforms to the ApiSection shape.
  *
  * @returns null if valid, error message string if invalid
  * @see recipe-system.md §12-4-1 (block conditions)
  */
 export function validateApiSection(raw: unknown): string | null {
   if (raw === null || raw === undefined) {
-    return null // api: 未指定は許可（handler なしレシピ）
+    return null // api: not specified is allowed (recipe without handlers)
   }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     return 'api: must be an object'
@@ -225,12 +225,12 @@ export function validateApiSection(raw: unknown): string | null {
       return `api.calls[${i}].args must be an object if specified`
     }
 
-    // Static integrity check: handler の required scope が declared scopes に含まれているか
-    // §12-4-1: handler が必要とする scope が api.scopes に宣言されていない場合ブロック
+    // Static integrity check: verify handler's required scopes are included in declared scopes
+    // §12-4-1: block if handler's required scope is not declared in api.scopes
     const handlerName = call.handler as CategoryAHandlerName
     const requiredScopes = HANDLER_REQUIRED_SCOPES[handlerName]
 
-    // scope 不要な handler（notify, export-file）はスキップ
+    // Skip handlers that require no scopes (notify, export-file)
     if (requiredScopes.length > 0) {
       const hasMatchingScope = requiredScopes.some((s: Scope) => declaredScopes.has(s))
       if (!hasMatchingScope) {
@@ -243,8 +243,8 @@ export function validateApiSection(raw: unknown): string | null {
 }
 
 /**
- * バリデーション済み raw オブジェクトを ApiSection 型にキャストする.
- * validateApiSection() が null を返した場合のみ使用すること。
+ * Cast a validated raw object to the ApiSection type.
+ * Only use after validateApiSection() has returned null.
  */
 export function parseApiSection(raw: Record<string, unknown>): ApiSection {
   return {

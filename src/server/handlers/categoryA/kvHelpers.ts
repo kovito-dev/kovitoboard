@@ -1,11 +1,12 @@
 /**
- * KV ストアの共通ヘルパー関数.
+ * Common helper functions for the KV store.
  *
- * kv-get / kv-set / kv-list / kv-delete が共有する
- * ストアファイルの読み書きロジックを集約する。
+ * Consolidates store file read/write logic shared by
+ * kv-get / kv-set / kv-list / kv-delete handlers.
  *
- * ストアは app/data/{recipeId}/_kv.json に単一 JSON ファイルとして保存する。
- * v0.1.0 は低頻度想定のため、操作ごとにファイルを読み書きする（インメモリキャッシュなし）。
+ * The store is persisted as a single JSON file at app/data/{recipeId}/_kv.json.
+ * In v0.1.0, assuming low frequency access, the file is read/written on each
+ * operation (no in-memory cache).
  *
  * @see recipe-system.md §12-2-1 kv-*
  * @stable v0.1.0
@@ -16,21 +17,21 @@ import * as path from 'path'
 import type { HandlerContext } from '../types.js'
 
 /**
- * KV ストア内の 1 エントリの形式.
+ * Shape of a single entry in the KV store.
  */
 export interface KvEntry {
   value: string
-  /** ISO 8601 形式。省略時は無期限 */
+  /** ISO 8601 format. Omitted means no expiration */
   expiresAt?: string
 }
 
 /**
- * KV ストアの内部形式（JSON ファイルの構造）.
+ * Internal representation of the KV store (JSON file structure).
  */
 export type KvStore = Record<string, KvEntry>
 
 /**
- * KV ストアファイルのパスを返す.
+ * Returns the file path for the KV store.
  */
 export function getKvStorePath(context: HandlerContext): string {
   return path.join(
@@ -43,8 +44,8 @@ export function getKvStorePath(context: HandlerContext): string {
 }
 
 /**
- * KV ストアを読み込む.
- * ファイルが存在しない場合は空のストアを返す。
+ * Reads the KV store from disk.
+ * Returns an empty store if the file does not exist.
  */
 export function readKvStore(storePath: string): KvStore {
   try {
@@ -60,8 +61,8 @@ export function readKvStore(storePath: string): KvStore {
 }
 
 /**
- * KV ストアを書き出す.
- * 親ディレクトリが存在しない場合は自動作成する。
+ * Writes the KV store to disk.
+ * Automatically creates parent directories if they do not exist.
  */
 export function writeKvStore(storePath: string, store: KvStore): void {
   const dir = path.dirname(storePath)
@@ -70,8 +71,8 @@ export function writeKvStore(storePath: string, store: KvStore): void {
 }
 
 /**
- * エントリの TTL が期限切れかを判定する.
- * expiresAt が未設定の場合は期限切れでない（無期限）。
+ * Checks whether an entry's TTL has expired.
+ * Returns false if expiresAt is not set (no expiration).
  */
 export function isExpired(entry: KvEntry): boolean {
   if (!entry.expiresAt) return false
@@ -79,8 +80,8 @@ export function isExpired(entry: KvEntry): boolean {
 }
 
 /**
- * 期限切れエントリを除去したストアを返す（ガベージコレクション）.
- * 読み取り時に呼び出し、期限切れエントリを遅延削除する。
+ * Returns a store with expired entries removed (garbage collection).
+ * Called on read to lazily purge expired entries.
  */
 export function purgeExpired(store: KvStore): KvStore {
   const cleaned: KvStore = {}

@@ -182,7 +182,7 @@ function parseAgentDefinition(
   }
 
   // Extract origin from persona section
-  // Pattern: "- **名前:** Name（EnglishName / Origin）"
+  // Pattern: "- **Name:** Name (EnglishName / Origin)" (Japanese frontmatter key)
   const originMatch = content.match(/\*\*名前:\*\*\s*.+?[/／]\s*(.+?)\)/)
   if (originMatch) {
     origin = originMatch[1].trim()

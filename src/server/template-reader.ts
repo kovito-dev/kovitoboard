@@ -1,9 +1,9 @@
 /**
- * テンプレート一覧と内容の取得
+ * Retrieve template list and contents.
  *
- * templates/agents/*.md を走査してエージェントテンプレートの
- * サマリーおよび本文を返す。
- * FileAccessLayer を受け取る設計。frontmatter パースには gray-matter を使用。
+ * Scans templates/agents/*.md and returns agent template
+ * summaries and body content.
+ * Designed to receive a FileAccessLayer. Uses gray-matter for frontmatter parsing.
  */
 import { resolve, dirname, join, basename } from 'path'
 import { fileURLToPath } from 'node:url'
@@ -13,16 +13,16 @@ import type { FileAccessLayer } from './fs-layer'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-/** テンプレートサマリー */
+/** Template summary */
 export interface AgentTemplateSummary {
   id: string           // e.g. "kovito-concierge"
-  name: string         // frontmatter の name
-  description: string  // frontmatter の description
-  model: string        // frontmatter の model
+  name: string         // name from frontmatter
+  description: string  // description from frontmatter
+  model: string        // model from frontmatter
 }
 
 /**
- * テンプレートディレクトリのパスを解決する。
+ * Resolve the template directory path.
  * dev: src/server/ -> ../../templates/agents
  * build: dist/server/ -> ../templates/agents
  */
@@ -35,8 +35,8 @@ function getTemplatesDir(fs: FileAccessLayer): string {
 }
 
 /**
- * templates/agents/*.md を走査してテンプレート一覧を返す。
- * `.en.md` ファイルは除外する（ロケール別取得は getAgentTemplateContent で行う）。
+ * Scan templates/agents/*.md and return the template list.
+ * `.en.md` files are excluded (locale-specific retrieval is handled by getAgentTemplateContent).
  */
 export function listAgentTemplates(fs: FileAccessLayer): AgentTemplateSummary[] {
   const dir = getTemplatesDir(fs)
@@ -72,10 +72,10 @@ export function listAgentTemplates(fs: FileAccessLayer): AgentTemplateSummary[] 
 }
 
 /**
- * 指定テンプレートの内容を返す。
- * locale が 'en' の場合は `{id}.en.md` を優先し、無ければ `{id}.md` にフォールバック。
- * locale が 'ja' の場合は `{id}.md` を返す。
- * テンプレートが見つからない場合は null を返す。
+ * Return the content of the specified template.
+ * If locale is 'en', prefer `{id}.en.md` and fall back to `{id}.md`.
+ * If locale is 'ja', return `{id}.md`.
+ * Returns null if the template is not found.
  */
 export function getAgentTemplateContent(
   fs: FileAccessLayer,
@@ -85,22 +85,22 @@ export function getAgentTemplateContent(
   const dir = getTemplatesDir(fs)
   if (!fs.existsSync(dir)) return null
 
-  // ID のバリデーション（ディレクトリトラバーサル防止）
+  // ID validation (prevent directory traversal)
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) return null
 
   if (locale === 'en') {
-    // 英語版を優先
+    // Prefer English version
     const enPath = join(dir, `${id}.en.md`)
     if (fs.existsSync(enPath)) {
       try {
         return fs.readFileSync(enPath, 'utf-8')
       } catch {
-        // フォールバックへ
+        // Fall through to fallback
       }
     }
   }
 
-  // 日本語版（デフォルト）
+  // Japanese version (default)
   const jaPath = join(dir, `${id}.md`)
   if (!fs.existsSync(jaPath)) return null
 

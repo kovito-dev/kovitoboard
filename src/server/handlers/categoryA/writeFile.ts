@@ -1,9 +1,9 @@
 /**
- * write-file handler — ファイルへの書き込みを行う.
+ * write-file handler — Writes content to a file.
  *
- * encoding として utf-8 または base64 をサポートする。
- * createDirs: true で途中ディレクトリを自動作成する。
- * サイズ上限は 10MB。パス検証は dispatcher 側で完了済み。
+ * Supports utf-8 and base64 encodings.
+ * When createDirs is true, intermediate directories are created automatically.
+ * Maximum size is 10MB. Path validation is handled by the dispatcher.
  *
  * @see recipe-system.md §12-2-1 write-file
  * @stable v0.1.0
@@ -64,7 +64,7 @@ export const writeFileHandler: HandlerDef<WriteFileInput, WriteFileOutput> = {
     const encoding = input.encoding ?? 'utf-8'
     const createDirs = input.createDirs ?? false
 
-    // サイズチェック（content 文字列のバイト長）
+    // Size check (byte length of content string)
     const contentBytes = Buffer.byteLength(input.content, encoding === 'base64' ? 'base64' : 'utf-8')
     if (contentBytes > HANDLER_LIMITS.WRITE_FILE_MAX_SIZE) {
       return handlerError(
@@ -73,7 +73,7 @@ export const writeFileHandler: HandlerDef<WriteFileInput, WriteFileOutput> = {
       )
     }
 
-    // 途中ディレクトリの作成
+    // Create intermediate directories
     const dir = path.dirname(absPath)
     if (createDirs) {
       try {
@@ -82,7 +82,7 @@ export const writeFileHandler: HandlerDef<WriteFileInput, WriteFileOutput> = {
         return handlerError('Internal', `Failed to create directories: ${(err as Error).message}`)
       }
     } else {
-      // createDirs が false の場合、親ディレクトリの存在を確認
+      // When createDirs is false, verify parent directory exists
       if (!fs.existsSync(dir)) {
         return handlerError(
           'NotFound',
@@ -91,7 +91,7 @@ export const writeFileHandler: HandlerDef<WriteFileInput, WriteFileOutput> = {
       }
     }
 
-    // ファイル書き込み
+    // Write file
     try {
       if (encoding === 'base64') {
         const buffer = Buffer.from(input.content, 'base64')

@@ -216,14 +216,14 @@ function extractMenuEntries(menu: unknown): RecipeMenuEntry[] {
 /**
  * Extract and validate the api: section from YAML data (optional field).
  *
- * api: セクションが存在しない場合は undefined を返す。
- * 存在するが不正な場合は例外を投げる。
+ * Returns undefined if the api: section is not present.
+ * Throws an error if present but invalid.
  *
  * @see recipe-system.md §12-4-1 (block conditions)
  */
 function extractApiSection(apiData: unknown): RecipeApiSection | undefined {
   if (apiData === undefined || apiData === null) {
-    return undefined // api: 未指定は許可（handler なしレシピ）
+    return undefined // api: not specified is allowed (recipe without handlers)
   }
 
   const validationError = validateApiSection(apiData)

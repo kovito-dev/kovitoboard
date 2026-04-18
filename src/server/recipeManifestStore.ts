@@ -1,12 +1,12 @@
 /**
- * Recipe Manifest Store — インストール済みレシピの manifest.json 管理.
+ * Recipe Manifest Store — Manages manifest.json for installed recipes.
  *
- * .kovitoboard/recipes-installed/{recipe-id}/manifest.json を読み書きし、
- * インメモリキャッシュとして保持する。
+ * Reads and writes .kovitoboard/recipes-installed/{recipe-id}/manifest.json
+ * and maintains an in-memory cache.
  *
- * - 起動時に全 manifest をスキャン・ロード
- * - 明示的な save/delete でキャッシュを更新
- * - ファイル監視はしない（v0.1.0 は起動時スキャン + 明示的更新のみ）
+ * - Scans and loads all manifests at startup
+ * - Updates cache on explicit save/delete
+ * - No file watching (v0.1.0 uses startup scan + explicit updates only)
  *
  * @see recipe-system.md §12-5-1 (manifest.json)
  * @stable v0.1.0
@@ -26,8 +26,8 @@ export class RecipeManifestStore {
   private readonly baseDir: string
 
   /**
-   * @param kovitoboardDir - .kovitoboard/ ディレクトリの絶対パス
-   * @param fs - ファイルアクセスレイヤ
+   * @param kovitoboardDir - Absolute path to the .kovitoboard/ directory
+   * @param fs - File access layer
    */
   constructor(
     kovitoboardDir: string,
@@ -37,14 +37,14 @@ export class RecipeManifestStore {
   }
 
   /**
-   * 起動時に全 manifest をスキャンしてキャッシュにロードする.
-   * 不正な manifest は警告ログ出力後スキップ。
+   * Scan and load all manifests into the cache at startup.
+   * Invalid manifests are logged as warnings and skipped.
    */
   loadAll(): void {
     this.cache.clear()
 
     if (!this.fs.existsSync(this.baseDir)) {
-      return // ディレクトリ未作成 = インストール済みレシピなし
+      return // Directory not created = no installed recipes
     }
 
     const entries = this.fs.readdirSync(this.baseDir)
@@ -73,7 +73,7 @@ export class RecipeManifestStore {
   }
 
   /**
-   * manifest を保存し、キャッシュを更新する.
+   * Save a manifest and update the cache.
    */
   save(manifest: RecipeManifest): void {
     const dir = join(this.baseDir, manifest.recipeId)
@@ -87,21 +87,21 @@ export class RecipeManifestStore {
   }
 
   /**
-   * 指定 recipeId の manifest を取得する.
+   * Get the manifest for the specified recipeId.
    */
   get(recipeId: string): RecipeManifest | null {
     return this.cache.get(recipeId) ?? null
   }
 
   /**
-   * 全 manifest を一覧で返す.
+   * Return all manifests as a list.
    */
   list(): RecipeManifest[] {
     return [...this.cache.values()]
   }
 
   /**
-   * manifest を削除する（アンインストール用）.
+   * Delete a manifest (for uninstall).
    */
   delete(recipeId: string): void {
     const dir = join(this.baseDir, recipeId)
@@ -113,7 +113,7 @@ export class RecipeManifestStore {
   }
 
   /**
-   * 指定 recipeId がインストール済みかを返す.
+   * Check whether the specified recipeId is installed.
    */
   has(recipeId: string): boolean {
     return this.cache.has(recipeId)
@@ -125,7 +125,7 @@ export class RecipeManifestStore {
 // =========================================
 
 /**
- * manifest.json のバリデーション.
+ * Validate a manifest.json object.
  * @returns null if valid, error message string if invalid
  */
 function validateManifest(raw: unknown): string | null {

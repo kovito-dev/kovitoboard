@@ -1,9 +1,9 @@
 /**
- * kv-list handler — KV ストアのキー一覧を返す.
+ * kv-list handler — Returns a list of keys in the KV store.
  *
- * prefix フィルタと limit をサポートする。
- * limit のデフォルトは 100、最大 1000。
- * 期限切れエントリは結果から除外する。
+ * Supports prefix filtering and limit.
+ * Default limit is 100, maximum 1000.
+ * Expired entries are excluded from results.
  *
  * @see recipe-system.md §12-2-1 kv-list
  * @stable v0.1.0
@@ -62,13 +62,13 @@ export const kvListHandler: HandlerDef<KvListInput, KvListOutput> = {
       const rawStore = readKvStore(storePath)
       const store = purgeExpired(rawStore)
 
-      // prefix フィルタ
+      // Prefix filter
       let keys = Object.keys(store)
       if (prefix.length > 0) {
         keys = keys.filter((key) => key.startsWith(prefix))
       }
 
-      // ソート（一貫した結果のため）
+      // Sort for consistent results
       keys.sort()
 
       // limit + hasMore

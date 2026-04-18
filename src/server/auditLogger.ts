@@ -1,8 +1,8 @@
 /**
- * Audit Logger — handler 呼び出しの監査ログ記録.
+ * Audit Logger — records audit logs for handler invocations.
  *
- * app/data/{recipe-id}/_audit.log に JSONL 形式で追記する。
- * 引数は SHA-256 ハッシュのみ記録（生の引数はログしない）。
+ * Appends entries in JSONL format to app/data/{recipe-id}/_audit.log.
+ * Only SHA-256 hashes of arguments are recorded (raw arguments are never logged).
  *
  * @see recipe-system.md §12-6
  * @see recipe-backend-implementation-plan.md Phase F
@@ -27,10 +27,10 @@ import { AUDIT_LOG_LIMITS } from './handlers/types.js'
 // =========================================
 
 /**
- * 監査ログエントリを記録する.
+ * Write an audit log entry.
  *
- * 書き込み失敗時は console.error で警告し、例外は投げない。
- * dispatcher 側の処理を中断させないため。
+ * On write failure, logs a warning via console.error but does not throw,
+ * so as not to interrupt the dispatcher's processing.
  */
 export function writeAuditLog(
   entry: AuditLogEntry,
@@ -40,10 +40,10 @@ export function writeAuditLog(
     const logPath = getAuditLogPath(entry.recipeId, projectRoot)
     ensureDir(join(projectRoot, 'app', 'data', entry.recipeId))
 
-    // ローテーション確認
+    // Check for rotation
     rotateIfNeeded(logPath)
 
-    // JSONL 追記
+    // Append JSONL entry
     const line = JSON.stringify(entry) + '\n'
     appendFileSync(logPath, line, 'utf-8')
   } catch (err) {
@@ -52,8 +52,8 @@ export function writeAuditLog(
 }
 
 /**
- * handler 呼び出しの引数を SHA-256 ハッシュに変換する.
- * 生の引数はログに残さない。
+ * Convert handler invocation arguments to a SHA-256 hash.
+ * Raw arguments are never stored in the log.
  */
 export function hashArgs(args: unknown): string {
   const canonical = JSON.stringify(args ?? {})
@@ -61,7 +61,7 @@ export function hashArgs(args: unknown): string {
 }
 
 /**
- * AuditLogEntry を組み立てるヘルパ.
+ * Helper to construct an AuditLogEntry.
  */
 export function createAuditEntry(params: {
   recipeId: string
@@ -99,9 +99,9 @@ function ensureDir(dir: string): void {
 }
 
 /**
- * ファイルサイズが上限を超えた場合にローテーションする.
+ * Rotate the log file when its size exceeds the limit.
  *
- * _audit.log → _audit.log.1 → _audit.log.2 → _audit.log.3（削除）
+ * _audit.log -> _audit.log.1 -> _audit.log.2 -> _audit.log.3 (deleted)
  */
 function rotateIfNeeded(logPath: string): void {
   if (!existsSync(logPath)) return
@@ -110,17 +110,17 @@ function rotateIfNeeded(logPath: string): void {
     const stat = statSync(logPath)
     if (stat.size < AUDIT_LOG_LIMITS.MAX_SIZE) return
   } catch {
-    return // stat 失敗は無視
+    return // Ignore stat failures
   }
 
-  // 最古の世代を削除
+  // Delete the oldest generation
   const maxGen = AUDIT_LOG_LIMITS.MAX_GENERATIONS
   const oldest = `${logPath}.${maxGen}`
   if (existsSync(oldest)) {
     try { unlinkSync(oldest) } catch { /* ignore */ }
   }
 
-  // 世代シフト: .2 → .3, .1 → .2, current → .1
+  // Generation shift: .2 -> .3, .1 -> .2, current -> .1
   for (let i = maxGen - 1; i >= 1; i--) {
     const from = `${logPath}.${i}`
     const to = `${logPath}.${i + 1}`

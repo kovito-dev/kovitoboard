@@ -1,8 +1,8 @@
 /**
- * エージェント作成・更新ロジック
+ * Agent creation and update logic.
  *
- * - createAgentFromTemplate: テンプレートから新規エージェントを作成
- * - updateAgentSections: 既存エージェントの構造化フィールドを部分更新
+ * - createAgentFromTemplate: Create a new agent from a template
+ * - updateAgentSections: Partially update structured fields of an existing agent
  */
 
 import { join } from 'path'
@@ -11,17 +11,17 @@ import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
 import { getAgentTemplateContent } from './template-reader'
 
-/** createAgentFromTemplate のオプション */
+/** Options for createAgentFromTemplate */
 export interface CreateAgentOptions {
-  /** テンプレート ID（例: "kovito-concierge"） */
+  /** Template ID (e.g. "kovito-concierge") */
   templateId: string
-  /** エージェント ID（ファイル名に使用。例: "my-agent"） */
+  /** Agent ID (used as filename, e.g. "my-agent") */
   agentId: string
-  /** 表示名（frontmatter の displayName に設定） */
+  /** Display name (set in frontmatter displayName) */
   displayName?: string
-  /** ロケール */
+  /** Locale */
   locale?: 'ja' | 'en'
-  /** 構造化フィールドのカスタマイズ値 */
+  /** Customization values for structured fields */
   customizations?: {
     personality?: string
     toneSample?: string
@@ -29,28 +29,28 @@ export interface CreateAgentOptions {
   }
 }
 
-/** createAgentFromTemplate の戻り値 */
+/** Return value of createAgentFromTemplate */
 export interface CreateAgentResult {
   success: boolean
-  /** 作成されたファイルの絶対パス */
+  /** Absolute path of the created file */
   filePath?: string
   error?: string
 }
 
-/** エージェント ID のバリデーション */
+/** Validate an agent ID */
 export function isValidAgentId(id: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id) && id.length <= 64
 }
 
 /**
- * テンプレートからエージェント定義ファイルを作成する。
+ * Create an agent definition file from a template.
  *
- * 処理フロー:
- * 1. テンプレートを読み込み
- * 2. マーカー置換（カスタマイズ値があれば）
- * 3. displayName があれば frontmatter に追加
- * 4. .claude/agents/{agentId}.md に書き込み
- * 5. .claude/agents/ が無ければ作成
+ * Flow:
+ * 1. Load the template
+ * 2. Replace markers (if customization values are provided)
+ * 3. Add displayName to frontmatter if specified
+ * 4. Write to .claude/agents/{agentId}.md
+ * 5. Create .claude/agents/ if it does not exist
  */
 export function createAgentFromTemplate(
   fs: FileAccessLayer,
@@ -58,26 +58,26 @@ export function createAgentFromTemplate(
 ): CreateAgentResult {
   const { templateId, agentId, displayName, locale = 'ja', customizations } = options
 
-  // バリデーション
+  // Validation
   if (!isValidAgentId(agentId)) {
     return { success: false, error: 'Invalid agent ID. Use alphanumeric, hyphens, underscores (max 64 chars).' }
   }
 
-  // テンプレート読み込み
+  // Load template
   const templateContent = getAgentTemplateContent(fs, templateId, locale)
   if (!templateContent) {
     return { success: false, error: `Template not found: ${templateId}` }
   }
 
-  // frontmatter と本文を分離
+  // Separate frontmatter and body
   const { data: frontmatterData, content: bodyContent } = matter(templateContent)
 
-  // displayName を frontmatter に追加
+  // Add displayName to frontmatter
   if (displayName) {
     frontmatterData.displayName = displayName
   }
 
-  // マーカーベースの置換
+  // Marker-based replacement
   let processedBody = bodyContent
   if (customizations) {
     if (customizations.personality !== undefined) {
@@ -91,23 +91,23 @@ export function createAgentFromTemplate(
     }
   }
 
-  // frontmatter を再構築
+  // Rebuild frontmatter
   const finalContent = matter.stringify(processedBody, frontmatterData)
 
-  // .claude/agents/ ディレクトリの確保
+  // Ensure .claude/agents/ directory exists
   const projectRoot = resolveProjectRoot(fs)
   const agentsDir = join(projectRoot, '.claude', 'agents')
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true })
   }
 
-  // 同名ファイルの存在チェック
+  // Check if a file with the same name already exists
   const filePath = join(agentsDir, `${agentId}.md`)
   if (fs.existsSync(filePath)) {
     return { success: false, error: `Agent already exists: ${agentId}` }
   }
 
-  // 書き込み
+  // Write to file
   try {
     fs.writeFileSync(filePath, finalContent, 'utf-8')
     return { success: true, filePath }
@@ -117,11 +117,11 @@ export function createAgentFromTemplate(
   }
 }
 
-/** updateAgentSections のオプション */
+/** Options for updateAgentSections */
 export interface UpdateAgentOptions {
-  /** 表示名の変更（undefined = 変更なし） */
+  /** Display name change (undefined = no change) */
   displayName?: string
-  /** 構造化フィールドのカスタマイズ値 */
+  /** Customization values for structured fields */
   sections?: {
     personality?: string
     toneSample?: string
@@ -129,17 +129,17 @@ export interface UpdateAgentOptions {
   }
 }
 
-/** updateAgentSections の戻り値 */
+/** Return value of updateAgentSections */
 export interface UpdateAgentResult {
   success: boolean
   error?: string
 }
 
-/** 抽出されたマーカーセクションの内容 */
+/** Extracted marker section contents */
 export interface ExtractedSections {
-  /** マーカーが存在するかどうか */
+  /** Whether markers exist */
   hasMarkers: boolean
-  /** frontmatter の displayName（未設定なら undefined） */
+  /** displayName from frontmatter (undefined if not set) */
   displayName?: string
   personality?: string
   toneSample?: string
@@ -147,11 +147,11 @@ export interface ExtractedSections {
 }
 
 /**
- * 既存エージェントの構造化フィールドを部分更新する。
+ * Partially update structured fields of an existing agent.
  *
- * - マーカーが存在するファイル: 該当セクションのみ置換
- * - マーカーが無いファイル（手動作成・レガシー）: エラーを返す（壊さない）
- * - displayName 変更: frontmatter の `displayName` フィールドを gray-matter で更新
+ * - Files with markers: replace only the matching sections
+ * - Files without markers (manually created / legacy): return an error (do not corrupt)
+ * - displayName change: update the `displayName` field in frontmatter via gray-matter
  */
 export function updateAgentSections(
   fs: FileAccessLayer,
@@ -173,7 +173,7 @@ export function updateAgentSections(
     const raw = fs.readFileSync(filePath, 'utf-8')
     const { data: frontmatterData, content: bodyContent } = matter(raw)
 
-    // セクション更新が要求されている場合、マーカーの存在を確認
+    // If section updates are requested, verify marker presence
     if (options.sections) {
       const hasAnyMarker = MARKER_NAMES.some(name => {
         const startMarker = `<!-- KB:${name}_START -->`
@@ -188,17 +188,17 @@ export function updateAgentSections(
       }
     }
 
-    // displayName 更新
+    // Update displayName
     if (options.displayName !== undefined) {
       if (options.displayName.trim() === '') {
-        // 空文字の場合は displayName フィールドを削除
+        // Remove displayName field if the value is empty
         delete frontmatterData.displayName
       } else {
         frontmatterData.displayName = options.displayName
       }
     }
 
-    // マーカーベースのセクション置換
+    // Marker-based section replacement
     let processedBody = bodyContent
     if (options.sections) {
       if (options.sections.personality !== undefined) {
@@ -223,8 +223,8 @@ export function updateAgentSections(
 }
 
 /**
- * エージェントファイルから構造化フィールドの現在値を抽出する。
- * 編集 UI が初期値を表示するために使用。
+ * Extract the current values of structured fields from an agent file.
+ * Used by the editing UI to display initial values.
  */
 export function extractMarkerSections(
   fs: FileAccessLayer,
@@ -259,18 +259,18 @@ export function extractMarkerSections(
   }
 }
 
-/** 全マーカー名のリスト */
+/** List of all marker names */
 const MARKER_NAMES = ['PERSONALITY', 'TONE_SAMPLE', 'EXTRA_INSTRUCTIONS'] as const
 
 /**
- * マーカーで囲まれたセクションを置換する。
+ * Replace a section delimited by markers.
  *
- * 形式:
+ * Format:
  * <!-- KB:{NAME}_START -->
  * ... content ...
  * <!-- KB:{NAME}_END -->
  *
- * マーカーが見つからない場合は何も変更しない。
+ * If the markers are not found, the content is returned unchanged.
  */
 function replaceMarkerSection(content: string, markerName: string, newValue: string): string {
   const startMarker = `<!-- KB:${markerName}_START -->`
@@ -290,8 +290,8 @@ function replaceMarkerSection(content: string, markerName: string, newValue: str
 }
 
 /**
- * マーカーで囲まれたセクションの内容を抽出する。
- * マーカーが存在しない場合は undefined を返す。
+ * Extract the content of a section delimited by markers.
+ * Returns undefined if the markers do not exist.
  */
 function extractSingleSection(content: string, markerName: string): string | undefined {
   const startMarker = `<!-- KB:${markerName}_START -->`
@@ -304,9 +304,9 @@ function extractSingleSection(content: string, markerName: string): string | und
     return undefined
   }
 
-  // マーカータグの直後から終了マーカーの直前まで
+  // From right after the start marker tag to right before the end marker tag
   const sectionContent = content.substring(startIdx + startMarker.length, endIdx)
 
-  // 前後の空行を除去
+  // Strip leading and trailing newlines
   return sectionContent.replace(/^\n/, '').replace(/\n$/, '')
 }

@@ -1,8 +1,8 @@
 /**
- * read-file handler — ファイルの内容を読み取って返す.
+ * read-file handler — Reads and returns the contents of a file.
  *
- * encoding として utf-8 または base64 をサポートする。
- * サイズ上限は 10MB。パス検証は dispatcher 側で完了済み。
+ * Supports utf-8 and base64 encodings.
+ * Maximum file size is 10MB. Path validation is handled by the dispatcher.
  *
  * @see recipe-system.md §12-2-1 read-file
  * @stable v0.1.0
@@ -54,7 +54,7 @@ export const readFileHandler: HandlerDef<ReadFileInput, ReadFileOutput> = {
     const absPath = path.join(context.projectRoot, input.path)
     const encoding = input.encoding ?? 'utf-8'
 
-    // ファイルの存在・サイズチェック
+    // Check file existence and size
     let stat: fs.Stats
     try {
       stat = fs.statSync(absPath)
@@ -77,7 +77,7 @@ export const readFileHandler: HandlerDef<ReadFileInput, ReadFileOutput> = {
       )
     }
 
-    // ファイル読み取り
+    // Read file contents
     try {
       const content = fs.readFileSync(absPath, { encoding })
       return handlerOk({

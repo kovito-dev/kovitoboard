@@ -1,9 +1,9 @@
 /**
- * export-file handler — ファイルのエクスポート（ダウンロード）を中継する.
+ * export-file handler — Relays file export (download) to the browser.
  *
- * v0.1.0 ではブラウザ側の File System Access API を使うため、
- * BE 側は content / suggestedName をそのまま返す中継役。
- * FE 側のダイアログ実装は Phase K で統合する。
+ * In v0.1.0, the browser-side File System Access API is used, so
+ * the backend simply relays content / suggestedName as-is.
+ * Frontend dialog integration will be added in Phase K.
  *
  * @see recipe-system.md §12-2-1 export-file
  * @stable v0.1.0
@@ -41,7 +41,7 @@ export const exportFileHandler: HandlerDef<ExportFileInput, ExportFileOutput> = 
       return 'content must be a string'
     }
 
-    // content サイズチェック
+    // Content size check
     const encoding = obj.encoding === 'base64' ? 'base64' : 'utf-8'
     const contentBytes = Buffer.byteLength(obj.content as string, encoding)
     if (contentBytes > HANDLER_LIMITS.EXPORT_FILE_MAX_SIZE) {
@@ -66,10 +66,11 @@ export const exportFileHandler: HandlerDef<ExportFileInput, ExportFileOutput> = 
     _context: HandlerContext,
   ): Promise<HandlerResponse<ExportFileOutput>> => {
     try {
-      // Phase K で FE 側のダイアログ統合時に、WebSocket 経由でブラウザに
-      // content を送信し、ユーザーの保存操作結果を受け取る実装に差し替え。
-      // 現時点では content と suggestedName をそのまま返す。
-      // FE 側が受け取って File System Access API で保存を行う想定。
+      // In Phase K (frontend dialog integration), this will be replaced with
+      // an implementation that sends content to the browser via WebSocket and
+      // receives the result of the user's save operation.
+      // Currently returns content and suggestedName as-is.
+      // The frontend is expected to use the File System Access API for saving.
       return handlerOk({
         saved: false,
         savedPath: undefined,

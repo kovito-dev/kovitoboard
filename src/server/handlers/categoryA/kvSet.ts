@@ -1,8 +1,8 @@
 /**
- * kv-set handler — KV ストアにキーと値を保存する.
+ * kv-set handler — Stores a key-value pair in the KV store.
  *
- * ttlSeconds が指定された場合、expiresAt フィールドを設定する。
- * ストア合計サイズが 100MB を超える場合はエラーを返す。
+ * When ttlSeconds is specified, sets the expiresAt field.
+ * Returns an error if total store size exceeds 100MB.
  *
  * @see recipe-system.md §12-2-1 kv-set
  * @stable v0.1.0
@@ -72,21 +72,21 @@ export const kvSetHandler: HandlerDef<KvSetInput, KvSetOk> = {
     const storePath = getKvStorePath(context)
 
     try {
-      // ストアを読み込み、期限切れエントリを除去
+      // Read the store and purge expired entries
       const rawStore = readKvStore(storePath)
       const store = purgeExpired(rawStore)
 
-      // 新しいエントリを作成
+      // Create new entry
       const entry: KvEntry = { value: input.value }
       if (input.ttlSeconds !== undefined) {
         const expiresAt = new Date(Date.now() + input.ttlSeconds * 1000)
         entry.expiresAt = expiresAt.toISOString()
       }
 
-      // エントリをセット
+      // Set the entry
       store[input.key] = entry
 
-      // ストア全体のサイズチェック
+      // Check total store size
       const serialized = JSON.stringify(store, null, 2)
       const storeSize = Buffer.byteLength(serialized, 'utf-8')
       if (storeSize > HANDLER_LIMITS.KV_STORE_MAX_SIZE) {
@@ -96,7 +96,7 @@ export const kvSetHandler: HandlerDef<KvSetInput, KvSetOk> = {
         )
       }
 
-      // 書き出し
+      // Write to disk
       writeKvStore(storePath, store)
 
       return handlerOk({ ok: true as const })

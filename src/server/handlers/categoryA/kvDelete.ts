@@ -1,7 +1,7 @@
 /**
- * kv-delete handler — KV ストアからキーを削除する.
+ * kv-delete handler — Deletes a key from the KV store.
  *
- * 冪等操作: 存在しないキーを削除しても { deleted: false } を返す（エラーではない）。
+ * Idempotent: deleting a non-existent key returns { deleted: false } (not an error).
  *
  * @see recipe-system.md §12-2-1 kv-delete
  * @stable v0.1.0

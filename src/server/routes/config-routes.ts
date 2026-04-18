@@ -1,10 +1,10 @@
 /**
- * 設定 API ルーター
+ * Configuration API router
  *
- * GET  /api/config/setting       — KovitoBoard 設定の取得
- * PUT  /api/config/setting       — KovitoBoard 設定の更新
- * GET  /api/config/project-root  — 起動時に解決された projectRoot を返す (DEC-009)
- * POST /api/config/setup-agent-ref — agent-ref シンボリックリンク作成
+ * GET  /api/config/setting       — Get KovitoBoard settings
+ * PUT  /api/config/setting       — Update KovitoBoard settings
+ * GET  /api/config/project-root  — Return the projectRoot resolved at startup (DEC-009)
+ * POST /api/config/setup-agent-ref — Create agent-ref symlink
  */
 import { Router } from 'express'
 import { join, resolve } from 'path'
@@ -40,13 +40,13 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
     }
   })
 
-  // GET /api/config/project-root (DEC-009: Step 3 表示用)
+  // GET /api/config/project-root (DEC-009: for Step 3 display)
   router.get('/project-root', (_req, res) => {
     res.json({ projectRoot })
   })
 
   // POST /api/config/setup-agent-ref
-  // KovitoBoard の docs/agent-ref/ を親プロジェクトにシンボリックリンクする
+  // Create a symlink from KovitoBoard's docs/agent-ref/ into the parent project
   router.post('/setup-agent-ref', (_req, res) => {
     try {
       const kbRoot = resolve(projectRoot, 'kovitoboard')
@@ -54,24 +54,24 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       const targetDir = join(projectRoot, 'docs')
       const targetLink = join(targetDir, 'agent-ref')
 
-      // source が存在しない場合はスキップ
+      // Skip if source does not exist
       if (!fs.existsSync(source)) {
         res.json({ success: true, skipped: true, reason: 'source docs/agent-ref/ not found' })
         return
       }
 
-      // target が既に存在する場合はスキップ（既存ファイルを壊さない）
+      // Skip if target already exists (avoid overwriting existing files)
       if (fs.existsSync(targetLink)) {
         res.json({ success: true, skipped: true, reason: 'docs/agent-ref/ already exists' })
         return
       }
 
-      // docs/ ディレクトリがなければ作成
+      // Create docs/ directory if it does not exist
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true })
       }
 
-      // シンボリックリンク作成
+      // Create the symlink
       fs.symlinkSync(source, targetLink, 'dir')
       res.json({ success: true, skipped: false, link: targetLink, target: source })
     } catch (err) {

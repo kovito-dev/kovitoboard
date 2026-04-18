@@ -1,8 +1,8 @@
 /**
  * Recipe handler system — core type definitions.
  *
- * Category A handler 9 個の入出力スキーマ、共通レスポンス型、
- * scope 7 種、handler 定義インターフェースを一元管理する。
+ * Centrally manages input/output schemas for the 9 Category A handlers,
+ * common response types, 7 scope types, and handler definition interfaces.
  *
  * @see recipe-system.md §12-2 (Category A handler set)
  * @see recipe-system.md §12-2-1 (input/output schemas)
@@ -15,26 +15,26 @@
 // =========================================
 
 /**
- * Handler error codes (全 handler 共通).
+ * Handler error codes (shared across all handlers).
  * @see recipe-system.md §12-2-1
  */
 export type HandlerErrorCode =
-  | 'ScopeViolation'    // 宣言していない scope が必要な操作
-  | 'PathOutOfScope'    // scope の対象領域外のパス
-  | 'PathForbidden'     // ハードコード除外リスト（§12-3-1）に該当
-  | 'NotFound'          // 対象が存在しない
-  | 'SizeExceeded'      // サイズ上限超過
-  | 'RateLimited'       // レート制限に抵触
-  | 'InvalidArgs'       // 引数バリデーションエラー
-  | 'HandlerNotDeclared' // api.calls[].id で未宣言の呼び出し
-  | 'Internal'          // サーバー内部エラー
+  | 'ScopeViolation'    // Operation requires an undeclared scope
+  | 'PathOutOfScope'    // Path is outside the scope's target area
+  | 'PathForbidden'     // Matches hardcoded exclusion list (§12-3-1)
+  | 'NotFound'          // Target does not exist
+  | 'SizeExceeded'      // Size limit exceeded
+  | 'RateLimited'       // Rate limit hit
+  | 'InvalidArgs'       // Argument validation error
+  | 'HandlerNotDeclared' // Undeclared call via api.calls[].id
+  | 'Internal'          // Internal server error
 
 // =========================================
 // Response type
 // =========================================
 
 /**
- * 共通 handler レスポンス型（ok/error discriminated union）.
+ * Common handler response type (ok/error discriminated union).
  * @see recipe-system.md §12-2-1
  */
 export type HandlerResponse<T> =
@@ -45,12 +45,12 @@ export type HandlerResponse<T> =
 // Response factory helpers
 // =========================================
 
-/** 成功レスポンスを生成する */
+/** Creates a success response */
 export function handlerOk<T>(data: T): HandlerResponse<T> {
   return { ok: true, data }
 }
 
-/** エラーレスポンスを生成する */
+/** Creates an error response */
 export function handlerError<T = never>(
   code: HandlerErrorCode,
   message: string,
@@ -63,25 +63,25 @@ export function handlerError<T = never>(
 // =========================================
 
 /**
- * scope 7 種の定義.
- * handler の実行に必要な権限を表す。インストール時にユーザーが承認する。
+ * Definition of 7 scope types.
+ * Represents permissions required for handler execution. Approved by the user at install time.
  * @see recipe-system.md §12-3
  */
 export type Scope =
-  | 'project-read'    // プロジェクトルート配下（除外リストを除く）の読み取り
-  | 'project-write'   // 同上の書き込み
-  | 'agents-read'     // .claude/agents/ 配下の読み取り
-  | 'skills-read'     // .claude/skills/ 配下の読み取り
-  | 'claude-md-read'  // 各種 CLAUDE.md ファイルの読み取り
-  | 'kb-data-read'    // kovitoboard/data/ 配下の読み取り
-  | 'own-data'        // app/data/{recipe-id}/ 配下の読み書き
+  | 'project-read'    // Read access under project root (excluding exclusion list)
+  | 'project-write'   // Write access under project root (same exclusions)
+  | 'agents-read'     // Read access under .claude/agents/
+  | 'skills-read'     // Read access under .claude/skills/
+  | 'claude-md-read'  // Read access to various CLAUDE.md files
+  | 'kb-data-read'    // Read access under kovitoboard/data/
+  | 'own-data'        // Read/write access under app/data/{recipe-id}/
 
 // =========================================
 // Handler names
 // =========================================
 
 /**
- * Category A handler 名（v0.1.0 で提供する 9 個）.
+ * Category A handler names (9 handlers provided in v0.1.0).
  * @see recipe-system.md §12-2
  */
 export type CategoryAHandlerName =
@@ -96,9 +96,9 @@ export type CategoryAHandlerName =
   | 'export-file'
 
 /**
- * handler 名ごとの必要 scope マッピング.
- * 各 handler は指定された scope のいずれか 1 つ以上が承認されていれば実行可能。
- * @see recipe-system.md §12-2 handler 一覧表
+ * Required scope mapping per handler name.
+ * Each handler can be executed if at least one of the specified scopes is approved.
+ * @see recipe-system.md §12-2 handler list
  */
 export const HANDLER_REQUIRED_SCOPES: Record<CategoryAHandlerName, Scope[]> = {
   'list-files': ['project-read', 'project-write', 'agents-read', 'skills-read', 'claude-md-read', 'kb-data-read', 'own-data'],
@@ -108,8 +108,8 @@ export const HANDLER_REQUIRED_SCOPES: Record<CategoryAHandlerName, Scope[]> = {
   'kv-set': ['own-data'],
   'kv-list': ['own-data'],
   'kv-delete': ['own-data'],
-  'notify': [],    // scope 不要（ユーザー可視）
-  'export-file': [], // scope 不要（ユーザー明示操作が介在）
+  'notify': [],    // No scope required (user-visible)
+  'export-file': [], // No scope required (explicit user action involved)
 }
 
 // =========================================
@@ -117,30 +117,30 @@ export const HANDLER_REQUIRED_SCOPES: Record<CategoryAHandlerName, Scope[]> = {
 // =========================================
 
 /**
- * handler 実行時のコンテキスト.
- * dispatcher から handler.execute() に渡される。
+ * Context provided to handlers at execution time.
+ * Passed from the dispatcher to handler.execute().
  */
 export interface HandlerContext {
-  /** ターゲットプロジェクトのルートパス */
+  /** Root path of the target project */
   projectRoot: string
-  /** レシピ ID（own-data パス解決に使用） */
+  /** Recipe ID (used for own-data path resolution) */
   recipeId: string
-  /** このレシピに対して承認済みの scope 一覧 */
+  /** List of approved scopes for this recipe */
   approvedScopes: readonly Scope[]
 }
 
 /**
- * handler 実装のインターフェース.
- * 各 Category A handler はこのインターフェースに準拠するオブジェクトを export する。
+ * Interface for handler implementations.
+ * Each Category A handler exports an object conforming to this interface.
  */
 export interface HandlerDef<TInput = unknown, TOutput = unknown> {
-  /** handler 名（CategoryAHandlerName と一致） */
+  /** Handler name (must match CategoryAHandlerName) */
   name: CategoryAHandlerName
-  /** この handler の実行に必要な scope（いずれか 1 つが承認されていれば可） */
+  /** Scopes required to execute this handler (at least one must be approved) */
   requiredScopes: readonly Scope[]
-  /** 入力引数をバリデーションする。有効なら null、無効ならエラーメッセージを返す */
+  /** Validates input arguments. Returns null if valid, or an error message string */
   validate: (input: unknown) => string | null
-  /** handler を実行する */
+  /** Executes the handler */
   execute: (
     input: TInput,
     context: HandlerContext,
@@ -155,9 +155,9 @@ export interface HandlerDef<TInput = unknown, TOutput = unknown> {
 // @see recipe-system.md §12-2-1 list-files
 
 export interface ListFilesInput {
-  /** 対象ディレクトリパス（scope に応じた相対パス） */
+  /** Target directory path (relative path based on scope) */
   path: string
-  /** 再帰探索。デフォルト false */
+  /** Recursive traversal. Default: false */
   recursive?: boolean
 }
 
@@ -178,9 +178,9 @@ export interface ListFilesOutput {
 // @see recipe-system.md §12-2-1 read-file
 
 export interface ReadFileInput {
-  /** 対象ファイルパス */
+  /** Target file path */
   path: string
-  /** エンコーディング。デフォルト "utf-8" */
+  /** Encoding. Default: "utf-8" */
   encoding?: 'utf-8' | 'base64'
 }
 
@@ -194,18 +194,18 @@ export interface ReadFileOutput {
 // @see recipe-system.md §12-2-1 write-file
 
 export interface WriteFileInput {
-  /** 書き込み先パス */
+  /** Destination path */
   path: string
-  /** 書き込む内容 */
+  /** Content to write */
   content: string
-  /** エンコーディング。デフォルト "utf-8" */
+  /** Encoding. Default: "utf-8" */
   encoding?: 'utf-8' | 'base64'
-  /** 途中ディレクトリの作成を許可。デフォルト false */
+  /** Allow creation of intermediate directories. Default: false */
   createDirs?: boolean
 }
 
 export interface WriteFileOutput {
-  /** 書き込んだバイト数 */
+  /** Number of bytes written */
   written: number
 }
 
@@ -227,11 +227,11 @@ export interface KvGetOutput {
 export interface KvSetInput {
   key: string
   value: string
-  /** TTL（秒）。省略時は無期限 */
+  /** TTL in seconds. Omitted means no expiration */
   ttlSeconds?: number
 }
 
-// kv-set は { ok: true } のみ返す — 型は不要（HandlerResponse<KvSetOk> で使用）
+// kv-set only returns { ok: true } — no separate type needed (used as HandlerResponse<KvSetOk>)
 export interface KvSetOk {
   ok: true
 }
@@ -240,9 +240,9 @@ export interface KvSetOk {
 // @see recipe-system.md §12-2-1 kv-list
 
 export interface KvListInput {
-  /** キー prefix フィルタ */
+  /** Key prefix filter */
   prefix?: string
-  /** 返却上限。デフォルト 100、最大 1000 */
+  /** Return limit. Default: 100, maximum: 1000 */
   limit?: number
 }
 
@@ -259,7 +259,7 @@ export interface KvDeleteInput {
 }
 
 export interface KvDeleteOutput {
-  /** 削除された（存在した）か */
+  /** Whether the key existed and was deleted */
   deleted: boolean
 }
 
@@ -280,20 +280,20 @@ export interface NotifyOk {
 // @see recipe-system.md §12-2-1 export-file
 
 export interface ExportFileInput {
-  /** 保存ダイアログに提案するファイル名 */
+  /** Suggested file name for the save dialog */
   suggestedName: string
-  /** ファイル内容 */
+  /** File content */
   content: string
-  /** MIME タイプ（省略時はブラウザ推定） */
+  /** MIME type (browser-inferred when omitted) */
   mimeType?: string
-  /** エンコーディング。デフォルト "utf-8" */
+  /** Encoding. Default: "utf-8" */
   encoding?: 'utf-8' | 'base64'
 }
 
 export interface ExportFileOutput {
-  /** ユーザーが保存を承認したか */
+  /** Whether the user approved the save */
   saved: boolean
-  /** 保存先パス（キャンセル時は undefined） */
+  /** Saved file path (undefined if cancelled) */
   savedPath?: string
 }
 
@@ -302,43 +302,43 @@ export interface ExportFileOutput {
 // =========================================
 
 /**
- * handler 制限値（recipe-system.md §12-2-1 の各制限に対応）.
+ * Handler limits (corresponds to limits defined in recipe-system.md §12-2-1).
  */
 export const HANDLER_LIMITS = {
-  /** list-files: 1 回のレスポンスで最大エントリ数 */
+  /** list-files: Maximum entries per response */
   LIST_FILES_MAX_ENTRIES: 1_000,
-  /** list-files: own-data 時の最大再帰深度 */
+  /** list-files: Maximum recursion depth for own-data */
   LIST_FILES_MAX_DEPTH_OWN: 5,
-  /** list-files: own-data 以外の最大再帰深度 */
+  /** list-files: Maximum recursion depth for non-own-data */
   LIST_FILES_MAX_DEPTH_OTHER: 2,
 
-  /** read-file: 最大ファイルサイズ (10MB) */
+  /** read-file: Maximum file size (10MB) */
   READ_FILE_MAX_SIZE: 10 * 1024 * 1024,
-  /** write-file: 最大書き込みサイズ (10MB) */
+  /** write-file: Maximum write size (10MB) */
   WRITE_FILE_MAX_SIZE: 10 * 1024 * 1024,
 
-  /** KV: キー長最大 (256 文字) */
+  /** KV: Maximum key length (256 chars) */
   KV_KEY_MAX_LENGTH: 256,
-  /** KV: 値の最大サイズ (1MB) */
+  /** KV: Maximum value size (1MB) */
   KV_VALUE_MAX_SIZE: 1 * 1024 * 1024,
-  /** KV: ストア合計最大サイズ (100MB) */
+  /** KV: Maximum total store size (100MB) */
   KV_STORE_MAX_SIZE: 100 * 1024 * 1024,
-  /** kv-list: デフォルト limit */
+  /** kv-list: Default limit */
   KV_LIST_DEFAULT_LIMIT: 100,
-  /** kv-list: 最大 limit */
+  /** kv-list: Maximum limit */
   KV_LIST_MAX_LIMIT: 1_000,
 
-  /** notify: title 最大長 (100 文字) */
+  /** notify: Maximum title length (100 chars) */
   NOTIFY_TITLE_MAX_LENGTH: 100,
-  /** notify: body 最大長 (500 文字) */
+  /** notify: Maximum body length (500 chars) */
   NOTIFY_BODY_MAX_LENGTH: 500,
-  /** notify: レート制限 (レシピ単位、/min) */
+  /** notify: Rate limit (per recipe, /min) */
   NOTIFY_RATE_LIMIT_PER_MIN: 10,
 
-  /** export-file: content 最大サイズ (50MB) */
+  /** export-file: Maximum content size (50MB) */
   EXPORT_FILE_MAX_SIZE: 50 * 1024 * 1024,
 
-  /** FE 側タイムアウト (30 秒) */
+  /** Frontend-side timeout (30 seconds) */
   HANDLER_TIMEOUT_MS: 30_000,
 } as const
 
@@ -347,16 +347,16 @@ export const HANDLER_LIMITS = {
 // =========================================
 
 /**
- * ハードコード除外パターン — scope に関わらず常にアクセス拒否.
- * scopeValidator.ts の 1 箇所のみで管理し、各 handler で個別判定しない。
+ * Hardcoded exclusion patterns — always denied regardless of scope.
+ * Managed in a single location (scopeValidator.ts); individual handlers do not check these.
  * @see recipe-system.md §12-3-1
  */
 export const HARDCODED_EXCLUSIONS = [
-  '.env',               // .env 完全一致
-  '.env.*',             // .env.production, .env.local 等
-  '.git/**',            // .git/ 配下全て
-  'node_modules/**',    // node_modules/ 配下全て
-  '.claude/credentials*', // .claude/credentials, .claude/credentials.json 等
+  '.env',               // Exact match for .env
+  '.env.*',             // .env.production, .env.local, etc.
+  '.git/**',            // Everything under .git/
+  'node_modules/**',    // Everything under node_modules/
+  '.claude/credentials*', // .claude/credentials, .claude/credentials.json, etc.
 ] as const
 
 // =========================================
@@ -364,35 +364,35 @@ export const HARDCODED_EXCLUSIONS = [
 // =========================================
 
 /**
- * 監査ログ 1 行のスキーマ.
- * app/data/{recipe-id}/_audit.log に JSONL 形式で書き出す。
- * @see recipe-system.md §12-6（将来）
+ * Schema for a single audit log entry.
+ * Written in JSONL format to app/data/{recipe-id}/_audit.log.
+ * @see recipe-system.md §12-6 (future)
  */
 export interface AuditLogEntry {
-  /** ISO 8601 タイムスタンプ */
+  /** ISO 8601 timestamp */
   timestamp: string
-  /** レシピ ID */
+  /** Recipe ID */
   recipeId: string
-  /** 呼び出し ID（api.calls[].id） */
+  /** Call ID (api.calls[].id) */
   callId: string
-  /** handler 名 */
+  /** Handler name */
   handler: CategoryAHandlerName
-  /** 引数の SHA-256 ハッシュ（生の引数はログしない） */
+  /** SHA-256 hash of arguments (raw arguments are not logged) */
   argsHash: string
-  /** レスポンスの ok/error */
+  /** Response result: ok or error */
   result: 'ok' | 'error'
-  /** エラーコード（result === 'error' の場合のみ） */
+  /** Error code (only when result === 'error') */
   errorCode?: HandlerErrorCode
-  /** 処理時間 (ms) */
+  /** Processing duration (ms) */
   durationMs: number
 }
 
 /**
- * 監査ログのローテーション設定.
+ * Audit log rotation settings.
  */
 export const AUDIT_LOG_LIMITS = {
-  /** 最大ファイルサイズ (10MB) */
+  /** Maximum file size (10MB) */
   MAX_SIZE: 10 * 1024 * 1024,
-  /** ローテーション世代数 */
+  /** Number of rotation generations */
   MAX_GENERATIONS: 3,
 } as const

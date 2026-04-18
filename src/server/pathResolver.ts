@@ -1,11 +1,12 @@
 /**
- * Path Resolver — scope ごとのベースパス解決とパス正規化.
+ * Path Resolver — resolves base paths per scope and normalizes paths.
  *
- * handler が受け取るパス引数を安全に正規化し、scope 領域内に
- * 収まっていることを保証する。Symlink 展開・パストラバーサル防止を含む。
+ * Safely normalizes path arguments received by handlers and ensures they
+ * remain within the scope's allowed region. Includes symlink resolution
+ * and path traversal prevention.
  *
  * @see recipe-system.md §12-3 (scope definitions)
- * @see recipe-backend-critical-reviews.md §2 (Q-B1 確定方針)
+ * @see recipe-backend-critical-reviews.md §2 (Q-B1 finalized approach)
  * @stable v0.1.0
  */
 
@@ -14,12 +15,12 @@ import * as fs from 'fs'
 import type { Scope } from './handlers/types.js'
 
 /**
- * scope ごとのベースパス（絶対パス）を返す.
+ * Return the base path (absolute) for a given scope.
  *
- * @param scope - 解決対象の scope
- * @param projectRoot - ターゲットプロジェクトのルートパス
- * @param recipeId - レシピ ID（own-data で使用）
- * @param kovitoboardRoot - KovitoBoard インストールパス（kb-data-read で使用）
+ * @param scope - The scope to resolve
+ * @param projectRoot - Root path of the target project
+ * @param recipeId - Recipe ID (used for own-data)
+ * @param kovitoboardRoot - KovitoBoard installation path (used for kb-data-read)
  *
  * @see recipe-system.md §12-3
  */
@@ -38,7 +39,7 @@ export function resolveScopeRoot(
     case 'skills-read':
       return path.join(projectRoot, '.claude', 'skills')
     case 'claude-md-read':
-      return projectRoot // CLAUDE.md はプロジェクトルート直下
+      return projectRoot // CLAUDE.md is directly under the project root
     case 'kb-data-read':
       return path.join(kovitoboardRoot || projectRoot, 'data')
     case 'own-data':
@@ -51,34 +52,35 @@ export function resolveScopeRoot(
 }
 
 /**
- * パスを正規化する（3 段階の正規化フロー）.
+ * Normalize a path (3-stage normalization flow).
  *
- * Step 1: 絶対パス化（scopeRoot と rawPath を結合）
- * Step 2: ../ 正規化（論理解決）
- * Step 3: fs.realpathSync で Symlink 展開（物理解決）
+ * Step 1: Convert to absolute path (join scopeRoot and rawPath)
+ * Step 2: Normalize ../ sequences (logical resolution)
+ * Step 3: Resolve symlinks via fs.realpathSync (physical resolution)
  *
  * @see recipe-backend-critical-reviews.md §2-2
  */
 export function normalizePath(rawPath: string, scopeRoot: string): string {
-  // Step 1: 絶対パス化
+  // Step 1: Convert to absolute path
   const joined = path.isAbsolute(rawPath)
     ? rawPath
     : path.join(scopeRoot, rawPath)
 
-  // Step 2: ../. 正規化（論理解決）
+  // Step 2: Normalize ../ sequences (logical resolution)
   const normalized = path.normalize(joined)
 
-  // Step 3: Symlink 展開（物理解決）
+  // Step 3: Resolve symlinks (physical resolution)
   const physical = realpathUpToExisting(normalized)
 
   return physical
 }
 
 /**
- * 存在するパスまで realpath で解決し、残りを論理結合する.
+ * Resolve via realpath up to the nearest existing path, then logically join the rest.
  *
- * 存在しないパスへの write-file では realpath が ENOENT を投げるため、
- * 最も近い既存親ディレクトリまで展開して残りのセグメントを結合する。
+ * For write-file to non-existent paths, realpath would throw ENOENT,
+ * so we resolve up to the nearest existing parent directory and join
+ * the remaining segments.
  *
  * @see recipe-backend-critical-reviews.md §2-2
  */
@@ -88,7 +90,7 @@ export function realpathUpToExisting(p: string): string {
 
   while (!fs.existsSync(current)) {
     const parent = path.dirname(current)
-    if (parent === current) break // ルート到達
+    if (parent === current) break // Reached filesystem root
     segments.unshift(path.basename(current))
     current = parent
   }
@@ -99,7 +101,7 @@ export function realpathUpToExisting(p: string): string {
       ? path.join(resolvedBase, ...segments)
       : resolvedBase
   } catch (err: unknown) {
-    // ELOOP（Symlink ループ）等
+    // ELOOP (symlink loop) etc.
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ELOOP') {
       throw new PathResolutionError('SYMLINK_LOOP', `Symlink loop detected: ${current}`)
@@ -109,26 +111,26 @@ export function realpathUpToExisting(p: string): string {
 }
 
 /**
- * absPath が scopeRoot の配下にあるかを判定する.
+ * Determine whether absPath is under scopeRoot.
  *
- * 両パスとも正規化済みであることを前提とする。
+ * Both paths are assumed to be already normalized.
  */
 export function isWithin(absPath: string, scopeRoot: string): boolean {
-  // 末尾に区切り文字を追加して前方一致で判定
-  // (scopeRoot="/foo/bar", absPath="/foo/barBaz" の誤判定を防ぐ)
+  // Append a separator and use prefix matching to prevent
+  // false positives (e.g. scopeRoot="/foo/bar", absPath="/foo/barBaz")
   const root = scopeRoot.endsWith(path.sep) ? scopeRoot : scopeRoot + path.sep
   return absPath === scopeRoot || absPath.startsWith(root)
 }
 
 /**
- * claude-md-read scope の特殊判定.
- * CLAUDE.md ファイルのみアクセスを許可する。
+ * Special check for the claude-md-read scope.
+ * Only allows access to CLAUDE.md files.
  */
 export function isClaudeMdPath(absPath: string, projectRoot: string): boolean {
   const basename = path.basename(absPath)
   if (basename !== 'CLAUDE.md') return false
 
-  // プロジェクトルート直下、または .claude/ 配下の CLAUDE.md
+  // CLAUDE.md directly under the project root or under .claude/
   return isWithin(absPath, projectRoot)
 }
 

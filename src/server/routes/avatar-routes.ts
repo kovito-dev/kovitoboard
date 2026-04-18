@@ -1,9 +1,9 @@
 /**
- * エージェントアバター画像の REST API ルーター
+ * Agent avatar image REST API router
  *
- * POST   /api/agents/:name/avatar — アバターアップロード
- * DELETE /api/agents/:name/avatar — カスタムアバター削除
- * GET    /api/agents/:name/avatar — アバター解決（ファイル配信）
+ * POST   /api/agents/:name/avatar — Upload avatar
+ * DELETE /api/agents/:name/avatar — Delete custom avatar
+ * GET    /api/agents/:name/avatar — Resolve and serve avatar file
  */
 
 import { Router } from 'express'
@@ -20,7 +20,7 @@ const ALLOWED_CONTENT_TYPES: Record<string, string> = {
   'image/svg+xml': '.svg',
 }
 
-/** エージェント名バリデーション（ディレクトリトラバーサル防止） */
+/** Validate agent name (prevent directory traversal) */
 function isValidAgentName(name: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(name)
 }
@@ -28,7 +28,7 @@ function isValidAgentName(name: string): boolean {
 export function createAvatarRouter(fs: FileAccessLayer): Router {
   const router = Router()
 
-  // POST /api/agents/:name/avatar — アバターアップロード
+  // POST /api/agents/:name/avatar — Upload avatar
   router.post(
     '/:name/avatar',
     express.raw({ type: ['image/*', 'image/svg+xml'], limit: '2mb' }),
@@ -65,10 +65,10 @@ export function createAvatarRouter(fs: FileAccessLayer): Router {
           fs.mkdirSync(customDir, { recursive: true })
         }
 
-        // 既存の同名ファイルを全拡張子分削除（1エージェント1画像の原則）
+        // Delete existing files with all extensions (one image per agent policy)
         deleteCustomAvatar(fs, agentName)
 
-        // 新しい画像を保存
+        // Save the new image
         const filePath = join(customDir, `${agentName}${ext}`)
         fs.writeFileSync(filePath, body)
 
@@ -80,7 +80,7 @@ export function createAvatarRouter(fs: FileAccessLayer): Router {
     },
   )
 
-  // DELETE /api/agents/:name/avatar — アバター削除（custom のみ）
+  // DELETE /api/agents/:name/avatar — Delete avatar (custom only)
   router.delete('/:name/avatar', (req, res) => {
     const agentName = req.params.name
     if (!isValidAgentName(agentName)) {
@@ -101,8 +101,8 @@ export function createAvatarRouter(fs: FileAccessLayer): Router {
     }
   })
 
-  // GET /api/agents/:name/avatar — アバター解決（ファイル配信）
-  // custom -> default -> 404（フロントエンドがフォールバック SVG を生成）
+  // GET /api/agents/:name/avatar — Resolve and serve avatar file
+  // custom -> default -> 404 (frontend generates fallback SVG)
   router.get('/:name/avatar', (req, res) => {
     const agentName = req.params.name
     if (!isValidAgentName(agentName)) {
@@ -116,8 +116,8 @@ export function createAvatarRouter(fs: FileAccessLayer): Router {
       return
     }
 
-    // res.sendFile は絶対パスが必要（resolveAvatarPath は絶対パスを返す）
-    // Cache-Control: no-cache でアップロード後の即時反映を保証
+    // res.sendFile requires an absolute path (resolveAvatarPath returns one)
+    // Cache-Control: no-cache ensures immediate reflection after upload
     res.setHeader('Cache-Control', 'no-cache')
     res.sendFile(avatarPath, (err) => {
       if (err) {

@@ -20,9 +20,17 @@ const ROOT = resolve(__dirname, '..')
 
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.css']
 
-// Relative paths excluded from Japanese character checks
+// Relative paths excluded from Japanese character checks.
+// These files legitimately contain Japanese for:
+//   - i18n dictionaries (ja.ts, initial-prompts.ts)
+//   - CLAUDE.md parsing regex (settings-reader.ts, agent-reader.ts)
+//   - Security inspection patterns (recipe-inspector.ts)
 const JAPANESE_EXCLUDE = new Set([
   'src/renderer/i18n/ja.ts',
+  'src/server/services/initial-prompts.ts',
+  'src/server/settings-reader.ts',
+  'src/server/agent-reader.ts',
+  'src/server/recipe-inspector.ts',
 ])
 
 // Path prefixes excluded from Japanese character checks

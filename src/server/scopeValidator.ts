@@ -1,15 +1,16 @@
 /**
- * Scope Validator — scope ↔ パスのマッピング、除外リストの強制.
+ * Scope Validator — maps scope to path and enforces exclusion lists.
  *
- * handler dispatcher から呼ばれ、handler 実行前にパスが
- * 承認済み scope の領域内かつ除外リスト非該当であることを保証する。
+ * Called from the handler dispatcher to ensure, before handler execution,
+ * that the path is within an approved scope's region and is not on the
+ * exclusion list.
  *
- * 除外リストは **ここの 1 箇所のみ** で管理する。
- * 各 handler で個別に除外判定しない。
+ * The exclusion list is managed in **this one place only**.
+ * Individual handlers must not perform their own exclusion checks.
  *
  * @see recipe-system.md §12-3 (scope definitions)
  * @see recipe-system.md §12-3-1 (hardcoded exclusion list)
- * @see recipe-backend-implementation-plan.md §8-2 原則 3
+ * @see recipe-backend-implementation-plan.md §8-2 principle 3
  * @stable v0.1.0
  */
 
@@ -28,24 +29,24 @@ import {
 // =========================================
 
 /**
- * ハードコード除外パターン（全 scope 共通）.
+ * Hardcoded exclusion patterns (common across all scopes).
  *
- * パスの相対部分（プロジェクトルートからの相対）に対してマッチングする。
+ * Matched against the relative portion of the path (relative to project root).
  * @see recipe-system.md §12-3-1
  */
 const EXCLUSION_MATCHERS: Array<(relativePath: string) => boolean> = [
-  // .env（完全一致）
+  // .env (exact match)
   (rel) => rel === '.env',
-  // .env.*（.env.production, .env.local 等）
+  // .env.* (.env.production, .env.local, etc.)
   (rel) => rel.startsWith('.env.'),
-  // .env* がネストしている場合（例: subdir/.env）
+  // Nested .env* files (e.g. subdir/.env)
   (rel) => {
     const basename = path.basename(rel)
     return basename === '.env' || basename.startsWith('.env.')
   },
-  // .git/ 配下全て
+  // Everything under .git/
   (rel) => rel === '.git' || rel.startsWith('.git/') || rel.startsWith('.git\\'),
-  // node_modules/ 配下全て
+  // Everything under node_modules/
   (rel) => rel === 'node_modules' || rel.startsWith('node_modules/') || rel.startsWith('node_modules\\'),
   // .claude/credentials*
   (rel) => {
@@ -55,31 +56,32 @@ const EXCLUSION_MATCHERS: Array<(relativePath: string) => boolean> = [
 ]
 
 /**
- * 絶対パスが除外リストに該当するかを判定する.
+ * Determine whether an absolute path matches the exclusion list.
  *
- * @param absPath - 正規化済みの絶対パス
- * @param projectRoot - プロジェクトルートパス
+ * @param absPath - Normalized absolute path
+ * @param projectRoot - Project root path
  * @returns true if the path is forbidden
  */
 export function isForbidden(absPath: string, projectRoot: string): boolean {
-  // プロジェクトルートからの相対パスを算出
+  // Compute relative path from project root
   const rel = path.relative(projectRoot, absPath)
 
-  // プロジェクト外（../ で始まる）のパスは除外リストのチェック不要
-  // （scope 領域判定で弾かれるため）
+  // Paths outside the project (starting with ../) do not need exclusion checks
+  // (they will be rejected by the scope region check)
   if (rel.startsWith('..')) return false
 
   return EXCLUSION_MATCHERS.some((matcher) => matcher(rel))
 }
 
 /**
- * list-files の結果エントリから除外パスを除去する.
+ * Remove excluded paths from list-files result entries.
  *
- * 除外パスに該当するエントリはエラーではなく「そもそも存在しない」として
- * 結果から除外する（メタデータ漏洩のサイドチャネル遮断）。
+ * Entries matching excluded paths are silently omitted from results
+ * (treated as "non-existent" rather than errors) to prevent metadata
+ * leakage through side channels.
  *
- * @see recipe-system.md §12-3-1 list-files の除外挙動
- * @see recipe-system.md §12-2-1 list-files の除外リストの扱い
+ * @see recipe-system.md §12-3-1 list-files exclusion behavior
+ * @see recipe-system.md §12-2-1 list-files exclusion list handling
  */
 export function filterExcludedEntries<T extends { path: string }>(
   entries: T[],
@@ -103,14 +105,15 @@ export interface ScopeValidationResult {
 }
 
 /**
- * パス引数が承認済み scope の領域内かつ除外リスト非該当であることを検証する.
+ * Validate that a path argument is within an approved scope's region
+ * and does not match the exclusion list.
  *
- * @param rawPath - handler が受け取ったパス引数（相対パス or 絶対パス）
- * @param approvedScopes - インストール時にユーザーが承認した scope
- * @param requiredScopes - この handler が必要とする scope（いずれか 1 つが承認済みなら OK）
- * @param recipeId - レシピ ID
- * @param projectRoot - ターゲットプロジェクトのルートパス
- * @param kovitoboardRoot - KovitoBoard インストールパス（kb-data-read で使用、省略可）
+ * @param rawPath - Path argument received by the handler (relative or absolute)
+ * @param approvedScopes - Scopes approved by the user at install time
+ * @param requiredScopes - Scopes required by this handler (any one approved is sufficient)
+ * @param recipeId - Recipe ID
+ * @param projectRoot - Root path of the target project
+ * @param kovitoboardRoot - KovitoBoard installation path (used for kb-data-read, optional)
  *
  * @see recipe-backend-critical-reviews.md §2-3
  */
@@ -122,7 +125,7 @@ export function validatePathForScope(
   projectRoot: string,
   kovitoboardRoot?: string,
 ): ScopeValidationResult {
-  // 承認済み scope と必要 scope の交差を求める
+  // Find the intersection of approved scopes and required scopes
   const matchingScopes = requiredScopes.filter((s) =>
     approvedScopes.includes(s),
   )
@@ -131,8 +134,8 @@ export function validatePathForScope(
     return { ok: false, failedCode: 'ScopeViolation' }
   }
 
-  // 各マッチング scope に対してパス検証を試みる
-  // いずれか 1 つでも通れば OK
+  // Try path validation against each matching scope
+  // Any one passing is sufficient
   for (const scope of matchingScopes) {
     const scopeRoot = resolveScopeRoot(scope, projectRoot, recipeId, kovitoboardRoot)
     let physical: string
@@ -146,24 +149,24 @@ export function validatePathForScope(
       throw err
     }
 
-    // claude-md-read は特殊判定（CLAUDE.md のみ許可）
+    // claude-md-read has special handling (only CLAUDE.md is allowed)
     if (scope === 'claude-md-read') {
       if (isClaudeMdPath(physical, projectRoot)) {
-        // 除外リスト判定（CLAUDE.md は通常該当しないが安全策）
+        // Exclusion list check (CLAUDE.md normally won't match, but as a safety measure)
         if (isForbidden(physical, projectRoot)) {
-          continue // 次の scope を試す
+          continue // Try next scope
         }
         return { ok: true }
       }
-      continue // CLAUDE.md でなければ次の scope を試す
+      continue // Not CLAUDE.md, try next scope
     }
 
-    // scope 領域内判定
+    // Check if path is within scope region
     if (!isWithin(physical, scopeRoot)) {
-      continue // 次の scope を試す
+      continue // Try next scope
     }
 
-    // 除外リスト判定（scope 宣言に関わらず常に効く）
+    // Exclusion list check (always enforced regardless of scope declaration)
     if (isForbidden(physical, projectRoot)) {
       return { ok: false, failedCode: 'PathForbidden' }
     }
@@ -171,13 +174,13 @@ export function validatePathForScope(
     return { ok: true }
   }
 
-  // どの scope でも領域内判定をパスしなかった
+  // No scope passed the region check
   return { ok: false, failedCode: 'PathOutOfScope' }
 }
 
 /**
- * scope のみの検証（パス引数なしの handler 用）.
- * kv-* など own-data 固定の handler で使用する。
+ * Scope-only validation (for handlers without path arguments).
+ * Used by own-data-bound handlers such as kv-*.
  */
 export function validateScopeOnly(
   approvedScopes: readonly Scope[],

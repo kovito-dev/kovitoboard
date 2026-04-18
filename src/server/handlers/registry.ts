@@ -1,8 +1,8 @@
 /**
- * Handler Registry — Category A handler 9 個の登録・名前解決.
+ * Handler Registry — Registration and name resolution for 9 Category A handlers.
  *
- * 各 handler モジュールを一覧管理し、handler 名から実装を取得する。
- * Phase E で個々の handler が実装された後、ここに登録する。
+ * Manages all handler modules and retrieves implementations by handler name.
+ * Individual handlers are registered here after being implemented in Phase E.
  *
  * @see recipe-system.md §12-2
  * @stable v0.1.0
@@ -17,7 +17,7 @@ import type { CategoryAHandlerName, HandlerDef } from './types.js'
 const handlers = new Map<CategoryAHandlerName, HandlerDef>()
 
 /**
- * handler 実装を登録する.
+ * Registers a handler implementation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerHandler(handler: HandlerDef<any, any>): void {
@@ -28,21 +28,21 @@ export function registerHandler(handler: HandlerDef<any, any>): void {
 }
 
 /**
- * handler 名から実装を取得する.
+ * Retrieves a handler implementation by name.
  */
 export function getHandler(name: CategoryAHandlerName): HandlerDef | undefined {
   return handlers.get(name)
 }
 
 /**
- * 登録済みの全 handler 名を返す.
+ * Returns all registered handler names.
  */
 export function getRegisteredHandlerNames(): CategoryAHandlerName[] {
   return [...handlers.keys()]
 }
 
 /**
- * テスト用: レジストリをクリアする.
+ * For testing: clears the registry.
  */
 export function clearRegistry(): void {
   handlers.clear()

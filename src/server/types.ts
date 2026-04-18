@@ -214,7 +214,7 @@ export interface NewSessionRequest {
   agentId?: string
   message?: string
   cwd?: string
-  /** 初回発話辞書のキー（例: "onboarding:first-time"）。指定時は辞書から解決したテキストを送信する */
+  /** Key for the initial prompt dictionary (e.g. "onboarding:first-time"). When specified, the resolved text from the dictionary is sent */
   initialPrompt?: string
 }
 

@@ -1,9 +1,9 @@
 /**
- * エージェント作成・更新 REST API ルーター
+ * Agent create/update REST API router
  *
- * POST   /api/agents/create        — テンプレートからエージェントを作成
- * GET    /api/agents/:id/sections   — 構造化フィールドの現在値を取得
- * PUT    /api/agents/:id            — エージェント属性を更新
+ * POST   /api/agents/create        — Create an agent from a template
+ * GET    /api/agents/:id/sections   — Get current values of structured fields
+ * PUT    /api/agents/:id            — Update agent attributes
  */
 
 import { Router } from 'express'
@@ -20,11 +20,11 @@ import {
 export function createAgentWriteRouter(fs: FileAccessLayer): Router {
   const router = Router()
 
-  // POST /api/agents/create — テンプレートからエージェント作成
+  // POST /api/agents/create — Create an agent from a template
   router.post('/create', (req, res) => {
     const body = req.body as Partial<CreateAgentOptions>
 
-    // 必須パラメータのバリデーション
+    // Validate required parameters
     if (!body.templateId || typeof body.templateId !== 'string') {
       res.status(400).json({ error: 'templateId is required' })
       return
@@ -34,7 +34,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
       return
     }
 
-    // オプションパラメータのサニタイズ
+    // Sanitize optional parameters
     const options: CreateAgentOptions = {
       templateId: body.templateId,
       agentId: body.agentId,
@@ -46,7 +46,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
     const result = createAgentFromTemplate(fs, options)
 
     if (!result.success) {
-      // 既存エージェントとの衝突は 409
+      // 409 for conflict with existing agent
       const status = result.error?.includes('already exists') ? 409 : 400
       res.status(status).json({ error: result.error })
       return
@@ -59,7 +59,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
     })
   })
 
-  // GET /api/agents/:id/sections — 構造化フィールドの現在値を取得
+  // GET /api/agents/:id/sections — Get current values of structured fields
   router.get('/:id/sections', (req, res) => {
     const agentId = req.params.id
     if (!isValidAgentId(agentId)) {
@@ -76,7 +76,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
     res.json(sections)
   })
 
-  // PUT /api/agents/:id — エージェント属性を更新
+  // PUT /api/agents/:id — Update agent attributes
   router.put('/:id', (req, res) => {
     const agentId = req.params.id
     if (!isValidAgentId(agentId)) {
@@ -86,7 +86,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
 
     const body = req.body as Partial<UpdateAgentOptions>
 
-    // 少なくとも 1 つの更新項目が必要
+    // At least one field to update is required
     if (body.displayName === undefined && !body.sections) {
       res.status(400).json({ error: 'At least one field to update is required (displayName or sections)' })
       return
@@ -113,7 +113,7 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
   return router
 }
 
-/** customizations オブジェクトのサニタイズ */
+/** Sanitize the customizations object */
 function sanitizeCustomizations(
   raw: unknown,
 ): CreateAgentOptions['customizations'] | undefined {

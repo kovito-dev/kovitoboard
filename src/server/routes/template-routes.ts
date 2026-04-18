@@ -1,8 +1,8 @@
 /**
- * テンプレート API ルーター
+ * Template API router
  *
- * GET /api/templates/agents      — エージェントテンプレート一覧
- * GET /api/templates/agents/:id  — エージェントテンプレート内容
+ * GET /api/templates/agents      — List agent templates
+ * GET /api/templates/agents/:id  — Get agent template content
  */
 import { Router } from 'express'
 import type { FileAccessLayer } from '../fs-layer'

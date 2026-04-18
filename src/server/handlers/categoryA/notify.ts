@@ -1,9 +1,9 @@
 /**
- * notify handler — ユーザーに通知を送る.
+ * notify handler — Sends a notification to the user.
  *
- * v0.1.0 では UI トーストのみ（OS 通知は実装しない）。
- * Phase E 時点では WebSocket 未統合のため、console.log で代替する。
- * Phase J/K で WebSocket 統合時に kb-notification イベントを送信する実装に差し替え。
+ * In v0.1.0, only UI toasts are supported (no OS-level notifications).
+ * At Phase E, WebSocket is not yet integrated, so console.log is used as a fallback.
+ * Will be replaced with kb-notification event via WebSocket in Phase J/K.
  *
  * @see recipe-system.md §12-2-1 notify
  * @stable v0.1.0
@@ -63,8 +63,8 @@ export const notifyHandler: HandlerDef<NotifyInput, NotifyOk> = {
     const level = input.level ?? 'info'
 
     try {
-      // TODO: Phase J/K で WebSocket 統合時に kb-notification イベントを送信する実装に差し替え
-      // 現時点では console.log で代替
+      // TODO: Replace with kb-notification event via WebSocket in Phase J/K
+      // Currently using console.log as a fallback
       const prefix = level === 'warning' ? '[WARN]' : '[INFO]'
       console.log(`[notify] ${prefix} ${input.title}: ${input.body}`)
 

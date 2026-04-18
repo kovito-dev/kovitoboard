@@ -1,9 +1,9 @@
 /**
- * list-files handler — ディレクトリ内のファイル・フォルダ一覧を返す.
+ * list-files handler — Returns a list of files and directories within a directory.
  *
- * BFS でディレクトリを探索し、エントリ一覧を返す。
- * 除外パスは filterExcludedEntries で結果から除去する。
- * パス検証は dispatcher 側で完了済みのため、handler 内では行わない。
+ * Traverses the directory using BFS and returns an entry list.
+ * Excluded paths are removed from results via filterExcludedEntries.
+ * Path validation is handled by the dispatcher, so no validation is done here.
  *
  * @see recipe-system.md §12-2-1 list-files
  * @stable v0.1.0
@@ -28,8 +28,8 @@ import {
 import { filterExcludedEntries } from '../../scopeValidator.js'
 
 /**
- * input.path が own-data scope に該当するかを判定する.
- * own-data scope のパス形式: "app/data/{recipeId}/..." or 相対パスが own-data 領域
+ * Determines whether input.path falls under the own-data scope.
+ * own-data scope path format: "app/data/{recipeId}/..." or relative paths in the own-data area.
  */
 function isOwnDataPath(inputPath: string, context: HandlerContext): boolean {
   return context.approvedScopes.includes('own-data') &&
@@ -37,19 +37,19 @@ function isOwnDataPath(inputPath: string, context: HandlerContext): boolean {
 }
 
 /**
- * 探索のベースパスを解決する.
+ * Resolves the base path for directory traversal.
  */
 function resolveBasePath(inputPath: string, context: HandlerContext): string {
   if (isOwnDataPath(inputPath, context)) {
-    // own-data の場合、projectRoot/app/data/recipeId/ 配下に限定
-    // inputPath が "app/data/..." の形で来るので、projectRoot と結合
+    // For own-data, restrict to projectRoot/app/data/recipeId/
+    // inputPath arrives as "app/data/...", so join with projectRoot
     return path.join(context.projectRoot, inputPath)
   }
   return path.join(context.projectRoot, inputPath)
 }
 
 /**
- * BFS でディレクトリを探索し、FileEntry の配列を返す.
+ * Traverses a directory using BFS and returns an array of FileEntry.
  */
 function listDirectory(
   basePath: string,
@@ -59,7 +59,7 @@ function listDirectory(
 ): FileEntry[] {
   const entries: FileEntry[] = []
 
-  // BFS キュー: [absolutePath, currentDepth]
+  // BFS queue: [absolutePath, currentDepth]
   const queue: Array<[string, number]> = [[basePath, 0]]
 
   while (queue.length > 0 && entries.length < maxEntries) {
@@ -69,7 +69,7 @@ function listDirectory(
     try {
       dirEntries = fs.readdirSync(currentDir, { withFileTypes: true })
     } catch {
-      // ディレクトリが読めない場合はスキップ（権限不足等）
+      // Skip unreadable directories (e.g. insufficient permissions)
       continue
     }
 
@@ -83,7 +83,7 @@ function listDirectory(
       try {
         stat = fs.statSync(entryAbsPath)
       } catch {
-        // stat が取れない場合はスキップ
+        // Skip entries where stat fails
         continue
       }
 
@@ -95,7 +95,7 @@ function listDirectory(
         modifiedAt: stat.mtime.toISOString(),
       })
 
-      // 再帰探索: ディレクトリかつ depth 制限内なら BFS キューに追加
+      // Recursive traversal: add to BFS queue if directory and within depth limit
       if (recursive && dirent.isDirectory() && depth < maxDepth) {
         queue.push([entryAbsPath, depth + 1])
       }
@@ -133,7 +133,7 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
     const basePath = resolveBasePath(input.path, context)
     const recursive = input.recursive ?? false
 
-    // ディレクトリの存在チェック
+    // Check directory existence
     try {
       const stat = fs.statSync(basePath)
       if (!stat.isDirectory()) {
@@ -147,7 +147,7 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
       return handlerError('Internal', `Failed to access directory: ${input.path}`)
     }
 
-    // own-data かどうかで最大深度を切り替え
+    // Switch max depth based on whether the path is own-data
     const maxDepth = isOwnDataPath(input.path, context)
       ? HANDLER_LIMITS.LIST_FILES_MAX_DEPTH_OWN
       : HANDLER_LIMITS.LIST_FILES_MAX_DEPTH_OTHER
@@ -160,14 +160,14 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
         HANDLER_LIMITS.LIST_FILES_MAX_ENTRIES,
       )
 
-      // 除外パスを除去（エントリの path を一時的に絶対パスに変換してフィルタ）
+      // Remove excluded paths (temporarily convert entry paths to absolute for filtering)
       const entriesWithAbsPaths = rawEntries.map((entry) => ({
         ...entry,
         path: path.join(basePath, entry.path),
       }))
       const filtered = filterExcludedEntries(entriesWithAbsPaths, context.projectRoot)
 
-      // 結果を相対パスに戻す
+      // Convert results back to relative paths
       const result: FileEntry[] = filtered.map((entry) => ({
         ...entry,
         path: path.relative(basePath, entry.path),

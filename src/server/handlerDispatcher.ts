@@ -1,12 +1,12 @@
 /**
- * Handler Dispatcher — callId → handler 解決 → scope 検証 → 実行.
+ * Handler Dispatcher — resolves callId to handler, validates scope, and executes.
  *
- * FE からの kb-call リクエストを受けて、manifest から呼び出し宣言を取得し、
- * scope 検証 → テンプレート展開 → handler 実行 → レスポンス返却 を行う。
+ * Receives kb-call requests from the FE, retrieves call declarations from the manifest,
+ * then performs scope validation -> template expansion -> handler execution -> response.
  *
- * dispatcher 経由以外の handler 呼び出し経路を作らない。
- * @see recipe-system.md §12-5-2 (実行時 dispatcher フロー)
- * @see recipe-backend-implementation-plan.md §8-2 原則 2
+ * No handler invocation path should exist outside of this dispatcher.
+ * @see recipe-system.md §12-5-2 (runtime dispatcher flow)
+ * @see recipe-backend-implementation-plan.md §8-2 principle 2
  * @stable v0.1.0
  */
 
@@ -47,7 +47,7 @@ interface BucketEntry {
 
 const rateBuckets = new Map<string, BucketEntry>()
 
-/** デフォルトのレート制限: 60 calls / min (notify は個別に 10/min) */
+/** Default rate limit: 60 calls/min (notify is individually limited to 10/min) */
 const DEFAULT_RATE = { tokensPerMin: 60 }
 const NOTIFY_RATE = { tokensPerMin: 10 }
 
@@ -85,12 +85,12 @@ function checkRateLimit(
 // =========================================
 
 /**
- * テンプレート引数を展開する.
+ * Expand template arguments.
  *
- * 文字列中の `${input.xxx}` を input オブジェクトの値で置換する。
- * ネストしたオブジェクト内も再帰的に展開する。
+ * Replaces `${input.xxx}` in strings with values from the input object.
+ * Recursively expands nested objects.
  *
- * @returns 展開後の引数オブジェクト
+ * @returns The expanded arguments object
  * @throws Error if input.xxx is undefined
  */
 export function expandTemplate(
@@ -126,7 +126,7 @@ function expandValue(value: unknown, input: Record<string, unknown>): unknown {
 }
 
 function expandString(template: string, input: Record<string, unknown>): unknown {
-  // 完全一致パターン: "${input.xxx}" のみ → 型を保持して返す
+  // Exact match pattern: "${input.xxx}" only -> return with type preserved
   const fullMatch = template.match(/^\$\{input\.([a-zA-Z0-9_.]+)\}$/)
   if (fullMatch) {
     const key = fullMatch[1]
@@ -137,7 +137,7 @@ function expandString(template: string, input: Record<string, unknown>): unknown
     return value
   }
 
-  // 部分置換パターン: "prefix/${input.xxx}/suffix" → 文字列として結合
+  // Partial replacement pattern: "prefix/${input.xxx}/suffix" -> concatenate as string
   return template.replace(/\$\{input\.([a-zA-Z0-9_.]+)\}/g, (_match, key: string) => {
     const value = getNestedValue(input, key)
     if (value === undefined) {
@@ -168,7 +168,7 @@ export class TemplateExpansionError extends Error {
 // Dispatcher
 // =========================================
 
-/** handler がパス引数を取るかを判定 */
+/** Determine whether a handler takes a path argument */
 const HANDLERS_WITH_PATH: Set<CategoryAHandlerName> = new Set([
   'list-files',
   'read-file',
@@ -176,9 +176,9 @@ const HANDLERS_WITH_PATH: Set<CategoryAHandlerName> = new Set([
 ])
 
 /**
- * handler 呼び出しを dispatch する.
+ * Dispatch a handler invocation.
  *
- * @see recipe-system.md §12-5-2 の 1〜8 ステップに対応
+ * @see recipe-system.md §12-5-2 steps 1-8
  */
 export async function dispatch(
   request: DispatchRequest,
@@ -188,26 +188,26 @@ export async function dispatch(
 ): Promise<HandlerResponse<unknown>> {
   const { recipeId, callId, input } = request
 
-  // 1. manifest ロード
+  // 1. Load manifest
   const manifest = manifestStore.get(recipeId)
   if (!manifest) {
     return handlerError('HandlerNotDeclared', `No manifest found for recipe "${recipeId}"`)
   }
 
-  // 2. api.calls[id=callId] 検索
+  // 2. Look up api.calls[id=callId]
   const callDecl = manifest.api.calls.find((c) => c.id === callId)
   if (!callDecl) {
     return handlerError('HandlerNotDeclared', `Call "${callId}" is not declared in recipe "${recipeId}"`)
   }
 
-  // 3. handler registry から実装を取得
+  // 3. Get implementation from handler registry
   const handlerName = callDecl.handler
   const handlerDef = getHandler(handlerName)
   if (!handlerDef) {
     return handlerError('Internal', `Handler "${handlerName}" is not registered`)
   }
 
-  // 4. args テンプレート展開
+  // 4. Expand args template
   let expandedArgs: Record<string, unknown>
   try {
     expandedArgs = expandTemplate(callDecl.args, input)
@@ -218,12 +218,12 @@ export async function dispatch(
     throw err
   }
 
-  // 5. scope 検証
+  // 5. Scope validation
   const requiredScopes = HANDLER_REQUIRED_SCOPES[handlerName]
   const approvedScopes = manifest.approvedScopes
 
   if (HANDLERS_WITH_PATH.has(handlerName)) {
-    // パス引数を持つ handler: パス × scope の交差検証
+    // Handler with path argument: cross-validate path x scope
     const pathArg = expandedArgs.path
     if (typeof pathArg !== 'string') {
       return handlerError('InvalidArgs', '"path" argument must be a string')
@@ -243,7 +243,7 @@ export async function dispatch(
       )
     }
   } else {
-    // パス引数なし handler: scope のみ検証
+    // Handler without path argument: validate scope only
     const scopeValidation = validateScopeOnly(approvedScopes, requiredScopes)
     if (!scopeValidation.ok) {
       return handlerError(
@@ -253,18 +253,18 @@ export async function dispatch(
     }
   }
 
-  // 6. 引数バリデーション
+  // 6. Argument validation
   const validationError = handlerDef.validate(expandedArgs)
   if (validationError) {
     return handlerError('InvalidArgs', validationError)
   }
 
-  // 7. レート制限チェック
+  // 7. Rate limit check
   if (!checkRateLimit(recipeId, callId, handlerName)) {
     return handlerError('RateLimited', `Rate limit exceeded for "${callId}"`)
   }
 
-  // 8. handler 実行 + 監査ログ
+  // 8. Execute handler + audit log
   const startTime = Date.now()
   try {
     const result = await handlerDef.execute(expandedArgs, {
@@ -274,7 +274,7 @@ export async function dispatch(
     })
     const durationMs = Date.now() - startTime
 
-    // 監査ログ（成功 / handler 内エラー）
+    // Audit log (success / handler-level error)
     writeAuditLog(
       createAuditEntry({
         recipeId,
@@ -293,7 +293,7 @@ export async function dispatch(
     const durationMs = Date.now() - startTime
     console.error(`[dispatcher] Handler "${handlerName}" threw:`, err)
 
-    // 監査ログ（例外）
+    // Audit log (exception)
     writeAuditLog(
       createAuditEntry({
         recipeId,
@@ -312,7 +312,7 @@ export async function dispatch(
 }
 
 /**
- * テスト用: レートリミッタをリセットする.
+ * Reset the rate limiter. For testing only.
  */
 export function resetRateLimiter(): void {
   rateBuckets.clear()

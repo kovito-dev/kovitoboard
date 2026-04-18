@@ -13,9 +13,9 @@ const DEFAULT_CONFIG: ViewerConfig = {
     pollInterval: 1500
   },
   agents: {
-    default: { name: 'デフォルト', color: '#A67B5B' }
+    default: { name: 'Default', color: '#A67B5B' }
   },
-  user: { name: 'ユーザー', color: '#7C3AED' },
+  user: { name: 'User', color: '#7C3AED' },
   ui: {
     theme: 'dark',
     maxPreviewHeight: 300,
@@ -38,49 +38,49 @@ const DEFAULT_CONFIG: ViewerConfig = {
 let cachedProjectRoot: string | null = null
 
 /**
- * プロジェクトルートを解決する（DEC-009）。
+ * Resolve the project root (DEC-009).
  *
- * 優先順位:
- *   ① --project-root CLI 引数
- *   ② KOVITOBOARD_PROJECT_ROOT 環境変数
- *   ③ .kovitoboard/setting.json の project.path
- *   ④ process.cwd() フォールバック
+ * Priority:
+ *   1. --project-root CLI argument
+ *   2. KOVITOBOARD_PROJECT_ROOT environment variable
+ *   3. project.path from .kovitoboard/setting.json
+ *   4. process.cwd() fallback
  *
- * 結果はモジュールレベルでキャッシュされるため、
- * 2 回目以降の呼び出しは fs アクセスなしで即座に返る。
+ * The result is cached at the module level, so subsequent calls
+ * return immediately without any fs access.
  */
 export function resolveProjectRoot(fs: FileAccessLayer): string {
   if (cachedProjectRoot) return cachedProjectRoot
 
-  // 1. CLI 引数
+  // 1. CLI argument
   const argRoot = parseProjectRootArg(process.argv)
   if (argRoot) {
     cachedProjectRoot = resolve(argRoot)
     return cachedProjectRoot
   }
 
-  // 2. 環境変数
+  // 2. Environment variable
   const envRoot = process.env.KOVITOBOARD_PROJECT_ROOT
   if (envRoot && envRoot.trim().length > 0) {
     cachedProjectRoot = resolve(envRoot)
     return cachedProjectRoot
   }
 
-  // 3. .kovitoboard/setting.json の project.path
+  // 3. project.path from .kovitoboard/setting.json
   const persisted = readPersistedProjectRoot(fs, process.cwd())
   if (persisted) {
     cachedProjectRoot = persisted
     return cachedProjectRoot
   }
 
-  // 4. process.cwd() フォールバック
+  // 4. process.cwd() fallback
   cachedProjectRoot = process.cwd()
   return cachedProjectRoot
 }
 
 /**
- * テスト用: キャッシュをリセットする。
- * プロダクションコードでは呼ばないこと。
+ * Reset the cache. For testing only.
+ * Do not call from production code.
  */
 export function _resetProjectRootCache(): void {
   cachedProjectRoot = null

@@ -1,11 +1,11 @@
 /**
- * 初回発話テンプレート辞書
+ * Initial prompt template dictionary
  *
- * オンボーディング等で使用する定型メッセージを
- * ロケール別に管理する。
+ * Manages predefined messages used during onboarding, etc.,
+ * organized by locale.
  */
 
-/** 初回発話テンプレート辞書 */
+/** Initial prompt template dictionary */
 const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
   'onboarding:first-time': {
     ja: 'はじめまして！今から一緒に KovitoBoard を使い始めましょう。',
@@ -14,9 +14,9 @@ const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
 }
 
 /**
- * 指定キー・ロケールの初回発話テンプレートを返す。
- * 該当キーが存在しない場合は null を返す。
- * 指定ロケールが存在しない場合は 'ja' にフォールバックする。
+ * Return the initial prompt template for the given key and locale.
+ * Returns null if the key does not exist.
+ * Falls back to 'ja' if the specified locale is not available.
  */
 export function getInitialPrompt(key: string, locale: 'ja' | 'en'): string | null {
   const entry = INITIAL_PROMPTS[key]

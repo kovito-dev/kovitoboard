@@ -1,8 +1,8 @@
 /**
- * kv-get handler — KV ストアからキーの値を取得する.
+ * kv-get handler — Retrieves a value by key from the KV store.
  *
- * TTL が設定されている場合、期限切れなら null を返す。
- * キーが存在しない場合も { value: null } を返す（エラーではない）。
+ * If TTL is set and the entry has expired, returns null.
+ * Returns { value: null } for non-existent keys (not an error).
  *
  * @see recipe-system.md §12-2-1 kv-get
  * @stable v0.1.0

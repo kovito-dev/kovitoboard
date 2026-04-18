@@ -1,8 +1,8 @@
 /**
- * KovitoBoard 設定ファイル (.kovitoboard/setting.json) の読み書き
+ * KovitoBoard settings file (.kovitoboard/setting.json) read/write.
  *
- * FileAccessLayer を受け取る設計。
- * バリデーションは手書きで実装する（zod 不使用）。
+ * Designed to receive a FileAccessLayer.
+ * Validation is implemented manually (without zod).
  */
 import { join } from 'path'
 import { getKovitoboardDir } from './paths'
@@ -11,12 +11,12 @@ import type { KovitoboardSetting } from '../shared/setting-types'
 
 const SETTING_FILENAME = 'setting.json'
 
-/** .kovitoboard/setting.json のパスを返す */
+/** Return the path to .kovitoboard/setting.json */
 export function getSettingPath(fs: FileAccessLayer): string {
   return join(getKovitoboardDir(fs), SETTING_FILENAME)
 }
 
-/** 設定ファイルを読み込む。ファイルが無ければ null を返す */
+/** Read the settings file. Returns null if the file does not exist */
 export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
   const settingPath = getSettingPath(fs)
   if (!fs.existsSync(settingPath)) return null
@@ -25,7 +25,7 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
     const raw = fs.readFileSync(settingPath, 'utf-8')
     const data = JSON.parse(raw) as Record<string, unknown>
 
-    // 1.0 → 1.1 マイグレ��ション: project.path を process.cwd() で補完
+    // 1.0 -> 1.1 migration: backfill project.path with process.cwd()
     if (data.version === '1.0') {
       data.version = '1.1'
       const project = (data.project ?? {}) as Record<string, unknown>
@@ -33,7 +33,7 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
       data.project = project
       try {
         writeSetting(fs, data as unknown as KovitoboardSetting)
-        console.log('[setting-manager] Migrated setting.json: 1.0 → 1.1')
+        console.log('[setting-manager] Migrated setting.json: 1.0 -> 1.1')
       } catch (writeErr) {
         console.warn('[setting-manager] Migration write-back failed:', writeErr)
       }
@@ -50,11 +50,11 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
   }
 }
 
-/** 設定ファイルを JSON で書き出す */
+/** Write the settings data as JSON */
 export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): void {
   const settingPath = getSettingPath(fs)
 
-  // .kovitoboard/ ディレクトリがなければ作成
+  // Create .kovitoboard/ directory if it does not exist
   const dir = getKovitoboardDir(fs)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
@@ -63,7 +63,7 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
   fs.writeFileSync(settingPath, JSON.stringify(data, null, 2) + '\n', 'utf-8')
 }
 
-/** 手書きバリデーション（zod 不使用） */
+/** Manual validation (without zod) */
 export function validateSetting(data: unknown): data is KovitoboardSetting {
   if (data === null || typeof data !== 'object') return false
 

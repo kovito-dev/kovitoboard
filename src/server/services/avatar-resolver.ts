@@ -1,10 +1,10 @@
 /**
- * エージェントアバター画像の優先順位解決ロジック
+ * Agent avatar image resolution logic with priority ordering
  *
- * ファイルシステムを走査して custom -> default の順で画像を探す。
- * - custom: ユーザーがアップロードした画像（public/avatars/custom/）
- * - default: 既定アバター（public/avatars/default/、git 管理）
- * - どちらにもなければ null（フロントエンド側の SVG 生成器がフォールバック）
+ * Scans the filesystem in custom -> default order to locate avatar images.
+ * - custom: User-uploaded images (public/avatars/custom/)
+ * - default: Built-in default avatars (public/avatars/default/, git-managed)
+ * - If neither exists, returns null (frontend SVG generator provides the fallback)
  */
 
 import { join, resolve, dirname } from 'path'
@@ -17,11 +17,11 @@ const __dirname = dirname(__filename)
 const SUPPORTED_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.svg']
 
 /**
- * avatars ディレクトリのパスを解決する。
+ * Resolve the avatars directory path.
  * dev: src/server/services/ -> ../../../public/avatars
- * build: dist/server/services/ -> ../../avatars (dist/ に vite がコピーした public)
+ * build: dist/server/services/ -> ../../avatars (public copied by vite into dist/)
  *
- * ただし dev 時はビルド済み dist がないため ../../public/avatars にもフォールバック
+ * In dev mode the built dist does not exist, so ../../public/avatars is also tried as a fallback.
  */
 function getAvatarsBaseDir(fs: FileAccessLayer): string {
   const candidates = [
@@ -40,22 +40,22 @@ export function getDefaultDir(fs: FileAccessLayer): string {
 }
 
 /**
- * エージェント名に対応するアバター画像パスを解決する。
- * custom -> default の順で探す。見つからなければ null。
+ * Resolve the avatar image path for a given agent name.
+ * Searches custom -> default in order. Returns null if not found.
  */
 export function resolveAvatarPath(fs: FileAccessLayer, agentName: string): string | null {
-  // custom ディレクトリを先に探す
+  // Search the custom directory first
   const customDir = getCustomDir(fs)
   const customPath = findImageInDir(fs, customDir, agentName)
   if (customPath) return customPath
 
-  // default ディレクトリ
+  // Fall back to default directory
   const defaultDir = getDefaultDir(fs)
   return findImageInDir(fs, defaultDir, agentName)
 }
 
 /**
- * 指定ディレクトリ内で agentName.{ext} にマッチするファイルを探す
+ * Find a file matching agentName.{ext} in the specified directory
  */
 function findImageInDir(fs: FileAccessLayer, dir: string, name: string): string | null {
   if (!fs.existsSync(dir)) return null
@@ -67,7 +67,7 @@ function findImageInDir(fs: FileAccessLayer, dir: string, name: string): string 
 }
 
 /**
- * custom ディレクトリ内の agentName.* を全削除（拡張子違いも含む）
+ * Delete all agentName.* files in the custom directory (including different extensions)
  */
 export function deleteCustomAvatar(fs: FileAccessLayer, agentName: string): boolean {
   const customDir = getCustomDir(fs)

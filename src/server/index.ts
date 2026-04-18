@@ -179,8 +179,8 @@ function resolveAndValidatePath(requestedPath: string): string | null {
 }
 
 // --- Route modules ---
-// ルーターは /api/config/setting 等のサブパスを処理するため、
-// 既存の app.get('/api/config') より先にマウントして優先させる
+// Routers handle sub-paths like /api/config/setting, so mount them
+// before the existing app.get('/api/config') to give them priority
 app.use('/api/config', createConfigRouter(fs, projectRoot))
 app.use('/api/templates/agents', createTemplateRouter(fs))
 app.use('/api/agents', createAvatarRouter(fs))
@@ -328,7 +328,7 @@ app.post('/api/sessions/:id/send', async (req, res) => {
 app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd, initialPrompt } = req.body as NewSessionRequest
 
-  // initialPrompt が指定されている場合、辞書から発話テキストを解決する
+  // If initialPrompt is specified, resolve the prompt text from the dictionary
   let effectiveMessage: string | undefined = message
 
   if (initialPrompt !== undefined) {
@@ -773,7 +773,7 @@ app.post('/api/recipes/install', async (req, res) => {
     // Apply recipe (send to agent via tmux, excluding api: section)
     const windowName = tmuxBridge.listWindows()[0]?.name
     if (windowName) {
-      // api: セクションを除外してエージェントに渡す
+      // Exclude api: section before passing to the agent
       const recipeForAgent = { ...parsed, api: undefined }
       try {
         await applyRecipe(recipeForAgent as Parameters<typeof applyRecipe>[0], tmuxBridge, windowName)
@@ -1091,7 +1091,7 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
 }
 
 // --- WebSocket: kb-call handler (Recipe BE Phase J) ---
-// @see recipe-backend-critical-reviews.md §3 (Q-J1: WebSocket 採用)
+// @see recipe-backend-critical-reviews.md §3 (Q-J1: WebSocket adoption)
 async function handleKbCall(
   ws: WebSocket,
   msg: { type: 'kb-call' } & KbCallRequest,
