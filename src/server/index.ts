@@ -28,6 +28,7 @@ import { createConfigRouter } from './routes/config-routes'
 import { createTemplateRouter } from './routes/template-routes'
 import { createAvatarRouter } from './routes/avatar-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
+import { scanBundledRecipes, getBundledRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import { applyRecipe } from './recipe-applicator'
@@ -77,6 +78,13 @@ const projectRoot = resolveProjectRoot(fs)
 
 // Auto-create `.kovitoboard/` directory on first launch
 ensureKovitoboardDir(fs)
+
+// Scan bundled recipes at startup (safe — never throws)
+try {
+  scanBundledRecipes(fs)
+} catch (err) {
+  console.error('[startup] Bundled recipe scan failed (non-fatal):', err)
+}
 
 const sessionManager = new SessionManager()
 const watcher = new Watcher(config, sessionManager, fs)
@@ -516,6 +524,18 @@ app.get('/api/settings/rules', (_req, res) => {
 })
 
 // --- Recipe API ---
+
+app.get('/api/recipes/bundled', (_req, res) => {
+  try {
+    // Refresh install status against current history before returning
+    refreshInstallStatus(fs)
+    const recipes = getBundledRecipes()
+    res.json(recipes)
+  } catch (err) {
+    console.error('[API] Bundled recipes error:', err)
+    res.status(500).json({ error: 'Failed to get bundled recipes' })
+  }
+})
 
 app.post('/api/recipes/parse', async (req, res) => {
   try {

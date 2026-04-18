@@ -1,21 +1,23 @@
 /**
- * Recipes page — tab container for Import, History, and Export.
+ * Recipes page — tab container for Bundled, Import, History, and Export.
  */
 import { useState } from 'react'
+import { RecipeBundled } from '../components/RecipeBundled'
 import { RecipeImport } from '../components/RecipeImport'
 import { RecipeHistory } from '../components/RecipeHistory'
 import { RecipeExport } from '../components/RecipeExport'
 
-type TabId = 'import' | 'history' | 'export'
+type TabId = 'bundled' | 'import' | 'history' | 'export'
 
 const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'bundled', label: '同梱' },
   { id: 'import', label: '読み込み' },
   { id: 'history', label: '履歴' },
   { id: 'export', label: '書き出し' },
 ]
 
 export function RecipesPage() {
-  const [activeTab, setActiveTab] = useState<TabId>('import')
+  const [activeTab, setActiveTab] = useState<TabId>('bundled')
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -48,6 +50,7 @@ export function RecipesPage() {
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
+        {activeTab === 'bundled' && <RecipeBundled />}
         {activeTab === 'import' && <RecipeImport />}
         {activeTab === 'history' && <RecipeHistory />}
         {activeTab === 'export' && <RecipeExport />}
