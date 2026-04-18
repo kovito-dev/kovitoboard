@@ -3,12 +3,13 @@ import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// KovitoBoard Phase 1:
-// - gala-ui の vite.config.ts を踏襲。public/ は不要なため publicDir を無効化
+// KovitoBoard:
+// - public/ から静的資産を配信する（avatars, docs 等）
+// - root が src/renderer のため publicDir は絶対パスで指定
 // - ビルド成果物は <repo>/dist に出力
 export default defineConfig({
   root: 'src/renderer',
-  publicDir: false,
+  publicDir: resolve(__dirname, 'public'),
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

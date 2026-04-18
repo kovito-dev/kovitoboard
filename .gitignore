@@ -10,3 +10,5 @@ projects/*/
 .DS_Store
 .playwright-mcp/
 app/
+public/avatars/custom/*
+!public/avatars/custom/.gitkeep
