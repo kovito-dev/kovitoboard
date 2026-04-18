@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
-    "check:hygiene": "node tools/check-release-hygiene.mjs"
+    "check:hygiene": "node tools/check-release-hygiene.mjs",
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "chokidar": "^5.0.0",
@@ -39,6 +40,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.4",
     "concurrently": "^9.2.1",
+    "lefthook": "^2.1.6",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

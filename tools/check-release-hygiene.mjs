@@ -15,6 +15,16 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
 // ---------------------------------------------------------------------------
+// CLI flags
+// ---------------------------------------------------------------------------
+
+const args = process.argv.slice(2)
+const PII_ONLY = args.includes('--pii-only')
+const JAPANESE_ONLY = args.includes('--japanese-only')
+const STRICT = args.includes('--strict')  // Treat warnings (Japanese) as errors
+const RUN_ALL = !PII_ONLY && !JAPANESE_ONLY
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -140,8 +150,14 @@ let warnings = 0
 let errors = 0
 
 function warn(msg) {
-  console.log(`  \x1b[33mWARN\x1b[0m  ${msg}`)
-  warnings++
+  if (STRICT) {
+    // In strict mode (CI), warnings become errors
+    console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
+    errors++
+  } else {
+    console.log(`  \x1b[33mWARN\x1b[0m  ${msg}`)
+    warnings++
+  }
 }
 
 function error(msg) {
@@ -150,64 +166,70 @@ function error(msg) {
 }
 
 // --- Check 1: Japanese characters in source files ---
-console.log('\n\x1b[1m[1/3] Japanese character detection\x1b[0m')
+if (RUN_ALL || JAPANESE_ONLY) {
+  console.log('\n\x1b[1m[1/3] Japanese character detection\x1b[0m')
 
-const sourceFiles = getTrackedSourceFiles(SOURCE_EXTENSIONS)
-  .filter(f => !isJapaneseExcluded(f))
+  const sourceFiles = getTrackedSourceFiles(SOURCE_EXTENSIONS)
+    .filter(f => !isJapaneseExcluded(f))
 
-let japaneseFileCount = 0
-for (const file of sourceFiles) {
-  const hits = scanFile(join(ROOT, file), JAPANESE_RE)
-  if (hits.length > 0) {
-    japaneseFileCount++
-    warn(`${file} (${hits.length} occurrence${hits.length > 1 ? 's' : ''})`)
-    for (const h of hits.slice(0, 3)) {
-      console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
-    }
-    if (hits.length > 3) {
-      console.log(`         ... and ${hits.length - 3} more`)
-    }
-  }
-}
-
-if (japaneseFileCount === 0) {
-  console.log('  \x1b[32mOK\x1b[0m    No Japanese characters found in source files')
-} else {
-  console.log(`\n  Found Japanese characters in ${japaneseFileCount} file(s)`)
-}
-
-// --- Check 2: Personal information patterns ---
-console.log('\n\x1b[1m[2/3] Personal information detection\x1b[0m')
-
-const allTextFiles = getAllTrackedTextFiles()
-let piiFound = false
-
-for (const { label, regex } of PII_PATTERNS) {
-  for (const file of allTextFiles) {
-    // Skip this hygiene script itself
-    if (file === 'tools/check-release-hygiene.mjs') continue
-    const hits = scanFile(join(ROOT, file), regex)
+  let japaneseFileCount = 0
+  for (const file of sourceFiles) {
+    const hits = scanFile(join(ROOT, file), JAPANESE_RE)
     if (hits.length > 0) {
-      piiFound = true
-      for (const hit of hits) {
-        error(`PII "${label}" found: ${file}:${hit.line}`)
+      japaneseFileCount++
+      warn(`${file} (${hits.length} occurrence${hits.length > 1 ? 's' : ''})`)
+      for (const h of hits.slice(0, 3)) {
+        console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
+      }
+      if (hits.length > 3) {
+        console.log(`         ... and ${hits.length - 3} more`)
       }
     }
   }
+
+  if (japaneseFileCount === 0) {
+    console.log('  \x1b[32mOK\x1b[0m    No Japanese characters found in source files')
+  } else {
+    console.log(`\n  Found Japanese characters in ${japaneseFileCount} file(s)`)
+  }
 }
 
-if (!piiFound) {
-  console.log('  \x1b[32mOK\x1b[0m    No personal information patterns found')
+// --- Check 2: Personal information patterns ---
+if (RUN_ALL || PII_ONLY) {
+  console.log('\n\x1b[1m[2/3] Personal information detection\x1b[0m')
+
+  const allTextFiles = getAllTrackedTextFiles()
+  let piiFound = false
+
+  for (const { label, regex } of PII_PATTERNS) {
+    for (const file of allTextFiles) {
+      // Skip this hygiene script itself
+      if (file === 'tools/check-release-hygiene.mjs') continue
+      const hits = scanFile(join(ROOT, file), regex)
+      if (hits.length > 0) {
+        piiFound = true
+        for (const hit of hits) {
+          error(`PII "${label}" found: ${file}:${hit.line}`)
+        }
+      }
+    }
+  }
+
+  if (!piiFound) {
+    console.log('  \x1b[32mOK\x1b[0m    No personal information patterns found')
+  }
 }
 
 // --- Check 3: docs/specs/ directory ---
-console.log('\n\x1b[1m[3/3] docs/specs/ directory check\x1b[0m')
+if (RUN_ALL) {
+  console.log('\n\x1b[1m[3/3] docs/specs/ directory check\x1b[0m')
 
-const specsDir = join(ROOT, 'docs', 'specs')
-if (existsSync(specsDir)) {
-  error('docs/specs/ directory exists — should be removed (internal docs only)')
-} else {
-  console.log('  \x1b[32mOK\x1b[0m    docs/specs/ does not exist')
+  const specsDir = join(ROOT, 'docs', 'specs')
+  if (existsSync(specsDir)) {
+    error('docs/specs/ directory exists — should be removed (internal docs only)')
+  } else {
+    console.log('  \x1b[32mOK\x1b[0m    docs/specs/ does not exist')
+  }
 }
 
 // ---------------------------------------------------------------------------

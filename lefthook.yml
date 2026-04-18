@@ -1,0 +1,15 @@
+# Lefthook configuration for KovitoBoard OSS release hygiene.
+# See: DEC-012 (OSS release hygiene gate)
+
+pre-commit:
+  commands:
+    hygiene-pii:
+      # Personal information detection — always blocks commit
+      run: node tools/check-release-hygiene.mjs --pii-only
+      fail_text: |
+        Personal information detected in staged files.
+        Run `npm run check:hygiene` for details.
+
+    hygiene-japanese:
+      # Japanese character detection — warning only (does not block)
+      run: node tools/check-release-hygiene.mjs --japanese-only || true
