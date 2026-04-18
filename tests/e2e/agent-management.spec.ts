@@ -42,7 +42,7 @@ test.describe('エージェント管理', () => {
     const res = await request.get(`${API_BASE}/api/agents`)
     const agents = await res.json()
 
-    await page.goto('/')
+    await page.goto('/agents')
     await page.waitForLoadState('networkidle')
 
     if (agents.length > 0) {
@@ -50,9 +50,12 @@ test.describe('エージェント管理', () => {
       const content = await page.textContent('body')
       expect(content).toContain(agents[0].displayName)
     } else {
-      // A guidance message is displayed when no agents exist
+      // Either a guidance message or the welcome banner is displayed
       const content = await page.textContent('body')
-      expect(content).toContain('エージェントが見つかりません')
+      const hasGuidance =
+        content?.includes('エージェントが見つかりません') ||
+        content?.includes('エージェント定義ファイルを作成')
+      expect(hasGuidance).toBe(true)
     }
   })
 

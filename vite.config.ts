@@ -21,12 +21,12 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
-    port: 5173,
+    port: process.env.VITE_PORT ? parseInt(process.env.VITE_PORT, 10) : 5173,
     host: true,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': `http://localhost:${process.env.PORT || 3001}`,
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: `ws://localhost:${process.env.PORT || 3001}`,
         ws: true
       }
     }

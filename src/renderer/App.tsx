@@ -64,9 +64,12 @@ export function App() {
         return res.json()
       })
       .then((data) => {
-        if (data) {
-          setOnboardingComplete(data.onboarding?.completedAt != null)
+        // Body may be `null` when setting.json does not exist (onboarding not yet started)
+        if (data == null) {
+          setOnboardingComplete(false)
+          return
         }
+        setOnboardingComplete(data.onboarding?.completedAt != null)
       })
       .catch(() => {
         setOnboardingComplete(false)

@@ -14,7 +14,11 @@
  */
 import { test, expect } from '@playwright/test'
 import { cpSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 const API_BASE = 'http://127.0.0.1:3001'
 
@@ -117,7 +121,7 @@ function cleanup(): void {
 
 /* --- Tests --- */
 
-test.describe('Research Reports E2E (RR-2)', () => {
+test.describe('Research Reports E2E (RR-2) @rich-project', () => {
   /**
    * Note: app/ copy and mock data placement must be done before the server restarts.
    * Since Playwright's webServer starts automatically, copying within tests means

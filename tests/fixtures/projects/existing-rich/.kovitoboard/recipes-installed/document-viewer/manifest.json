@@ -1,0 +1,7 @@
+{
+  "_comment": "Minimal recipe manifest for E2E fixture (existing-rich)",
+  "name": "document-viewer",
+  "version": "1.0.0",
+  "description": "A simple document viewer recipe for testing",
+  "installedAt": "2026-04-18T00:00:00.000Z"
+}
