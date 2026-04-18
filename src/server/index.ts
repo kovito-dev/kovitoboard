@@ -40,6 +40,21 @@ import type {
   ClientToServerEvent,
   TrustPromptRespondPayload,
 } from '../shared/ws-events'
+import { RecipeManifestStore } from './recipeManifestStore'
+import { dispatch as dispatchHandler } from './handlerDispatcher'
+import { validateApiSection, parseApiSection } from './recipe/apiTypes'
+import type { KbCallRequest, KbCallResponse } from './recipe/apiTypes'
+import { registerHandler } from './handlers/registry'
+import { listFilesHandler } from './handlers/categoryA/listFiles'
+import { readFileHandler } from './handlers/categoryA/readFile'
+import { writeFileHandler } from './handlers/categoryA/writeFile'
+import { kvGetHandler } from './handlers/categoryA/kvGet'
+import { kvSetHandler } from './handlers/categoryA/kvSet'
+import { kvListHandler } from './handlers/categoryA/kvList'
+import { kvDeleteHandler } from './handlers/categoryA/kvDelete'
+import { notifyHandler } from './handlers/categoryA/notify'
+import { exportFileHandler } from './handlers/categoryA/exportFile'
+import { getKovitoboardDir } from './paths'
 
 const PORT = Number(process.env.PORT) || 3001
 
@@ -84,6 +99,24 @@ try {
   scanBundledRecipes(fs)
 } catch (err) {
   console.error('[startup] Bundled recipe scan failed (non-fatal):', err)
+}
+
+// --- Recipe BE: handler registration + manifest store ---
+registerHandler(listFilesHandler)
+registerHandler(readFileHandler)
+registerHandler(writeFileHandler)
+registerHandler(kvGetHandler)
+registerHandler(kvSetHandler)
+registerHandler(kvListHandler)
+registerHandler(kvDeleteHandler)
+registerHandler(notifyHandler)
+registerHandler(exportFileHandler)
+
+const manifestStore = new RecipeManifestStore(getKovitoboardDir(fs), fs)
+try {
+  manifestStore.loadAll()
+} catch (err) {
+  console.error('[startup] Manifest store load failed (non-fatal):', err)
 }
 
 const sessionManager = new SessionManager()
@@ -672,6 +705,108 @@ app.get('/api/recipes/app-scan', (_req, res) => {
   }
 })
 
+// --- Recipe Install API (Recipe BE Phase J) ---
+
+app.post('/api/recipes/install', async (req, res) => {
+  try {
+    const { recipe, approvedScopes } = req.body as {
+      recipe: unknown
+      approvedScopes: unknown
+    }
+
+    // Basic validation
+    if (!recipe || typeof recipe !== 'object') {
+      res.status(400).json({ error: 'recipe is required' })
+      return
+    }
+    const parsed = recipe as Record<string, unknown>
+    if (!parsed.metadata || typeof parsed.metadata !== 'object') {
+      res.status(400).json({ error: 'recipe.metadata is required' })
+      return
+    }
+    const metadata = parsed.metadata as Record<string, unknown>
+    if (typeof metadata.name !== 'string') {
+      res.status(400).json({ error: 'recipe.metadata.name is required' })
+      return
+    }
+
+    // api: section validation
+    if (!parsed.api || typeof parsed.api !== 'object') {
+      res.status(400).json({ error: 'recipe.api is required for install' })
+      return
+    }
+    const apiValidation = validateApiSection(parsed.api)
+    if (apiValidation) {
+      res.status(400).json({ error: `Invalid api section: ${apiValidation}` })
+      return
+    }
+    const apiSection = parseApiSection(parsed.api as Record<string, unknown>)
+
+    if (!Array.isArray(approvedScopes)) {
+      res.status(400).json({ error: 'approvedScopes must be an array' })
+      return
+    }
+
+    // Generate recipe ID from name (kebab-case)
+    const recipeId = (metadata.name as string)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+
+    // Save manifest
+    const manifest = {
+      recipeId,
+      version: typeof metadata.version === 'string' ? metadata.version : '0.0.0',
+      hash: typeof parsed.hash === 'string' ? parsed.hash : '',
+      installedAt: new Date().toISOString(),
+      approvedScopes: apiSection.scopes,
+      api: apiSection,
+    }
+    manifestStore.save(manifest)
+
+    // Create own-data directory
+    const ownDataDir = join(projectRoot, 'app', 'data', recipeId)
+    if (!fs.existsSync(ownDataDir)) {
+      fs.mkdirSync(ownDataDir, { recursive: true })
+    }
+
+    // Apply recipe (send to agent via tmux, excluding api: section)
+    const windowName = tmuxBridge.listWindows()[0]?.name
+    if (windowName) {
+      // api: セクションを除外してエージェントに渡す
+      const recipeForAgent = { ...parsed, api: undefined }
+      try {
+        await applyRecipe(recipeForAgent as Parameters<typeof applyRecipe>[0], tmuxBridge, windowName)
+      } catch (applyErr) {
+        console.warn('[API] Recipe apply via tmux failed (non-fatal):', applyErr)
+      }
+    }
+
+    // Record history
+    const historyId = generateHistoryId(fs)
+    appendRecipeHistory(fs, {
+      id: historyId,
+      name: metadata.name as string,
+      version: typeof metadata.version === 'string' ? metadata.version : '0.0.0',
+      author: typeof metadata.author === 'string' ? metadata.author : undefined,
+      source: typeof parsed.sourcePath === 'string' ? parsed.sourcePath : '',
+      hash: typeof parsed.hash === 'string' ? parsed.hash : '',
+      appliedAt: new Date().toISOString(),
+      artifacts: Array.isArray(parsed.artifacts)
+        ? (parsed.artifacts as Array<{ path: string }>).map((a) => a.path)
+        : [],
+      menu: Array.isArray(parsed.menu)
+        ? (parsed.menu as Array<{ id: string }>).map((m) => m.id)
+        : [],
+    })
+
+    res.json({ success: true, recipeId, historyId })
+  } catch (err) {
+    console.error('[API] Recipe install error:', err)
+    res.status(500).json({ error: 'Failed to install recipe' })
+  }
+})
+
 // --- File upload API ---
 
 const UPLOAD_DIR = getUploadDir()
@@ -866,8 +1001,9 @@ const trustPromptDetector = new TrustPromptDetector(
 trustPromptDetector.start()
 
 // Known client-to-server event types (whitelist)
-const KNOWN_WS_EVENT_TYPES = new Set<ClientToServerEvent['type']>([
+const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'trust_prompt_respond',
+  'kb-call',
 ])
 
 // --- WebSocket: client -> server (trust prompt response handling) ---
@@ -895,6 +1031,8 @@ wss.on('connection', (ws) => {
 
     if (parsed.type === 'trust_prompt_respond') {
       handleTrustPromptRespond(parsed.payload as TrustPromptRespondPayload)
+    } else if (parsed.type === 'kb-call') {
+      handleKbCall(ws, parsed as unknown as { type: 'kb-call' } & KbCallRequest)
     }
   })
 })
@@ -949,6 +1087,58 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
     }
   } else {
     console.warn(`[WS] trust_prompt_respond: unknown response mode: "${(response as { mode: string }).mode}"`)
+  }
+}
+
+// --- WebSocket: kb-call handler (Recipe BE Phase J) ---
+// @see recipe-backend-critical-reviews.md §3 (Q-J1: WebSocket 採用)
+async function handleKbCall(
+  ws: WebSocket,
+  msg: { type: 'kb-call' } & KbCallRequest,
+): Promise<void> {
+  const { requestId, recipeId, callId, input } = msg
+
+  if (typeof requestId !== 'string' || !requestId) {
+    console.warn('[WS] kb-call: requestId is required')
+    return
+  }
+  if (typeof recipeId !== 'string' || !recipeId) {
+    sendKbCallResponse(ws, requestId, { ok: false, error: { code: 'InvalidArgs', message: 'recipeId is required' } })
+    return
+  }
+  if (typeof callId !== 'string' || !callId) {
+    sendKbCallResponse(ws, requestId, { ok: false, error: { code: 'InvalidArgs', message: 'callId is required' } })
+    return
+  }
+
+  try {
+    const result = await dispatchHandler(
+      { recipeId, callId, input: (input && typeof input === 'object') ? input as Record<string, unknown> : {} },
+      manifestStore,
+      projectRoot,
+    )
+    sendKbCallResponse(ws, requestId, result as KbCallResponse['result'])
+  } catch (err) {
+    console.error('[WS] kb-call dispatch error:', err)
+    sendKbCallResponse(ws, requestId, {
+      ok: false,
+      error: { code: 'Internal', message: 'Dispatch failed' },
+    })
+  }
+}
+
+function sendKbCallResponse(
+  ws: WebSocket,
+  requestId: string,
+  result: KbCallResponse['result'],
+): void {
+  const response: { type: 'kb-call-response' } & KbCallResponse = {
+    type: 'kb-call-response',
+    requestId,
+    result,
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(response))
   }
 }
 

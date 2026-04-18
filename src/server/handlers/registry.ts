@@ -19,7 +19,8 @@ const handlers = new Map<CategoryAHandlerName, HandlerDef>()
 /**
  * handler 実装を登録する.
  */
-export function registerHandler(handler: HandlerDef): void {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function registerHandler(handler: HandlerDef<any, any>): void {
   if (handlers.has(handler.name)) {
     console.warn(`[handler-registry] Handler "${handler.name}" is already registered, overwriting`)
   }
