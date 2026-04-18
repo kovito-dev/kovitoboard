@@ -250,7 +250,7 @@ function RecipeCard({
   onInstall?: () => void
 }) {
   return (
-    <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg p-4 flex items-start justify-between gap-4">
+    <div data-testid={`recipe-card-${recipe.id}`} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg p-4 flex items-start justify-between gap-4">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <h4 className="text-sm font-bold text-[var(--text-primary)] truncate">
@@ -296,6 +296,7 @@ function RecipeCard({
       <div className="shrink-0">
         {!recipe.installed && onInstall && (
           <button
+            data-testid={`recipe-install-button-${recipe.id}`}
             onClick={onInstall}
             disabled={isInstalling}
             className="px-3 py-1.5 bg-[var(--accent-bg)] text-[var(--accent-text)] rounded-lg text-xs font-medium hover:opacity-80 disabled:opacity-40 transition-opacity"

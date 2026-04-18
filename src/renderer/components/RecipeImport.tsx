@@ -101,6 +101,7 @@ export function RecipeImport() {
             <div className="flex gap-2">
               <input
                 type="text"
+                data-testid="recipe-import-source-input"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleParse()}
@@ -108,6 +109,7 @@ export function RecipeImport() {
                 className="flex-1 px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-dim)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-border)]"
               />
               <button
+                data-testid="recipe-import-parse"
                 onClick={handleParse}
                 disabled={!source.trim()}
                 className="px-4 py-2 bg-[var(--accent-bg)] text-[var(--accent-text)] rounded-lg text-sm font-medium hover:opacity-80 disabled:opacity-40 transition-opacity"

@@ -95,6 +95,7 @@ export function RecipeInstallModal({
 
       {/* Modal */}
       <div
+        data-testid="recipe-install-modal"
         className="relative w-full max-w-lg mx-4 bg-[var(--bg-base)] rounded-2xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden max-h-[90vh]"
         role="dialog"
         aria-modal="true"
@@ -170,6 +171,7 @@ export function RecipeInstallModal({
         {/* Footer */}
         <div className="px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-surface)] flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
           <button
+            data-testid="recipe-install-reject"
             onClick={onReject}
             disabled={isInstalling}
             className="px-4 py-2 rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] transition-colors disabled:opacity-50"
@@ -177,6 +179,7 @@ export function RecipeInstallModal({
             {t('recipe.install.reject')}
           </button>
           <button
+            data-testid="recipe-install-confirm"
             onClick={onConfirm}
             disabled={isInstalling}
             className="px-4 py-2 rounded-lg bg-[var(--accent-bg)] text-[var(--accent-text)] border border-[var(--accent-border)] hover:brightness-110 transition-all disabled:opacity-50 font-medium"

@@ -355,18 +355,41 @@ test.describe('S6: Rejection flow', () => {
 // S7: Recipe installation -> scope approval -> operation
 // ---------------------------------------------------------------------------
 test.describe('S7: Recipe installation flow', () => {
-  test('S7-a: Bundled recipes endpoint returns installable entries', async ({ request }) => {
-    const listRes = await request.get('/api/recipes/bundled')
+  test('S7-a: Bundled recipe install flow surfaces the scope-approval modal', async ({ page }) => {
+    // Fetch available recipes up front so we can target a non-installed one
+    const listRes = await page.request.get('/api/recipes/bundled')
     expect(listRes.ok()).toBeTruthy()
-    const recipes = await listRes.json() as Array<{ id: string; name?: string }>
+    const recipes = await listRes.json() as Array<{ id: string; installed?: boolean }>
     expect(Array.isArray(recipes)).toBe(true)
     expect(recipes.length).toBeGreaterThan(0)
 
-    // Each recipe must have a usable id field (install contract prerequisite)
-    for (const r of recipes) {
-      expect(typeof r.id).toBe('string')
-      expect(r.id.length).toBeGreaterThan(0)
+    const target = recipes.find((r) => !r.installed)
+    if (!target) {
+      test.skip(true, 'All bundled recipes are already installed in this fixture')
+      return
     }
+
+    await page.goto('/recipes')
+    await page.waitForLoadState('networkidle')
+
+    // Bundled tab is default; the install button for the target recipe must exist
+    const installBtn = page.getByTestId(`recipe-install-button-${target.id}`)
+    await expect(installBtn).toBeVisible({ timeout: 10_000 })
+    await installBtn.click()
+
+    // Scope-approval modal appears (parse -> inspection -> modal)
+    const modal = page.getByTestId('recipe-install-modal')
+    await expect(modal).toBeVisible({ timeout: 10_000 })
+
+    // Both buttons are rendered in the expected state
+    await expect(page.getByTestId('recipe-install-confirm')).toBeVisible()
+    await expect(page.getByTestId('recipe-install-reject')).toBeVisible()
+
+    // We dismiss via Reject to keep the fixture clean for later tests
+    // (apply requires an active tmux window, which the Fake Claude
+    // tests have already torn down by the time S7 runs).
+    await page.getByTestId('recipe-install-reject').click()
+    await expect(modal).not.toBeVisible({ timeout: 5_000 })
   })
 })
 
@@ -443,12 +466,29 @@ test.describe('S10: Research Reports API smoke', () => {
 // Full export/import loop is blocked pending endpoint completion; this
 // verifies the parse path which is the first half of import.
 // ---------------------------------------------------------------------------
-test.describe('S11: Recipe parse smoke', () => {
-  test('S11-a: /api/recipes/parse rejects empty payload', async ({ request }) => {
-    const res = await request.post('/api/recipes/parse', { data: {} })
-    // Rejection codes: 400 (bad request). Accept any 4xx.
-    expect(res.status()).toBeGreaterThanOrEqual(400)
-    expect(res.status()).toBeLessThan(500)
+test.describe('S11: Recipe import UI smoke', () => {
+  test('S11-a: Recipe import tab renders the parse form and validates empty input', async ({ page, request }) => {
+    // API-level validation: empty source is rejected
+    const apiRes = await request.post('/api/recipes/parse', { data: {} })
+    expect(apiRes.status()).toBeGreaterThanOrEqual(400)
+    expect(apiRes.status()).toBeLessThan(500)
+
+    // UI-level: import tab renders the controls
+    await page.goto('/recipes')
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: '読み込み' }).click()
+
+    const input = page.getByTestId('recipe-import-source-input')
+    await expect(input).toBeVisible({ timeout: 10_000 })
+    const parseBtn = page.getByTestId('recipe-import-parse')
+    await expect(parseBtn).toBeVisible()
+
+    // Empty input keeps the parse button disabled
+    await expect(parseBtn).toBeDisabled()
+
+    // Filling the input enables the parse button (smoke contract)
+    await input.fill('/tmp/kb-nonexistent-recipe')
+    await expect(parseBtn).toBeEnabled()
   })
 })
 

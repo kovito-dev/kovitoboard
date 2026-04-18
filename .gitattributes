@@ -1,0 +1,4 @@
+# Normalise line endings for shell scripts so Linux/macOS can execute them
+# regardless of the committer's autocrlf settings.
+*.sh text eol=lf
+*.mjs text eol=lf
