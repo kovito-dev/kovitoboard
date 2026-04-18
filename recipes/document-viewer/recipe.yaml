@@ -16,6 +16,20 @@ menu:
     icon: "content"
     page: "pages/DocumentViewer"
 
+api:
+  scopes:
+    - project-read
+  calls:
+    - id: list-docs
+      handler: list-files
+      args:
+        path: "."
+        recursive: true
+    - id: read-doc
+      handler: read-file
+      args:
+        path: "${input.path}"
+
 instruction: |
   このレシピは Markdown ファイルの一覧・閲覧のみ行います。
   対象拡張子を変更したい場合は pages/DocumentViewer.tsx 内の

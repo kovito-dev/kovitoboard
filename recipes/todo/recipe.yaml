@@ -16,6 +16,28 @@ menu:
     icon: "content"
     page: "pages/TodoPage"
 
+api:
+  scopes:
+    - own-data
+  calls:
+    - id: list-tasks
+      handler: kv-list
+      args:
+        prefix: "task:"
+    - id: get-task
+      handler: kv-get
+      args:
+        key: "${input.key}"
+    - id: save-task
+      handler: kv-set
+      args:
+        key: "${input.key}"
+        value: "${input.value}"
+    - id: delete-task
+      handler: kv-delete
+      args:
+        key: "${input.key}"
+
 instruction: |
   TODO データは app/data/todo/ 配下の KV ストアに保存されます。
   デザイン（色・余白等）を変更したい場合は pages/TodoPage.tsx の Tailwind クラスを編集してください。
