@@ -156,18 +156,35 @@ export default function MyDashboard() {
 
 ### 4.1 ファイル命名と自動マウント
 
-`app/api/` 配下の `.ts` / `.js` ファイルは、**サーバー起動時に自動で `/api/ext/{ファイル名}` にマウント** されます。
+API ファイルには **フラット配置** と **ネスト配置** の 2 系統があります（DEC-008）。どちらも `.ts` / `.js` ファイルを **サーバー起動時に自動マウント** します。
+
+#### フラット配置（従来）
+
+`app/api/` 直下に置くパターン。単発の API を足したいときに向きます。
 
 | ファイル | マウント先 |
 |---|---|
 | `app/api/my-data.ts` | `/api/ext/my-data` |
 | `app/api/intel.ts` | `/api/ext/intel` |
 
-制約:
+#### ネスト配置（アプリ単位）
 
-- 1 階層のみ（サブディレクトリ非対応）
+`app/{app-name}/api/` 直下に置くパターン。アプリに属するコードを 1 ディレクトリに凝集させたいときに向きます（§8 の長時間処理パターン、複数ファイル構成の独自アプリ）。
+
+| ファイル | マウント先 |
+|---|---|
+| `app/research-reports/api/start-research.ts` | `/api/ext/research-reports/start-research` |
+| `app/research-reports/api/status.ts` | `/api/ext/research-reports/status` |
+| `app/my-app/api/list.ts` | `/api/ext/my-app/list` |
+
+#### 共通の制約
+
+- **階層は 1 段のみ** — フラットは `app/api/*.ts`、ネストは `app/*/api/*.ts`。それ以上深いサブディレクトリはスキャンされません
 - 先頭が `_` のファイル（例: `_helpers.ts`）はスキップ
 - 読み込みは **起動時 1 回**。BE の変更は再起動必須
+- `app/api/` はフラット配置専用の予約ディレクトリです（ネスト配置のアプリ名として `api` は使えません）
+- `{app-name}` は小文字英数字とハイフンのみ推奨（`/^[a-z][a-z0-9-]{0,63}$/`）
+- 同じマウントパスが重複した場合は先勝ち + 起動ログに警告
 
 ### 4.2 基本例
 
