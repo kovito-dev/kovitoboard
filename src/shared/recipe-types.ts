@@ -16,7 +16,10 @@
 
 // --- Artifact types ---
 
-/** Allowed artifact types (v0.1.0: FE-only, 'api' is forbidden) */
+/**
+ * Allowed artifact types (v0.1.0: FE-only, 'api' is forbidden).
+ * API 拡張は recipe.yaml の api: セクションで宣言的に行う。
+ */
 export type ArtifactType = 'page' | 'style' | 'lib' | 'hook' | 'util'
 
 /** Artifact entry from recipe YAML (path + type only) */
@@ -57,9 +60,33 @@ export interface ParsedRecipe {
   artifacts: ArtifactWithContent[]
   menu: RecipeMenuEntry[]
   instruction?: string
+  /**
+   * 宣言的 handler API セクション.
+   * recipe.yaml に api: セクションがあるレシピのみ設定される。
+   * @see recipe-system.md §12-2, §12-3
+   */
+  api?: RecipeApiSection
   hash: string
   sourceFormat: 'directory' | 'markdown'
   sourcePath: string
+}
+
+/**
+ * recipe.yaml の api: セクション（shared 型）.
+ * server 側の ApiSection と同一構造だが、server 依存の import を避けるため
+ * shared 側に再定義する。
+ *
+ * @see recipe-system.md §12-2, §12-3
+ */
+export interface RecipeApiSection {
+  scopes: string[]
+  calls: RecipeApiCall[]
+}
+
+export interface RecipeApiCall {
+  id: string
+  handler: string
+  args?: Record<string, unknown>
 }
 
 // --- Security inspection ---

@@ -8,11 +8,13 @@ import type { FileAccessLayer } from './fs-layer'
 import type {
   ParsedRecipe,
   RecipeMetadata,
+  RecipeApiSection,
   ArtifactEntry,
   ArtifactWithContent,
   ArtifactType,
   RecipeMenuEntry,
 } from '../shared/recipe-types'
+import { validateApiSection, parseApiSection } from './recipe/apiTypes.js'
 
 const ALLOWED_EXTENSIONS = new Set(['.tsx', '.ts', '.css', '.json', '.md'])
 const VALID_ARTIFACT_TYPES = new Set<ArtifactType>(['page', 'style', 'lib', 'hook', 'util'])
@@ -61,6 +63,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
   const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
   const instruction: string | undefined = typeof data.instruction === 'string' ? data.instruction : undefined
+  const api = extractApiSection(data.api)
 
   // Read artifact file contents
   const artifacts: ArtifactWithContent[] = rawArtifacts.map((entry) => {
@@ -81,6 +84,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
     artifacts,
     menu,
     instruction,
+    api,
     hash: '',
     sourceFormat: 'directory',
     sourcePath: dirPath,
@@ -101,6 +105,7 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
   const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
   const instruction: string | undefined = typeof data.instruction === 'string' ? data.instruction : undefined
+  const api = extractApiSection(data.api)
 
   // Parse artifact contents from markdown body
   const artifactContents = parseArtifactSections(body)
@@ -122,6 +127,7 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
     artifacts,
     menu,
     instruction,
+    api,
     hash: '',
     sourceFormat: 'markdown',
     sourcePath: filePath,
@@ -205,6 +211,35 @@ function extractMenuEntries(menu: unknown): RecipeMenuEntry[] {
         page: typeof m.page === 'string' ? m.page : '',
       }
     })
+}
+
+/**
+ * Extract and validate the api: section from YAML data (optional field).
+ *
+ * api: セクションが存在しない場合は undefined を返す。
+ * 存在するが不正な場合は例外を投げる。
+ *
+ * @see recipe-system.md §12-4-1 (block conditions)
+ */
+function extractApiSection(apiData: unknown): RecipeApiSection | undefined {
+  if (apiData === undefined || apiData === null) {
+    return undefined // api: 未指定は許可（handler なしレシピ）
+  }
+
+  const validationError = validateApiSection(apiData)
+  if (validationError) {
+    throw new Error(`Invalid api section: ${validationError}`)
+  }
+
+  const parsed = parseApiSection(apiData as Record<string, unknown>)
+  return {
+    scopes: parsed.scopes as string[],
+    calls: parsed.calls.map((c) => ({
+      id: c.id,
+      handler: c.handler as string,
+      args: c.args,
+    })),
+  }
 }
 
 /**
