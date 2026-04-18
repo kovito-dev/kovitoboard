@@ -1,0 +1,22 @@
+---
+name: "TODO 管理"
+description: "シンプルな TODO リスト。タスクの追加・完了・削除ができます。データはこのレシピ専用領域に保存されます。"
+version: "1.0.0"
+author: "kovito-dev"
+kovitoboard: ">=0.1.0"
+tags: ["sample", "productivity", "todo"]
+
+artifacts:
+  - path: "pages/TodoPage.tsx"
+    type: "page"
+
+menu:
+  - id: "todo"
+    label: "TODO"
+    icon: "content"
+    page: "pages/TodoPage"
+
+instruction: |
+  TODO データは app/data/todo/ 配下の KV ストアに保存されます。
+  デザイン（色・余白等）を変更したい場合は pages/TodoPage.tsx の Tailwind クラスを編集してください。
+---

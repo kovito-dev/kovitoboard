@@ -4,12 +4,15 @@
  * Used by Phase G to provide `GET /api/recipes/bundled` with pre-scanned recipe info.
  * Gracefully handles missing directories and parse failures (logs warning, skips).
  */
-import { join } from 'path'
+import { join, resolve, dirname } from 'path'
+import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
-import { resolveProjectRoot } from '../config'
 import { parseRecipe } from '../recipe-parser'
 import { readRecipeHistory } from '../recipe-history'
 import type { RecipeMetadata, RecipeHistoryEntry } from '../../shared/recipe-types'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 /** Lightweight metadata for a bundled recipe (no full artifact content). */
 export interface BundledRecipeInfo {
@@ -124,14 +127,18 @@ export function refreshInstallStatus(fs: FileAccessLayer): void {
 /**
  * Resolve the KovitoBoard installation root.
  * This is the directory where KovitoBoard itself is installed (containing recipes/, src/, etc.),
- * NOT the user's project root.
+ * NOT the user's project root (which contains CLAUDE.md).
+ *
+ * Source:  src/server/services/ → 3 levels up
+ * Build:  dist/server/services/ → 3 levels up (same)
  */
 function resolveKovitoboardRoot(fs: FileAccessLayer): string {
-  // KovitoBoard's own package.json is located at the installation root.
-  // From src/server/services/ → 3 levels up in source, 2 levels in dist.
-  // We use resolveProjectRoot as a fallback, but the primary source is __dirname-based.
-  // For v0.1.0 (git clone deployment), the project root IS the KovitoBoard root.
-  return resolveProjectRoot(fs)
+  const candidates = [
+    resolve(__dirname, '..', '..', '..'),  // src/server/services/ or dist/server/services/ → root
+    resolve(__dirname, '..', '..'),         // fallback
+  ]
+  // Look for package.json as the indicator of KB root
+  return candidates.find((p) => fs.existsSync(join(p, 'package.json'))) || candidates[0]
 }
 
 /**

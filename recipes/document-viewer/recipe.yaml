@@ -1,0 +1,23 @@
+---
+name: "ドキュメントビュアー"
+description: "プロジェクト内の Markdown ファイルを一覧・閲覧する。.md ファイルをクリックすると本文がレンダリングされます。"
+version: "1.0.0"
+author: "kovito-dev"
+kovitoboard: ">=0.1.0"
+tags: ["sample", "documents", "markdown"]
+
+artifacts:
+  - path: "pages/DocumentViewer.tsx"
+    type: "page"
+
+menu:
+  - id: "document-viewer"
+    label: "ドキュメント"
+    icon: "content"
+    page: "pages/DocumentViewer"
+
+instruction: |
+  このレシピは Markdown ファイルの一覧・閲覧のみ行います。
+  対象拡張子を変更したい場合は pages/DocumentViewer.tsx 内の
+  EXTENSIONS 定数を編集してください。
+---
