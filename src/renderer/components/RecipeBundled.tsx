@@ -1,7 +1,10 @@
 /**
  * Bundled recipes — shows pre-installed recipes split into Available / Installed sections.
+ * api: セクションを持つレシピの場合、インストール前に scope 承認モーダルを表示する。
  */
 import { useState, useEffect, useCallback } from 'react'
+import type { RecipeApiSection, ParsedRecipe, InspectionResult } from '../../shared/recipe-types'
+import { RecipeInstallModal } from './RecipeInstallModal'
 
 /** Bundled recipe info from the server. */
 interface BundledRecipeInfo {
@@ -30,6 +33,14 @@ export function RecipeBundled() {
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
+
+  // api: 承認モーダル用の状態
+  const [pendingInstall, setPendingInstall] = useState<{
+    recipe: BundledRecipeInfo
+    parsed: ParsedRecipe
+    inspection: InspectionResult
+    api: RecipeApiSection
+  } | null>(null)
 
   const fetchRecipes = useCallback(async () => {
     try {
@@ -63,31 +74,64 @@ export function RecipeBundled() {
         const data = await parseRes.json()
         throw new Error(data.error || 'Parse failed')
       }
-      const { recipe: parsed, inspection } = await parseRes.json()
+      const { recipe: parsed, inspection } = await parseRes.json() as {
+        recipe: ParsedRecipe
+        inspection: InspectionResult
+      }
 
       if (inspection.verdict === 'blocked') {
         throw new Error('このレシピはセキュリティチェックでブロックされました')
       }
 
-      // Step 2: Apply the recipe
-      const applyRes = await fetch('/api/recipes/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipe: parsed, inspection }),
-      })
-      if (!applyRes.ok) {
-        const data = await applyRes.json()
-        throw new Error(data.error || 'Apply failed')
+      // Step 2: api: セクションがある場合は承認モーダルを挟む
+      if (parsed.api && parsed.api.scopes.length > 0) {
+        setPendingInstall({ recipe, parsed, inspection, api: parsed.api })
+        setInstallingId(null)
+        return // モーダルの承認/拒否を待つ
       }
 
-      // Refresh the list to update install status
-      await fetchRecipes()
+      // Step 3: api: なしのレシピは従来通り直接適用
+      await applyRecipe(parsed, inspection)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Install failed')
+      setInstallingId(null)
+    }
+  }, [fetchRecipes])
+
+  /** api: 承認後のインストール実行 */
+  const handleApproveInstall = useCallback(async () => {
+    if (!pendingInstall) return
+    const { parsed, inspection } = pendingInstall
+    setInstallingId(pendingInstall.recipe.id)
+    try {
+      await applyRecipe(parsed, inspection)
+      setPendingInstall(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Install failed')
     } finally {
       setInstallingId(null)
     }
-  }, [fetchRecipes])
+  }, [pendingInstall, fetchRecipes])
+
+  /** api: 承認拒否 */
+  const handleRejectInstall = useCallback(() => {
+    setPendingInstall(null)
+    setInstallingId(null)
+  }, [])
+
+  /** レシピを適用する共通処理 */
+  async function applyRecipe(parsed: ParsedRecipe, inspection: InspectionResult) {
+    const applyRes = await fetch('/api/recipes/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipe: parsed, inspection }),
+    })
+    if (!applyRes.ok) {
+      const data = await applyRes.json()
+      throw new Error(data.error || 'Apply failed')
+    }
+    await fetchRecipes()
+  }
 
   if (state === 'loading') {
     return (
@@ -131,6 +175,17 @@ export function RecipeBundled() {
 
   return (
     <div className="space-y-6">
+      {/* api: 承認モーダル */}
+      {pendingInstall && (
+        <RecipeInstallModal
+          recipeName={pendingInstall.parsed.metadata.name}
+          api={pendingInstall.api}
+          isInstalling={installingId === pendingInstall.recipe.id}
+          onConfirm={handleApproveInstall}
+          onReject={handleRejectInstall}
+        />
+      )}
+
       {/* Error banner */}
       {error && (
         <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 flex items-center justify-between">
