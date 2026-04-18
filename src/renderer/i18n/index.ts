@@ -7,19 +7,19 @@ const catalogs: Record<Locale, Record<MessageKey, string>> = { ja, en }
 
 let currentLocale: Locale = 'ja'
 
-/** 現在のロケールを設定 */
+/** Set the current locale */
 export function setLocale(locale: Locale): void {
   currentLocale = locale
 }
 
-/** 現在のロケールを取得 */
+/** Get the current locale */
 export function getLocale(): Locale {
   return currentLocale
 }
 
 /**
- * メッセージキーからローカライズされた文字列を取得。
- * プレースホルダー（{key}）は params で置換可能。
+ * Retrieve a localized string by message key.
+ * Placeholders ({key}) can be substituted via the params argument.
  */
 export function t(key: MessageKey, params?: Record<string, string | number>): string {
   const catalog = catalogs[currentLocale] || catalogs['ja']

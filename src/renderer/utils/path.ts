@@ -1,9 +1,9 @@
 /**
- * ファイルパス検出・判定ユーティリティ
- * MessageBubble / MarkdownPreview で共通利用
+ * File path detection and validation utilities.
+ * Shared by MessageBubble and MarkdownPreview.
  */
 
-/** プレビュー可能なファイル拡張子 */
+/** File extensions that can be previewed */
 export const PREVIEWABLE_EXTENSIONS = [
   '.md', '.txt',
   '.ts', '.tsx', '.js', '.jsx',
@@ -14,12 +14,12 @@ export const PREVIEWABLE_EXTENSIONS = [
 ]
 
 /**
- * テキスト内のファイルパスを検出する正規表現
- * パターン: 英数字/_/- で構成された path/to/file.ext 形式
+ * Regular expression to detect file paths in text.
+ * Pattern: path/to/file.ext composed of alphanumeric characters, _, -, /, and .
  */
 export const FILE_PATH_REGEX = /(?:^|(?<=[\s`'"(（]))([a-zA-Z0-9_.~/-]+\/[a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)(?=[\s`'"）),:;。、]|$)/g
 
-/** ファイルがプレビュー可能な拡張子かを判定 */
+/** Check whether a file has a previewable extension */
 export function hasPreviewableExtension(path: string): boolean {
   const lower = path.toLowerCase()
   return PREVIEWABLE_EXTENSIONS.some((ext) => lower.endsWith(ext))

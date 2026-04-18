@@ -4,13 +4,13 @@ import { AgentAvatar } from './AgentAvatar'
 interface AgentListProps {
   agents: AgentInfo[]
   onSelectAgent: (agentId: string) => void
-  /** 新規エージェント追加ボタンのクリックハンドラ */
+  /** Click handler for the add new agent button */
   onAddAgent?: () => void
-  /** UIテーマ */
+  /** UI theme */
   theme?: 'dark' | 'light'
 }
 
-/** モデル名を短縮表示 */
+/** Shorten model name for display */
 function shortModel(model: string): string {
   if (model.includes('opus')) return 'Opus'
   if (model.includes('sonnet')) return 'Sonnet'
@@ -18,7 +18,7 @@ function shortModel(model: string): string {
   return model
 }
 
-/** employee_id の数値昇順でソート（未設定は末尾） */
+/** Sort by employee_id ascending (unset values go to the end) */
 function sortByEmployeeId(agents: AgentInfo[]): AgentInfo[] {
   return [...agents].sort((a, b) => {
     const aNum = a.employeeId ? parseInt(a.employeeId, 10) : Infinity
@@ -32,7 +32,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
 
   return (
     <div className="flex-1 overflow-y-auto p-3 md:p-6">
-      {/* ヘッダー */}
+      {/* Header */}
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h2 className="text-lg font-semibold text-[var(--text-secondary)]">エージェント</h2>
@@ -54,7 +54,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
         )}
       </div>
 
-      {/* エージェントカードグリッド */}
+      {/* Agent card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {sortedAgents.map((agent) => (
           <button
@@ -62,14 +62,14 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
             onClick={() => onSelectAgent(agent.id)}
             className="group text-left rounded-xl overflow-hidden transition-all duration-200 hover:scale-[1.02] hover:shadow-lg hover:shadow-[var(--accent-shadow)]"
           >
-            {/* カード上部: グラデーション背景 */}
+            {/* Card top: gradient background */}
             <div
               className="px-5 pt-5 pb-4 relative"
               style={{
                 background: `linear-gradient(135deg, ${agent.color}22, ${agent.color}08)`
               }}
             >
-              {/* アクティブバッジ */}
+              {/* Active badge */}
               {agent.activeSessionCount > 0 && (
                 <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-green-500/20 text-green-400 text-[10px] font-medium px-2 py-0.5 rounded-full">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
@@ -77,7 +77,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
                 </div>
               )}
 
-              {/* アバター + 名前 */}
+              {/* Avatar + name */}
               <div className="flex items-center gap-3 mb-3">
                 <AgentAvatar name={agent.displayName} color={agent.color} size={64} avatar={agent.avatar} agentId={agent.id} theme={theme} />
                 <div className="min-w-0">
@@ -90,7 +90,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
                 </div>
               </div>
 
-              {/* ロール */}
+              {/* Role */}
               {agent.role && (
                 <div
                   className="inline-block text-xs font-medium px-2.5 py-1 rounded-full mb-2"
@@ -106,23 +106,23 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
               )}
             </div>
 
-            {/* カード下部: 詳細情報 */}
+            {/* Card bottom: detail information */}
             <div className="px-5 py-4 bg-[var(--bg-elevated)] border-t border-[var(--border)] group-hover:bg-[var(--bg-hover)] transition-colors">
-              {/* サマリー（viewer.config.json から） */}
+              {/* Summary (from viewer.config.json) */}
               {agent.summary && (
                 <p className="text-xs text-[var(--text-tertiary)] mb-2 font-medium leading-relaxed">
                   {agent.summary}
                 </p>
               )}
-              {/* 説明文（2行まで） */}
+              {/* Description (up to 2 lines) */}
               <p className="text-xs text-[var(--text-muted)] mb-3 line-clamp-2 leading-relaxed">
                 {agent.description}
               </p>
 
-              {/* 統計バー */}
+              {/* Stats bar */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  {/* モデル */}
+                  {/* Model */}
                   <div className="flex items-center gap-1">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-faint)]">
                       <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
@@ -130,7 +130,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
                     <span className="text-[11px] text-[var(--text-dim)]">{shortModel(agent.model)}</span>
                   </div>
 
-                  {/* セッション数 */}
+                  {/* Session count */}
                   <div className="flex items-center gap-1">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-faint)]">
                       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -139,7 +139,7 @@ export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }:
                   </div>
                 </div>
 
-                {/* 矢印 */}
+                {/* Arrow */}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors">
                   <polyline points="9 18 15 12 9 6" />
                 </svg>

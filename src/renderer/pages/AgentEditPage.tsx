@@ -1,16 +1,16 @@
 /**
- * エージェント属性編集ページ
+ * Agent attribute editing page
  *
- * 構造化フィールド（表示名・性格・口調・追加指示）の編集 UI。
- * GET /api/agents/:id/sections で現在値を取得し、
- * PUT /api/agents/:id で保存する。
+ * Editing UI for structured fields (display name, personality, tone sample, extra instructions).
+ * Fetches current values via GET /api/agents/:id/sections
+ * and persists changes via PUT /api/agents/:id.
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Navigate } from 'react-router-dom'
 import { StructuredFieldEditor, type SectionData } from '../components/StructuredFieldEditor'
 
-/** GET /api/agents/:id/sections のレスポンス型 */
+/** Response type for GET /api/agents/:id/sections */
 interface SectionsResponse {
   hasMarkers: boolean
   displayName?: string
@@ -29,7 +29,7 @@ export function AgentEditPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  // 構造化フィールドの現在値を取得
+  // Fetch current values of structured fields
   useEffect(() => {
     if (!id) return
 
@@ -43,12 +43,12 @@ export function AgentEditPage() {
       })
       .then(setSections)
       .catch((err) => {
-        setLoadError(err instanceof Error ? err.message : 'セクション情報の取得に失敗しました')
+        setLoadError(err instanceof Error ? err.message : 'Failed to fetch section data')
       })
       .finally(() => setIsLoading(false))
   }, [id])
 
-  // 保存
+  // Save
   const handleSave = useCallback(async (data: SectionData) => {
     if (!id) return
 
@@ -56,13 +56,13 @@ export function AgentEditPage() {
     setSaveError(null)
 
     try {
-      // displayName の変更判定: 初期値と異なる場合のみ送信
+      // Build the request body for changed fields
       const body: Record<string, unknown> = {}
 
-      // displayName は常に送信（空文字は frontmatter から削除を意味する）
+      // Always send displayName (empty string means removal from frontmatter)
       body.displayName = data.displayName
 
-      // セクション更新（マーカーがある場合のみ）
+      // Update sections (only when markers exist in the agent file)
       if (sections?.hasMarkers) {
         body.sections = {
           personality: data.personality,
@@ -82,10 +82,10 @@ export function AgentEditPage() {
         throw new Error(resData.error || `Save failed (${res.status})`)
       }
 
-      // 成功 → エージェント詳細に戻る
+      // Success — navigate back to agent detail
       navigate(`/agents/${id}`)
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : '保存に失敗しました')
+      setSaveError(err instanceof Error ? err.message : 'Failed to save')
     } finally {
       setIsSaving(false)
     }

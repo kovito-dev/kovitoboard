@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 
-// --- メニュー定義の型 ---
+// --- Menu definition types ---
 
 export interface MenuItemDef {
   id: string
@@ -21,30 +21,30 @@ function isFolder(entry: MenuEntry): entry is MenuFolderDef {
   return 'children' in entry
 }
 
-// --- SVG アイコン ---
-// 依存ライブラリなしで使えるインラインSVGアイコン
+// --- SVG icons ---
+// Inline SVG icons usable without external dependencies
 
 export const Icons = {
-  /** セッション一覧 (チャットバブル) */
+  /** Sessions (chat bubble) */
   sessions: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   ),
-  /** フォルダ */
+  /** Folder */
   folder: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
     </svg>
   ),
-  /** 設定 (歯車) */
+  /** Settings (gear) */
   settings: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   ),
-  /** エージェント (人型) */
+  /** Agents (person icon) */
   agents: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -53,7 +53,7 @@ export const Icons = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   ),
-  /** ダッシュボード (グリッド) */
+  /** Dashboard (grid) */
   dashboard: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="7" height="7" />
@@ -62,33 +62,33 @@ export const Icons = {
       <rect x="3" y="14" width="7" height="7" />
     </svg>
   ),
-  /** 展開矢印 */
+  /** Expand arrow */
   chevronRight: (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9 18 15 12 9 6" />
     </svg>
   ),
-  /** 折りたたみ矢印 */
+  /** Collapse arrow */
   chevronDown: (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="6 9 12 15 18 9" />
     </svg>
   ),
-  /** Seeds (芽吹き) */
+  /** Seeds (sprout) */
   seeds: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22V12" />
       <path d="M12 12C12 12 7 9 7 5c0-2 1.5-3 3-3 2 0 2 1 2 1s0-1 2-1c1.5 0 3 1 3 3 0 4-5 7-5 7z" />
     </svg>
   ),
-  /** コンテンツ (ペン・記事) */
+  /** Content (pen/article) */
   content: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
     </svg>
   ),
-  /** Git (ブランチ分岐) */
+  /** Git (branch fork) */
   git: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="6" r="2" />
@@ -98,7 +98,7 @@ export const Icons = {
       <line x1="12" y1="8" x2="18" y2="16" />
     </svg>
   ),
-  /** スライド (プレゼンテーション画面) */
+  /** Slides (presentation screen) */
   slides: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
@@ -106,27 +106,27 @@ export const Icons = {
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   ),
-  /** ブランド (シールド) */
+  /** Brands (shield) */
   brands: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
     </svg>
   ),
-  /** 開発室 (コードブラケット) */
+  /** Dev room (code brackets) */
   devroom: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="16 18 22 12 16 6" />
       <polyline points="8 6 2 12 8 18" />
     </svg>
   ),
-  /** サイドバー折りたたみ（左向き二重矢印） */
+  /** Sidebar collapse (left double arrow) */
   collapseLeft: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="11 17 6 12 11 7" />
       <polyline points="18 17 13 12 18 7" />
     </svg>
   ),
-  /** サイドバー展開（右向き二重矢印） */
+  /** Sidebar expand (right double arrow) */
   expandRight: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="13 17 18 12 13 7" />
@@ -140,7 +140,7 @@ export function getIcon(key: string): ReactNode {
   return (Icons as Record<string, ReactNode>)[key] ?? Icons.folder
 }
 
-// --- コンポーネント ---
+// --- Component ---
 
 interface NavMenuProps {
   entries: MenuEntry[]
@@ -149,9 +149,9 @@ interface NavMenuProps {
 }
 
 export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
-  // コンパクトモード（アイコンのみ）の状態管理。デフォルトは展開
+  // Compact mode (icon-only) state. Default is expanded
   const [compact, setCompact] = useState(false)
-  // フォルダの開閉状態を管理
+  // Manage folder open/close state
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
 
   const toggleFolder = (folderId: string) => {
@@ -166,7 +166,7 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
     })
   }
 
-  // アクティブなアイテムがフォルダ内にあるかチェック（フォルダのハイライト用）
+  // Check if the active item is within a folder (for folder highlighting)
   const isActiveInFolder = (folder: MenuFolderDef): boolean => {
     return folder.children.some((child) => child.id === activeId)
   }
@@ -186,7 +186,7 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
           const hasActiveChild = isActiveInFolder(entry)
           return (
             <div key={entry.id} className={`relative w-full flex flex-col ${compact ? 'items-center' : ''}`}>
-              {/* フォルダボタン */}
+              {/* Folder button */}
               <NavIconButton
                 icon={entry.icon}
                 label={entry.label}
@@ -199,7 +199,7 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
                   </span>
                 }
               />
-              {/* フォルダ内の子アイテム */}
+              {/* Child items within the folder */}
               {isExpanded && (
                 <div className={`flex flex-col gap-0.5 mt-0.5 mb-1 ${compact ? 'items-center' : ''}`}>
                   {entry.children.map((child) => (
@@ -219,7 +219,7 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
           )
         }
 
-        // 単体メニューアイテム
+        // Single menu item
         return (
           <NavIconButton
             key={entry.id}
@@ -232,13 +232,13 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
         )
       })}
 
-      {/* 下部にスペーサーを入れて、将来的に設定等を下に配置可能にする */}
+      {/* Spacer at the bottom (allows settings etc. to be placed below in the future) */}
       <div className="flex-1" />
 
-      {/* コンパクト切り替えボタン */}
+      {/* Compact toggle button */}
       <button
         onClick={() => setCompact((prev) => !prev)}
-        title={compact ? 'メニューを展開' : 'メニューを折りたたむ'}
+        title={compact ? 'Expand menu' : 'Collapse menu'}
         className="
           flex items-center justify-center w-full py-1.5
           text-[var(--text-dim)] hover:text-[var(--text-tertiary)] hover:bg-[var(--bg-elevated)]
@@ -251,7 +251,7 @@ export function NavMenu({ entries, activeId, onSelect }: NavMenuProps) {
   )
 }
 
-// --- アイコンボタン ---
+// --- Icon button ---
 
 interface NavIconButtonProps {
   icon: ReactNode
@@ -264,7 +264,7 @@ interface NavIconButtonProps {
 }
 
 function NavIconButton({ icon, label, isActive, onClick, badge, isChild, compact }: NavIconButtonProps) {
-  // コンパクトモード: アイコンのみ（従来の表示）
+  // Compact mode: icon only (legacy display)
   if (compact) {
     return (
       <button
@@ -288,7 +288,7 @@ function NavIconButton({ icon, label, isActive, onClick, badge, isChild, compact
     )
   }
 
-  // 展開モード: アイコン + ラベル
+  // Expanded mode: icon + label
   return (
     <button
       onClick={onClick}

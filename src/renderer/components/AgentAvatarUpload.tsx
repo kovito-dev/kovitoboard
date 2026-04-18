@@ -19,7 +19,7 @@ export function AgentAvatarUpload({ agentId, onUploadComplete }: AgentAvatarUplo
 
     setError(null)
 
-    // クライアント側バリデーション
+    // Client-side validation
     if (!ALLOWED_TYPES.includes(file.type)) {
       setError('対応形式: PNG, JPG, WEBP, SVG')
       return
@@ -48,7 +48,7 @@ export function AgentAvatarUpload({ agentId, onUploadComplete }: AgentAvatarUplo
       setError(err instanceof Error ? err.message : 'アップロードに失敗しました')
     } finally {
       setIsUploading(false)
-      // input をリセット（同じファイルを再度選択可能にする）
+      // Reset input (allow re-selecting the same file)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }, [agentId, onUploadComplete])

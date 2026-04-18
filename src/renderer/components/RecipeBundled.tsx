@@ -1,6 +1,6 @@
 /**
  * Bundled recipes — shows pre-installed recipes split into Available / Installed sections.
- * api: セクションを持つレシピの場合、インストール前に scope 承認モーダルを表示する。
+ * For recipes with an api: section, a scope approval modal is shown before installation.
  */
 import { useState, useEffect, useCallback } from 'react'
 import type { RecipeApiSection, ParsedRecipe, InspectionResult } from '../../shared/recipe-types'
@@ -34,7 +34,7 @@ export function RecipeBundled() {
   const [error, setError] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
 
-  // api: 承認モーダル用の状態
+  // State for api: approval modal
   const [pendingInstall, setPendingInstall] = useState<{
     recipe: BundledRecipeInfo
     parsed: ParsedRecipe
@@ -80,17 +80,17 @@ export function RecipeBundled() {
       }
 
       if (inspection.verdict === 'blocked') {
-        throw new Error('このレシピはセキュリティチェックでブロックされました')
+        throw new Error('This recipe was blocked by the security check')
       }
 
-      // Step 2: api: セクションがある場合は承認モーダルを挟む
+      // Step 2: if an api: section exists, show the approval modal
       if (parsed.api && parsed.api.scopes.length > 0) {
         setPendingInstall({ recipe, parsed, inspection, api: parsed.api })
         setInstallingId(null)
-        return // モーダルの承認/拒否を待つ
+        return // Wait for modal approval/rejection
       }
 
-      // Step 3: api: なしのレシピは従来通り直接適用
+      // Step 3: recipes without api: are applied directly as before
       await applyRecipe(parsed, inspection)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Install failed')
@@ -98,7 +98,7 @@ export function RecipeBundled() {
     }
   }, [fetchRecipes])
 
-  /** api: 承認後のインストール実行 */
+  /** Execute installation after api: approval */
   const handleApproveInstall = useCallback(async () => {
     if (!pendingInstall) return
     const { parsed, inspection } = pendingInstall
@@ -113,13 +113,13 @@ export function RecipeBundled() {
     }
   }, [pendingInstall, fetchRecipes])
 
-  /** api: 承認拒否 */
+  /** api: approval rejected */
   const handleRejectInstall = useCallback(() => {
     setPendingInstall(null)
     setInstallingId(null)
   }, [])
 
-  /** レシピを適用する共通処理 */
+  /** Common logic for applying a recipe */
   async function applyRecipe(parsed: ParsedRecipe, inspection: InspectionResult) {
     const applyRes = await fetch('/api/recipes/apply', {
       method: 'POST',
@@ -175,7 +175,7 @@ export function RecipeBundled() {
 
   return (
     <div className="space-y-6">
-      {/* api: 承認モーダル */}
+      {/* api: approval modal */}
       {pendingInstall && (
         <RecipeInstallModal
           recipeName={pendingInstall.parsed.metadata.name}

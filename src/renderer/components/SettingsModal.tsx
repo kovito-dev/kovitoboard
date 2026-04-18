@@ -5,7 +5,7 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
-// --- 型定義 ---
+// --- Type definitions ---
 
 interface BasicSettings {
   projectName: string
@@ -53,7 +53,7 @@ const TABS: { id: TabId; label: string }[] = [
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabId>('basic')
 
-  // ESC キーで閉じる
+  // Close on ESC key
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: KeyboardEvent) => {
@@ -67,12 +67,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* オーバーレイ */}
+      {/* Overlay */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      {/* モーダル本体 */}
+      {/* Modal body */}
       <div className="relative w-full max-w-4xl mx-0 md:mx-4 bg-[var(--bg-base)] md:rounded-2xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden h-full md:h-[85vh]">
-        {/* ヘッダー */}
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <h2 className="text-lg font-semibold text-[var(--text-secondary)] flex items-center gap-2">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-muted)]">
@@ -92,7 +92,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           </button>
         </div>
 
-        {/* タブバー */}
+        {/* Tab bar */}
         <div className="flex gap-0 px-3 md:px-6 border-b border-[var(--border)] overflow-x-auto">
           {TABS.map((tab) => (
             <button
@@ -111,7 +111,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           ))}
         </div>
 
-        {/* タブコンテンツ */}
+        {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-3 md:p-6">
           {activeTab === 'basic' && <SettingsBasic />}
           {activeTab === 'skills' && <SettingsSkills />}
@@ -124,7 +124,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   )
 }
 
-// --- ヘルプアイコン ---
+// --- Help icon ---
 
 function HelpTip({ text }: { text: string }) {
   const [show, setShow] = useState(false)
@@ -152,7 +152,7 @@ function HelpTip({ text }: { text: string }) {
   )
 }
 
-// --- 基本設定タブ ---
+// --- Basic settings tab ---
 
 function SettingsBasic() {
   const [data, setData] = useState<BasicSettings | null>(null)
@@ -171,7 +171,7 @@ function SettingsBasic() {
 
   return (
     <div className="space-y-6">
-      {/* 基本情報 */}
+      {/* Basic information */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">基本情報</h3>
         <div className="space-y-3">
@@ -204,7 +204,7 @@ function SettingsBasic() {
         </div>
       </div>
 
-      {/* エージェント一覧 */}
+      {/* Agent list */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">エージェント一覧</h3>
         {data.agents.length > 0 ? (
@@ -226,7 +226,7 @@ function SettingsBasic() {
         )}
       </div>
 
-      {/* フッター */}
+      {/* Footer */}
       <div className="text-center text-xs text-[var(--text-faint)] py-2">
         設定の変更はAgents画面から秘書に依頼してください
       </div>
@@ -253,7 +253,7 @@ function SettingRow({ label, value, helpText, highlight }: {
   )
 }
 
-// --- スキルタブ ---
+// --- Skills tab ---
 
 function SettingsSkills() {
   const [data, setData] = useState<SkillInfo[]>([])
@@ -305,7 +305,7 @@ function SettingsSkills() {
   )
 }
 
-// --- 自動処理タブ ---
+// --- Automations tab ---
 
 function SettingsAutomations() {
   const [hooks, setHooks] = useState<HookInfo[]>([])
@@ -355,7 +355,7 @@ function SettingsAutomations() {
   )
 }
 
-// --- 外部連携タブ ---
+// --- Integrations tab ---
 
 function SettingsIntegrations() {
   const [data, setData] = useState<IntegrationInfo[]>([])
@@ -401,7 +401,7 @@ function SettingsIntegrations() {
   )
 }
 
-// --- ルールタブ ---
+// --- Rules tab ---
 
 function SettingsRules() {
   const [data, setData] = useState<RuleInfo[]>([])
@@ -438,7 +438,7 @@ function SettingsRules() {
   )
 }
 
-// --- 共通コンポーネント ---
+// --- Common components ---
 
 function LoadingSpinner() {
   return (

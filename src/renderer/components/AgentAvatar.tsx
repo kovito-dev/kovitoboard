@@ -6,20 +6,20 @@ interface AgentAvatarProps {
   color: string
   size?: number
   avatar?: string
-  /** エージェントID（SVGジェネレーターのシード値）。未指定時は name を使用 */
+  /** Agent ID (seed for SVG generator). Falls back to name when unspecified */
   agentId?: string
-  /** UIテーマ（SVG背景色の切り替えに使用） */
+  /** UI theme (used for switching SVG background color) */
   theme?: 'dark' | 'light'
 }
 
 /**
- * avatar ファイル名からテーマに応じたパスを解決する
- * 例: "secretary.svg" + light → "/avatars/secretary-light.svg"
- * ライト版が読み込み失敗した場合はダーク版にフォールバック → さらに失敗時はランタイム生成
+ * Resolve the avatar file path based on the theme.
+ * e.g. "secretary.svg" + light -> "/avatars/secretary-light.svg"
+ * Falls back to the dark variant on load failure, then to runtime generation.
  */
 function resolveAvatarSrc(avatar: string, theme: 'dark' | 'light'): string {
   if (theme === 'dark') return `/avatars/${avatar}`
-  // ライトモード: {id}-light.svg を試行
+  // Light mode: try {id}-light.svg
   const dotIdx = avatar.lastIndexOf('.')
   if (dotIdx > 0) {
     const base = avatar.slice(0, dotIdx)
@@ -31,18 +31,18 @@ function resolveAvatarSrc(avatar: string, theme: 'dark' | 'light'): string {
 
 export function AgentAvatar({ name, color, size = 36, avatar, agentId, theme = 'dark' }: AgentAvatarProps) {
   const [imgError, setImgError] = useState(false)
-  // ライト版が失敗した場合にダーク版（元ファイル）を試行するフラグ
+  // Flag to try the dark variant (original file) when the light variant fails
   const [lightFallback, setLightFallback] = useState(false)
 
-  // SVGアイコンを決定論的に生成（メモ化）
+  // Deterministically generate SVG icon (memoized)
   const generatedSvg = useMemo(() => {
     const seed = agentId || name
     return generateAgentIconSvg({ agentId: seed, themeColor: color, theme })
   }, [agentId, name, color, theme])
 
-  // avatar がありかつ読み込みエラーでない場合は画像表示
+  // Display the image if avatar is set and no load error occurred
   if (avatar && !imgError) {
-    // テーマに応じたパスを解決（ライト版が未対応ならダーク版にフォールバック）
+    // Resolve theme-aware path (fall back to dark variant if light is unavailable)
     const src = lightFallback ? `/avatars/${avatar}` : resolveAvatarSrc(avatar, theme)
     return (
       <img
@@ -50,10 +50,10 @@ export function AgentAvatar({ name, color, size = 36, avatar, agentId, theme = '
         alt={name}
         onError={() => {
           if (theme === 'light' && !lightFallback) {
-            // ライト版が存在しない → ダーク版を試行
+            // Light variant not found -> try dark variant
             setLightFallback(true)
           } else {
-            // ダーク版も失敗 → ランタイム生成にフォールバック
+            // Dark variant also failed -> fall back to runtime generation
             setImgError(true)
           }
         }}
@@ -67,7 +67,7 @@ export function AgentAvatar({ name, color, size = 36, avatar, agentId, theme = '
     )
   }
 
-  // フォールバック: SVGジェネレーターで自動生成
+  // Fallback: auto-generate with SVG generator
   return (
     <div
       className="rounded-full overflow-hidden shrink-0"

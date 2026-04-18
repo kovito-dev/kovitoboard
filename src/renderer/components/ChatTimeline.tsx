@@ -8,8 +8,8 @@ type ViewMode = 'summary' | 'detail'
 type NewTopicState = 'idle' | 'input' | 'sending'
 
 /**
- * システム注入コンテンツのみで構成されたユーザーメッセージを判定する
- * パーサーではなく表示層でフィルタすることで、データを安全に保持しつつ表示を制御する
+ * Determine if a user message consists only of system-injected content.
+ * Filtering at the display layer (not the parser) keeps data intact while controlling visibility.
  */
 const SYSTEM_ONLY_PATTERNS = [
   /^<local-command-caveat>[\s\S]*$/,
@@ -32,23 +32,23 @@ interface ChatTimelineProps {
   userConfig: AgentConfig
   onSendMessage?: (sessionId: string, message: string) => Promise<void>
   onReload?: () => void
-  /** 新しい話題でセッションを開始するコールバック（agentId, message） */
+  /** Callback to start a session with a new topic (agentId, message) */
   onStartNewTopic?: (agentId: string, message: string) => Promise<void>
-  /** 現在のセッションに紐づくエージェントID */
+  /** Agent ID associated with the current session */
   agentId?: string
-  /** 新規セッション待機中フラグ */
+  /** Waiting for new session flag */
   isPendingNewSession?: boolean
-  /** セッション引き継ぎで新規セッションを開始するコールバック（agentId, message） */
+  /** Callback to continue a session by starting a new one (agentId, message) */
   onContinueSession?: (agentId: string, message: string) => Promise<void>
-  /** ファイルパスクリック時のコールバック */
+  /** Callback when a file path is clicked */
   onFilePathClick?: (path: string) => void
-  /** 送信失敗時のコールバック（オプティミスティックメッセージのロールバック用） */
+  /** Callback on send failure (for rolling back optimistic messages) */
   onSendError?: (error: Error) => void
-  /** エージェント名（ヘッダー表示用） */
+  /** Agent name (for header display) */
   agentName?: string
-  /** エージェントカラー（ヘッダー表示用） */
+  /** Agent color (for header display) */
   agentColor?: string
-  /** UIテーマ */
+  /** UI theme */
   theme?: 'dark' | 'light'
 }
 
@@ -64,7 +64,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
   const newTopicInputRef = useRef<HTMLTextAreaElement>(null)
   const [isContinuing, setIsContinuing] = useState(false)
 
-  // セッション引き継ぎで新規セッション開始
+  // Start a new session by continuing from the current one
   const handleContinueSession = useCallback(async () => {
     if (!onContinueSession || !agentId) return
     setIsContinuing(true)
@@ -86,7 +86,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
     }
   }, [onSendMessage, session.id])
 
-  // 新しい話題で開始
+  // Start with a new topic
   const handleNewTopic = useCallback(async () => {
     if (!onStartNewTopic || !agentId || !newTopicMessage.trim()) return
     setNewTopicState('sending')
@@ -99,47 +99,47 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
     }
   }, [onStartNewTopic, agentId, newTopicMessage])
 
-  // 入力欄を開いた時にフォーカス
+  // Focus input when opened
   useEffect(() => {
     if (newTopicState === 'input') {
       newTopicInputRef.current?.focus()
     }
   }, [newTopicState])
 
-  // 自動スクロール判定
+  // Auto-scroll detection
   const handleScroll = () => {
     const el = containerRef.current
     if (!el) return
     wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50
   }
 
-  // 新メッセージ時の自動スクロール
+  // Auto-scroll on new messages
   useEffect(() => {
     if (wasAtBottomRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [session.events.length])
 
-  // 表示対象イベントのフィルタリング
+  // Filter events for display
   const visibleEvents = session.events.filter((e) => {
-    // 共通: progress と空の tool_result は常に除外
+    // Common: always exclude progress and empty tool_result
     if (e.type === 'progress') return false
     if (e.type === 'tool_result' && !e.content.toolOutput) return false
 
-    // 標準表示: システム注入のみのメッセージ・空メッセージを非表示
+    // Summary view: hide system-only and empty messages
     if (viewMode === 'summary') {
       if (isSystemOnlyMessage(e)) return false
       if ((e.type === 'user' || e.type === 'assistant') && !e.content.text?.trim()) return false
       return e.type === 'user' || e.type === 'assistant'
     }
 
-    // 詳細表示: すべて表示（デバッグ用にシステム注入も含む）
+    // Detail view: show everything (including system-injected for debugging)
     return true
   })
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* セッション情報ヘッダー（固定表示） */}
+      {/* Session info header (fixed) */}
       <div className="shrink-0 flex justify-center py-2 md:py-3 border-b border-[var(--border)] bg-[var(--bg-base)] px-2">
         <div className="text-xs md:text-sm text-[var(--text-dim)] bg-[var(--bg-surface)] px-3 md:px-5 py-1.5 md:py-2 rounded-full flex items-center gap-2 md:gap-3 flex-wrap justify-center">
           {agentName && (
@@ -154,7 +154,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
           <span className="hidden md:inline">|</span>
           <span className="hidden md:inline">{new Date(session.startedAt).toLocaleDateString('ja-JP')}</span>
           <span>|</span>
-          {/* 表示モード切替ボタン */}
+          {/* View mode toggle buttons */}
           <div className="flex bg-[var(--bg-inset)] rounded-full p-0.5">
             <button
               onClick={() => setViewMode('summary')}
@@ -177,14 +177,14 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
               詳細
             </button>
           </div>
-          {/* リロードボタン */}
+          {/* Reload button */}
           {onReload && (
             <>
               <span>|</span>
               <button
                 onClick={onReload}
                 className="text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] transition-colors"
-                title="セッション再読み込み"
+                title="Reload session"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="23 4 23 10 17 10" />
@@ -193,7 +193,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
               </button>
             </>
           )}
-          {/* 全メッセージコピーボタン */}
+          {/* Copy all messages button */}
           <span>|</span>
           <button
             onClick={async () => {
@@ -209,7 +209,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
               }
             }}
             className="text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] transition-colors"
-            title="全メッセージをMarkdownでコピー"
+            title="Copy all messages as Markdown"
           >
             {allCopied ? (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -222,7 +222,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
               </svg>
             )}
           </button>
-          {/* 新しい話題ボタン */}
+          {/* New topic button */}
           {onStartNewTopic && agentId && (
             <>
               <span>|</span>
@@ -243,7 +243,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
                       ? 'bg-[var(--accent-bg-subtle)] text-[var(--accent-text-vivid)] animate-pulse'
                       : 'text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] hover:bg-[var(--accent-bg-subtle)]'
                 }`}
-                title="新しい話題でセッションを始める"
+                title="Start a session with a new topic"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19" />
@@ -256,7 +256,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
         </div>
       </div>
 
-      {/* 新しい話題: メッセージ入力エリア */}
+      {/* New topic: message input area */}
       {newTopicState !== 'idle' && (
         <div className="shrink-0 border-b border-[var(--border)] bg-[var(--bg-surface)] px-4 py-3">
           <div className="flex items-center gap-2 mb-2">
@@ -308,13 +308,13 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
         </div>
       )}
 
-      {/* メッセージ一覧（スクロール領域） */}
+      {/* Message list (scrollable area) */}
       <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-2 md:px-4 py-3">
         {visibleEvents.map((event) => (
           <MessageBubble key={event.id} event={event} agentConfig={agentConfig} userConfig={userConfig} onFilePathClick={onFilePathClick} theme={theme} />
         ))}
 
-        {/* タイピングインジケーター: エージェントが応答準備中の表示 */}
+        {/* Typing indicator: shown while agent is preparing a response */}
         {(isSending || session.status === 'thinking' || session.status === 'waiting') && (
           <div className="flex justify-start mb-3">
             <div className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl bg-[var(--bg-surface)] border border-[var(--border)]">
@@ -337,7 +337,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
         <div ref={bottomRef} />
       </div>
 
-      {/* メッセージ入力 or 読み取り専用表示 */}
+      {/* Message input or read-only display */}
       {onSendMessage ? (
         <MessageInput
           onSend={handleSend}
@@ -354,7 +354,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
           <div className="text-xs text-[var(--text-dim)] text-center py-1">
             このセッションは読み取り専用です（終了済み、またはエージェント未起動）
           </div>
-          {/* 引き継ぎボタン: エージェントが紐づいている終了済みセッションのみ表示 */}
+          {/* Continue button: shown only for ended sessions with an associated agent */}
           {onContinueSession && agentId && session.status === 'idle' && (
             <div className="flex justify-center py-1.5">
               <button
@@ -365,7 +365,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
                     ? 'bg-[var(--accent-bg-subtle)] text-[var(--accent-text-vivid)] animate-pulse cursor-wait'
                     : 'bg-[var(--accent-bg)] text-[var(--accent-text)] hover:bg-[var(--accent-bg)] hover:text-[var(--accent-text)]'
                 }`}
-                title="このセッションの内容を引き継いで新しいセッションを開始する"
+                title="Continue this session's context in a new session"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="23 4 23 10 17 10" />

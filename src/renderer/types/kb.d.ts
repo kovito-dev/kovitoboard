@@ -1,11 +1,11 @@
 /**
- * KovitoBoard Recipe Bridge API — window.kb 型宣言.
+ * KovitoBoard Recipe Bridge API — window.kb type declarations.
  *
- * レシピページ（recipes/{id}/pages/*.tsx）の mount 中のみ有効。
- * コア UI コンポーネントからは使用しない。
+ * Available only while a recipe page (recipes/{id}/pages/*.tsx) is mounted.
+ * Do not use from core UI components.
  *
- * 将来 v0.2.0 で iframe 隔離に移行する可能性があるが、
- * call 署名は stable に保つためレシピコードの変更は不要。
+ * May migrate to iframe isolation in v0.2.0, but the call signature
+ * is kept stable so recipe code requires no changes.
  *
  * @see recipe-backend-critical-reviews.md §4 (Q-K1)
  * @stable v0.1.0

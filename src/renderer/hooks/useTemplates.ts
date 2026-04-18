@@ -1,10 +1,10 @@
 /**
- * テンプレート一覧を取得する React Hook
+ * React hook to fetch the list of templates
  */
 
 import { useState, useEffect, useCallback } from 'react'
 
-/** テンプレートサマリー（サーバー側 AgentTemplateSummary と同一構造） */
+/** Template summary (same structure as server-side AgentTemplateSummary) */
 export interface TemplateSummary {
   id: string
   name: string
@@ -35,7 +35,7 @@ export function useTemplates(): UseTemplatesResult {
       const data = (await res.json()) as TemplateSummary[]
       setTemplates(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'テンプレートの取得に失敗しました')
+      setError(err instanceof Error ? err.message : 'Failed to fetch templates')
     } finally {
       setIsLoading(false)
     }

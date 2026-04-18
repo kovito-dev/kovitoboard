@@ -1,10 +1,10 @@
 /**
- * RecipeInstallModal — レシピインストール時の scope 承認 UI.
+ * RecipeInstallModal — Scope approval UI shown during recipe installation.
  *
- * api: セクションを持つレシピのインストール時に表示される。
- * scope 一覧と使用する handler を提示し、ユーザーの承認/拒否を取得する。
+ * Displayed when installing a recipe that has an api: section.
+ * Presents the list of scopes and handlers to the user for approval/rejection.
  *
- * @see recipe-system.md §12-4 (インストール時の承認 UX)
+ * @see recipe-system.md §12-4 (Installation approval UX)
  * @stable v0.1.0
  */
 
@@ -18,15 +18,15 @@ import type { MessageKey } from '../i18n/ja'
 // =========================================
 
 export interface RecipeInstallModalProps {
-  /** レシピ名 */
+  /** Recipe name */
   recipeName: string
-  /** レシピの api: セクション */
+  /** The recipe's api: section */
   api: RecipeApiSection
-  /** インストール中フラグ */
+  /** Whether installation is in progress */
   isInstalling: boolean
-  /** 承認ボタン押下時 */
+  /** Fired when the approve button is clicked */
   onConfirm: () => void
-  /** 拒否ボタン押下時 */
+  /** Fired when the reject button is clicked */
   onReject: () => void
 }
 
@@ -67,7 +67,7 @@ export function RecipeInstallModal({
   onConfirm,
   onReject,
 }: RecipeInstallModalProps) {
-  // ESC キーで拒否
+  // Reject on ESC key
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isInstalling) {
@@ -82,7 +82,7 @@ export function RecipeInstallModal({
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [handleKeyDown])
 
-  // handler 名の重複排除（複数 call が同じ handler を使う場合）
+  // Deduplicate handler names (multiple calls may use the same handler)
   const uniqueHandlers = [...new Set(api.calls.map((c) => c.handler))]
 
   return (

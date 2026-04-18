@@ -1,13 +1,13 @@
 /**
- * 構造化フィールドエディタ
+ * Structured Field Editor
  *
- * エージェント定義ファイル内のマーカーで囲まれたセクション
- * (性格・口調サンプル・追加指示) を個別に編集する UI。
+ * UI for individually editing marker-delimited sections
+ * (personality, tone sample, extra instructions) within agent definition files.
  */
 
 import { useState, useCallback } from 'react'
 
-/** 編集可能なセクションのデータ */
+/** Data for editable sections */
 export interface SectionData {
   displayName: string
   personality: string
@@ -16,15 +16,15 @@ export interface SectionData {
 }
 
 interface StructuredFieldEditorProps {
-  /** 初期値 */
+  /** Initial values */
   initial: SectionData
-  /** マーカーが存在するか（false の場合セクション編集を無効化） */
+  /** Whether markers exist (section editing is disabled when false) */
   hasMarkers: boolean
-  /** 保存中か */
+  /** Whether saving is in progress */
   isSaving: boolean
-  /** 保存ハンドラ */
+  /** Save handler */
   onSave: (data: SectionData) => void
-  /** キャンセルハンドラ */
+  /** Cancel handler */
   onCancel: () => void
 }
 
@@ -40,7 +40,7 @@ export function StructuredFieldEditor({
   const [toneSample, setToneSample] = useState(initial.toneSample)
   const [extraInstructions, setExtraInstructions] = useState(initial.extraInstructions)
 
-  // 変更があるかチェック
+  // Check if there are changes
   const hasChanges =
     displayName !== initial.displayName ||
     personality !== initial.personality ||
@@ -53,7 +53,7 @@ export function StructuredFieldEditor({
 
   return (
     <div className="space-y-5">
-      {/* 表示名 — マーカーの有無に関わらず編集可能 */}
+      {/* Display name -- editable regardless of marker presence */}
       <FieldSection
         label="表示名"
         description="UI 上で表示されるエージェント名。空欄の場合はファイル名から自動生成されます。"
@@ -67,7 +67,7 @@ export function StructuredFieldEditor({
         />
       </FieldSection>
 
-      {/* マーカーがない場合の警告 */}
+      {/* Warning when markers are absent */}
       {!hasMarkers && (
         <div className="flex items-start gap-2.5 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-yellow-400 shrink-0 mt-0.5">
@@ -85,7 +85,7 @@ export function StructuredFieldEditor({
         </div>
       )}
 
-      {/* 構造化フィールド — マーカーがある場合のみ編集可能 */}
+      {/* Structured fields -- editable only when markers are present */}
       <FieldSection
         label="性格"
         description="エージェントの基本的な性格特性を箇条書きで定義します。"
@@ -131,7 +131,7 @@ export function StructuredFieldEditor({
         />
       </FieldSection>
 
-      {/* アクションボタン */}
+      {/* Action buttons */}
       <div className="flex items-center gap-3 pt-2">
         <button
           onClick={handleSave}
@@ -160,7 +160,7 @@ export function StructuredFieldEditor({
   )
 }
 
-// --- フィールドセクション ---
+// --- Field section ---
 
 interface FieldSectionProps {
   label: string

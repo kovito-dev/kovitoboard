@@ -1,4 +1,4 @@
-// Renderer 側で使う型定義（サーバーの types.ts と同じ構造を手動同期）
+// Type definitions for the renderer (manually synced with server-side types.ts)
 
 export interface ParsedEvent {
   id: string
@@ -28,7 +28,7 @@ export interface EventMetadata {
   parentUuid?: string | null
   cwd?: string
   gitBranch?: string
-  /** assistant メッセージの終了理由（"end_turn" で応答完了） */
+  /** Stop reason for assistant messages ("end_turn" indicates response completion) */
   stopReason?: string
 }
 
@@ -104,33 +104,33 @@ export interface AgentInfo {
   summary?: string
 }
 
-// tmux ウィンドウ情報
+// tmux window information
 export interface TmuxWindow {
   index: number
   name: string
   active: boolean
 }
 
-// tmux ステータス
+// tmux status
 export interface TmuxStatus {
   hasSession: boolean
   sessionName: string
   windows: TmuxWindow[]
-  /** エージェントID → tmux ウィンドウ名 */
+  /** Agent ID -> tmux window name */
   agentWindowMap: Record<string, string>
 }
 
-// NOTE (v0.1.0): タスク管理機能は v0.1.0 スコープ外のため、Task 関連の型定義は削除済み。
-// v0.1.1 以降で Claude Code 標準のタスク管理機能（TaskCreate 系）をベースに再導入予定。
+// NOTE (v0.1.0): Task management is out of scope for v0.1.0; Task-related type definitions have been removed.
+// They will be reintroduced in v0.1.1+ based on Claude Code's native task management (TaskCreate, etc.).
 
-// メッセージ送信レスポンス
+// Send message response
 export interface SendMessageResponse {
   success: boolean
   processId: string
   error?: string
 }
 
-// 新規セッション開始レスポンス
+// New session response
 export interface NewSessionResponse {
   success: boolean
   processId: string

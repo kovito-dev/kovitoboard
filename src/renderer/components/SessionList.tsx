@@ -9,25 +9,25 @@ interface SessionListProps {
   sessions: SessionSummary[]
   selectedId: string | null
   onSelect: (id: string) => void
-  /** セッションID → エージェント定義ファイル名 のマップ */
+  /** Map of session ID -> agent definition file name */
   sessionAgentMap: Record<string, string>
-  /** エージェント定義ファイル名 → AgentConfig のマップ */
+  /** Map of agent definition file name -> AgentConfig */
   agentConfigs: Record<string, AgentConfig>
-  /** デフォルトアシスタントのconfig */
+  /** Default assistant config */
   defaultAgentConfig: AgentConfig
-  /** UIテーマ */
+  /** UI theme */
   theme?: 'dark' | 'light'
 }
 
 export function SessionList({ sessions, selectedId, onSelect, sessionAgentMap, agentConfigs, defaultAgentConfig, theme = 'dark' }: SessionListProps) {
   const [filterMode, setFilterMode] = useState<FilterMode>('latest')
 
-  // エージェントごとの最新セッションのみに絞り込み
+  // Filter to only the latest session per agent
   const filteredSessions = useMemo(() => {
     if (filterMode === 'all') return sessions
 
-    // sessions は lastEventAt 降順（新しい順）で来る前提
-    // 各エージェントの最初に出現するセッション = 最新セッション
+    // Assumes sessions are sorted by lastEventAt descending (newest first).
+    // The first occurrence for each agent = latest session
     const seen = new Set<string>()
     return sessions.filter((s) => {
       const agentId = sessionAgentMap[s.id] || '_default'
@@ -39,7 +39,7 @@ export function SessionList({ sessions, selectedId, onSelect, sessionAgentMap, a
 
   return (
     <div className="w-full md:w-56 lg:w-64 bg-[var(--bg-surface)] border-r border-[var(--border)] flex flex-col overflow-hidden">
-      {/* ヘッダー + フィルターボタン */}
+      {/* Header + filter buttons */}
       <div className="px-3 py-2.5 border-b border-[var(--border)]">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Sessions</h2>
@@ -59,7 +59,7 @@ export function SessionList({ sessions, selectedId, onSelect, sessionAgentMap, a
         </div>
       </div>
 
-      {/* セッション一覧 */}
+      {/* Session list */}
       <div className="flex-1 overflow-y-auto">
         {filteredSessions.map((s) => {
           const indicator = STATUS_INDICATORS[s.status] || STATUS_INDICATORS.idle
@@ -78,12 +78,12 @@ export function SessionList({ sessions, selectedId, onSelect, sessionAgentMap, a
               }`}
             >
               <div className="flex items-center gap-2">
-                {/* アバター + ステータスドット */}
+                {/* Avatar + status dot */}
                 <div className="relative shrink-0">
                   <AgentAvatar name={agentCfg.name} color={agentCfg.color} size={28} avatar={agentCfg.avatar} theme={theme} />
                   <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--bg-surface)] ${indicator.dot}`} />
                 </div>
-                {/* セッション情報 */}
+                {/* Session info */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 mb-0.5">
                     <span className="text-[11px] font-medium truncate" style={{ color: agentCfg.color }}>
@@ -107,7 +107,7 @@ export function SessionList({ sessions, selectedId, onSelect, sessionAgentMap, a
   )
 }
 
-// --- フィルターボタン ---
+// --- Filter button ---
 
 function FilterButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (

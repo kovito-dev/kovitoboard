@@ -1,6 +1,6 @@
 import type { MessageKey } from './ja'
 
-/** 英語メッセージカタログ */
+/** English message catalog */
 const en: Record<MessageKey, string> = {
   // Onboarding
   'onboarding.welcome.title': 'Welcome to KovitoBoard',

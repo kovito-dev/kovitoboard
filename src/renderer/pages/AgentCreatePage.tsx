@@ -1,8 +1,8 @@
 /**
- * エージェント新規作成ページ
+ * Agent creation page
  *
- * Step 1: テンプレート選択
- * Step 2: エージェント ID・表示名入力 → 作成
+ * Step 1: Select a template
+ * Step 2: Enter agent ID and display name, then create
  */
 
 import { useState, useCallback, useMemo } from 'react'
@@ -11,12 +11,12 @@ import { useTemplates, type TemplateSummary } from '../hooks/useTemplates'
 
 type Step = 'select-template' | 'configure'
 
-/** エージェント ID として有効かチェック */
+/** Check whether the given string is a valid agent ID */
 function isValidAgentId(id: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id) && id.length <= 64
 }
 
-/** モデル名を短縮表示 */
+/** Shorten a model name for display */
 function shortModel(model: string): string {
   if (model.includes('opus')) return 'Opus'
   if (model.includes('sonnet')) return 'Sonnet'
@@ -35,17 +35,17 @@ export function AgentCreatePage() {
   const [isCreating, setIsCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  // テンプレート選択
+  // Select a template
   const handleSelectTemplate = useCallback((template: TemplateSummary) => {
     setSelectedTemplate(template)
-    // テンプレート名からデフォルトの agentId を生成
+    // Generate a default agentId from the template name
     setAgentId(template.id)
     setDisplayName('')
     setCreateError(null)
     setStep('configure')
   }, [])
 
-  // 戻るボタン
+  // Back button
   const handleBack = useCallback(() => {
     if (step === 'configure') {
       setStep('select-template')
@@ -55,7 +55,7 @@ export function AgentCreatePage() {
     }
   }, [step, navigate])
 
-  // agentId バリデーション
+  // agentId validation
   const idValidation = useMemo(() => {
     if (!agentId) return { valid: false, message: '' }
     if (!isValidAgentId(agentId)) {
@@ -64,7 +64,7 @@ export function AgentCreatePage() {
     return { valid: true, message: '' }
   }, [agentId])
 
-  // エージェント作成
+  // Create agent
   const handleCreate = useCallback(async () => {
     if (!selectedTemplate || !idValidation.valid) return
 
@@ -87,10 +87,10 @@ export function AgentCreatePage() {
         throw new Error(data.error || `Creation failed (${res.status})`)
       }
 
-      // 成功 → エージェント一覧へ遷移
+      // Success — navigate to agents list
       navigate('/agents')
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'エージェントの作成に失敗しました')
+      setCreateError(err instanceof Error ? err.message : 'Failed to create agent')
     } finally {
       setIsCreating(false)
     }
@@ -147,7 +147,7 @@ export function AgentCreatePage() {
   )
 }
 
-// --- テンプレート選択コンポーネント ---
+// --- Template selector component ---
 
 interface TemplateSelectorProps {
   templates: TemplateSummary[]
@@ -213,7 +213,7 @@ function TemplateSelector({ templates, isLoading, error, onSelect }: TemplateSel
   )
 }
 
-// --- 設定確認・作成コンポーネント ---
+// --- Configure and create component ---
 
 interface ConfigureStepProps {
   template: TemplateSummary

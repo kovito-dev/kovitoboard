@@ -7,8 +7,8 @@ import { eventToMarkdown, copyToClipboard } from '../utils/format'
 import { FILE_PATH_REGEX, hasPreviewableExtension } from '../utils/path'
 
 /**
- * tmux 送信時にエスケープされた \n \t リテラルを実際の改行・タブに復元する
- * ユーザーメッセージの表示用（アシスタントメッセージには適用しない）
+ * Restore escaped \n \t literals to actual newlines/tabs.
+ * Applied only to user messages for display (not applied to assistant messages).
  */
 function restoreEscapedNewlines(text: string): string {
   return text
@@ -17,10 +17,10 @@ function restoreEscapedNewlines(text: string): string {
 }
 
 /**
- * ユーザーメッセージを改行を保持して表示するコンポーネント
- * Markdown レンダリングだと連続改行が圧縮されるため、
- * ユーザーメッセージは whitespace-pre-wrap でそのまま表示する
- * ファイルパスが含まれていればクリッカブルにする
+ * Component that displays user messages while preserving line breaks.
+ * Markdown rendering collapses consecutive newlines, so user messages
+ * are displayed as-is using whitespace-pre-wrap.
+ * File paths within the text are made clickable.
  */
 function UserMessageText({ text, onFilePathClick }: { text: string; onFilePathClick?: (path: string) => void }) {
   const restored = restoreEscapedNewlines(text)
@@ -29,7 +29,7 @@ function UserMessageText({ text, onFilePathClick }: { text: string; onFilePathCl
     return <span className="whitespace-pre-wrap">{restored}</span>
   }
 
-  // ファイルパスを検出してクリッカブルに
+  // Detect file paths and make them clickable
   const parts: ReactNode[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
@@ -54,7 +54,7 @@ function UserMessageText({ text, onFilePathClick }: { text: string; onFilePathCl
           onFilePathClick(filePath)
         }}
         className="text-blue-400 hover:text-blue-300 underline underline-offset-2 decoration-blue-400/40 hover:decoration-blue-300/60 cursor-pointer transition-colors"
-        title={`プレビュー: ${filePath}`}
+        title={`Preview: ${filePath}`}
       >
         {filePath}
       </button>,
@@ -69,7 +69,7 @@ function UserMessageText({ text, onFilePathClick }: { text: string; onFilePathCl
   return <span className="whitespace-pre-wrap">{parts.length > 0 ? parts : restored}</span>
 }
 
-/** メッセージアクションバー（ホバー時表示、メッセージ下部に配置） */
+/** Message action bar (shown on hover, positioned below the message) */
 function MessageActions({ onCopy }: { onCopy: () => void }) {
   const [copied, setCopied] = useState(false)
 
@@ -82,7 +82,7 @@ function MessageActions({ onCopy }: { onCopy: () => void }) {
 
   return (
     <div className="flex items-center gap-1 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-      {/* コピーボタン */}
+      {/* Copy button */}
       <button
         onClick={handleCopy}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] hover:bg-[var(--accent)]/10 transition-colors"
@@ -107,9 +107,9 @@ interface MessageBubbleProps {
   event: ParsedEvent
   agentConfig: AgentConfig
   userConfig: AgentConfig
-  /** ファイルパスクリック時のコールバック */
+  /** Callback when a file path is clicked */
   onFilePathClick?: (path: string) => void
-  /** UIテーマ */
+  /** UI theme */
   theme?: 'dark' | 'light'
 }
 
@@ -121,7 +121,7 @@ function formatTime(timestamp: string): string {
   }
 }
 
-/** 小さなコピーボタン（tool_use / tool_result 用、ホバー時表示） */
+/** Small copy button (for tool_use / tool_result, shown on hover) */
 function SmallCopyButton({ onClick, size = 12 }: { onClick: () => void; size?: number }) {
   const [copied, setCopied] = useState(false)
 
@@ -136,7 +136,7 @@ function SmallCopyButton({ onClick, size = 12 }: { onClick: () => void; size?: n
     <button
       onClick={handleClick}
       className="text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] transition-colors opacity-0 group-hover:opacity-100"
-      title="コピー"
+      title="Copy"
     >
       {copied ? (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -228,7 +228,7 @@ export function MessageBubble({ event, agentConfig, userConfig, onFilePathClick,
               : <MarkdownPreview content={event.content.text} onFilePathClick={onFilePathClick} />
           )}
         </div>
-        {/* アクションバー（メッセージ下部、ホバーで表示） */}
+        {/* Action bar (below message, shown on hover) */}
         <MessageActions onCopy={handleCopy} />
       </div>
     </div>

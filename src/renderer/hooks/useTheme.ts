@@ -5,24 +5,24 @@ export type Theme = 'dark' | 'light'
 const STORAGE_KEY = 'kovitoboard-theme'
 
 /**
- * テーマ管理フック
- * localStorage に設定を永続化し、<html> 要素の data-theme 属性を切り替える
+ * Theme management hook.
+ * Persists the setting in localStorage and toggles the data-theme attribute on the <html> element.
  */
 export function useTheme() {
   const [theme, setThemeState] = useState<Theme>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (stored === 'light' || stored === 'dark') return stored
-    } catch { /* localStorage 未対応 */ }
+    } catch { /* localStorage not supported */ }
     return 'dark'
   })
 
-  // テーマ変更時に DOM と localStorage を更新
+  // Update DOM and localStorage when theme changes
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     try {
       localStorage.setItem(STORAGE_KEY, theme)
-    } catch { /* 書き込み失敗は無視 */ }
+    } catch { /* Ignore write failures */ }
   }, [theme])
 
   const toggleTheme = useCallback(() => {

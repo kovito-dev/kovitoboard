@@ -2,7 +2,7 @@
 @import "highlight.js/styles/github-dark.css";
 @import "./theme.css";
 
-/* タイピングインジケーター: パルスドットアニメーション */
+/* Typing indicator: pulsing dot animation */
 @keyframes pulse-dot {
   0%, 80%, 100% {
     opacity: 0.3;
@@ -14,7 +14,7 @@
   }
 }
 
-/* モバイルサイドバーのスライドインアニメーション */
+/* Mobile sidebar slide-in animation */
 @keyframes slide-in-left {
   from {
     transform: translateX(-100%);
@@ -27,7 +27,7 @@
   animation: slide-in-left 0.2s ease-out;
 }
 
-/* カスタムスクロールバー */
+/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -42,7 +42,7 @@
   background: var(--scrollbar-thumb-hover);
 }
 
-/* タイトルバーのドラッグ領域 */
+/* Title bar drag region */
 .titlebar-drag {
   -webkit-app-region: drag;
 }
@@ -50,7 +50,7 @@
   -webkit-app-region: no-drag;
 }
 
-/* Markdown 内のスタイル調整 */
+/* Markdown content styling */
 .markdown-body h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
 .markdown-body h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; }
 .markdown-body h3 { font-size: 1.1em; font-weight: 600; margin: 0.6em 0 0.3em; }
@@ -97,7 +97,7 @@
 }
 
 /* ============================
-   Document variant — ドキュメント閲覧向けの読みやすいスタイル
+   Document variant — readable styles for document viewing
    ============================ */
 .markdown-body--document {
   font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
@@ -105,7 +105,7 @@
   color: var(--md-doc-text);
 }
 
-/* 見出し: 存在感を高める */
+/* Headings: increased prominence */
 .markdown-body--document h1 {
   font-size: 1.6em;
   font-weight: 700;
@@ -135,12 +135,12 @@
   color: var(--md-doc-h4-text);
 }
 
-/* 段落: ゆったりした間隔 */
+/* Paragraphs: generous spacing */
 .markdown-body--document p {
   margin: 0.75em 0;
 }
 
-/* リスト: 少し広めの間隔 */
+/* Lists: slightly wider spacing */
 .markdown-body--document ul, .markdown-body--document ol {
   padding-left: 1.8em;
   margin: 0.6em 0;
@@ -152,7 +152,7 @@
   color: var(--md-doc-marker);
 }
 
-/* コードブロック: 左ボーダーアクセント */
+/* Code blocks: left border accent */
 .markdown-body--document pre {
   background: var(--md-doc-pre-bg);
   border-radius: 8px;
@@ -169,7 +169,7 @@
   color: var(--md-doc-code-text);
 }
 
-/* テーブル: ゼブラストライプ + ホバー */
+/* Tables: zebra-stripe + hover */
 .markdown-body--document table {
   border-collapse: collapse;
   width: 100%;
@@ -192,7 +192,7 @@
   background: var(--md-doc-row-hover);
 }
 
-/* ブロッククォート: アクセントカラー + 背景 */
+/* Blockquotes: accent color + background */
 .markdown-body--document blockquote {
   border-left: 3px solid #A78BFA;
   padding: 0.6em 1em;
@@ -202,7 +202,7 @@
   border-radius: 0 6px 6px 0;
 }
 
-/* リンク */
+/* Links */
 .markdown-body--document a {
   color: #60a5fa;
   text-decoration: underline;
@@ -212,14 +212,14 @@
   color: #93bbfc;
 }
 
-/* 水平線 */
+/* Horizontal rule */
 .markdown-body--document hr {
   border: none;
   border-top: 1px solid var(--md-doc-hr);
   margin: 1.5em 0;
 }
 
-/* 強調テキスト */
+/* Bold text */
 .markdown-body--document strong {
   color: var(--md-doc-strong);
   font-weight: 600;

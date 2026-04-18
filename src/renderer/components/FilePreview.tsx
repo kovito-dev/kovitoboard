@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { MarkdownPreview } from './MarkdownPreview'
 
 interface FilePreviewProps {
-  /** プレビュー対象のファイルパス */
+  /** File path to preview */
   filePath: string
-  /** パネルを閉じるコールバック */
+  /** Callback to close the panel */
   onClose: () => void
 }
 
-/** 画像系拡張子の判定 */
+/** Determine if the file has an image extension */
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico']
 
 function isImageFile(path: string): boolean {
@@ -16,7 +16,7 @@ function isImageFile(path: string): boolean {
   return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext))
 }
 
-/** 拡張子から表示ラベルを取得 */
+/** Get display label from file extension */
 function getFileTypeLabel(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || ''
   const labels: Record<string, string> = {
@@ -42,7 +42,7 @@ function getFileTypeLabel(path: string): string {
   return labels[ext] || ext.toUpperCase()
 }
 
-/** ファイル名を抽出 */
+/** Extract the file name from a path */
 function getFileName(path: string): string {
   return path.split('/').pop() || path
 }
@@ -61,12 +61,12 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
 
-  // ドラッグによるリサイズ処理
+  // Resize handling via drag
   useEffect(() => {
     if (!isDragging) return
 
     const handleMouseMove = (e: MouseEvent) => {
-      // 左方向にドラッグ = 幅を広げる（右パネルなので逆方向）
+      // Dragging left = widening (inverted because this is a right panel)
       const delta = dragStartX.current - e.clientX
       const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, dragStartWidth.current + delta))
       setWidth(newWidth)
@@ -78,7 +78,7 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
 
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-    // ドラッグ中のテキスト選択を防止
+    // Prevent text selection during drag
     document.body.style.userSelect = 'none'
     document.body.style.cursor = 'col-resize'
 
@@ -117,7 +117,7 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
   }, [filePath])
 
   useEffect(() => {
-    // 画像はAPIで取得せずブラウザで直接表示
+    // Display images directly in the browser instead of fetching via API
     if (isImageFile(filePath)) {
       setIsLoading(false)
       return
@@ -132,30 +132,30 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
       className="shrink-0 flex flex-col border-l border-[var(--border)] bg-[var(--bg-surface)] overflow-hidden relative"
       style={{ width: `${width}px` }}
     >
-      {/* ドラッグハンドル（左端） */}
+      {/* Drag handle (left edge) */}
       <div
         onMouseDown={handleDragStart}
         className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 transition-colors ${
           isDragging ? 'bg-[var(--accent)]/60' : 'hover:bg-[var(--accent)]/40'
         }`}
       />
-      {/* ヘッダー */}
+      {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-base)]">
         <div className="flex items-center gap-2 min-w-0">
-          {/* ファイルタイプバッジ */}
+          {/* File type badge */}
           <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono">
             {getFileTypeLabel(filePath)}
           </span>
-          {/* ファイル名 */}
+          {/* File name */}
           <span className="text-xs text-[var(--text-tertiary)] truncate" title={filePath}>
             {getFileName(filePath)}
           </span>
         </div>
-        {/* 閉じるボタン */}
+        {/* Close button */}
         <button
           onClick={onClose}
           className="shrink-0 ml-2 text-[var(--text-dim)] hover:text-[var(--text-tertiary)] transition-colors"
-          title="プレビューを閉じる"
+          title="Close preview"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="18" y1="6" x2="6" y2="18" />
@@ -164,12 +164,12 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
         </button>
       </div>
 
-      {/* ファイルパス（フルパス表示） */}
+      {/* File path (full path display) */}
       <div className="shrink-0 px-3 py-1.5 border-b border-[var(--border)]">
         <span className="text-[10px] text-[var(--text-faint)] font-mono break-all">{filePath}</span>
       </div>
 
-      {/* コンテンツ領域 */}
+      {/* Content area */}
       <div className="flex-1 overflow-y-auto p-4">
         {isLoading ? (
           <div className="text-sm text-[var(--text-dim)] animate-pulse">読み込み中...</div>

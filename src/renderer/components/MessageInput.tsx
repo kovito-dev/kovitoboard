@@ -1,40 +1,40 @@
 import { useState, useRef, useCallback } from 'react'
 
-/** 添付ファイル情報 */
+/** Attached file information */
 interface AttachedFile {
-  /** サーバー上のファイルパス */
+  /** File path on the server */
   filePath: string
-  /** 表示用ファイル名 */
+  /** File name for display */
   fileName: string
-  /** ファイルサイズ（バイト） */
+  /** File size in bytes */
   size: number
   /** Content-Type */
   contentType: string
-  /** サムネイルプレビュー用のオブジェクトURL（画像の場合） */
+  /** Object URL for thumbnail preview (for images) */
   previewUrl?: string
 }
 
 interface MessageInputProps {
-  /** 送信ハンドラ。Promise を返し、完了/エラーを通知 */
+  /** Send handler. Returns a Promise to signal completion/error */
   onSend: (message: string) => Promise<void>
-  /** 入力を無効にするか */
+  /** Whether to disable input */
   disabled?: boolean
-  /** プレースホルダーテキスト */
+  /** Placeholder text */
   placeholder?: string
-  /** 送信中かどうか */
+  /** Whether sending is in progress */
   isSending?: boolean
-  /** 送信失敗時のコールバック（オプティミスティックメッセージのロールバック等） */
+  /** Callback on send failure (for rolling back optimistic messages, etc.) */
   onSendError?: (error: Error) => void
 }
 
-/** ファイルサイズの表示用フォーマット */
+/** Format file size for display */
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
-/** 画像ファイルかどうか */
+/** Check if the content type is an image */
 function isImageType(contentType: string): boolean {
   return contentType.startsWith('image/')
 }
@@ -48,7 +48,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  /** ファイルをサーバーにアップロード */
+  /** Upload file to the server */
   const uploadFile = useCallback(async (file: File | Blob, originalName?: string): Promise<AttachedFile | null> => {
     setIsUploading(true)
     setUploadError(null)
@@ -64,14 +64,14 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
       })
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'アップロード失敗' }))
-        setUploadError(err.error || `アップロード失敗 (${res.status})`)
+        const err = await res.json().catch(() => ({ error: 'Upload failed' }))
+        setUploadError(err.error || `Upload failed (${res.status})`)
         return null
       }
 
       const data = await res.json()
 
-      // 画像の場合はプレビューURLを作成
+      // Create preview URL for images
       let previewUrl: string | undefined
       if (isImageType(file.type)) {
         previewUrl = URL.createObjectURL(file instanceof File ? file : new Blob([buffer], { type: file.type }))
@@ -85,14 +85,14 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
         previewUrl,
       }
     } catch {
-      setUploadError('アップロードに失敗しました')
+      setUploadError('Upload failed')
       return null
     } finally {
       setIsUploading(false)
     }
   }, [])
 
-  /** 複数ファイルのアップロード処理 */
+  /** Handle uploading multiple files */
   const handleFiles = useCallback(async (files: FileList | File[]) => {
     const fileArray = Array.from(files)
     for (const file of fileArray) {
@@ -103,11 +103,11 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     }
   }, [uploadFile])
 
-  /** 添付ファイルの削除 */
+  /** Remove an attached file */
   const removeAttachedFile = useCallback((index: number) => {
     setAttachedFiles((prev) => {
       const file = prev[index]
-      // プレビューURLをクリーンアップ
+      // Clean up preview URL
       if (file?.previewUrl) {
         URL.revokeObjectURL(file.previewUrl)
       }
@@ -115,12 +115,12 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     })
   }, [])
 
-  /** 送信処理 */
+  /** Send handler */
   const handleSend = useCallback(async () => {
     const trimmedText = text.trim()
     if ((!trimmedText && attachedFiles.length === 0) || disabled || isSending) return
 
-    // 添付ファイルのパスをメッセージに追加
+    // Append attached file paths to the message
     let fullMessage = trimmedText
     if (attachedFiles.length > 0) {
       const fileLines = attachedFiles.map((f) => f.filePath).join('\n')
@@ -133,7 +133,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     try {
       await onSend(fullMessage)
       setText('')
-      // プレビューURLのクリーンアップ
+      // Clean up preview URLs
       for (const f of attachedFiles) {
         if (f.previewUrl) URL.revokeObjectURL(f.previewUrl)
       }
@@ -143,18 +143,18 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
         textareaRef.current.style.height = 'auto'
       }
     } catch (err) {
-      // 送信失敗: エラーを表示し、入力内容は保持（ユーザーが再送信できるように）
-      const errorMsg = err instanceof Error ? err.message : '送信に失敗しました'
-      console.error('[MessageInput] 送信エラー:', errorMsg)
+      // Send failed: show error, keep input content (so user can retry)
+      const errorMsg = err instanceof Error ? err.message : 'Failed to send'
+      console.error('[MessageInput] Send error:', errorMsg)
       setSendError(errorMsg)
-      // 呼び出し元にエラーを通知（オプティミスティックメッセージのロールバック用）
+      // Notify the caller of the error (for rolling back optimistic messages)
       if (onSendError) {
         onSendError(err instanceof Error ? err : new Error(errorMsg))
       }
     }
   }, [text, attachedFiles, disabled, isSending, onSend, onSendError])
 
-  /** キーボード操作 */
+  /** Keyboard handling */
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault()
@@ -162,12 +162,12 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     }
   }
 
-  /** クリップボードペースト */
+  /** Clipboard paste */
   const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
     if (!items) return
 
-    // クリップボードからファイル（画像等）を検出
+    // Detect files (images, etc.) from the clipboard
     const fileItems: DataTransferItem[] = []
     for (let i = 0; i < items.length; i++) {
       if (items[i].kind === 'file') {
@@ -175,14 +175,14 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
       }
     }
 
-    if (fileItems.length === 0) return // テキストペーストはデフォルト動作に任せる
+    if (fileItems.length === 0) return // Let text paste use default behavior
 
-    e.preventDefault() // ファイルがある場合はテキストペーストを防止
+    e.preventDefault() // Prevent text paste when files are present
 
     for (const item of fileItems) {
       const file = item.getAsFile()
       if (file) {
-        // スクリーンショットの場合、ファイル名がないことが多いので生成
+        // Generate a file name for screenshots (which often lack one)
         const name = file.name && file.name !== 'image.png'
           ? file.name
           : `screenshot-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`
@@ -194,7 +194,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     }
   }, [uploadFile])
 
-  /** ドラッグ&ドロップ */
+  /** Drag & drop */
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -209,7 +209,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
     e.stopPropagation()
   }
 
-  /** テキストエリアの高さ自動調整 */
+  /** Auto-adjust textarea height */
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value)
     const el = e.target
@@ -226,7 +226,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      {/* 添付ファイルプレビュー */}
+      {/* Attached file preview */}
       {attachedFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 max-w-4xl mx-auto mb-2">
           {attachedFiles.map((file, index) => (
@@ -234,7 +234,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
               key={`${file.filePath}-${index}`}
               className="relative group flex items-center gap-2 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg px-2.5 py-1.5"
             >
-              {/* サムネイル or アイコン */}
+              {/* Thumbnail or icon */}
               {file.previewUrl ? (
                 <img
                   src={file.previewUrl}
@@ -250,17 +250,17 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
                 </div>
               )}
 
-              {/* ファイル情報 */}
+              {/* File info */}
               <div className="min-w-0">
                 <div className="text-[11px] text-[var(--text-tertiary)] truncate max-w-[150px]">{file.fileName}</div>
                 <div className="text-[10px] text-[var(--text-faint)]">{formatFileSize(file.size)}</div>
               </div>
 
-              {/* 削除ボタン */}
+              {/* Remove button */}
               <button
                 onClick={() => removeAttachedFile(index)}
                 className="shrink-0 ml-1 text-[var(--text-faint)] hover:text-red-400 transition-colors"
-                title="添付を取り消す"
+                title="Remove attachment"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -272,7 +272,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
         </div>
       )}
 
-      {/* アップロードエラー表示 */}
+      {/* Upload error display */}
       {uploadError && (
         <div className="max-w-4xl mx-auto mb-2">
           <div className="text-[11px] text-red-400 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-1.5">
@@ -281,7 +281,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
         </div>
       )}
 
-      {/* 送信エラー表示 */}
+      {/* Send error display */}
       {sendError && (
         <div className="max-w-4xl mx-auto mb-2">
           <div className="flex items-center justify-between text-[11px] text-red-400 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-1.5">
@@ -289,7 +289,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
             <button
               onClick={() => setSendError(null)}
               className="ml-2 text-red-500 hover:text-red-300 transition-colors"
-              title="エラーを閉じる"
+              title="Dismiss error"
             >
               ✕
             </button>
@@ -298,7 +298,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
       )}
 
       <div className="flex items-center gap-2 md:gap-3 max-w-4xl mx-auto">
-        {/* ファイル添付ボタン */}
+        {/* File attach button */}
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isDisabled || isUploading}
@@ -310,7 +310,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
               : 'bg-[var(--bg-elevated)] text-[var(--text-dim)] hover:text-[var(--accent-text-vivid)] hover:bg-[var(--bg-hover)]'
             }
           `}
-          title="ファイルを添付"
+          title="Attach file"
         >
           {isUploading ? (
             <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
@@ -324,7 +324,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
           )}
         </button>
 
-        {/* 非表示のファイル入力 */}
+        {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -333,12 +333,12 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
           onChange={(e) => {
             if (e.target.files && e.target.files.length > 0) {
               handleFiles(e.target.files)
-              e.target.value = '' // 同じファイルを再選択できるようにリセット
+              e.target.value = '' // Reset to allow re-selecting the same file
             }
           }}
         />
 
-        {/* テキスト入力 */}
+        {/* Text input */}
         <div className="flex-1 relative">
           <textarea
             ref={textareaRef}
@@ -361,7 +361,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
           />
         </div>
 
-        {/* 送信ボタン */}
+        {/* Send button */}
         <button
           onClick={handleSend}
           disabled={!canSend}
@@ -373,7 +373,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
               : 'bg-[var(--bg-elevated)] text-[var(--text-faint)] cursor-not-allowed'
             }
           `}
-          title="送信 (Ctrl+Enter)"
+          title="Send (Ctrl+Enter)"
         >
           {isSending ? (
             <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
@@ -389,7 +389,7 @@ export function MessageInput({ onSend, disabled, placeholder, isSending, onSendE
         </button>
       </div>
 
-      {/* ヒント */}
+      {/* Hints */}
       <div className="flex items-center justify-between max-w-4xl mx-auto mt-1 md:mt-1.5 px-1">
         <span className="text-[10px] text-[var(--text-faint)] hidden sm:inline">
           Ctrl+Enter で送信 · 📎 ファイル添付 · Ctrl+V で画像ペースト

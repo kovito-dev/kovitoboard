@@ -1,8 +1,8 @@
 /**
- * injectKb — レシピページ mount 時に window.kb を注入するブートストラップ.
+ * injectKb — Bootstrap that injects window.kb when a recipe page mounts.
  *
- * レシピ由来ページ（app/pages/*.tsx）のマウント直前に呼び出し、
- * アンマウント時にクリーンアップする。
+ * Called just before a recipe-authored page (app/pages/*.tsx) mounts,
+ * and cleaned up on unmount.
  *
  * @see recipe-backend-critical-reviews.md §4 (Q-K1)
  * @stable v0.1.0
@@ -11,10 +11,10 @@
 import { createKbBridge } from '../lib/kbBridge'
 
 /**
- * window.kb を注入する.
+ * Inject window.kb.
  *
- * @param recipeId - レシピ ID（クロージャに保持）
- * @returns cleanup function（アンマウント時に呼ぶ）
+ * @param recipeId - Recipe ID (captured in a closure)
+ * @returns cleanup function (call on unmount)
  */
 export function injectKb(recipeId: string): () => void {
   window.kb = createKbBridge(recipeId)

@@ -5,7 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
 import { FILE_PATH_REGEX, hasPreviewableExtension } from '../utils/path'
 
-/** テキストノード内のファイルパスをクリッカブルに変換 */
+/** Convert file paths in text nodes to clickable links */
 function renderTextWithFileLinks(
   text: string,
   onFilePathClick?: (path: string) => void,
@@ -16,7 +16,7 @@ function renderTextWithFileLinks(
   let lastIndex = 0
   let match: RegExpExecArray | null
 
-  // グローバル正規表現のリセット
+  // Reset global regex
   const regex = new RegExp(FILE_PATH_REGEX.source, 'g')
   while ((match = regex.exec(text)) !== null) {
     const filePath = match[1] || match[0]
@@ -25,12 +25,12 @@ function renderTextWithFileLinks(
 
     if (!hasPreviewableExtension(filePath)) continue
 
-    // マッチ前のテキスト
+    // Text before the match
     if (matchStart > lastIndex) {
       parts.push(text.slice(lastIndex, matchStart))
     }
 
-    // クリッカブルなファイルパスリンク
+    // Clickable file path link
     parts.push(
       <button
         key={`fp-${matchStart}`}
@@ -40,7 +40,7 @@ function renderTextWithFileLinks(
           onFilePathClick(filePath)
         }}
         className="text-blue-400 hover:text-blue-300 underline underline-offset-2 decoration-blue-400/40 hover:decoration-blue-300/60 cursor-pointer transition-colors"
-        title={`プレビュー: ${filePath}`}
+        title={`Preview: ${filePath}`}
       >
         {filePath}
       </button>,
@@ -48,7 +48,7 @@ function renderTextWithFileLinks(
     lastIndex = matchEnd
   }
 
-  // 残りのテキスト
+  // Remaining text
   if (lastIndex < text.length) {
     parts.push(text.slice(lastIndex))
   }
@@ -58,11 +58,11 @@ function renderTextWithFileLinks(
 
 interface MarkdownPreviewProps {
   content: string
-  /** compact: チャット向け（密度優先）、document: ドキュメント閲覧向け（読みやすさ優先） */
+  /** compact: for chat (density-focused), document: for document viewing (readability-focused) */
   variant?: 'compact' | 'document'
-  /** 単一改行を <br> に変換するか（デフォルト: false） */
+  /** Whether to convert single newlines to <br> (default: false) */
   breaks?: boolean
-  /** ファイルパスクリック時のコールバック */
+  /** Callback when a file path is clicked */
   onFilePathClick?: (path: string) => void
 }
 
@@ -71,27 +71,27 @@ export function MarkdownPreview({ content, variant = 'compact', breaks = false, 
     ? 'markdown-body markdown-body--document text-sm leading-relaxed max-w-3xl'
     : 'markdown-body text-sm leading-relaxed'
 
-  // react-markdown のカスタムコンポーネント: テキストノードでファイルパスを検出
+  // Custom react-markdown components: detect file paths in text nodes
   const components = useMemo(() => {
     if (!onFilePathClick) return undefined
     return {
-      // p タグ内のテキストをファイルパス検出付きで表示
+      // Render text inside <p> with file path detection
       p: ({ children }: { children?: ReactNode }) => {
         return <p>{processChildren(children, onFilePathClick)}</p>
       },
-      // li タグ
+      // <li> tag
       li: ({ children }: { children?: ReactNode }) => {
         return <li>{processChildren(children, onFilePathClick)}</li>
       },
-      // td タグ
+      // <td> tag
       td: ({ children }: { children?: ReactNode }) => {
         return <td>{processChildren(children, onFilePathClick)}</td>
       },
-      // インラインコード内のファイルパスもクリッカブルに
+      // Make file paths in inline code clickable
       code: ({ children, className }: { children?: ReactNode; className?: string }) => {
-        // コードブロック（言語指定あり）はそのまま返す
+        // Code blocks (with language class) are returned as-is
         if (className) return <code className={className}>{children}</code>
-        // インラインコードの中身がファイルパスならリンク化
+        // If inline code content is a file path, make it a link
         if (typeof children === 'string') {
           const parts = renderTextWithFileLinks(children, onFilePathClick)
           if (parts.length === 1 && typeof parts[0] === 'string') {
@@ -117,7 +117,7 @@ export function MarkdownPreview({ content, variant = 'compact', breaks = false, 
   )
 }
 
-/** children の中の文字列ノードにファイルパス検出を適用 */
+/** Apply file path detection to string nodes within children */
 function processChildren(
   children: ReactNode,
   onFilePathClick: (path: string) => void,

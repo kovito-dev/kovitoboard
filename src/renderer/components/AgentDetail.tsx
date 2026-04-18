@@ -8,26 +8,26 @@ import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../ut
 
 interface AgentDetailProps {
   agent: AgentInfo
-  /** このエージェントに紐づくセッション一覧 */
+  /** List of sessions associated with this agent */
   sessions: SessionSummary[]
   onBack: () => void
   onSelectSession: (sessionId: string) => void
   onStartNewSession?: (agentId: string, message: string) => Promise<void>
-  /** 新規セッション検出待機中 */
+  /** Waiting for new session detection */
   isPendingNewSession?: boolean
-  /** アバター変更時のコールバック（エージェント一覧のリフレッシュ等に使用） */
+  /** Callback when avatar changes (used for refreshing agent list, etc.) */
   onAvatarChange?: () => void
-  /** エージェント編集ページへの遷移 */
+  /** Navigate to agent edit page */
   onEdit?: (agentId: string) => void
-  /** UIテーマ */
+  /** UI theme */
   theme?: 'dark' | 'light'
 }
 
 type TabId = 'profile' | 'sessions' | 'definition'
 
-/** アクティブセッション検出時の確認状態 */
+/** Confirmation state when an active session is detected */
 interface ActiveSessionConfirm {
-  /** 検出されたアクティブセッション */
+  /** The detected active session */
   activeSession: SessionSummary
 }
 
@@ -42,28 +42,28 @@ export function AgentDetail({
   const [activeTab, setActiveTab] = useState<TabId>('profile')
   const [showNewSession, setShowNewSession] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
-  // アクティブセッション確認ダイアログの状態
+  // Active session confirmation dialog state
   const [activeConfirm, setActiveConfirm] = useState<ActiveSessionConfirm | null>(null)
 
-  // 「新規セッション」ボタン押下時: アクティブセッションがあれば確認UIを表示
+  // "New session" button click: show confirmation UI if an active session exists
   const handleNewSessionClick = useCallback(() => {
     if (showNewSession) {
-      // 既に開いていたら閉じる
+      // Already open -> close it
       setShowNewSession(false)
       setActiveConfirm(null)
       return
     }
 
-    // このエージェントにアクティブなセッションがあるか確認
+    // Check if this agent has an active session
     const activeSession = sessions.find((s) => s.status !== 'idle')
     if (activeSession) {
-      // 確認UIを表示（メッセージ入力前）
+      // Show confirmation UI (before message input)
       setActiveConfirm({ activeSession })
       setShowNewSession(true)
       return
     }
 
-    // アクティブなセッションがなければ直接メッセージ入力欄を表示
+    // No active session -> show message input directly
     setShowNewSession(true)
   }, [showNewSession, sessions])
 
@@ -79,13 +79,13 @@ export function AgentDetail({
     }
   }, [onStartNewSession, agent.id])
 
-  // 確認UI: 新規セッション開始を選択 → メッセージ入力欄を表示
+  // Confirmation UI: user chose to start a new session -> show message input
   const handleConfirmNewSession = useCallback(() => {
     setActiveConfirm(null)
-    // showNewSession は true のまま → MessageInput が表示される
+    // showNewSession remains true -> MessageInput is displayed
   }, [])
 
-  // 確認UI: アクティブセッションを開く
+  // Confirmation UI: open the active session
   const handleOpenActiveSession = useCallback(() => {
     if (!activeConfirm) return
     const { activeSession } = activeConfirm
@@ -94,7 +94,7 @@ export function AgentDetail({
     onSelectSession(activeSession.id)
   }, [activeConfirm, onSelectSession])
 
-  // 確認UI: キャンセル
+  // Confirmation UI: cancel
   const handleConfirmCancel = useCallback(() => {
     setActiveConfirm(null)
     setShowNewSession(false)
@@ -106,14 +106,14 @@ export function AgentDetail({
     { id: 'definition', label: '定義ファイル' },
   ]
 
-  // セッション統計集計
+  // Aggregate session statistics
   const totalMessages = sessions.reduce((sum, s) => sum + s.stats.userMessages + s.stats.assistantMessages, 0)
   const totalToolCalls = sessions.reduce((sum, s) => sum + s.stats.toolCalls, 0)
   const totalTokens = sessions.reduce((sum, s) => sum + s.stats.totalInputTokens + s.stats.totalOutputTokens, 0)
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* ヘッダー */}
+      {/* Header */}
       <div
         className="shrink-0 border-b border-[var(--border)]"
         style={{
@@ -151,7 +151,7 @@ export function AgentDetail({
                   )}
                 </div>
 
-                {/* 新規セッション開始ボタン */}
+                {/* New session button */}
                 {onStartNewSession && (
                   <button
                     onClick={handleNewSessionClick}
@@ -185,11 +185,11 @@ export function AgentDetail({
                 )}
               </div>
 
-              {/* 新規セッション入力欄 or アクティブセッション確認UI */}
+              {/* New session input or active session confirmation UI */}
               {showNewSession && !isPendingNewSession && (
                 <div className="mt-3">
                   {activeConfirm ? (
-                    /* --- アクティブセッション確認UI --- */
+                    /* --- Active session confirmation UI --- */
                     <ActiveSessionConfirmDialog
                       confirm={activeConfirm}
                       agentName={agent.displayName}
@@ -207,7 +207,7 @@ export function AgentDetail({
                 </div>
               )}
 
-              {/* 新規セッション検出待機中のパルスアニメーション */}
+              {/* Pulse animation while waiting for new session detection */}
               {isPendingNewSession && (
                 <div className="mt-3 flex items-center gap-3 px-4 py-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border)]">
                   <div className="relative flex items-center justify-center w-5 h-5">
@@ -225,7 +225,7 @@ export function AgentDetail({
               )}
         </div>
 
-        {/* タブ */}
+        {/* Tabs */}
           <div className="flex gap-0 px-3 md:px-6">
             {tabs.map((tab) => (
               <button
@@ -250,7 +250,7 @@ export function AgentDetail({
           </div>
       </div>
 
-      {/* メインコンテンツ */}
+      {/* Main content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'profile' && (
             <ProfileTab
@@ -278,7 +278,7 @@ export function AgentDetail({
   )
 }
 
-// --- プロフィールタブ ---
+// --- Profile tab ---
 
 interface ProfileTabProps {
   agent: AgentInfo
@@ -293,7 +293,7 @@ interface ProfileTabProps {
 function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens, onAvatarChange, onEdit }: ProfileTabProps) {
   return (
     <div className="p-3 md:p-6 space-y-4 md:space-y-6">
-      {/* 編集ボタンバナー */}
+      {/* Edit button banner */}
       {onEdit && (
         <div className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border)]">
           <div className="flex items-center gap-2">
@@ -318,7 +318,7 @@ function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, total
         </div>
       )}
 
-      {/* 概要カード */}
+      {/* Overview card */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-3">概要</h3>
         {agent.summary && (
@@ -327,7 +327,7 @@ function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, total
         <p className="text-sm text-[var(--text-muted)] leading-relaxed">{agent.description}</p>
       </div>
 
-      {/* 基本情報 */}
+      {/* Basic information */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">基本情報</h3>
         <div className="space-y-3">
@@ -341,7 +341,7 @@ function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, total
         </div>
       </div>
 
-      {/* アバター設定 */}
+      {/* Avatar settings */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">アバター</h3>
         <div className="flex items-start gap-4">
@@ -353,7 +353,7 @@ function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, total
         </div>
       </div>
 
-      {/* 累計統計 */}
+      {/* Cumulative statistics */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
         <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">累計統計</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -432,7 +432,7 @@ function StatCard({ label, value, icon, color }: {
   )
 }
 
-// --- アクティブセッション確認ダイアログ ---
+// --- Active session confirmation dialog ---
 
 interface ActiveSessionConfirmDialogProps {
   confirm: ActiveSessionConfirm
@@ -449,7 +449,7 @@ function ActiveSessionConfirmDialog({
 
   return (
     <div className="bg-[var(--bg-elevated)] rounded-xl border border-[var(--border)] p-4 space-y-3">
-      {/* 警告メッセージ */}
+      {/* Warning message */}
       <div className="flex items-start gap-3">
         <div className="shrink-0 mt-0.5">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-400">
@@ -475,9 +475,9 @@ function ActiveSessionConfirmDialog({
         </div>
       </div>
 
-      {/* 3択ボタン */}
+      {/* Three-choice buttons */}
       <div className="flex flex-col gap-2">
-        {/* 新規セッション開始 */}
+        {/* Start new session */}
         <button
           onClick={onNewSession}
           className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
@@ -490,7 +490,7 @@ function ActiveSessionConfirmDialog({
           新規セッションを開始
         </button>
 
-        {/* アクティブセッションを開く */}
+        {/* Open active session */}
         <button
           onClick={onOpenActive}
           className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
@@ -502,7 +502,7 @@ function ActiveSessionConfirmDialog({
           アクティブなセッションを開く
         </button>
 
-        {/* キャンセル */}
+        {/* Cancel */}
         <button
           onClick={onCancel}
           className="w-full px-4 py-2 rounded-lg text-sm text-[var(--text-dim)] hover:text-[var(--text-tertiary)]
@@ -515,7 +515,7 @@ function ActiveSessionConfirmDialog({
   )
 }
 
-// --- セッション履歴タブ ---
+// --- Session history tab ---
 
 interface SessionsTabProps {
   sessions: SessionSummary[]
@@ -555,12 +555,12 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
               <span className="text-xs text-[var(--text-dim)] shrink-0 ml-3">{relativeTime(s.lastEventAt)}</span>
             </div>
 
-            {/* 最後のメッセージ */}
+            {/* Last message */}
             {s.lastMessage && (
               <p className="text-xs text-[var(--text-dim)] mb-2 truncate pl-4">{s.lastMessage}</p>
             )}
 
-            {/* 統計バー */}
+            {/* Stats bar */}
             <div className="flex items-center gap-4 pl-4">
               <span className="text-[10px] text-[var(--text-faint)]">
                 {s.stats.userMessages + s.stats.assistantMessages} msgs
@@ -571,7 +571,7 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
               <span className="text-[10px] text-[var(--text-faint)]">
                 {formatTokens(s.stats.totalInputTokens + s.stats.totalOutputTokens)} tokens
               </span>
-              {/* アクセント */}
+              {/* Accent spacer */}
               <div className="flex-1" />
               <svg
                 width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -588,7 +588,7 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
   )
 }
 
-// --- 定義ファイルタブ ---
+// --- Definition file tab ---
 
 function DefinitionTab({ agentId }: { agentId: string }) {
   const [content, setContent] = useState<string | null>(null)

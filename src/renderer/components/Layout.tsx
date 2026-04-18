@@ -4,7 +4,7 @@ interface LayoutProps {
   nav: ReactNode
   sidebar: ReactNode | null
   children: ReactNode
-  /** モバイル用: サイドバーオーバーレイを開閉するハンドラ */
+  /** Mobile: handler to toggle sidebar overlay */
   isMobileSidebarOpen?: boolean
   onCloseMobileSidebar?: () => void
 }
@@ -12,19 +12,19 @@ interface LayoutProps {
 export function Layout({ nav, sidebar, children, isMobileSidebarOpen, onCloseMobileSidebar }: LayoutProps) {
   return (
     <div className="flex h-full overflow-hidden">
-      {/* ナビメニュー: sm以下は非表示（BottomNavで代替） */}
+      {/* Nav menu: hidden on sm and below (replaced by BottomNav) */}
       <div className="hidden md:flex">
         {nav}
       </div>
 
-      {/* サイドバー: md以上は通常表示、sm以下はオーバーレイ */}
+      {/* Sidebar: normal display on md+, overlay on sm and below */}
       {sidebar && (
         <>
-          {/* デスクトップ: 通常のサイドバー */}
+          {/* Desktop: normal sidebar */}
           <div className="hidden md:flex">
             {sidebar}
           </div>
-          {/* モバイル: オーバーレイサイドバー */}
+          {/* Mobile: overlay sidebar */}
           {isMobileSidebarOpen && (
             <div className="fixed inset-0 z-40 md:hidden">
               <div className="absolute inset-0 bg-black/50" onClick={onCloseMobileSidebar} />

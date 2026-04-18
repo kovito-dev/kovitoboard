@@ -2,35 +2,35 @@ import { AgentAvatar } from './AgentAvatar'
 import type { AgentConfig } from '../types'
 import type { Theme } from '../hooks/useTheme'
 
-/** エージェントのアクティブ状態 */
+/** Agent active status */
 export interface AgentStatus {
   agentId: string
   hasActiveSession: boolean
 }
 
 interface TitleBarProps {
-  /** プロジェクト名（ロゴ部に表示） */
+  /** Project name (displayed in logo area) */
   projectName: string
-  /** プロジェクト説明（ロゴ横に表示） */
+  /** Project description (displayed next to logo) */
   projectDescription?: string
-  /** viewer.config.json の agents 定義（キー: エージェントID） */
+  /** Agent definitions from viewer.config.json (key: agent ID) */
   agentConfigs: Record<string, AgentConfig>
-  /** 各エージェントのアクティブ状態 */
+  /** Active status of each agent */
   agentStatuses: AgentStatus[]
-  /** エージェントアイコンクリック時のコールバック */
+  /** Callback when an agent icon is clicked */
   onAgentClick: (agentId: string) => void
-  /** 設定モーダルを開くコールバック */
+  /** Callback to open settings modal */
   onOpenSettings?: () => void
-  /** 現在のテーマ */
+  /** Current theme */
   theme?: Theme
-  /** テーマ切り替えコールバック */
+  /** Theme toggle callback */
   onToggleTheme?: () => void
 }
 
 export function TitleBar({ projectName, projectDescription, agentConfigs, agentStatuses, onAgentClick, onOpenSettings, theme, onToggleTheme }: TitleBarProps) {
   return (
     <div className="bg-[var(--bg-surface)] flex items-center justify-between px-3 md:px-5 border-b border-[var(--border)] select-none h-14 md:h-[100px]">
-      {/* 左: プロジェクト名 + 説明 */}
+      {/* Left: project name + description */}
       <div className="flex items-center gap-2 md:gap-4 min-w-0">
         <div className="flex items-center gap-2.5 shrink-0">
           <span className="text-lg md:text-2xl font-bold tracking-widest text-[var(--text-tertiary)]">{projectName}</span>
@@ -43,7 +43,7 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
         )}
       </div>
 
-      {/* 右: エージェントアイコンボタン + テーマ切替 + 設定ボタン */}
+      {/* Right: agent icon buttons + theme toggle + settings button */}
       <div className="flex items-center gap-1 md:gap-2 shrink-0">
         {agentStatuses.map(({ agentId, hasActiveSession }) => {
           const cfg = agentConfigs[agentId]
@@ -63,11 +63,11 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
                 agentId={agentId}
                 theme={theme}
               />
-              {/* アクティブインジケーター */}
+              {/* Active indicator */}
               {hasActiveSession && (
                 <span className="absolute bottom-0 right-0 w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-emerald-400 border-2 border-[var(--bg-surface)]" />
               )}
-              {/* ホバー時にエージェント名をツールチップ表示 */}
+              {/* Show agent name tooltip on hover */}
               <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none hidden md:block">
                 {cfg.name}
               </span>
@@ -75,18 +75,18 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
           )
         })}
 
-        {/* セパレーター */}
+        {/* Separator */}
         <div className="w-px h-5 md:h-6 bg-[var(--border)] mx-0.5 md:mx-1" />
 
-        {/* テーマ切替ボタン */}
+        {/* Theme toggle button */}
         {onToggleTheme && (
           <button
             onClick={onToggleTheme}
             className="p-1.5 md:p-2 rounded-full transition-all duration-150 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20"
-            title={theme === 'dark' ? 'ライトモードに切り替え' : 'ダークモードに切り替え'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {theme === 'dark' ? (
-              /* 太陽アイコン（ダーク時 → ライトに切り替え） */
+              /* Sun icon (dark -> switch to light) */
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] md:w-5 md:h-5">
                 <circle cx="12" cy="12" r="5" />
                 <line x1="12" y1="1" x2="12" y2="3" />
@@ -99,7 +99,7 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
                 <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
               </svg>
             ) : (
-              /* 月アイコン（ライト時 → ダークに切り替え） */
+              /* Moon icon (light -> switch to dark) */
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] md:w-5 md:h-5">
                 <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
               </svg>
@@ -107,7 +107,7 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
           </button>
         )}
 
-        {/* 歯車ボタン */}
+        {/* Gear button */}
         {onOpenSettings && (
           <button
             onClick={onOpenSettings}

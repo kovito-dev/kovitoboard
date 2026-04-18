@@ -9,37 +9,38 @@ import type {
 
 const API_BASE = '/api'
 
-/** オプティミスティックUIで追加した仮メッセージのIDプレフィックス */
+/** ID prefix for optimistic UI temporary messages */
 const OPTIMISTIC_ID_PREFIX = 'optimistic_'
 
 /**
- * 信頼プロンプト queue の要素 (Phase 5d)
+ * Trust prompt queue item (Phase 5d)
  *
- * detected / fallback を同一 queue に混在させ、モーダル側で kind を分岐する。
- * Phase 5c では detected のみだったが 5d で fallback を追加した。
+ * Both detected and fallback items coexist in the same queue;
+ * the modal differentiates by kind.
+ * Phase 5c only had detected; fallback was added in 5d.
  */
 export type TrustPromptItem =
   | { kind: 'detected'; payload: TrustPromptDetectedPayload }
   | { kind: 'fallback'; payload: TrustPromptFallbackPayload }
 
 /**
- * メッセージテキストを正規化して比較用にする
- * サーバー側のサニタイズ（改行→\nリテラル、制御文字除去等）と一致させるため
- * オプティミスティックUI（改行あり）とサーバーイベント（\nリテラル）を同一視する
+ * Normalize message text for comparison.
+ * Matches server-side sanitization (newlines to \n literals, control char removal, etc.)
+ * so that optimistic UI messages (with real newlines) and server events (\n literals) are treated as equal.
  */
 function normalizeForComparison(text: string): string {
   return text
-    // 実際の改行を \n リテラルに統一
+    // Normalize real newlines to \n literals
     .replace(/\r\n/g, '\\n')
     .replace(/[\r\n]/g, '\\n')
-    // 実際のタブを \t リテラルに統一
+    // Normalize real tabs to \t literals
     .replace(/\t/g, '\\t')
-    // 有害な制御文字を除去
+    // Remove harmful control characters
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
     .trim()
 }
 
-/** tmuxステータスのポーリング間隔（ms） */
+/** Polling interval for tmux status (ms) */
 const TMUX_POLL_INTERVAL = 60_000
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -59,21 +60,21 @@ export function useIPC() {
   const [isLoading, setIsLoading] = useState(true)
   const selectedIdRef = useRef<string | null>(null)
 
-  // --- 信頼プロンプト中継 (Phase 5c / 5d) ---
-  // 複数ウィンドウで同時発生した場合は FIFO queue で 1 件ずつ表示する。
-  // queue の先頭 (index 0) が現在モーダルに表示中のアイテム。
-  // Phase 5d で fallback (raw-keys 入力) にも対応。同一 queue に
-  // discriminated union として格納し、モーダル側で kind を分岐する。
+  // --- Trust prompt relay (Phase 5c / 5d) ---
+  // When prompts occur in multiple windows simultaneously, they are queued (FIFO) and shown one at a time.
+  // The first item (index 0) is the one currently displayed in the modal.
+  // Phase 5d added fallback (raw-keys input) support. Items are stored as a
+  // discriminated union in the same queue; the modal branches by kind.
   const [trustPromptQueue, setTrustPromptQueue] = useState<TrustPromptItem[]>([])
-  // WebSocket 参照（trust-prompt 応答送信用）
+  // WebSocket ref (used to send trust-prompt responses)
   const wsRef = useRef<WebSocket | null>(null)
 
-  // selectedId を ref でも追跡（WebSocket コールバック内で最新値を参照するため）
+  // Track selectedId via ref so WebSocket callbacks can access the latest value
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
 
-  // 初期データ読み込み
+  // Load initial data
   useEffect(() => {
     Promise.all([
       fetchJson<SessionSummary[]>(`${API_BASE}/sessions`),
@@ -92,18 +93,18 @@ export function useIPC() {
         setSelectedId(sessionList[0].id)
       }
     }).catch((err) => {
-      console.error('初期データ読み込みエラー:', err)
+      console.error('Failed to load initial data:', err)
       setIsLoading(false)
     })
   }, [])
 
-  // セッション選択時にフルデータ取得
+  // Fetch full session data when a session is selected
   useEffect(() => {
     if (!selectedId) return
     fetchJson<Session>(`${API_BASE}/sessions/${selectedId}`).then(setCurrentSession)
   }, [selectedId])
 
-  // tmuxステータスの定期ポーリング（60秒ごと）
+  // Poll tmux status periodically (every 60 seconds)
   useEffect(() => {
     const timer = setInterval(() => {
       fetchJson<TmuxStatus>(`${API_BASE}/tmux/status`)
@@ -114,12 +115,12 @@ export function useIPC() {
     return () => clearInterval(timer)
   }, [])
 
-  // --- セッション送信可否の判定 ---
-  // エージェントごとの最新セッションIDを算出
+  // --- Determine whether a session can accept messages ---
+  // Compute the latest session ID per agent
   const latestSessionByAgent = useMemo(() => {
     const map: Record<string, string> = {}
-    // sessions は lastEventAt の降順（新しい順）でサーバーから返る
-    // 最初に見つかったものが最新
+    // sessions are returned from the server in descending order of lastEventAt (newest first)
+    // The first match for each agent is the latest session
     for (const s of sessions) {
       const agentId = sessionAgentMap[s.id] || '_default'
       if (!map[agentId]) {
@@ -130,17 +131,17 @@ export function useIPC() {
   }, [sessions, sessionAgentMap])
 
   /**
-   * セッションがメッセージ送信可能かどうかを判定
+   * Determine whether a session can accept messages.
    *
-   * 送信可能な条件（いずれか）:
-   * 1. tmuxにエージェントのウィンドウがあり、そのエージェントの最新セッションである
-   * 2. セッションが idle でない（= 現在アクティブ。tmux外で起動されたCLIセッション含む）
+   * A session is sendable if either condition is met:
+   * 1. The agent has a tmux window and this is the agent's latest session
+   * 2. The session is not idle (i.e. currently active, including CLI sessions started outside tmux)
    */
   const isSessionSendable = useCallback((sessionId: string): boolean => {
     const agentId = sessionAgentMap[sessionId] || '_default'
     const session = sessions.find((s) => s.id === sessionId)
 
-    // 条件1: tmuxにエージェントウィンドウがあり、そのエージェントの最新セッション
+    // Condition 1: Agent has a tmux window and this is the agent's latest session
     if (tmuxStatus?.hasSession) {
       const lookupAgentId = agentId === '_default' ? 'default' : agentId
       const windowName = tmuxStatus.agentWindowMap?.[lookupAgentId]
@@ -149,13 +150,13 @@ export function useIPC() {
       }
     }
 
-    // 条件2: セッションが idle でない（アクティブに動作中）
+    // Condition 2: Session is not idle (actively running)
     if (session && session.status !== 'idle') return true
 
     return false
   }, [tmuxStatus, sessionAgentMap, sessions, latestSessionByAgent])
 
-  // --- オプティミスティックUI: 仮メッセージをタイムラインに即追加 ---
+  // --- Optimistic UI: immediately add a temporary message to the timeline ---
   const addOptimisticMessage = useCallback((sessionId: string, message: string) => {
     const now = new Date().toISOString()
     const optimisticEvent: ParsedEvent = {
@@ -167,7 +168,7 @@ export function useIPC() {
       metadata: {},
     }
 
-    // 現在表示中のセッションなら即座にイベント追加 + ステータスを waiting に
+    // If this is the currently displayed session, append the event immediately and set status to waiting
     if (sessionId === selectedIdRef.current) {
       setCurrentSession((prev) => {
         if (!prev) return prev
@@ -175,7 +176,7 @@ export function useIPC() {
       })
     }
 
-    // セッション一覧の lastMessage・ステータスも更新
+    // Also update lastMessage and status in the session list
     setSessions((prev) =>
       prev.map((s) =>
         s.id === sessionId
@@ -185,19 +186,19 @@ export function useIPC() {
     )
   }, [])
 
-  // --- オプティミスティックUI: 送信失敗時に仮メッセージを除去 ---
+  // --- Optimistic UI: remove temporary message on send failure ---
   const rollbackOptimisticMessage = useCallback((sessionId: string) => {
-    // currentSession からオプティミスティックメッセージを除去し、ステータスを復元
+    // Remove optimistic messages from currentSession and restore status
     if (sessionId === selectedIdRef.current) {
       setCurrentSession((prev) => {
         if (!prev) return prev
         const filteredEvents = prev.events.filter((e) => !e.id.startsWith(OPTIMISTIC_ID_PREFIX))
-        // 元のステータスを推定: イベントがあれば idle、なければ idle
+        // Restore status to idle
         return { ...prev, status: 'idle', events: filteredEvents }
       })
     }
 
-    // セッション一覧のステータスも復元
+    // Also restore status in the session list
     setSessions((prev) =>
       prev.map((s) =>
         s.id === sessionId ? { ...s, status: 'idle' } : s
@@ -205,7 +206,7 @@ export function useIPC() {
     )
   }, [])
 
-  // WebSocket でリアルタイムイベント受信（自動再接続付き）
+  // Receive real-time events via WebSocket (with automatic reconnection)
   useEffect(() => {
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -222,16 +223,16 @@ export function useIPC() {
             setCurrentSession((prev) => {
               if (!prev) return prev
 
-              // 重複排除: サーバーからの user イベントが到着したら、
-              // 同じテキストの仮メッセージ（optimistic）を置換する
-              // サーバー側でサニタイズされるため、正規化して比較する
+              // Deduplication: when a user event arrives from the server,
+              // replace any optimistic message with matching text.
+              // Normalize before comparison to account for server-side sanitization.
               if (event.type === 'user' && event.content.text) {
                 const normalizedIncoming = normalizeForComparison(event.content.text)
                 const optimisticIndex = prev.events.findIndex(
                   (e) => e.id.startsWith(OPTIMISTIC_ID_PREFIX) && e.content.text && normalizeForComparison(e.content.text) === normalizedIncoming
                 )
                 if (optimisticIndex !== -1) {
-                  // 仮メッセージを実メッセージで置換
+                  // Replace the optimistic message with the real one
                   const newEvents = [...prev.events]
                   newEvents[optimisticIndex] = event
                   return { ...prev, events: newEvents }
@@ -257,14 +258,14 @@ export function useIPC() {
         } else if (type === 'new_session') {
           const { summary } = payload as { summary: SessionSummary }
           setSessions((prev) => [summary, ...prev])
-          // agentId があれば sessionAgentMap も即座に更新（遅延なし）
+          // If agentId is present, update sessionAgentMap immediately (no delay)
           if (summary.agentId) {
             setSessionAgentMap((prev) => ({ ...prev, [summary.id]: summary.agentId! }))
           }
         } else if (type === 'process_end') {
-          // Claude CLI プロセス完了通知
+          // Claude CLI process completion notification
         } else if (type === 'trust_prompt_detected') {
-          // 信頼プロンプト検知: queue に detected として追加（同一 promptId 重複抑止）
+          // Trust prompt detected: add to queue as 'detected' (deduplicate by promptId)
           const detectedPayload = payload as TrustPromptDetectedPayload
           setTrustPromptQueue((prev) => {
             if (prev.some((p) => p.payload.promptId === detectedPayload.promptId)) {
@@ -273,7 +274,7 @@ export function useIPC() {
             return [...prev, { kind: 'detected', payload: detectedPayload }]
           })
         } else if (type === 'trust_prompt_fallback') {
-          // Phase 5d: 未知プロンプトを fallback として queue に追加
+          // Phase 5d: add unknown prompt to queue as 'fallback'
           const fallbackPayload = payload as TrustPromptFallbackPayload
           setTrustPromptQueue((prev) => {
             if (prev.some((p) => p.payload.promptId === fallbackPayload.promptId)) {
@@ -282,7 +283,7 @@ export function useIPC() {
             return [...prev, { kind: 'fallback', payload: fallbackPayload }]
           })
         } else if (type === 'trust_prompt_resolved') {
-          // サーバー側でプロンプトが消えた → queue から該当 promptId を除去
+          // Prompt resolved on the server side -> remove the corresponding promptId from the queue
           const resolvedPayload = payload as TrustPromptResolvedPayload
           setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== resolvedPayload.promptId))
         }
@@ -300,8 +301,8 @@ export function useIPC() {
       wsRef.current = ws
 
       ws.onopen = () => {
-        console.log('[WS] 接続確立')
-        // 再接続時はデータを最新に同期
+        console.log('[WS] Connection established')
+        // Sync data to latest on reconnection
         fetchJson<SessionSummary[]>(`${API_BASE}/sessions`).then(setSessions).catch(() => {})
         fetchJson<TmuxStatus>(`${API_BASE}/tmux/status`).then(setTmuxStatus).catch(() => {})
         if (selectedIdRef.current) {
@@ -312,15 +313,15 @@ export function useIPC() {
       ws.onmessage = handleMessage
 
       ws.onclose = () => {
-        console.log('[WS] 接続切断')
+        console.log('[WS] Connection closed')
         if (!disposed) {
-          // 2秒後に再接続
+          // Reconnect after 2 seconds
           reconnectTimer = setTimeout(connect, 2000)
         }
       }
 
       ws.onerror = () => {
-        // onclose が続けて発火するので、ここでは何もしない
+        // No-op here; onclose will fire immediately after
       }
     }
 
@@ -342,7 +343,7 @@ export function useIPC() {
     fetchJson<SessionSummary[]>(`${API_BASE}/sessions`).then(setSessions)
   }, [])
 
-  // 現在選択中のセッションを強制再取得
+  // Force-reload the currently selected session
   const reloadCurrentSession = useCallback(() => {
     if (!selectedIdRef.current) return
     fetchJson<Session>(`${API_BASE}/sessions/${selectedIdRef.current}`).then(setCurrentSession)
@@ -358,9 +359,9 @@ export function useIPC() {
     })
   }, [])
 
-  // 既存セッションにメッセージを送信
+  // Send a message to an existing session
   const sendMessage = useCallback(async (sessionId: string, message: string): Promise<SendMessageResponse> => {
-    // オプティミスティックUI: 即座に仮メッセージを表示
+    // Optimistic UI: display temporary message immediately
     addOptimisticMessage(sessionId, message)
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/send`, {
@@ -375,7 +376,7 @@ export function useIPC() {
     return res.json()
   }, [addOptimisticMessage])
 
-  // 新規セッションを開始
+  // Start a new session
   const startNewSession = useCallback(async (message: string, agentId?: string): Promise<NewSessionResponse> => {
     const res = await fetch(`${API_BASE}/sessions/new`, {
       method: 'POST',
@@ -389,9 +390,9 @@ export function useIPC() {
     return res.json()
   }, [])
 
-  // tmux 経由でメッセージ送信（オプティミスティックUI付き）
+  // Send a message via tmux (with optimistic UI)
   const tmuxSend = useCallback(async (windowName: string, message: string, sessionId?: string): Promise<void> => {
-    // オプティミスティックUI: sessionId が分かれば仮メッセージを表示
+    // Optimistic UI: display temporary message if sessionId is known
     if (sessionId) {
       addOptimisticMessage(sessionId, message)
     }
@@ -407,7 +408,7 @@ export function useIPC() {
     }
   }, [addOptimisticMessage])
 
-  // tmux 経由で既存セッションをクリアして新規メッセージ送信
+  // Clear existing session via tmux and send a new message
   const tmuxClearAndSend = useCallback(async (windowName: string, message: string): Promise<void> => {
     const res = await fetch(`${API_BASE}/tmux/clear-and-send`, {
       method: 'POST',
@@ -420,11 +421,11 @@ export function useIPC() {
     }
   }, [])
 
-  // セッションに agentId を手動設定（/clear で作成されたセッション用）
+  // Manually assign an agentId to a session (for sessions created by /clear)
   const setSessionAgent = useCallback(async (sessionId: string, agentId: string) => {
-    // ローカル状態を即更新
+    // Update local state immediately
     setSessionAgentMap((prev) => ({ ...prev, [sessionId]: agentId }))
-    // サーバーにも反映
+    // Also persist to the server
     try {
       await fetch(`${API_BASE}/sessions/${sessionId}/set-agent`, {
         method: 'POST',
@@ -432,22 +433,23 @@ export function useIPC() {
         body: JSON.stringify({ agentId }),
       })
     } catch {
-      // サーバー更新失敗してもローカルは維持
+      // Keep local state even if server update fails
     }
   }, [])
 
-  // --- 信頼プロンプト応答送信 (Phase 5c / 5d) ---
+  // --- Trust prompt response (Phase 5c / 5d) ---
   /**
-   * 現在モーダル表示中のプロンプトに choice で応答する。
-   * サーバー側は choiceId → keys 変換を detector 側で行う（UI から任意キー
-   * 送り込みを禁じる設計）。サーバーから `trust_prompt_resolved` を受信
-   * すると queue から自動削除されるため、ここでは queue を直接いじらない。
+   * Respond to the currently displayed prompt modal with a choice.
+   * The server performs choiceId -> keys conversion on the detector side
+   * (by design, the UI is not allowed to send arbitrary keys).
+   * When `trust_prompt_resolved` is received from the server, the item
+   * is automatically removed from the queue, so we do not modify the queue here.
    */
   const respondTrustPromptChoice = useCallback(
     (promptId: string, windowName: string, choiceId: string) => {
       const ws = wsRef.current
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        console.warn('[trust-prompt] WebSocket 未接続のため choice 応答送信をスキップ')
+        console.warn('[trust-prompt] Skipping choice response: WebSocket not connected')
         return
       }
       const msg: ClientToServerEvent = {
@@ -464,20 +466,20 @@ export function useIPC() {
   )
 
   /**
-   * fallback モーダルから raw-keys で応答する (Phase 5d)。
-   * サーバー側では send-keys -l（literal モード）で送信され、1024 文字の
-   * 上限もサーバー側で検査される。UI 側でも事前検査を行い、上限超過なら
-   * warn を出して noop する。
+   * Respond from the fallback modal with raw-keys (Phase 5d).
+   * The server sends them via send-keys -l (literal mode) and also
+   * enforces a 1024-character limit. The UI performs a pre-check as well;
+   * if the limit is exceeded, a warning is logged and the send is skipped.
    */
   const respondTrustPromptRawKeys = useCallback(
     (promptId: string, windowName: string, rawKeys: string) => {
       const ws = wsRef.current
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        console.warn('[trust-prompt] WebSocket 未接続のため raw-keys 応答送信をスキップ')
+        console.warn('[trust-prompt] Skipping raw-keys response: WebSocket not connected')
         return
       }
       if (rawKeys.length > 1024) {
-        console.warn(`[trust-prompt] raw-keys が長すぎます (${rawKeys.length} 文字 > 1024): 送信中止`)
+        console.warn(`[trust-prompt] raw-keys too long (${rawKeys.length} chars > 1024): send aborted`)
         return
       }
       const msg: ClientToServerEvent = {
@@ -494,16 +496,16 @@ export function useIPC() {
   )
 
   /**
-   * ユーザーが ESC / オーバーレイクリックでモーダルを閉じた場合、
-   * queue から該当 promptId だけ除去する。サーバー側の lastDetectedPromptId は
-   * 残ったままなので、capture が変わって resolved されるか、次の tick で
-   * 再度同じ promptId が通知されるまで待つ。detected / fallback 共通。
+   * When the user closes the modal via ESC or overlay click,
+   * remove only the corresponding promptId from the queue. The server's
+   * lastDetectedPromptId remains, so the prompt will either be resolved when
+   * the capture changes, or re-notified on the next tick. Common to both detected and fallback.
    */
   const dismissTrustPrompt = useCallback((promptId: string) => {
     setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== promptId))
   }, [])
 
-  // tmux ステータスを更新
+  // Refresh tmux status
   const refreshTmuxStatus = useCallback(async () => {
     try {
       const status = await fetchJson<TmuxStatus>(`${API_BASE}/tmux/status`)
@@ -513,7 +515,7 @@ export function useIPC() {
     }
   }, [])
 
-  // queue の先頭が現在モーダルに表示すべきアイテム（Phase 5c / 5d）
+  // The first item in the queue is the one to display in the modal (Phase 5c / 5d)
   const currentTrustPrompt = trustPromptQueue[0] ?? null
 
   return {
@@ -521,7 +523,7 @@ export function useIPC() {
     selectSession, refreshSessions, reloadCurrentSession, refreshAgents, refreshTmuxStatus,
     sendMessage, startNewSession, tmuxSend, tmuxClearAndSend, setSessionAgent,
     isSessionSendable, rollbackOptimisticMessage,
-    // 信頼プロンプト中継 (Phase 5c / 5d)
+    // Trust prompt relay (Phase 5c / 5d)
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
   }
 }

@@ -1,13 +1,11 @@
 /**
- * generate-agent-icon.ts — エージェントアイコンSVG自動生成
+ * generate-agent-icon.ts — Automatic SVG icon generation for agents.
  *
- * エージェントIDをシード値としたハッシュから、決定論的にSVGアイコンを生成する。
- * 画像ファイルの保存は不要で、ランタイムでSVG文字列を生成してインラインレンダリングする。
- *
- * Generates deterministic SVG icons from agent IDs using djb2 hash.
+ * Deterministically generates SVG icons from agent IDs using a djb2 hash as seed.
+ * No image files need to be saved; SVG strings are generated at runtime for inline rendering.
  */
 
-// --- djb2 ハッシュ関数（暗号学的強度不要） ---
+// --- djb2 hash function (no cryptographic strength required) ---
 
 function djb2(str: string): number {
   let hash = 5381
@@ -17,15 +15,15 @@ function djb2(str: string): number {
   return hash
 }
 
-// --- ベースシェイプ定義 ---
+// --- Base shape definitions ---
 
 type ShapeGenerator = (cx: number, cy: number, r: number, rotation: number, color: string) => string
 
-/** 円 */
+/** Circle */
 const circle: ShapeGenerator = (_cx, _cy, r, _rotation, color) =>
   `<circle cx="50" cy="50" r="${r}" fill="${color}" />`
 
-/** 六角形 */
+/** Hexagon */
 const hexagon: ShapeGenerator = (cx, cy, r, rotation, color) => {
   const points = Array.from({ length: 6 }, (_, i) => {
     const angle = (Math.PI / 3) * i + (rotation * Math.PI) / 180
@@ -34,7 +32,7 @@ const hexagon: ShapeGenerator = (cx, cy, r, rotation, color) => {
   return `<polygon points="${points}" fill="${color}" />`
 }
 
-/** 菱形 */
+/** Diamond */
 const diamond: ShapeGenerator = (cx, cy, r, rotation, color) => {
   const points = Array.from({ length: 4 }, (_, i) => {
     const angle = (Math.PI / 2) * i + (rotation * Math.PI) / 180
@@ -44,7 +42,7 @@ const diamond: ShapeGenerator = (cx, cy, r, rotation, color) => {
   return `<polygon points="${points}" fill="${color}" />`
 }
 
-/** 星形（5角） */
+/** 5-pointed star */
 const star5: ShapeGenerator = (cx, cy, r, rotation, color) => {
   const points = Array.from({ length: 10 }, (_, i) => {
     const angle = (Math.PI / 5) * i - Math.PI / 2 + (rotation * Math.PI) / 180
@@ -54,7 +52,7 @@ const star5: ShapeGenerator = (cx, cy, r, rotation, color) => {
   return `<polygon points="${points}" fill="${color}" />`
 }
 
-/** 星形（6角） */
+/** 6-pointed star */
 const star6: ShapeGenerator = (cx, cy, r, rotation, color) => {
   const points = Array.from({ length: 12 }, (_, i) => {
     const angle = (Math.PI / 6) * i + (rotation * Math.PI) / 180
@@ -64,20 +62,20 @@ const star6: ShapeGenerator = (cx, cy, r, rotation, color) => {
   return `<polygon points="${points}" fill="${color}" />`
 }
 
-/** 二重円 */
+/** Double circle */
 const doubleCircle: ShapeGenerator = (_cx, _cy, r, _rotation, color) =>
   `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="3" />` +
   `<circle cx="50" cy="50" r="${r * 0.6}" fill="${color}" />`
 
 const SHAPES: ShapeGenerator[] = [circle, hexagon, diamond, star5, star6, doubleCircle]
 
-// --- 内部パターン定義 ---
+// --- Inner pattern definitions ---
 
 type PatternGenerator = (cx: number, cy: number, r: number, hash: number, color: string) => string
 
-/** 放射線 */
+/** Radial lines */
 const radialLines: PatternGenerator = (cx, cy, r, hash, color) => {
-  const count = 4 + (hash % 5) // 4〜8本
+  const count = 4 + (hash % 5) // 4-8 lines
   return Array.from({ length: count }, (_, i) => {
     const angle = ((Math.PI * 2) / count) * i
     const x2 = cx + r * 0.85 * Math.cos(angle)
@@ -86,9 +84,9 @@ const radialLines: PatternGenerator = (cx, cy, r, hash, color) => {
   }).join('')
 }
 
-/** ドット配置 */
+/** Dot placement */
 const dots: PatternGenerator = (cx, cy, r, hash, color) => {
-  const count = 3 + (hash % 4) // 3〜6個
+  const count = 3 + (hash % 4) // 3-6 dots
   return Array.from({ length: count }, (_, i) => {
     const angle = ((Math.PI * 2) / count) * i + ((hash * 13) % 360) * Math.PI / 180
     const dist = r * 0.5
@@ -99,19 +97,19 @@ const dots: PatternGenerator = (cx, cy, r, hash, color) => {
   }).join('')
 }
 
-/** 同心円 */
+/** Concentric circles */
 const concentricCircles: PatternGenerator = (cx, cy, r, _hash, color) =>
   `<circle cx="${cx}" cy="${cy}" r="${r * 0.7}" fill="none" stroke="${color}" stroke-width="1.2" />` +
   `<circle cx="${cx}" cy="${cy}" r="${r * 0.4}" fill="none" stroke="${color}" stroke-width="1.2" />`
 
-/** なし */
+/** None */
 const noPattern: PatternGenerator = () => ''
 
 const PATTERNS: PatternGenerator[] = [radialLines, dots, concentricCircles, noPattern]
 
-// --- カラーユーティリティ ---
+// --- Color utilities ---
 
-/** HEXカラーを透過版にする */
+/** Convert a HEX color to an RGBA value with the given opacity */
 function withOpacity(hex: string, opacity: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
@@ -119,16 +117,16 @@ function withOpacity(hex: string, opacity: number): string {
   return `rgba(${r},${g},${b},${opacity})`
 }
 
-// --- メイン生成関数 ---
+// --- Main generation function ---
 
 export interface AgentIconParams {
   agentId: string
   themeColor: string
-  /** UI テーマ（'dark' | 'light'）。デフォルト: 'dark' */
+  /** UI theme ('dark' | 'light'). Default: 'dark' */
   theme?: 'dark' | 'light'
 }
 
-/** テーマカラーを濃くする（ライトモード用） */
+/** Darken a theme color (for light mode) */
 function darkenColor(hex: string, factor: number): string {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * factor)
   const g = Math.round(parseInt(hex.slice(3, 5), 16) * factor)
@@ -137,13 +135,13 @@ function darkenColor(hex: string, factor: number): string {
 }
 
 /**
- * エージェントIDとテーマカラーからSVG文字列を生成する。
- * 同じ入力には常に同じ出力を返す（決定論的）。
+ * Generate an SVG string from an agent ID and theme color.
+ * Always returns the same output for the same input (deterministic).
  */
 export function generateAgentIconSvg({ agentId, themeColor, theme = 'dark' }: AgentIconParams): string {
   const hash = djb2(agentId)
 
-  // ハッシュからパラメータを導出
+  // Derive parameters from the hash
   const shapeIndex = hash % SHAPES.length
   const rotation = (hash * 37) % 360
   const patternIndex = (hash >>> 4) % PATTERNS.length
@@ -163,13 +161,13 @@ export function generateAgentIconSvg({ agentId, themeColor, theme = 'dark' }: Ag
   const pattern = PATTERNS[patternIndex]
 
   const svgContent = [
-    // 背景円
+    // Background circle
     `<circle cx="${cx}" cy="${cy}" r="46" fill="${bgColor}" />`,
-    // サブカラーの装飾円
+    // Decorative circle with sub-color
     `<circle cx="${cx}" cy="${cy}" r="${outerR}" fill="${subColor}" />`,
-    // ベースシェイプ
+    // Base shape
     shape(cx, cy, innerR, rotation, effectiveColor),
-    // 内部パターン
+    // Inner pattern
     pattern(cx, cy, innerR, hash >>> 12, withOpacity(effectiveColor, isLight ? 0.4 : 0.6)),
   ].join('')
 

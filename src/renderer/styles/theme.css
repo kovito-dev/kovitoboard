@@ -1,48 +1,48 @@
 /* =============================================
-   テーマ定義 — ダークモード / ライトモード
+   Theme definitions — Dark mode / Light mode
    =============================================
-   data-theme 属性で切り替え。デフォルトはダーク。
+   Switched via data-theme attribute. Default is dark.
 */
 
 :root,
 [data-theme="dark"] {
-  /* 背景色 */
-  --bg-base: #1a1a2e;       /* メインの背景 */
-  --bg-surface: #16162a;    /* ヘッダー、サイドバー、入力エリア */
-  --bg-elevated: #1e1e38;   /* カード、ホバー状態 */
-  --bg-nav: #111122;        /* ナビゲーション */
-  --bg-inset: #0e0e1e;      /* 深い凹み（入力欄） */
-  --bg-hover: #24243e;      /* ホバー時の背景 */
+  /* Background colors */
+  --bg-base: #1a1a2e;       /* Main background */
+  --bg-surface: #16162a;    /* Header, sidebar, input area */
+  --bg-elevated: #1e1e38;   /* Cards, hover state */
+  --bg-nav: #111122;        /* Navigation */
+  --bg-inset: #0e0e1e;      /* Deep inset (input fields) */
+  --bg-hover: #24243e;      /* Hover background */
 
-  /* ボーダー */
+  /* Borders */
   --border: #2a2a4a;
   --border-subtle: #1e1e38;
   --border-strong: #3a3a5a;
 
-  /* テキスト */
-  --text-primary: #f3f4f6;    /* 最も明るい */
+  /* Text */
+  --text-primary: #f3f4f6;    /* Brightest */
   --text-secondary: #e5e7eb;
   --text-tertiary: #d1d5db;
   --text-muted: #9ca3af;
   --text-dim: #6b7280;
   --text-faint: #4b5563;
 
-  /* アクセントカラー（青系） */
-  --accent: #3b82f6;                    /* blue-500: 基本アクセント */
-  --accent-hover: #60a5fa;              /* blue-400: ホバー時 */
-  --accent-strong: #2563eb;             /* blue-600: ボタン背景等 */
-  --accent-text: #93c5fd;               /* blue-300: アクセントテキスト */
-  --accent-text-vivid: #60a5fa;         /* blue-400: 強調テキスト */
-  --accent-bg: rgba(29, 78, 216, 0.35); /* blue-700/35: アクティブ背景 */
-  --accent-bg-subtle: rgba(29, 78, 216, 0.18); /* blue-700/18: 薄い背景 */
-  --accent-bg-strong: rgba(29, 78, 216, 0.55); /* blue-700/55: 強い背景 */
-  --accent-badge-bg: rgba(59, 130, 246, 0.2);  /* blue-500/20: バッジ背景 */
-  --accent-border: #60a5fa;             /* blue-400: ボーダー */
-  --accent-border-subtle: rgba(37, 99, 235, 0.3); /* blue-600/30: 薄いボーダー */
-  --accent-shadow: rgba(30, 58, 138, 0.3);        /* blue-900/30: シャドウ */
-  --accent-ring: rgba(59, 130, 246, 0.3);         /* blue-500/30: フォーカスリング */
+  /* Accent colors (blue family) */
+  --accent: #3b82f6;                    /* blue-500: primary accent */
+  --accent-hover: #60a5fa;              /* blue-400: hover state */
+  --accent-strong: #2563eb;             /* blue-600: button background, etc. */
+  --accent-text: #93c5fd;               /* blue-300: accent text */
+  --accent-text-vivid: #60a5fa;         /* blue-400: emphasized text */
+  --accent-bg: rgba(29, 78, 216, 0.35); /* blue-700/35: active background */
+  --accent-bg-subtle: rgba(29, 78, 216, 0.18); /* blue-700/18: subtle background */
+  --accent-bg-strong: rgba(29, 78, 216, 0.55); /* blue-700/55: strong background */
+  --accent-badge-bg: rgba(59, 130, 246, 0.2);  /* blue-500/20: badge background */
+  --accent-border: #60a5fa;             /* blue-400: border */
+  --accent-border-subtle: rgba(37, 99, 235, 0.3); /* blue-600/30: subtle border */
+  --accent-shadow: rgba(30, 58, 138, 0.3);        /* blue-900/30: shadow */
+  --accent-ring: rgba(59, 130, 246, 0.3);         /* blue-500/30: focus ring */
 
-  /* スクロールバー */
+  /* Scrollbar */
   --scrollbar-thumb: #4a4a6a;
   --scrollbar-thumb-hover: #6a6a8a;
 
@@ -76,7 +76,7 @@
 }
 
 [data-theme="light"] {
-  /* 背景色 */
+  /* Background colors */
   --bg-base: #f3f4f6;
   --bg-surface: #ffffff;
   --bg-elevated: #e9eaef;
@@ -84,12 +84,12 @@
   --bg-inset: #e2e4e9;
   --bg-hover: #dcdee5;
 
-  /* ボーダー */
+  /* Borders */
   --border: #d1d5db;
   --border-subtle: #e5e7eb;
   --border-strong: #9ca3af;
 
-  /* テキスト */
+  /* Text */
   --text-primary: #111827;
   --text-secondary: #1f2937;
   --text-tertiary: #374151;
@@ -97,13 +97,13 @@
   --text-dim: #6b7280;
   --text-faint: #9ca3af;
 
-  /* アクセントカラー（青系 — ライトモード用: 高コントラスト） */
+  /* Accent colors (blue family — light mode: high contrast) */
   --accent: #2563eb;                    /* blue-600 */
   --accent-hover: #1d4ed8;              /* blue-700 */
   --accent-strong: #2563eb;             /* blue-600 */
-  --accent-text: #1d4ed8;              /* blue-700: 明るい背景でも読みやすい */
+  --accent-text: #1d4ed8;              /* blue-700: readable on light backgrounds */
   --accent-text-vivid: #2563eb;         /* blue-600 */
-  --accent-bg: rgba(37, 99, 235, 0.12); /* 薄い青背景 */
+  --accent-bg: rgba(37, 99, 235, 0.12); /* Light blue background */
   --accent-bg-subtle: rgba(37, 99, 235, 0.07);
   --accent-bg-strong: rgba(37, 99, 235, 0.2);
   --accent-badge-bg: rgba(37, 99, 235, 0.1);
@@ -112,7 +112,7 @@
   --accent-shadow: rgba(37, 99, 235, 0.12);
   --accent-ring: rgba(37, 99, 235, 0.3);
 
-  /* スクロールバー */
+  /* Scrollbar */
   --scrollbar-thumb: #b0b4c0;
   --scrollbar-thumb-hover: #8a8e9a;
 
