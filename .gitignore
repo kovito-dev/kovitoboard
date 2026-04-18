@@ -12,3 +12,4 @@ projects/*/
 app/
 public/avatars/custom/*
 !public/avatars/custom/.gitkeep
+docs/specs/

@@ -39,7 +39,7 @@ describe('PatternMatcher 正マッチ', () => {
     expect(result!.pattern.kind).toBe('folder-trust')
     expect(result!.degenerate).toBe(false)
     // workspace パスの抽出
-    expect(result!.extracted.workspace).toMatch(/kb-test-fresh/)
+    expect(result!.extracted.workspace).toMatch(/kb-test-example/)
   })
 
   it('edit-modify-existing: Edit(Update) プロンプトを検出する', () => {

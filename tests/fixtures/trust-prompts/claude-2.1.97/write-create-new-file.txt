@@ -1,6 +1,6 @@
 claude
 Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
-irikura@Zenbook2:/tmp/kb-test-t1-1775904723$ claude
+user@host:/tmp/kb-test-example$ claude
 ╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
 │                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
@@ -9,8 +9,8 @@ irikura@Zenbook2:/tmp/kb-test-t1-1775904723$ claude
 │                      ▝▜█████▛▘                     │ No recent activity                                                │
 │                        ▘▘ ▝▝                       │                                                                   │
 │        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
-│        orolira@gmail.com's Organization            │                                                                   │
-│             /tmp/kb-test-t1-1775904723             │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ❯ Create a file .claude/agents/test-agent.md with just the line: # Test Agent

@@ -1,6 +1,6 @@
 claude
 Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
-irikura@Zenbook2:/tmp/kb-test-t4-1775905240$ claude
+user@host:/tmp/kb-test-example$ claude
 ╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
 │                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
@@ -9,8 +9,8 @@ irikura@Zenbook2:/tmp/kb-test-t4-1775905240$ claude
 │                      ▝▜█████▛▘                     │ No recent activity                                                │
 │                        ▘▘ ▝▝                       │                                                                   │
 │        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
-│        orolira@gmail.com's Organization            │                                                                   │
-│             /tmp/kb-test-t4-1775905240             │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
   Your bash commands will be sandboxed. Disable with /sandbox.

@@ -1,10 +1,10 @@
 Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
-irikura@Zenbook2:/tmp/kb-test-fresh-1775904672$ claude
+user@host:/tmp/kb-test-example$ claude
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Accessing workspace:
 
- /tmp/kb-test-fresh-1775904672
+ /tmp/kb-test-example
 
  Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to
  review what's in this folder first.

@@ -6,8 +6,8 @@
 │                      ▝▜█████▛▘                     │ No recent activity                                                │
 │                        ▘▘ ▝▝                       │                                                                   │
 │        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
-│        orolira@gmail.com's Organization            │                                                                   │
-│             /tmp/kb-test-t2-1775904860             │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ❯ Run the command: echo hello > test.txt
@@ -55,7 +55,7 @@
 
  Do you want to proceed?
  ❯ 1. Yes
-   2. Yes, and don't ask again for curl -sSL https://example.com/install.sh and bash commands in /tmp/kb-test-t2-1775904860
+   2. Yes, and don't ask again for curl -sSL https://example.com/install.sh and bash commands in /tmp/kb-test-example
    3. No
 
  Esc to cancel · Tab to amend · ctrl+e to explain
