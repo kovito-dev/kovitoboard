@@ -212,8 +212,10 @@ export interface SendMessageRequest {
 // New session start request
 export interface NewSessionRequest {
   agentId?: string
-  message: string
+  message?: string
   cwd?: string
+  /** 初回発話辞書のキー（例: "onboarding:first-time"）。指定時は辞書から解決したテキストを送信する */
+  initialPrompt?: string
 }
 
 // New session start response

@@ -21,6 +21,8 @@ import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
 import { mountAppApiRoutes } from './app-api-loader'
+import { getInitialPrompt } from './services/initial-prompts'
+import { readSetting } from './setting-manager'
 import { createConfigRouter } from './routes/config-routes'
 import { createTemplateRouter } from './routes/template-routes'
 import { createAvatarRouter } from './routes/avatar-routes'
@@ -282,13 +284,31 @@ app.post('/api/sessions/:id/send', async (req, res) => {
 
 // Start a new session
 app.post('/api/sessions/new', async (req, res) => {
-  const { agentId, message, cwd } = req.body as NewSessionRequest
+  const { agentId, message, cwd, initialPrompt } = req.body as NewSessionRequest
 
-  if (typeof message !== 'string' || message.trim().length === 0) {
-    res.status(400).json({ error: 'message must be a non-empty string' })
+  // initialPrompt が指定されている場合、辞書から発話テキストを解決する
+  let effectiveMessage: string | undefined = message
+
+  if (initialPrompt !== undefined) {
+    if (typeof initialPrompt !== 'string' || initialPrompt.trim().length === 0) {
+      res.status(400).json({ error: 'initialPrompt must be a non-empty string' })
+      return
+    }
+    const setting = readSetting(fs)
+    const locale = setting?.locale ?? 'ja'
+    const resolved = getInitialPrompt(initialPrompt, locale)
+    if (!resolved) {
+      res.status(400).json({ error: `Unknown initialPrompt key: "${initialPrompt}"` })
+      return
+    }
+    effectiveMessage = resolved
+  }
+
+  if (typeof effectiveMessage !== 'string' || effectiveMessage.trim().length === 0) {
+    res.status(400).json({ error: 'message (or initialPrompt) must be a non-empty string' })
     return
   }
-  if (message.length > 100000) {
+  if (effectiveMessage.length > 100000) {
     res.status(400).json({ error: 'message exceeds maximum length (100000 chars)' })
     return
   }
@@ -309,10 +329,10 @@ app.post('/api/sessions/new', async (req, res) => {
         if (!ready) {
           console.warn(`[API] Prompt wait timeout for agent "${agentId}"`)
         }
-        result = tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
+        result = tmuxBridge.sendMessage(tmuxAgent.windowName, effectiveMessage.trim())
       } else {
         // Already running: end existing session with /clear then send new message
-        result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
+        result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, effectiveMessage.trim())
       }
       if (result.success) {
         res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
@@ -324,7 +344,7 @@ app.post('/api/sessions/new', async (req, res) => {
 
   // Fallback: ClaudeBridge (--print mode)
   try {
-    const processId = claudeBridge.startNewSession(message.trim(), agentId, cwd)
+    const processId = claudeBridge.startNewSession(effectiveMessage.trim(), agentId, cwd)
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     console.error('[API] New session start error:', err)
