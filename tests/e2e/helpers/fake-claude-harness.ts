@@ -46,16 +46,19 @@ export interface StartFakeClaudeOptions {
   windowName: string
   /** Explicit tmux session name (default: auto-resolved E2E shared session name) */
   sessionName?: string
+  /** Playwright TestInfo — if provided, project.metadata.sessionName is used as fallback */
+  testInfo?: { project?: { metadata?: { sessionName?: string } } }
 }
 
 /**
  * Resolve the shared E2E tmux session name.
  *
- * Uses the KOVITOBOARD_E2E_TMUX_SESSION env var if set,
- * otherwise generates a unique test-specific name.
+ * Priority: explicit override > Playwright project metadata > env var > random fallback
  */
-function resolveSessionName(override?: string): string {
-  if (override) return override
+function resolveSessionName(opts: Pick<StartFakeClaudeOptions, 'sessionName' | 'testInfo'>): string {
+  if (opts.sessionName) return opts.sessionName
+  const metaName = opts.testInfo?.project?.metadata?.sessionName
+  if (metaName) return metaName
   return process.env.KOVITOBOARD_E2E_TMUX_SESSION || `kb-e2e-${randomUUID().slice(0, 8)}`
 }
 
@@ -68,7 +71,7 @@ function resolveSessionName(override?: string): string {
 export async function startFakeClaude(
   opts: StartFakeClaudeOptions,
 ): Promise<FakeClaudeHandle> {
-  const sessionName = resolveSessionName(opts.sessionName)
+  const sessionName = resolveSessionName(opts)
   const scriptPath = resolve(FAKE_CLAUDE_DIR, 'entrypoint.sh')
 
   // Create the session if it does not exist

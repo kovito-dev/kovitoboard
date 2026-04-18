@@ -107,7 +107,7 @@ function cleanup(): void {
 
 /* --- Tests --- */
 
-test.describe('オンボーディング §4.11 到達確認 (RR-3)', () => {
+test.describe('オンボーディング §4.11 到達確認 (RR-3) @preonboarding', () => {
   // --- §4.11 verification: File generation check --- //
 
   test('§4.11-V1: app.example/research-reports/ を app/ にコピーした際、必要なファイルが揃う', async () => {
