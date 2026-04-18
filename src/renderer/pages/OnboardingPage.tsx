@@ -24,10 +24,15 @@ export function OnboardingPage() {
   const [projectName, setProjectName] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
   const [conciergeAdded, setConciergeAdded] = useState(false)
+  const [projectRoot, setProjectRoot] = useState('')
 
-  // Initialize locale on mount
+  // Initialize locale on mount and fetch projectRoot
   useEffect(() => {
     setLocale(locale)
+    fetch('/api/config/project-root')
+      .then(r => r.json())
+      .then(d => setProjectRoot(d.projectRoot || ''))
+      .catch(() => setProjectRoot(''))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -44,9 +49,9 @@ export function OnboardingPage() {
   const handleComplete = useCallback(async () => {
     // Save setting via API
     const setting: KovitoboardSetting = {
-      version: '1.0',
+      version: '1.1',
       user: { displayName, avatar: null },
-      project: { name: projectName, description: projectDescription },
+      project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,
       onboarding: { completedAt: new Date().toISOString(), wizardVersion: '0.1.0' },
     }
@@ -74,7 +79,7 @@ export function OnboardingPage() {
     }
 
     navigate('/')
-  }, [displayName, projectName, projectDescription, locale, conciergeAdded, navigate])
+  }, [displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, navigate])
 
   const renderStep = () => {
     switch (step) {
@@ -104,6 +109,7 @@ export function OnboardingPage() {
             onProjectNameChange={setProjectName}
             projectDescription={projectDescription}
             onProjectDescriptionChange={setProjectDescription}
+            projectRoot={projectRoot}
             onNext={() => setStep(4)}
             onBack={() => setStep(2)}
           />

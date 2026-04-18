@@ -181,7 +181,7 @@ function resolveAndValidatePath(requestedPath: string): string | null {
 // --- Route modules ---
 // ルーターは /api/config/setting 等のサブパスを処理するため、
 // 既存の app.get('/api/config') より先にマウントして優先させる
-app.use('/api/config', createConfigRouter(fs))
+app.use('/api/config', createConfigRouter(fs, projectRoot))
 app.use('/api/templates/agents', createTemplateRouter(fs))
 app.use('/api/agents', createAvatarRouter(fs))
 app.use('/api/agents', createAgentWriteRouter(fs))

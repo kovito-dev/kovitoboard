@@ -31,6 +31,8 @@ const ja = {
   'onboarding.project.nameRequired': 'プロジェクト名を入力してください',
   'onboarding.project.nameMaxLength': 'プロジェクト名は 50 文字以内で入力してください',
   'onboarding.project.descriptionMaxLength': '説明は 500 文字以内で入力してください',
+  'onboarding.project.path': 'プロジェクトのパス',
+  'onboarding.project.pathNote': '別の場所で運用したい場合はサーバを目的のディレクトリで再起動してください。',
   'onboarding.next': '次へ',
   'onboarding.back': '戻る',
   'onboarding.step': 'ステップ {current} / {total}',

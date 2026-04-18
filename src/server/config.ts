@@ -30,15 +30,82 @@ const DEFAULT_CONFIG: ViewerConfig = {
   project: undefined,
 }
 
-/** Dynamically resolve the project root (the directory containing CLAUDE.md) */
+/**
+ * Module-level cache for the resolved project root.
+ * Set on first call to resolveProjectRoot() and reused thereafter,
+ * eliminating repeated fs access from paths.ts / setting-manager.ts etc.
+ */
+let cachedProjectRoot: string | null = null
+
+/**
+ * プロジェクトルートを解決する（DEC-009）。
+ *
+ * 優先順位:
+ *   ① --project-root CLI 引数
+ *   ② KOVITOBOARD_PROJECT_ROOT 環境変数
+ *   ③ .kovitoboard/setting.json の project.path
+ *   ④ process.cwd() フォールバック
+ *
+ * 結果はモジュールレベルでキャッシュされるため、
+ * 2 回目以降の呼び出しは fs アクセスなしで即座に返る。
+ */
 export function resolveProjectRoot(fs: FileAccessLayer): string {
-  // When running via tsx: src/server/ → 3 levels up is the project root
-  // After build:          dist/      → 2 levels up is the project root
-  const candidates = [
-    resolve(__dirname, '..', '..', '..'),
-    resolve(__dirname, '..', '..'),
-  ]
-  return candidates.find(p => fs.existsSync(join(p, 'CLAUDE.md'))) || candidates[0]
+  if (cachedProjectRoot) return cachedProjectRoot
+
+  // 1. CLI 引数
+  const argRoot = parseProjectRootArg(process.argv)
+  if (argRoot) {
+    cachedProjectRoot = resolve(argRoot)
+    return cachedProjectRoot
+  }
+
+  // 2. 環境変数
+  const envRoot = process.env.KOVITOBOARD_PROJECT_ROOT
+  if (envRoot && envRoot.trim().length > 0) {
+    cachedProjectRoot = resolve(envRoot)
+    return cachedProjectRoot
+  }
+
+  // 3. .kovitoboard/setting.json の project.path
+  const persisted = readPersistedProjectRoot(fs, process.cwd())
+  if (persisted) {
+    cachedProjectRoot = persisted
+    return cachedProjectRoot
+  }
+
+  // 4. process.cwd() フォールバック
+  cachedProjectRoot = process.cwd()
+  return cachedProjectRoot
+}
+
+/**
+ * テスト用: キャッシュをリセットする。
+ * プロダクションコードでは呼ばないこと。
+ */
+export function _resetProjectRootCache(): void {
+  cachedProjectRoot = null
+}
+
+function parseProjectRootArg(argv: string[]): string | null {
+  const idx = argv.findIndex(a => a === '--project-root' || a.startsWith('--project-root='))
+  if (idx === -1) return null
+  const arg = argv[idx]
+  if (arg.includes('=')) return arg.split('=', 2)[1] || null
+  return argv[idx + 1] ?? null
+}
+
+function readPersistedProjectRoot(fs: FileAccessLayer, cwd: string): string | null {
+  const settingPath = join(cwd, '.kovitoboard', 'setting.json')
+  if (!fs.existsSync(settingPath)) return null
+  try {
+    const raw = fs.readFileSync(settingPath, 'utf-8')
+    const data = JSON.parse(raw) as { project?: { path?: string } }
+    const path = data.project?.path
+    if (typeof path === 'string' && path.length > 0) return resolve(path)
+    return null
+  } catch {
+    return null
+  }
 }
 
 export function loadConfig(fs: FileAccessLayer): ViewerConfig {

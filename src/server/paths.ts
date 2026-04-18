@@ -8,8 +8,8 @@
  * - `/tmp/kovitoboard-uploads/`: Temporary upload file directory
  *
  * Constants are provided via lazy evaluation (functions).
- * Since `resolveProjectRoot()` depends on `__dirname`,
- * eager evaluation at module load time could cause incorrect paths in tests.
+ * `resolveProjectRoot()` uses a module-level cache (DEC-009),
+ * so repeated calls do not incur fs access.
  */
 import { join } from 'path'
 import { tmpdir } from 'os'

@@ -3,15 +3,15 @@
  *
  * GET  /api/config/setting       — KovitoBoard 設定の取得
  * PUT  /api/config/setting       — KovitoBoard 設定の更新
+ * GET  /api/config/project-root  — 起動時に解決された projectRoot を返す (DEC-009)
  * POST /api/config/setup-agent-ref — agent-ref シンボリックリンク作成
  */
 import { Router } from 'express'
 import { join, resolve } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { readSetting, writeSetting, validateSetting } from '../setting-manager'
-import { resolveProjectRoot } from '../config'
 
-export function createConfigRouter(fs: FileAccessLayer): Router {
+export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Router {
   const router = Router()
 
   // GET /api/config/setting
@@ -40,11 +40,15 @@ export function createConfigRouter(fs: FileAccessLayer): Router {
     }
   })
 
+  // GET /api/config/project-root (DEC-009: Step 3 表示用)
+  router.get('/project-root', (_req, res) => {
+    res.json({ projectRoot })
+  })
+
   // POST /api/config/setup-agent-ref
   // KovitoBoard の docs/agent-ref/ を親プロジェクトにシンボリックリンクする
   router.post('/setup-agent-ref', (_req, res) => {
     try {
-      const projectRoot = resolveProjectRoot(fs)
       const kbRoot = resolve(projectRoot, 'kovitoboard')
       const source = join(kbRoot, 'docs', 'agent-ref')
       const targetDir = join(projectRoot, 'docs')

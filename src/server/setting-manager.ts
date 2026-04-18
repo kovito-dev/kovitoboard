@@ -23,7 +23,22 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
 
   try {
     const raw = fs.readFileSync(settingPath, 'utf-8')
-    const data: unknown = JSON.parse(raw)
+    const data = JSON.parse(raw) as Record<string, unknown>
+
+    // 1.0 → 1.1 マイグレ��ション: project.path を process.cwd() で補完
+    if (data.version === '1.0') {
+      data.version = '1.1'
+      const project = (data.project ?? {}) as Record<string, unknown>
+      project.path = project.path ?? process.cwd()
+      data.project = project
+      try {
+        writeSetting(fs, data as unknown as KovitoboardSetting)
+        console.log('[setting-manager] Migrated setting.json: 1.0 → 1.1')
+      } catch (writeErr) {
+        console.warn('[setting-manager] Migration write-back failed:', writeErr)
+      }
+    }
+
     if (!validateSetting(data)) {
       console.warn('[setting-manager] Invalid setting file, returning null')
       return null
@@ -55,7 +70,7 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   const obj = data as Record<string, unknown>
 
   // version
-  if (obj.version !== '1.0') return false
+  if (obj.version !== '1.1') return false
 
   // user
   if (obj.user === null || typeof obj.user !== 'object') return false
@@ -68,6 +83,8 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   const project = obj.project as Record<string, unknown>
   if (typeof project.name !== 'string') return false
   if (typeof project.description !== 'string') return false
+  if (typeof project.path !== 'string') return false
+  if (project.path.length === 0) return false
 
   // locale
   if (obj.locale !== 'ja' && obj.locale !== 'en') return false

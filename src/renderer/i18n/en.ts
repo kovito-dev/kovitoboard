@@ -33,6 +33,8 @@ const en: Record<MessageKey, string> = {
   'onboarding.project.nameRequired': 'Project name is required',
   'onboarding.project.nameMaxLength': 'Project name must be 50 characters or less',
   'onboarding.project.descriptionMaxLength': 'Description must be 500 characters or less',
+  'onboarding.project.path': 'Project path',
+  'onboarding.project.pathNote': 'To use a different location, restart the server in the desired directory.',
   'onboarding.next': 'Next',
   'onboarding.back': 'Back',
   'onboarding.step': 'Step {current} / {total}',

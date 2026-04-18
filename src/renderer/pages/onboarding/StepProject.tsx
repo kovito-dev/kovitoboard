@@ -5,6 +5,7 @@ interface StepProjectProps {
   onProjectNameChange: (name: string) => void
   projectDescription: string
   onProjectDescriptionChange: (desc: string) => void
+  projectRoot: string
   onNext: () => void
   onBack: () => void
 }
@@ -17,6 +18,7 @@ export function StepProject({
   onProjectNameChange,
   projectDescription,
   onProjectDescriptionChange,
+  projectRoot,
   onNext,
   onBack,
 }: StepProjectProps) {
@@ -86,6 +88,22 @@ export function StepProject({
             {projectDescription.length} / {MAX_DESCRIPTION_LENGTH}
           </span>
         </div>
+      </div>
+
+      {/* Project root path (display only, DEC-009) */}
+      <div className="flex flex-col gap-2">
+        <label className="text-sm font-medium text-[var(--text-primary)]">
+          {t('onboarding.project.path')}
+        </label>
+        <div
+          data-testid="onboarding-project-path"
+          className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-dim)] text-[var(--text-dim)] font-mono text-sm select-all"
+        >
+          {projectRoot || '—'}
+        </div>
+        <p className="text-xs text-[var(--text-dim)]">
+          {t('onboarding.project.pathNote')}
+        </p>
       </div>
 
       {/* Navigation buttons */}
