@@ -17,10 +17,10 @@
  */
 
 // =========================
-// 汎用メタ
+// Common meta types
 // =========================
 
-/** プロンプトの種別（UI 表示分類用）。パターン定義ファイルの `kind` と同期する */
+/** Prompt kind (used for UI display classification). Synced with `kind` in the pattern definition file. */
 export type TrustPromptKind =
   | 'folder-trust'
   | 'write'
@@ -29,54 +29,54 @@ export type TrustPromptKind =
   | 'sandbox-network'
   | 'other'
 
-/** UI に表示する選択肢 1 件 */
+/** A single choice displayed in the UI */
 export interface TrustPromptChoice {
-  /** 選択肢 ID（パターン定義と同期） */
+  /** Choice ID (synced with the pattern definition) */
   id: string
-  /** UI 表示ラベル */
+  /** Display label for the UI */
   label: string
   /**
-   * tmux send-keys に渡すキー列。
-   * - 末尾が `\n` で終わる場合、`\n` を `Enter` キーに変換して送信する
-   * - 例: `"1\n"` → `tmux send-keys -- 1 Enter`
-   * - 例: `"Enter"` → `tmux send-keys -- Enter`
+   * Key sequence passed to tmux send-keys.
+   * - If the sequence ends with `\n`, the `\n` is converted to an `Enter` key press
+   * - Example: `"1\n"` → `tmux send-keys -- 1 Enter`
+   * - Example: `"Enter"` → `tmux send-keys -- Enter`
    */
   keys: string
 }
 
 // =========================
-// サーバー → クライアント
+// Server → Client
 // =========================
 
-/** パターンマッチが成功して trust prompt を検知した */
+/** A trust prompt was detected via successful pattern matching */
 export interface TrustPromptDetectedPayload {
-  /** サーバー側で一意に採番された prompt ID（応答時の照合に使用） */
+  /** Unique prompt ID assigned by the server (used for response correlation) */
   promptId: string
-  /** 対象 tmux ウィンドウ名（= エージェント ID） */
+  /** Target tmux window name (= agent ID) */
   windowName: string
-  /** プロンプト種別 */
+  /** Prompt kind */
   kind: TrustPromptKind
-  /** マッチしたパターン定義の ID */
+  /** ID of the matched pattern definition */
   patternId: string
-  /** パターン定義の extract で抽出された付加情報（キーはパターン固有） */
+  /** Additional info extracted by the pattern definition's extract rules (keys are pattern-specific) */
   detail: Record<string, string | null>
-  /** 縮退表示（選択肢数が通常と異なる等）を示す警告フラグ */
+  /** Warning flag indicating degenerate display (e.g., unexpected number of choices) */
   degenerate: boolean
-  /** UI に表示する選択肢 */
+  /** Choices to display in the UI */
   choices: TrustPromptChoice[]
-  /** tmux capture の末尾（30 行程度） */
+  /** Trailing portion of tmux capture (approximately 30 lines) */
   rawBuffer: string
 }
 
-/** パターン不一致だが状態ベース検知が入力待ちと判定した（未知プロンプト） */
+/** Pattern did not match, but state-based detection determined input is being awaited (unknown prompt) */
 export interface TrustPromptFallbackPayload {
   promptId: string
   windowName: string
-  /** tmux capture の末尾（50 行程度） */
+  /** Trailing portion of tmux capture (approximately 50 lines) */
   rawBuffer: string
 }
 
-/** 応答送信が完了しプロンプトが消えたことを UI に通知する */
+/** Notifies the UI that the response has been sent and the prompt has been dismissed */
 export interface TrustPromptResolvedPayload {
   promptId: string
   windowName: string
@@ -92,7 +92,7 @@ export type ServerToClientEvent =
   | { type: 'trust_prompt_resolved'; payload: TrustPromptResolvedPayload }
 
 // =========================
-// クライアント → サーバー
+// Client → Server
 // =========================
 
 export type TrustPromptResponseMode = 'choice' | 'raw-keys'
@@ -109,10 +109,10 @@ export type ClientToServerEvent =
   | { type: 'trust_prompt_respond'; payload: TrustPromptRespondPayload }
 
 // =========================
-// イベント型ユーティリティ
+// Event type utilities
 // =========================
 
-/** 特定の type を持つサーバーイベントだけを抽出するユーティリティ */
+/** Utility type to extract a server event by its specific type */
 export type ServerEventOf<T extends ServerToClientEvent['type']> = Extract<
   ServerToClientEvent,
   { type: T }

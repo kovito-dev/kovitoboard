@@ -1,11 +1,11 @@
 /**
- * resolveProjectRoot() の単体テスト (DEC-009)
+ * Unit tests for resolveProjectRoot() (DEC-009)
  *
- * 4 つの優先順位ケースを検証:
- * 1. --project-root CLI 引数
- * 2. KOVITOBOARD_PROJECT_ROOT 環境変数
- * 3. .kovitoboard/setting.json の project.path
- * 4. process.cwd() フォールバック
+ * Verifies 4 priority cases:
+ * 1. --project-root CLI argument
+ * 2. KOVITOBOARD_PROJECT_ROOT environment variable
+ * 3. .kovitoboard/setting.json project.path
+ * 4. process.cwd() fallback
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { resolveProjectRoot, _resetProjectRootCache } from '../../src/server/config'

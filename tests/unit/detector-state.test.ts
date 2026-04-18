@@ -1,11 +1,11 @@
 /**
- * 状態ベース検知テスト（除外条件・フッター・ユーティリティ）
+ * State-based detection tests (exclusion conditions, footer, utilities)
  *
- * 仕様書 §7-3-1「状態ベース検知の各シグナル単独テスト」
- * 「状態ベース検知の組み合わせ判定テスト」に対応。
+ * Corresponds to spec §7-3-1 "Individual signal tests for state-based detection"
+ * and "Combination judgment tests for state-based detection".
  *
- * TrustPromptDetector の private メソッド (isExcluded / hasTrustFooter) は
- * 直接テストできないため、同じ regex パターンを用いて振る舞いを検証する。
+ * TrustPromptDetector's private methods (isExcluded / hasTrustFooter) cannot be
+ * tested directly, so the same regex patterns are used to verify behavior.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
@@ -19,7 +19,7 @@ function loadFixture(name: string): string {
 }
 
 // =========================
-// ユーティリティ関数テスト
+// Utility function tests
 // =========================
 
 describe('lastNonEmptyLine', () => {
@@ -58,10 +58,10 @@ describe('tailLines', () => {
 })
 
 // =========================
-// 除外条件テスト
+// Exclusion condition tests
 // =========================
 
-// TrustPromptDetector 内と同じ定義を再現
+// Reproduce the same definitions as in TrustPromptDetector
 const EXCLUDE_PATTERNS: RegExp[] = [
   /\? for shortcuts/,
   /⎿\s+Running…/,
@@ -70,7 +70,7 @@ const EXCLUDE_PATTERNS: RegExp[] = [
 
 const EXCLUDE_CHECK_TAIL_LINES = 5
 
-/** 実装と同じロジック: 末尾行のみで除外判定 */
+/** Same logic as the implementation: exclusion check on tail lines only */
 function isExcluded(capture: string): boolean {
   const tail = tailLines(capture, EXCLUDE_CHECK_TAIL_LINES)
   return EXCLUDE_PATTERNS.some((r) => r.test(tail))
@@ -111,23 +111,23 @@ describe('除外条件 (EXCLUDE_PATTERNS)', () => {
     ]
     for (const name of fixtures) {
       const capture = loadFixture(name)
-      // trust prompt の末尾行は除外パターンに該当しない
-      // (sandbox-network の capture 全体には歴史行として Running… が含まれるが、
-      //  末尾 5 行限定の判定では除外されない)
+      // Trust prompt tail lines do not match exclusion patterns
+      // (sandbox-network capture contains Running... as a history line,
+      //  but it is not excluded when checking only the last 5 lines)
       expect(isExcluded(capture)).toBe(false)
     }
   })
 
   it('plan-mode-refusal（通常応答）は ? for shortcuts を含まないが除外されない', () => {
     const capture = loadFixture('bash-plan-mode-refusal.txt')
-    // plan-mode-refusal の末尾は「⏸ plan mode on (shift+tab to cycle)」
-    // これは除外条件にマッチしない
+    // plan-mode-refusal's last line is "plan mode on (shift+tab to cycle)"
+    // This does not match exclusion conditions
     expect(isExcluded(capture)).toBe(false)
   })
 })
 
 // =========================
-// フッターパターンテスト
+// Footer pattern tests
 // =========================
 
 const TRUST_FOOTER_PATTERNS: RegExp[] = [
@@ -174,7 +174,7 @@ describe('フッターパターン (TRUST_FOOTER_PATTERNS)', () => {
 })
 
 // =========================
-// 組み合わせ判定テスト
+// Combination judgment tests
 // =========================
 
 describe('除外条件 + フッター の組み合わせ', () => {

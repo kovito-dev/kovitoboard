@@ -1,8 +1,8 @@
 /**
- * setting-manager の単体テスト
+ * Unit tests for setting-manager
  *
- * validateSetting: v1.1 スキーマ検証（project.path 必須）
- * readSetting: 1.0 → 1.1 マイグレーション
+ * validateSetting: v1.1 schema validation (project.path required)
+ * readSetting: 1.0 -> 1.1 migration
  */
 import { describe, it, expect } from 'vitest'
 import { validateSetting } from '../../src/server/setting-manager'

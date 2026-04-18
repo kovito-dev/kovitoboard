@@ -2,7 +2,7 @@
  * TODO Page — simple task list with add/toggle/delete.
  *
  * Customization hint: change Tailwind classes below to adjust colors.
- * e.g. ask your concierge "TODO の背景色を青系に変えて"
+ * e.g. ask your concierge "change the TODO background color to blue"
  */
 import { useState, useEffect, useCallback } from 'react'
 
@@ -73,7 +73,7 @@ export default function TodoPage() {
     if (!title) return
 
     if (tasks.length >= MAX_TASKS) {
-      setError(`最大 ${MAX_TASKS} 件です。不要なタスクを削除してから追加してください。`)
+      setError(`Maximum of ${MAX_TASKS} tasks reached. Please delete some tasks before adding new ones.`)
       return
     }
 
@@ -168,8 +168,8 @@ export default function TodoPage() {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-            placeholder="新しいタスク..."
-            aria-label="新しいタスク"
+            placeholder="New task..."
+            aria-label="New task"
             data-testid="todo-input"
             className="flex-1 px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-dim)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-border)]"
           />
@@ -179,14 +179,14 @@ export default function TodoPage() {
             data-testid="todo-add"
             className="px-4 py-2 bg-[var(--accent-bg)] text-[var(--accent-text)] rounded-lg text-sm font-medium hover:opacity-80 disabled:opacity-40 transition-opacity"
           >
-            追加
+            Add
           </button>
         </div>
 
         {/* Task list */}
         {isLoading && tasks.length === 0 && (
           <div className="text-sm text-[var(--text-dim)] text-center py-4">
-            読込中...
+            Loading...
           </div>
         )}
 
@@ -220,7 +220,7 @@ export default function TodoPage() {
                 data-testid={`todo-delete-${index}`}
                 className="text-red-400 hover:text-red-300 text-xs font-bold ml-2 shrink-0"
               >
-                削除
+                Delete
               </button>
             </div>
           ))}
@@ -229,14 +229,14 @@ export default function TodoPage() {
         {/* Empty state */}
         {!isLoading && tasks.length === 0 && (
           <div className="text-sm text-[var(--text-dim)] text-center py-4">
-            タスクがありません。上のフォームから追加してください。
+            No tasks yet. Add one using the form above.
           </div>
         )}
 
         {/* Footer: count */}
         {tasks.length > 0 && (
           <div className="text-xs text-[var(--text-dim)] text-right">
-            {tasks.length} 件中 {doneCount} 件完了
+            {doneCount} of {tasks.length} completed
           </div>
         )}
       </div>

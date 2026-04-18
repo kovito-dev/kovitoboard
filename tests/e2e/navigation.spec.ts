@@ -1,16 +1,16 @@
 /**
- * ナビゲーション・画面遷移テスト
+ * Navigation and page transition tests
  *
- * テスト対象:
- * - サイドメニューの各項目をクリックして画面遷移できるか
+ * Targets:
+ * - Clicking each sidebar menu item navigates to the corresponding page
  *
- * NavMenu の構造:
- * - サイドバー: div.bg-[var(--bg-nav)] 内に button[title=label] として配置
- * - button の title 属性にメニュー名が設定されている
+ * NavMenu structure:
+ * - Sidebar: buttons rendered as button[title=label] inside div.bg-[var(--bg-nav)]
+ * - Each button's title attribute holds the menu label
  */
 import { test, expect } from '@playwright/test'
 
-// サイドバー内のメニューボタンを取得するヘルパー
+// Helper to locate a sidebar menu button by its title
 function sidebarButton(page: import('@playwright/test').Page, label: string) {
   return page.locator(`button[title="${label}"]`).first()
 }
@@ -27,7 +27,7 @@ test.describe('ナビゲーション', () => {
   })
 
   test('タスクメニューが存在しないことを確認', async ({ page }) => {
-    // KovitoBoard v0.1.0 ではタスク機能は削除済み
+    // Task feature was removed in KovitoBoard v0.1.0
     const taskButton = page.locator('button[title="タスク"]')
     await expect(taskButton).toHaveCount(0)
   })
@@ -36,21 +36,21 @@ test.describe('ナビゲーション', () => {
     await sidebarButton(page, 'セッション').click()
     await page.waitForTimeout(500)
 
-    // 画面が変わったことを確認
+    // Verify that the page content has changed
     const content = await page.textContent('body')
     expect(content).toBeTruthy()
   })
 
   test('エージェントメニューに戻れる', async ({ page }) => {
-    // まずセッションに遷移
+    // First navigate to Sessions
     await sidebarButton(page, 'セッション').click()
     await page.waitForTimeout(300)
 
-    // エージェントに戻る
+    // Navigate back to Agents
     await sidebarButton(page, 'エージェント').click()
     await page.waitForTimeout(500)
 
-    // エージェント画面が表示される
+    // Verify the Agents page is displayed
     const content = await page.textContent('body')
     expect(content).toBeTruthy()
   })

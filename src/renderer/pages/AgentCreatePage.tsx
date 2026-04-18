@@ -98,7 +98,7 @@ export function AgentCreatePage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-3 md:p-6">
-      {/* ヘッダー */}
+      {/* Header */}
       <div className="mb-6">
         <button
           onClick={handleBack}
@@ -119,7 +119,7 @@ export function AgentCreatePage() {
         </p>
       </div>
 
-      {/* Step 1: テンプレート選択 */}
+      {/* Step 1: Select template */}
       {step === 'select-template' && (
         <TemplateSelector
           templates={templates}
@@ -129,7 +129,7 @@ export function AgentCreatePage() {
         />
       )}
 
-      {/* Step 2: 設定確認・作成 */}
+      {/* Step 2: Configure and create */}
       {step === 'configure' && selectedTemplate && (
         <ConfigureStep
           template={selectedTemplate}
@@ -240,7 +240,7 @@ function ConfigureStep({
 }: ConfigureStepProps) {
   return (
     <div className="max-w-lg">
-      {/* テンプレート情報 */}
+      {/* Template info */}
       <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg p-4 mb-6">
         <div className="flex items-center gap-2 mb-1">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-faint)]">
@@ -253,9 +253,9 @@ function ConfigureStep({
         <p className="text-xs text-[var(--text-muted)] mt-1">{template.description}</p>
       </div>
 
-      {/* フォーム */}
+      {/* Form */}
       <div className="space-y-4">
-        {/* エージェント ID */}
+        {/* Agent ID */}
         <div>
           <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
             エージェント ID <span className="text-red-400">*</span>
@@ -275,7 +275,7 @@ function ConfigureStep({
           </p>
         </div>
 
-        {/* 表示名 */}
+        {/* Display name */}
         <div>
           <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
             表示名 <span className="text-[var(--text-faint)]">(任意)</span>
@@ -293,14 +293,14 @@ function ConfigureStep({
         </div>
       </div>
 
-      {/* エラー表示 */}
+      {/* Error display */}
       {createError && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mt-4">
           <p className="text-sm text-red-400">{createError}</p>
         </div>
       )}
 
-      {/* 作成ボタン */}
+      {/* Create button */}
       <div className="mt-6 flex items-center gap-3">
         <button
           onClick={onCreate}

@@ -1,9 +1,9 @@
 /**
- * PatternMatcher 単体テスト
+ * PatternMatcher unit tests
  *
- * 仕様書 §7-3-1「各パターン regex の正マッチ・不マッチテスト」に対応。
- * 検証 fixture（Claude Code 2.1.97 の実測 capture）を使い、
- * 各パターンが正しく検出・抽出されることを確認する。
+ * Corresponds to spec §7-3-1 "Positive/negative match tests for each pattern regex".
+ * Uses verification fixtures (live captures from Claude Code 2.1.97) to confirm
+ * each pattern is correctly detected and extracted.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'fs'
@@ -27,7 +27,7 @@ beforeAll(() => {
 })
 
 // =========================
-// 正マッチテスト
+// Positive match tests
 // =========================
 
 describe('PatternMatcher 正マッチ', () => {
@@ -38,7 +38,7 @@ describe('PatternMatcher 正マッチ', () => {
     expect(result!.pattern.id).toBe('folder-trust-initial')
     expect(result!.pattern.kind).toBe('folder-trust')
     expect(result!.degenerate).toBe(false)
-    // workspace パスの抽出
+    // Workspace path extraction
     expect(result!.extracted.workspace).toMatch(/kb-test-example/)
   })
 
@@ -49,7 +49,7 @@ describe('PatternMatcher 正マッチ', () => {
     expect(result!.pattern.id).toBe('edit-update-existing')
     expect(result!.pattern.kind).toBe('edit')
     expect(result!.degenerate).toBe(false)
-    // パス抽出
+    // Path extraction
     expect(result!.extracted.path).toBe('sample.txt')
   })
 
@@ -60,7 +60,7 @@ describe('PatternMatcher 正マッチ', () => {
     expect(result!.pattern.id).toBe('write-create-new')
     expect(result!.pattern.kind).toBe('write')
     expect(result!.degenerate).toBe(false)
-    // パス抽出
+    // Path extraction
     expect(result!.extracted.path).toBe('.claude/agents/test-agent.md')
   })
 
@@ -106,13 +106,13 @@ describe('PatternMatcher 正マッチ', () => {
     expect(result).not.toBeNull()
     expect(result!.pattern.id).toBe('sandbox-network-escape')
     expect(result!.pattern.kind).toBe('sandbox-network')
-    // host 抽出
+    // Host extraction
     expect(result!.extracted.host).toMatch(/example\.com/)
   })
 })
 
 // =========================
-// 不マッチテスト
+// Negative match tests
 // =========================
 
 describe('PatternMatcher 不マッチ', () => {
@@ -127,9 +127,9 @@ describe('PatternMatcher 不マッチ', () => {
   })
 
   it('通常の入力待ち画面は null を返す', () => {
-    // "? for shortcuts" を含む通常画面をシミュレート
-    // ただしこれは PatternMatcher ではなく除外条件で弾く対象なので、
-    // matcher.match() 自体はフッターが合わなければ null になる
+    // Simulate a normal screen containing "? for shortcuts"
+    // This is actually meant to be rejected by exclusion conditions, not PatternMatcher,
+    // so matcher.match() itself returns null if the footer does not match
     const normalPrompt = `
 ╭─── Claude Code v2.1.97 ──╮
 │   Welcome back Kousuke!   │
@@ -149,7 +149,7 @@ describe('PatternMatcher 不マッチ', () => {
 })
 
 // =========================
-// choices の構造テスト
+// Choices structure tests
 // =========================
 
 describe('PatternMatcher choices', () => {

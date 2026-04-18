@@ -90,7 +90,7 @@ export default function DocumentViewer() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
         <h1 className="text-lg font-bold text-[var(--text-primary)]">
-          ドキュメントビュアー
+          Document Viewer
         </h1>
         <button
           onClick={fetchList}
@@ -98,7 +98,7 @@ export default function DocumentViewer() {
           data-testid="docviewer-reload"
           className="px-3 py-1.5 text-xs border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--bg-elevated)] disabled:opacity-40 transition-colors"
         >
-          {isListLoading ? '読込中...' : 'リロード'}
+          {isListLoading ? 'Loading...' : 'Reload'}
         </button>
       </div>
 
@@ -109,25 +109,25 @@ export default function DocumentViewer() {
           {listError && (
             <div className="p-3">
               <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
-                ファイル一覧の取得に失敗しました: {listError}
+                Failed to load file list: {listError}
               </div>
               <button
                 onClick={fetchList}
                 className="mt-2 px-3 py-1 text-xs border border-[var(--border)] text-[var(--text-secondary)] rounded hover:bg-[var(--bg-elevated)] transition-colors"
               >
-                再読込
+                Retry
               </button>
             </div>
           )}
 
           {!listError && files.length === 0 && !isListLoading && (
             <div className="p-4 text-sm text-[var(--text-dim)]">
-              {EXTENSIONS.join(', ')} ファイルが見つかりません
+              No {EXTENSIONS.join(', ')} files found
             </div>
           )}
 
           {isListLoading && files.length === 0 && (
-            <div className="p-4 text-sm text-[var(--text-dim)]">読込中...</div>
+            <div className="p-4 text-sm text-[var(--text-dim)]">Loading...</div>
           )}
 
           <div className="divide-y divide-[var(--border)]">
@@ -157,18 +157,18 @@ export default function DocumentViewer() {
         {/* Right pane: content */}
         <div className="flex-1 overflow-y-auto p-4" data-testid="docviewer-content">
           {isReadLoading && (
-            <div className="text-sm text-[var(--text-dim)]">読込中...</div>
+            <div className="text-sm text-[var(--text-dim)]">Loading...</div>
           )}
 
           {readError && (
             <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
-              ファイルを読み込めません: {readError}
+              Failed to read file: {readError}
             </div>
           )}
 
           {!selectedPath && !isReadLoading && !readError && (
             <div className="text-sm text-[var(--text-dim)]">
-              左から閲覧したいファイルを選んでください
+              Select a file from the left panel to view
             </div>
           )}
 
@@ -193,7 +193,7 @@ function formatSize(bytes: number): string {
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString('ja-JP', {
+    return new Date(iso).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

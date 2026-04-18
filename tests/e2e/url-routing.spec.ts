@@ -11,11 +11,11 @@ test.describe('URL routing', () => {
     await page.goto('/agents')
     await page.waitForLoadState('networkidle')
 
-    // NavMenu の「エージェント」ボタンが表示されている
+    // The agent button in NavMenu is visible
     const agentButton = page.locator('button[title="エージェント"]').first()
     await expect(agentButton).toBeVisible()
 
-    // URL が /agents のまま維持されている
+    // URL remains /agents
     expect(page.url()).toContain('/agents')
   })
 
@@ -26,7 +26,7 @@ test.describe('URL routing', () => {
     const body = await page.textContent('body')
     expect(body).toBeTruthy()
 
-    // URL が /sessions のまま維持されている
+    // URL remains /sessions
     expect(page.url()).toContain('/sessions')
   })
 
@@ -34,11 +34,11 @@ test.describe('URL routing', () => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // Recipe page header
+    // Recipe page heading
     const heading = page.locator('h1').filter({ hasText: 'レシピ' })
     await expect(heading).toBeVisible()
 
-    // 「読み込み」タブが存在する
+    // The import tab exists
     const importTab = page.getByRole('button', { name: '読み込み' })
     await expect(importTab).toBeVisible()
   })
@@ -47,26 +47,26 @@ test.describe('URL routing', () => {
     await page.goto('/nonexistent-path')
     await page.waitForLoadState('networkidle')
 
-    // /agents にリダイレクトされている
+    // Redirected to /agents
     expect(page.url()).toContain('/agents')
   })
 
   test('ブラウザの戻る/進むが動作する', async ({ page }) => {
-    // 1. /agents にアクセス
+    // 1. Access /agents
     await page.goto('/agents')
     await page.waitForLoadState('networkidle')
 
-    // 2. セッションに遷移
+    // 2. Navigate to sessions
     const sessionsButton = page.locator('button[title="セッション"]').first()
     await sessionsButton.click()
     await page.waitForURL('**/sessions')
 
-    // 3. ブラウザの「戻る」で /agents に戻る
+    // 3. Use browser "back" to return to /agents
     await page.goBack()
     await page.waitForURL('**/agents')
     expect(page.url()).toContain('/agents')
 
-    // 4. ブラウザの「進む」で /sessions に戻る
+    // 4. Use browser "forward" to go back to /sessions
     await page.goForward()
     await page.waitForURL('**/sessions')
     expect(page.url()).toContain('/sessions')

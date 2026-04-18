@@ -1,8 +1,8 @@
 /**
- * loadTrustPatterns 単体テスト
+ * Unit tests for loadTrustPatterns
  *
- * 仕様書 §7-3-1「パターン定義 JSON のスキーマバリデーション」に対応。
- * 不正な JSON / 空 patterns / 欠損フィールドで正しく例外が投げられることを確認する。
+ * Corresponds to spec §7-3-1 "Pattern definition JSON schema validation".
+ * Verifies correct exceptions for invalid JSON / empty patterns / missing fields.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { join } from 'path'
@@ -18,7 +18,7 @@ describe('loadTrustPatterns 正常系', () => {
     const patterns = loadTrustPatterns(fs, PATTERNS_JSON)
     expect(patterns.length).toBeGreaterThan(0)
 
-    // 全パターンが必須フィールドを持つ
+    // All patterns have required fields
     for (const p of patterns) {
       expect(typeof p.id).toBe('string')
       expect(typeof p.kind).toBe('string')
@@ -56,7 +56,7 @@ describe('loadTrustPatterns 正常系', () => {
 })
 
 describe('loadTrustPatterns 異常系', () => {
-  /** readFileSync をモックする簡易 fs */
+  /** Simple fs that mocks readFileSync */
   function mockFs(content: string): FileAccessLayer {
     return {
       readFileSync: () => content,
@@ -100,7 +100,7 @@ describe('loadTrustPatterns 異常系', () => {
 
   it('パターンの必須フィールドが欠損している場合は例外', () => {
     const json = JSON.stringify({
-      patterns: [{ id: 'test' }], // kind, priority, matchAny, footer, choices が欠損
+      patterns: [{ id: 'test' }], // kind, priority, matchAny, footer, choices are missing
     })
     const fs = mockFs(json)
     expect(() => loadTrustPatterns(fs, '/test.json'))

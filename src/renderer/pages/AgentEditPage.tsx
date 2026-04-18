@@ -101,7 +101,7 @@ export function AgentEditPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-3 md:p-6">
-      {/* ヘッダー */}
+      {/* Header */}
       <div className="mb-6">
         <button
           onClick={handleCancel}
@@ -120,21 +120,21 @@ export function AgentEditPage() {
         </p>
       </div>
 
-      {/* ローディング */}
+      {/* Loading */}
       {isLoading && (
         <div className="flex items-center justify-center py-12">
           <div className="text-sm text-[var(--text-dim)]">読み込み中...</div>
         </div>
       )}
 
-      {/* エラー */}
+      {/* Error */}
       {loadError && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
           <p className="text-sm text-red-400">{loadError}</p>
         </div>
       )}
 
-      {/* エディタ */}
+      {/* Editor */}
       {sections && !isLoading && (
         <div className="max-w-2xl">
           {saveError && (

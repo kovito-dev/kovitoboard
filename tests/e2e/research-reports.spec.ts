@@ -1,14 +1,14 @@
 /**
- * Research Reports E2E テスト — Phase RR-2
+ * Research Reports E2E tests — Phase RR-2
  *
- * §4.11 のシナリオを Playwright で自動検証する。
- * 実際の tmux サブセッション起動は行わず、モックデータを
- * `.kovitoboard/research-reports/` に直接配置して API レスポンスを検証する。
+ * Automated Playwright verification of the §4.11 scenarios.
+ * Does NOT launch actual tmux sub-sessions; instead, mock data is placed
+ * directly into `.kovitoboard/research-reports/` and API responses are verified.
  *
- * RR-2-T1: app/research-reports/ コピーによるメニュー登録・API マウント確認
- * RR-2-T2: テーマ入力 → 調査開始 → ポーリングで running → completed
- * RR-2-T3: レポートクリックで本文表示
- * RR-2-T4: failed ステータスのエラー表示
+ * RR-2-T1: Menu registration and API mount check after copying app/research-reports/
+ * RR-2-T2: Theme input -> start research -> polling running -> completed
+ * RR-2-T3: Click report to display body text
+ * RR-2-T4: Error display for failed status
  *
  * @see v0.1.0-research-reports-plan.md §4-4
  */
@@ -19,8 +19,8 @@ import { join } from 'path'
 const API_BASE = 'http://127.0.0.1:3001'
 
 /**
- * projectRoot は dev サーバーの起動ディレクトリ = kovitoboard ルート。
- * テスト用のモックデータは <projectRoot>/.kovitoboard/research-reports/ に配置する。
+ * projectRoot is the dev server's working directory = kovitoboard root.
+ * Mock data for tests is placed in <projectRoot>/.kovitoboard/research-reports/.
  */
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const APP_EXAMPLE_DIR = join(PROJECT_ROOT, 'app.example', 'research-reports')
@@ -28,7 +28,7 @@ const APP_DIR = join(PROJECT_ROOT, 'app', 'research-reports')
 const APP_MENU_FILE = join(PROJECT_ROOT, 'app', 'menu.ts')
 const DATA_DIR = join(PROJECT_ROOT, '.kovitoboard', 'research-reports')
 
-/* ─── モック用定数 ─── */
+/* --- Mock constants --- */
 
 const MOCK_JOB_COMPLETED = 'rr-20260418T100000-mock'
 const MOCK_JOB_FAILED = 'rr-20260418T110000-fail'
@@ -38,11 +38,11 @@ const MOCK_THEME_FAILED = '失敗する調査テーマ'
 const MOCK_THEME_RUNNING = '調査中のテーマ'
 const MOCK_REPORT_BODY = '# 調査レポート\n\n## 概要\n\nこれはモックレポートです。\n\n## 詳細\n\nE2E テスト用のレポート本文。'
 
-/* ─── フィクスチャ管理 ─── */
+/* --- Fixture management --- */
 
 /**
- * モックデータを .kovitoboard/research-reports/ に配置する。
- * jobs.jsonl + 各ジョブの status.json / report.md / sources.json を作成。
+ * Place mock data in .kovitoboard/research-reports/.
+ * Creates jobs.jsonl + status.json / report.md / sources.json for each job.
  */
 function setupMockData(): void {
   // Data directory
@@ -104,7 +104,7 @@ function setupMockData(): void {
 }
 
 /**
- * テスト終了後にモックデータとコピーした app/ をクリーンアップする。
+ * Clean up mock data and copied app/ after tests finish.
  */
 function cleanup(): void {
   if (existsSync(DATA_DIR)) {
@@ -115,30 +115,30 @@ function cleanup(): void {
   }
 }
 
-/* ─── テスト ─── */
+/* --- Tests --- */
 
 test.describe('Research Reports E2E (RR-2)', () => {
   /**
-   * 注意: app/ コピー・モックデータ配置はサーバー再起動前に行う必要がある。
-   * Playwright の webServer は自動で起動するため、テスト内でのコピーでは
-   * app-api-loader が既にスキャン済み。そのため API マウント系のテストは
-   * request ベースで動作確認し、UI テストはモックデータで実施する。
+   * Note: app/ copy and mock data placement must be done before the server restarts.
+   * Since Playwright's webServer starts automatically, copying within tests means
+   * app-api-loader has already scanned. Therefore, API mount tests are verified
+   * via request-based checks, and UI tests use mock data.
    */
 
-  // ─── RR-2-T1: API エンドポイントのマウント確認 ─── //
+  // --- RR-2-T1: API endpoint mount verification --- //
 
   test('RR-2-T1: list-reports API が配列を返す（モックデータ配置済み）', async ({ request }) => {
-    // モックデータを配置
+    // Place mock data
     setupMockData()
 
     try {
       const res = await request.get(`${API_BASE}/api/ext/research-reports/list-reports`)
 
-      // app-api-loader が app.example/ をマウントしていない場合は 404 になる。
-      // テストの前提として app/ へのコピーとサーバー再起動が必要だが、
-      // Playwright の webServer は事前起動のため、ここでは存在確認のみ行う。
+      // Returns 404 if app-api-loader has not mounted app.example/.
+      // Copying to app/ and restarting the server is a prerequisite,
+      // but since Playwright's webServer starts beforehand, we only check existence.
       if (res.status() === 404) {
-        // app/ がマウントされていない場合はスキップ
+        // Skip if app/ is not mounted
         test.skip(true, 'app/research-reports/ が app-api-loader にマウントされていない（サーバー再起動が必要）')
         return
       }
@@ -165,7 +165,7 @@ test.describe('Research Reports E2E (RR-2)', () => {
     expect(body.error).toBe('jobId-required')
   })
 
-  // ─── RR-2-T2: ステータス遷移のポーリング検証 ─── //
+  // --- RR-2-T2: Status transition polling verification --- //
 
   test('RR-2-T2: running ジョブのステータスが取得できる', async ({ request }) => {
     setupMockData()
@@ -212,7 +212,7 @@ test.describe('Research Reports E2E (RR-2)', () => {
     }
   })
 
-  // ─── RR-2-T3: レポート本文の取得 ─── //
+  // --- RR-2-T3: Report body retrieval --- //
 
   test('RR-2-T3: completed ジョブのレポート本文と出典が取得できる', async ({ request }) => {
     setupMockData()
@@ -269,7 +269,7 @@ test.describe('Research Reports E2E (RR-2)', () => {
     }
   })
 
-  // ─── RR-2-T4: 異常系 — failed ステータス ─── //
+  // --- RR-2-T4: Error case — failed status --- //
 
   test('RR-2-T4: failed ジョブのステータスにエラー情報が含まれる', async ({ request }) => {
     setupMockData()
@@ -322,14 +322,14 @@ test.describe('Research Reports E2E (RR-2)', () => {
     )
 
     if (res.status() === 404) {
-      // API 自体がマウントされていない場合 or ジョブが見つからない場合
-      // 両方とも 404 なので body で区別する
+      // Either the API itself is not mounted or the job is not found.
+      // Both return 404, so distinguish by body.
       const text = await res.text()
       try {
         const body = JSON.parse(text) as { error: string }
         expect(body.error).toBe('not-found')
       } catch {
-        // app-api-loader にマウントされていない場合
+        // Not mounted in app-api-loader
         test.skip(true, 'app/research-reports/ が app-api-loader にマウントされていない')
       }
     }

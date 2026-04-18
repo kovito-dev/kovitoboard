@@ -1,4 +1,4 @@
-/** KovitoBoard 設定ファイル (.kovitoboard/setting.json) の型定義 */
+/** Type definition for the KovitoBoard settings file (.kovitoboard/setting.json) */
 export interface KovitoboardSetting {
   version: '1.1'
   user: {
@@ -8,7 +8,7 @@ export interface KovitoboardSetting {
   project: {
     name: string
     description: string
-    path: string  // プロジェクトルートの絶対パス (DEC-009)
+    path: string  // Absolute path to the project root (DEC-009)
   }
   locale: 'ja' | 'en'
   onboarding: {

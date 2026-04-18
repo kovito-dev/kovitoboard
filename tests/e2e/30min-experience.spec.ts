@@ -1,11 +1,11 @@
 /**
- * 30min-experience E2E テスト
+ * 30min-experience E2E test
  *
- * 「最初の30分体験」シナリオの機能動作保証。
+ * Functional verification of the "first 30 minutes experience" scenario.
  * @see docs/specs/v0.1.0-30min-experience-e2e-plan.md
  *
- * S3: エージェント追加依頼 → Write 系 prompt 通し【参照実装】
- * 康輔さんが「一番自動化したい」と明示したシナリオ。
+ * S3: Agent creation request -> Write-type prompt pass-through [reference impl]
+ * This is the scenario explicitly flagged as a top automation priority.
  */
 import { test, expect } from '@playwright/test'
 import {
@@ -14,14 +14,14 @@ import {
   type FakeClaudeHandle,
 } from './helpers/fake-claude-harness'
 
-/** E2E 共有 tmux セッション名（playwright.config.ts の env と一致） */
+/** Shared E2E tmux session name (must match the env in playwright.config.ts) */
 const E2E_SESSION = 'kb-e2e-shared'
 
 test.describe('S3: エージェント追加依頼 → Write 系 prompt 通し', () => {
   test.describe.configure({ mode: 'serial' })
 
   test('S3-a: Yes 選択で trust prompt を承認し Claude Code が続行する', async ({ page }) => {
-    // Arrange: Fake Claude を write-create シナリオで起動
+    // Arrange: Start Fake Claude with the write-create scenario
     const fake = await startFakeClaude({
       scenario: 'write-create',
       windowName: 'kovito-concierge',
@@ -29,43 +29,43 @@ test.describe('S3: エージェント追加依頼 → Write 系 prompt 通し', 
     })
 
     try {
-      // fixture が tmux に表示されるのを待つ
+      // Wait for the fixture to be rendered in tmux
       await expect(async () => {
         const buf = await fake.capture()
         expect(buf).toContain('Write(')
       }).toPass({ timeout: 5000 })
 
-      // Act: セッション画面にアクセス（detector がポーリングで検知する）
+      // Act: Navigate to the session page (detector picks it up via polling)
       await page.goto('/')
       await page.waitForLoadState('networkidle')
 
-      // Assert 1: TrustPromptModal が表示される
+      // Assert 1: TrustPromptModal is visible
       const modal = page.getByTestId('trust-prompt-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
 
-      // Assert 2: kind ラベルが Write 系
+      // Assert 2: kind label indicates a Write-type prompt
       const kindLabel = page.getByTestId('trust-prompt-kind-label')
       await expect(kindLabel).toContainText('信頼確認')
 
-      // Assert 3: 対象ファイルが表示される
+      // Assert 3: Target file is displayed
       const targetFile = page.getByTestId('trust-prompt-target-file')
       await expect(targetFile).toContainText('test-agent.md')
 
-      // Assert 4: 選択肢が 3 つ存在する（Yes / Yes-session / No）
+      // Assert 4: Three choices are available (Yes / Yes-session / No)
       await expect(page.getByTestId('trust-prompt-choice-yes')).toBeVisible()
       await expect(page.getByTestId('trust-prompt-choice-yes-session')).toBeVisible()
       await expect(page.getByTestId('trust-prompt-choice-no')).toBeVisible()
 
-      // Act: Yes を選択
+      // Act: Select Yes
       await page.getByTestId('trust-prompt-choice-yes').click()
 
-      // Assert 5: Fake Claude が state 2 に遷移（成功メッセージ）
+      // Assert 5: Fake Claude transitions to state 2 (success message)
       await expect(async () => {
         const buf = await fake.capture()
         expect(buf).toContain('Created .claude/agents/test-agent.md')
       }).toPass({ timeout: 5000 })
 
-      // Assert 6: モーダルが閉じる（trust_prompt_resolved で消える）
+      // Assert 6: Modal closes (dismissed by trust_prompt_resolved)
       await expect(modal).not.toBeVisible({ timeout: 5000 })
     } finally {
       await fake.dispose()
@@ -91,10 +91,10 @@ test.describe('S3: エージェント追加依頼 → Write 系 prompt 通し', 
       const modal = page.getByTestId('trust-prompt-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
 
-      // Act: Yes, and allow for session を選択
+      // Act: Select "Yes, and allow for session"
       await page.getByTestId('trust-prompt-choice-yes-session').click()
 
-      // Assert: Fake Claude が session-allowed で遷移
+      // Assert: Fake Claude transitions with session-allowed
       await expect(async () => {
         const buf = await fake.capture()
         expect(buf).toContain('session-allowed')
@@ -125,12 +125,12 @@ test.describe('S3: エージェント追加依頼 → Write 系 prompt 通し', 
       const modal = page.getByTestId('trust-prompt-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
 
-      // Act: No を選択
+      // Act: Select No
       await page.getByTestId('trust-prompt-choice-no').click()
 
-      // Assert: Fake Claude が拒否メッセージを表示して exit
-      // Note: exit 1 でプロセスが終了するため、capture はエラーまたは空になりうる
-      // モーダルが閉じることを主に検証する
+      // Assert: Fake Claude shows rejection message and exits
+      // Note: The process terminates with exit 1, so capture may return an error or empty string.
+      // The primary assertion is that the modal closes.
       await expect(modal).not.toBeVisible({ timeout: 5000 })
     } finally {
       await fake.dispose()
@@ -138,7 +138,7 @@ test.describe('S3: エージェント追加依頼 → Write 系 prompt 通し', 
   })
 })
 
-// テスト全体のクリーンアップ
+// Global cleanup for all tests
 test.afterAll(async () => {
   await cleanupFakeClaudeSession(E2E_SESSION)
 })

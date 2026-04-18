@@ -1,8 +1,8 @@
 /**
- * Fake Claude Harness — Playwright E2E テスト用 tmux モック管理
+ * Fake Claude Harness — tmux mock management for Playwright E2E tests
  *
- * Fake Claude スクリプトを tmux セッション内で起動し、
- * KB の trust-prompt-detector が本番同様にキャプチャ → 検知できる環境を作る。
+ * Launches Fake Claude scripts inside tmux sessions so that
+ * KB's trust-prompt-detector can capture and detect prompts just like in production.
  *
  * @see docs/design/fake-claude-design.md
  * @see docs/design/decisions/DEC-010-fake-claude-e2e-strategy.md
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-/** Fake Claude スクリプトが配置されているディレクトリ */
+/** Directory containing the Fake Claude scripts */
 const FAKE_CLAUDE_DIR = resolve(__dirname, '../../fixtures/fake-claude')
 
 export type FakeClaudeScenario =
@@ -27,32 +27,32 @@ export type FakeClaudeScenario =
   | 'rejection-flow'
 
 export interface FakeClaudeHandle {
-  /** tmux セッション名（unique） */
+  /** tmux session name (unique) */
   sessionName: string
-  /** tmux window 名 */
+  /** tmux window name */
   windowName: string
-  /** セッションを破棄 */
+  /** Destroy the session */
   dispose(): Promise<void>
-  /** 追加で send-keys を送信（応答後の続き操作用） */
+  /** Send additional keys (for follow-up operations after a response) */
   sendKeys(keys: string): Promise<void>
-  /** 現在のパネル内容を取得（デバッグ・assert 用） */
+  /** Capture the current pane content (for debugging and assertions) */
   capture(): Promise<string>
 }
 
 export interface StartFakeClaudeOptions {
-  /** シナリオ名（scenarios/*.sh のファイル名から .sh を除いたもの） */
+  /** Scenario name (filename from scenarios/*.sh without the .sh extension) */
   scenario: FakeClaudeScenario
-  /** tmux window 名（KB は window 名をエージェント ID として扱う） */
+  /** tmux window name (KB treats the window name as the agent ID) */
   windowName: string
-  /** tmux セッション名を明示指定（デフォルト: E2E 共有セッション名を自動解決） */
+  /** Explicit tmux session name (default: auto-resolved E2E shared session name) */
   sessionName?: string
 }
 
 /**
- * E2E 共有 tmux セッション名を取得する。
+ * Resolve the shared E2E tmux session name.
  *
- * KOVITOBOARD_E2E_TMUX_SESSION 環境変数が設定されていればそれを使う。
- * 未設定時はテスト固有の一意名を生成する。
+ * Uses the KOVITOBOARD_E2E_TMUX_SESSION env var if set,
+ * otherwise generates a unique test-specific name.
  */
 function resolveSessionName(override?: string): string {
   if (override) return override
@@ -60,10 +60,10 @@ function resolveSessionName(override?: string): string {
 }
 
 /**
- * Fake Claude を tmux セッション内で起動する。
+ * Start Fake Claude inside a tmux session.
  *
- * KB の tmux-bridge が KOVITOBOARD_E2E_TMUX_SESSION で指定されたセッションを
- * 参照するため、そのセッション内に window を作成する。
+ * Creates a window inside the session specified by KOVITOBOARD_E2E_TMUX_SESSION,
+ * which KB's tmux-bridge will reference.
  */
 export async function startFakeClaude(
   opts: StartFakeClaudeOptions,
@@ -71,32 +71,32 @@ export async function startFakeClaude(
   const sessionName = resolveSessionName(opts.sessionName)
   const scriptPath = resolve(FAKE_CLAUDE_DIR, 'entrypoint.sh')
 
-  // セッションが存在しなければ作成
+  // Create the session if it does not exist
   const hasSession = spawnSync('tmux', ['has-session', '-t', sessionName], {
     stdio: 'pipe',
   })
 
   if (hasSession.status !== 0) {
-    // 新規セッション作成（画面サイズ固定: 落とし穴 #2 対策）
+    // Create a new session with fixed dimensions (pitfall #2 mitigation)
     execSync(
       `tmux new-session -d -s "${sessionName}" -n main -x 200 -y 50`,
       { stdio: 'pipe' },
     )
   }
 
-  // 同名 window が既にあれば削除（冪等性）
+  // Remove existing window with the same name (idempotency)
   spawnSync('tmux', ['kill-window', '-t', `${sessionName}:${opts.windowName}`], {
     stdio: 'pipe',
   })
 
-  // Fake Claude スクリプトを起動する window を作成
+  // Create a window that runs the Fake Claude script
   execSync(
     `tmux new-window -t "${sessionName}" -n "${opts.windowName}" ` +
     `"bash '${scriptPath}' '${opts.scenario}'"`,
     { stdio: 'pipe' },
   )
 
-  // fixture のレンダリングが完了するまで少し待つ
+  // Wait briefly for the fixture to finish rendering
   await new Promise((r) => setTimeout(r, 500))
 
   return {
@@ -107,12 +107,12 @@ export async function startFakeClaude(
       spawnSync('tmux', ['kill-window', '-t', `${sessionName}:${opts.windowName}`], {
         stdio: 'pipe',
       })
-      // セッション内に window が残っていなければセッションも破棄
+      // Destroy the session if no windows remain
       const remaining = spawnSync('tmux', [
         'list-windows', '-t', sessionName,
       ], { stdio: 'pipe' })
       const output = remaining.stdout?.toString().trim() ?? ''
-      // main window だけ or 空ならセッション破棄
+      // If only the main window remains (or empty), destroy the session
       const lines = output.split('\n').filter((l) => l.trim())
       if (lines.length <= 1) {
         spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'pipe' })
@@ -135,8 +135,8 @@ export async function startFakeClaude(
 }
 
 /**
- * E2E テスト用の tmux セッションを完全にクリーンアップする。
- * test.afterAll で呼ぶ。
+ * Fully clean up the tmux session used for E2E tests.
+ * Call this in test.afterAll.
  */
 export async function cleanupFakeClaudeSession(sessionName: string): Promise<void> {
   spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'pipe' })

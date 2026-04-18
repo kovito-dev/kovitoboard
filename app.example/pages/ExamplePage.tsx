@@ -24,16 +24,16 @@ export default function ExamplePage() {
   return (
     <div className="flex-1 p-6">
       <h1 className="text-xl font-bold text-[var(--text-primary)] mb-4">
-        サンプルページ
+        Example Page
       </h1>
       <p className="text-[var(--text-secondary)] mb-6">
-        このページは <code className="text-[var(--accent-text)]">app/</code> ディレクトリの拡張例です。
-        <code className="text-[var(--accent-text)]">src/</code> を変更せずにカスタムページを追加できます。
+        This page is an extension example in the <code className="text-[var(--accent-text)]">app/</code> directory.
+        You can add custom pages without modifying <code className="text-[var(--accent-text)]">src/</code>.
       </p>
 
       <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg p-4">
         <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
-          API レスポンス (/api/ext/example)
+          API Response (/api/ext/example)
         </h2>
         {error && (
           <p className="text-red-400 text-sm">Error: {error}</p>
@@ -44,7 +44,7 @@ export default function ExamplePage() {
           </pre>
         )}
         {!apiData && !error && (
-          <p className="text-[var(--text-dim)] text-sm">読み込み中...</p>
+          <p className="text-[var(--text-dim)] text-sm">Loading...</p>
         )}
       </div>
     </div>

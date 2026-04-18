@@ -7,19 +7,19 @@ import type {
 import type { TrustPromptItem } from '../hooks/useIPC'
 
 /**
- * 信頼プロンプト中継モーダル（Phase 5c / 5d）
+ * Trust prompt relay modal (Phase 5c / 5d)
  *
- * サーバー側 trust-prompt-detector が検知したプロンプトを UI に表示する。
+ * Displays prompts detected by server-side trust-prompt-detector in the UI.
  *
- * - detected モード: パターンマッチ済み。選択肢ボタンで応答する
- * - fallback モード: 未知プロンプト。生バッファ表示 + 自由入力 + よく使うキー
- *   ボタンで raw-keys 応答する
+ * - detected mode: pattern-matched prompt. Respond via choice buttons.
+ * - fallback mode: unknown prompt. Raw buffer display + free-form input + quick-key
+ *   buttons for raw-keys response.
  *
  * Props:
- * - item: null のときは非表示。非 null になるとオーバーレイで表示される
- * - onChoice: detected モードで選択肢ボタンを押したとき
- * - onRawKeys: fallback モードで raw-keys を送信するとき
- * - onDismiss: ESC / オーバーレイクリックで閉じるとき
+ * - item: hidden when null. Shows overlay when non-null.
+ * - onChoice: called when a choice button is pressed in detected mode.
+ * - onRawKeys: called when raw-keys are sent in fallback mode.
+ * - onDismiss: called on ESC / overlay click to close.
  */
 
 interface TrustPromptModalProps {
@@ -47,7 +47,7 @@ const KIND_ICON: Record<TrustPromptKind, string> = {
   other: '❓',
 }
 
-/** よく使うキーボタン定義（仕様書 §5-3-1） */
+/** Quick key button definitions (spec section 5-3-1) */
 const QUICK_KEYS = [
   { label: 'Enter', keys: 'Enter' },
   { label: 'Escape', keys: 'Escape' },
@@ -72,29 +72,29 @@ export function TrustPromptModal({
 
   const promptId = item?.payload.promptId ?? null
 
-  // イベントが切り替わったら内部状態をリセット
+  // Reset internal state when the event changes
   useEffect(() => {
     setShowRawBuffer(false)
     setRawKeysInput('')
     setCopied(false)
   }, [promptId])
 
-  // fallback モードではバッファを常に展開する
+  // Always expand buffer in fallback mode
   useEffect(() => {
     if (item?.kind === 'fallback') {
       setShowRawBuffer(true)
     }
   }, [item?.kind, promptId])
 
-  // fallback モードで表示されたら自由入力フィールドにフォーカス
+  // Focus the free-form input field when fallback mode is displayed
   useEffect(() => {
     if (item?.kind === 'fallback' && inputRef.current) {
-      // DOM が描画された後にフォーカスするため requestAnimationFrame
+      // Use requestAnimationFrame to focus after the DOM has rendered
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [item?.kind, promptId])
 
-  // ESC キーで閉じる
+  // Close on ESC key
   useEffect(() => {
     if (!item) return
     const handler = (e: KeyboardEvent) => {
@@ -104,7 +104,7 @@ export function TrustPromptModal({
     return () => window.removeEventListener('keydown', handler)
   }, [item, onDismiss])
 
-  // 自由入力フィールドの送信ハンドラ
+  // Submit handler for free-form input field
   const handleRawKeysSubmit = useCallback(() => {
     const trimmed = rawKeysInput.trim()
     if (!trimmed) return
@@ -112,7 +112,7 @@ export function TrustPromptModal({
     setRawKeysInput('')
   }, [rawKeysInput, onRawKeys])
 
-  // tmux attach コマンドのコピー
+  // Copy tmux attach command
   const handleCopyTmuxCommand = useCallback(async (windowName: string) => {
     const cmd = `tmux attach -t "${windowName}"`
     try {
@@ -120,8 +120,8 @@ export function TrustPromptModal({
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // clipboard API が使えない場合は警告のみ
-      console.warn('[trust-prompt] クリップボードへのコピーに失敗')
+      // Only warn if clipboard API is unavailable
+      console.warn('[trust-prompt] Failed to copy to clipboard')
     }
   }, [])
 
@@ -142,16 +142,16 @@ export function TrustPromptModal({
     )
   }
 
-  // fallback モード
+  // Fallback mode
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* オーバーレイ */}
+      {/* Overlay */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onDismiss}
       />
 
-      {/* モーダル本体 */}
+      {/* Modal body */}
       <div
         className="relative w-full max-w-2xl mx-0 md:mx-4 bg-[var(--bg-base)] md:rounded-2xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden max-h-[90vh]"
         role="dialog"
@@ -159,7 +159,7 @@ export function TrustPromptModal({
         aria-labelledby="trust-prompt-modal-title"
         data-testid="trust-prompt-modal"
       >
-        {/* ヘッダー */}
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <h2
             id="trust-prompt-modal-title"
@@ -173,9 +173,9 @@ export function TrustPromptModal({
           <CloseButton onClick={onDismiss} />
         </div>
 
-        {/* コンテンツ */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* メタ情報 */}
+          {/* Meta information */}
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-dim)]">
             <span className="px-2 py-1 rounded-md bg-[var(--bg-surface)] border border-[var(--border)]">
               window: <span className="text-[var(--text-tertiary)] font-mono">{windowName}</span>
@@ -185,7 +185,7 @@ export function TrustPromptModal({
             </span>
           </div>
 
-          {/* 警告バナー */}
+          {/* Warning banner */}
           <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm flex items-start gap-2">
             <span aria-hidden className="text-base leading-none mt-0.5">⚠️</span>
             <div>
@@ -196,14 +196,14 @@ export function TrustPromptModal({
             </div>
           </div>
 
-          {/* 生バッファ（fallback では常に展開） */}
+          {/* Raw buffer (always expanded in fallback mode) */}
           <RawBufferSection
             rawBuffer={rawBuffer}
             show={showRawBuffer}
             onToggle={() => setShowRawBuffer((v) => !v)}
           />
 
-          {/* よく使うキーボタン */}
+          {/* Quick key buttons */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-[var(--text-dim)]">
               よく使うキー
@@ -221,7 +221,7 @@ export function TrustPromptModal({
             </div>
           </div>
 
-          {/* 自由入力フィールド */}
+          {/* Free-form input field */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-[var(--text-dim)]">
               自由入力（literal モードで送信されます）
@@ -252,7 +252,7 @@ export function TrustPromptModal({
             </div>
           </div>
 
-          {/* tmux attach コマンドコピペ */}
+          {/* tmux attach command copy */}
           <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
             <div className="text-xs text-[var(--text-dim)] mb-2">
               最終手段: tmux を直接開く
@@ -275,9 +275,9 @@ export function TrustPromptModal({
   )
 }
 
-// ===== 内部サブコンポーネント =====
+// ===== Internal sub-components =====
 
-/** detected モード用モーダル（Phase 5c から構造を移植） */
+/** Modal for detected mode (structure ported from Phase 5c) */
 function DetectedModal({
   event,
   showRawBuffer,
@@ -294,20 +294,20 @@ function DetectedModal({
   const kindLabel = KIND_LABEL[event.kind] ?? event.kind
   const kindIcon = KIND_ICON[event.kind] ?? '❓'
 
-  // detail から表示する key-value ペアを抽出（null 値は除外）
+  // Extract key-value pairs from detail for display (exclude null values)
   const detailEntries = Object.entries(event.detail).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
   ) as [string, string][]
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* オーバーレイ */}
+      {/* Overlay */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onDismiss}
       />
 
-      {/* モーダル本体 */}
+      {/* Modal body */}
       <div
         className="relative w-full max-w-2xl mx-0 md:mx-4 bg-[var(--bg-base)] md:rounded-2xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden max-h-[90vh]"
         role="dialog"
@@ -315,7 +315,7 @@ function DetectedModal({
         aria-labelledby="trust-prompt-modal-title"
         data-testid="trust-prompt-modal"
       >
-        {/* ヘッダー */}
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <h2
             id="trust-prompt-modal-title"
@@ -329,9 +329,9 @@ function DetectedModal({
           <CloseButton onClick={onDismiss} />
         </div>
 
-        {/* コンテンツ */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* メタ情報バー */}
+          {/* Meta information bar */}
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-dim)]">
             <span className="px-2 py-1 rounded-md bg-[var(--bg-surface)] border border-[var(--border)]">
               window: <span className="text-[var(--text-tertiary)] font-mono">{event.windowName}</span>
@@ -341,7 +341,7 @@ function DetectedModal({
             </span>
           </div>
 
-          {/* degenerate 警告バナー */}
+          {/* Degenerate warning banner */}
           {event.degenerate && (
             <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm flex items-start gap-2">
               <span aria-hidden className="text-base leading-none mt-0.5">⚠️</span>
@@ -354,7 +354,7 @@ function DetectedModal({
             </div>
           )}
 
-          {/* 抽出された詳細 */}
+          {/* Extracted details */}
           {detailEntries.length > 0 && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] overflow-hidden">
               <div className="px-4 py-2 text-xs font-semibold text-[var(--text-dim)] border-b border-[var(--border)]">
@@ -378,7 +378,7 @@ function DetectedModal({
             </div>
           )}
 
-          {/* 生バッファ折り畳み */}
+          {/* Raw buffer collapsible */}
           <RawBufferSection
             rawBuffer={event.rawBuffer}
             show={showRawBuffer}
@@ -386,7 +386,7 @@ function DetectedModal({
           />
         </div>
 
-        {/* 選択肢ボタン（フッター） */}
+        {/* Choice buttons (footer) */}
         <div className="px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-surface)] flex flex-col-reverse sm:flex-row sm:flex-wrap gap-2 sm:justify-end">
           {event.choices.length === 0 ? (
             <div className="text-xs text-[var(--text-dim)] self-center">
@@ -394,7 +394,7 @@ function DetectedModal({
             </div>
           ) : (
             event.choices.map((choice, idx) => {
-              // 1 番目を primary として強調
+              // Highlight the first item as primary
               const isPrimary = idx === 0
               return (
                 <button
@@ -418,7 +418,7 @@ function DetectedModal({
   )
 }
 
-/** 閉じるボタン（共通） */
+/** Close button (shared) */
 function CloseButton({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -443,7 +443,7 @@ function CloseButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-/** 生バッファ折り畳みセクション（detected / fallback 共通） */
+/** Raw buffer collapsible section (shared between detected / fallback) */
 function RawBufferSection({
   rawBuffer,
   show,

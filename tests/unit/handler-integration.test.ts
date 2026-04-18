@@ -1,20 +1,20 @@
 /**
- * Recipe handler 結合テスト（BE 単体）— Phase H
+ * Recipe handler integration test (BE only) — Phase H
  *
- * manifest 保存 → dispatcher 経由の handler 呼び出し → レスポンス検証 の
- * 一連のフローを検証する。FE は含まない。
+ * Verifies the flow of manifest save -> handler invocation via dispatcher -> response.
+ * Does not include FE.
  *
- * テストシナリオ T1〜T8:
- *   T1: 正常系 — list-files 呼び出し
- *   T2: scope 違反 — 承認なし scope での handler 呼び出し → ScopeViolation
- *   T3: パストラバーサル — "../../etc/passwd" → PathOutOfScope
- *   T4: 除外リスト — ".env" → PathForbidden
- *   T5: サイズ超過 — 11MB ファイルの read-file → SizeExceeded
- *   T6: レート制限 — 11 回連続の notify → 11 回目が RateLimited
- *   T7: 未宣言 callId → HandlerNotDeclared
- *   T8: テンプレート展開 — ${input.path} に動的値を渡す
+ * Test scenarios T1-T8:
+ *   T1: Normal case — list-files invocation
+ *   T2: Scope violation — handler call with unapproved scope -> ScopeViolation
+ *   T3: Path traversal — "../../etc/passwd" -> PathOutOfScope
+ *   T4: Exclusion list — ".env" -> PathForbidden
+ *   T5: Size exceeded — read-file on 11MB file -> SizeExceeded
+ *   T6: Rate limiting — 11 consecutive notify calls -> 11th is RateLimited
+ *   T7: Undeclared callId -> HandlerNotDeclared
+ *   T8: Template expansion — pass dynamic values to ${input.path}
  *
- * 全テストで監査ログの記録も検証する。
+ * All tests also verify audit log recording.
  *
  * @see recipe-backend-implementation-plan.md Phase H
  */
@@ -55,7 +55,7 @@ const RECIPE_ID = 'test-intel-viewer'
 const RECIPE_VERSION = '1.0.0'
 
 /**
- * minimal-intel-viewer 相当のテスト manifest を作成する
+ * Create a test manifest equivalent to minimal-intel-viewer
  */
 function createTestManifest(overrides?: {
   approvedScopes?: Scope[]
@@ -108,7 +108,7 @@ function createTestManifest(overrides?: {
 }
 
 /**
- * 監査ログファイルを読み取ってパースする
+ * Read and parse the audit log file
  */
 function readAuditLog(): Array<Record<string, unknown>> {
   const logPath = path.join(projectRoot, 'app', 'data', RECIPE_ID, '_audit.log')
@@ -123,18 +123,18 @@ function readAuditLog(): Array<Record<string, unknown>> {
 // =========================================
 
 beforeAll(() => {
-  // 一時ディレクトリを作成
+  // Create temporary directory
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-handler-test-'))
   projectRoot = path.join(tmpDir, 'project')
   kovitoboardDir = path.join(projectRoot, '.kovitoboard')
 
-  // プロジェクト構成を作成
+  // Create project structure
   fs.mkdirSync(path.join(projectRoot, 'intel'), { recursive: true })
   fs.mkdirSync(path.join(projectRoot, 'app', 'data', RECIPE_ID), { recursive: true })
   fs.mkdirSync(kovitoboardDir, { recursive: true })
   fs.mkdirSync(path.join(projectRoot, '.claude', 'agents'), { recursive: true })
 
-  // テストファイルを配置
+  // Place test files
   fs.writeFileSync(
     path.join(projectRoot, 'intel', 'report-001.md'),
     '# Intel Report 001\n\nConfidential content.',
@@ -147,13 +147,13 @@ beforeAll(() => {
     path.join(projectRoot, 'README.md'),
     '# Test Project',
   )
-  // 除外リスト対象ファイル
+  // Files targeted by the exclusion list
   fs.writeFileSync(path.join(projectRoot, '.env'), 'SECRET=xxx')
   fs.writeFileSync(path.join(projectRoot, '.env.production'), 'PROD_SECRET=yyy')
   fs.mkdirSync(path.join(projectRoot, '.git'), { recursive: true })
   fs.writeFileSync(path.join(projectRoot, '.git', 'HEAD'), 'ref: refs/heads/main')
 
-  // handler をレジストリに登録
+  // Register handlers in the registry
   clearRegistry()
   registerHandler(listFilesHandler)
   registerHandler(readFileHandler)
@@ -165,21 +165,21 @@ beforeAll(() => {
   registerHandler(notifyHandler)
   registerHandler(exportFileHandler)
 
-  // ManifestStore 初期化
+  // Initialize ManifestStore
   const fsLayer = new DirectFsLayer()
   manifestStore = new RecipeManifestStore(kovitoboardDir, fsLayer)
 })
 
 afterAll(() => {
-  // 一時ディレクトリを削除
+  // Delete temporary directory
   fs.rmSync(tmpDir, { recursive: true, force: true })
   clearRegistry()
 })
 
 beforeEach(() => {
-  // レート制限をリセット
+  // Reset rate limiter
   resetRateLimiter()
-  // 監査ログをクリア
+  // Clear audit log
   const logPath = path.join(projectRoot, 'app', 'data', RECIPE_ID, '_audit.log')
   if (fs.existsSync(logPath)) {
     fs.unlinkSync(logPath)
@@ -187,7 +187,7 @@ beforeEach(() => {
 })
 
 // =========================================
-// T1: 正常系 — manifest 保存 → list-files 呼び出し → 正常結果
+// T1: Normal case — manifest save -> list-files call -> normal result
 // =========================================
 
 describe('T1: 正常系 — list-files 呼び出し', () => {
@@ -229,20 +229,20 @@ describe('T1: 正常系 — list-files 呼び出し', () => {
     expect(last.callId).toBe('list-intel-reports')
     expect(last.handler).toBe('list-files')
     expect(last.result).toBe('ok')
-    // argsHash は 16 進 64 文字
+    // argsHash is 64-char hex
     expect(last.argsHash).toMatch(/^[0-9a-f]{64}$/)
     expect(typeof last.durationMs).toBe('number')
   })
 })
 
 // =========================================
-// T2: scope 違反 — 承認なし scope での handler 呼び出し
+// T2: Scope violation — handler call with unapproved scope
 // =========================================
 
 describe('T2: scope 違反 → ScopeViolation', () => {
   it('kb-data-read のみ承認で write-file を呼ぶと ScopeViolation', async () => {
-    // write-file の requiredScopes は ['project-write', 'own-data']
-    // kb-data-read のみ承認ではいずれにもマッチしないため ScopeViolation
+    // write-file requiredScopes are ['project-write', 'own-data']
+    // With only kb-data-read approved, neither matches -> ScopeViolation
     const manifest = createTestManifest({
       approvedScopes: ['kb-data-read'],
       calls: [
@@ -271,8 +271,8 @@ describe('T2: scope 違反 → ScopeViolation', () => {
   })
 
   it('kv-set は own-data が必要 — project-read のみ承認では ScopeViolation', async () => {
-    // kv-set の requiredScopes は ['own-data']
-    // project-read のみ承認では own-data にマッチしないため ScopeViolation
+    // kv-set requiredScopes are ['own-data']
+    // With only project-read approved, own-data does not match -> ScopeViolation
     const manifest = createTestManifest({
       approvedScopes: ['project-read'],
       calls: [
@@ -323,7 +323,7 @@ describe('T2: scope 違反 → ScopeViolation', () => {
       projectRoot,
     )
 
-    // dispatcher のフローでは scope 検証（step 5）は audit ログ（step 8）の前に行われる
+    // In the dispatcher flow, scope validation (step 5) occurs before audit log (step 8)
     const logs = readAuditLog()
     expect(logs.length).toBe(0)
   })
@@ -436,7 +436,7 @@ describe('T4: 除外リスト → PathForbidden', () => {
   })
 
   it('list-files で "." を要求したとき、.env / .git / node_modules がエントリに含まれない', async () => {
-    // node_modules も作成
+    // Also create node_modules
     fs.mkdirSync(path.join(projectRoot, 'node_modules', 'some-pkg'), { recursive: true })
     fs.writeFileSync(path.join(projectRoot, 'node_modules', 'some-pkg', 'index.js'), 'module.exports = {}')
 
@@ -449,7 +449,7 @@ describe('T4: 除外リスト → PathForbidden', () => {
       projectRoot,
     )
 
-    // list-intel-reports は path: "intel/" 固定なので、project root を見るために別の call を作成
+    // list-intel-reports has a fixed path: "intel/", so create a separate call to see the project root
     const manifestWithRoot = createTestManifest({
       calls: [
         ...createTestManifest().api.calls,
@@ -470,12 +470,12 @@ describe('T4: 除外リスト → PathForbidden', () => {
     const data = rootResult.data as { entries: Array<{ name: string; path: string }> }
     const names = data.entries.map((e) => e.name)
 
-    // 除外対象が含まれていないことを検証
+    // Verify excluded targets are not included
     expect(names).not.toContain('.env')
     expect(names).not.toContain('.env.production')
     expect(names).not.toContain('.git')
     expect(names).not.toContain('node_modules')
-    // 正常ファイルは含まれている
+    // Normal files are included
     expect(names).toContain('README.md')
   })
 })
@@ -488,7 +488,7 @@ describe('T5: サイズ超過 → SizeExceeded', () => {
   const LARGE_FILE = 'intel/large-report.bin'
 
   beforeAll(() => {
-    // 11MB のダミーファイルを作成
+    // Create an 11MB dummy file
     const largePath = path.join(projectRoot, LARGE_FILE)
     const fd = fs.openSync(largePath, 'w')
     // 11MB = 11 * 1024 * 1024 bytes
@@ -540,12 +540,12 @@ describe('T6: レート制限 → RateLimited', () => {
       results.push(result as { ok: boolean; error?: { code: string } })
     }
 
-    // 最初の 10 回は成功
+    // First 10 calls succeed
     for (let i = 0; i < 10; i++) {
       expect(results[i].ok).toBe(true)
     }
 
-    // 11 回目はレート制限
+    // 11th call is rate limited
     expect(results[10].ok).toBe(false)
     expect(results[10].error?.code).toBe('RateLimited')
   })
@@ -624,13 +624,13 @@ describe('T8: テンプレート展開', () => {
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
-    // read-intel-report の args は { path: "${input.path}" }
-    // input に path を含めない
+    // read-intel-report args are { path: "${input.path}" }
+    // Do not include path in input
     const result = await dispatch(
       {
         recipeId: RECIPE_ID,
         callId: 'read-intel-report',
-        input: {},  // path が undefined
+        input: {},  // path is undefined
       },
       manifestStore,
       projectRoot,
@@ -673,14 +673,14 @@ describe('T8: テンプレート展開', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    // ファイルが実際に書き込まれたか確認
+    // Verify the file was actually written
     const written = fs.readFileSync(path.join(projectRoot, targetPath), 'utf-8')
     expect(written).toBe('Hello from handler!')
   })
 })
 
 // =========================================
-// KV ストア結合テスト
+// KV store integration tests
 // =========================================
 
 describe('KV ストア結合テスト', () => {
@@ -718,7 +718,7 @@ describe('KV ストア結合テスト', () => {
 })
 
 // =========================================
-// 監査ログ総合検証
+// Audit log comprehensive verification
 // =========================================
 
 describe('監査ログ総合検証', () => {
@@ -726,14 +726,14 @@ describe('監査ログ総合検証', () => {
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
-    // 正常な list-files 呼び出し
+    // Normal list-files call
     await dispatch(
       { recipeId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
       manifestStore,
       projectRoot,
     )
 
-    // テンプレート展開あり read-file 呼び出し
+    // read-file call with template expansion
     await dispatch(
       {
         recipeId: RECIPE_ID,
@@ -747,7 +747,7 @@ describe('監査ログ総合検証', () => {
     const logs = readAuditLog()
     expect(logs.length).toBe(2)
 
-    // 1 つ目: list-files
+    // 1st: list-files
     expect(logs[0].handler).toBe('list-files')
     expect(logs[0].callId).toBe('list-intel-reports')
     expect(logs[0].result).toBe('ok')
@@ -755,7 +755,7 @@ describe('監査ログ総合検証', () => {
     expect(typeof logs[0].timestamp).toBe('string')
     expect(typeof logs[0].durationMs).toBe('number')
 
-    // 2 つ目: read-file
+    // 2nd: read-file
     expect(logs[1].handler).toBe('read-file')
     expect(logs[1].callId).toBe('read-intel-report')
     expect(logs[1].result).toBe('ok')
@@ -765,7 +765,7 @@ describe('監査ログ総合検証', () => {
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
-    // 存在しないファイルを読み取り
+    // Read a nonexistent file
     await dispatch(
       {
         recipeId: RECIPE_ID,
@@ -785,7 +785,7 @@ describe('監査ログ総合検証', () => {
 })
 
 // =========================================
-// セキュリティ回帰テスト（recipe-backend-implementation-plan.md §7-4）
+// Security regression tests (recipe-backend-implementation-plan.md §7-4)
 // =========================================
 
 describe('セキュリティ回帰テスト', () => {

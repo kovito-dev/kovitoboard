@@ -4,9 +4,9 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // KovitoBoard:
-// - public/ から静的資産を配信する（avatars, docs 等）
-// - root が src/renderer のため publicDir は絶対パスで指定
-// - ビルド成果物は <repo>/dist に出力
+// - Serve static assets from public/ (avatars, docs, etc.)
+// - publicDir must be an absolute path because root is src/renderer
+// - Build output goes to <repo>/dist
 export default defineConfig({
   root: 'src/renderer',
   publicDir: resolve(__dirname, 'public'),

@@ -1,10 +1,10 @@
 /**
- * サーバー起動・基本動作テスト
+ * Server startup and basic operation tests
  *
- * テスト対象:
- * - KovitoBoard サーバーが起動し API が応答するか
- * - エージェントが正しくロードされるか
- * - フロントエンドが正常にレンダリングされるか
+ * Test targets:
+ * - KovitoBoard server starts and APIs respond
+ * - Agents are loaded correctly
+ * - Frontend renders normally
  */
 import { test, expect } from '@playwright/test'
 
@@ -16,7 +16,7 @@ test.describe('サーバー起動・基本動作', () => {
     expect(res.ok()).toBeTruthy()
 
     const config = await res.json()
-    // KovitoBoard の config は ui, user, agents 等を含む
+    // KovitoBoard config contains ui, user, agents, etc.
     expect(config).toHaveProperty('ui')
     expect(config).toHaveProperty('user')
   })
@@ -54,7 +54,7 @@ test.describe('サーバー起動・基本動作', () => {
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
-    // React アプリがマウントされていることを確認
+    // Verify that the React app is mounted
     const body = await page.textContent('body')
     expect(body).toBeTruthy()
     expect(body!.length).toBeGreaterThan(0)
@@ -64,7 +64,7 @@ test.describe('サーバー起動・基本動作', () => {
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
-    // ナビメニューに「エージェント」が表示されている
+    // The nav menu shows the agent button
     const agentButton = page.locator('button[title="エージェント"]').first()
     await expect(agentButton).toBeVisible()
   })

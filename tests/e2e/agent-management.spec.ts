@@ -1,14 +1,14 @@
 /**
- * エージェント管理テスト
+ * Agent management tests
  *
- * テスト対象:
- * - エージェント一覧が正しく表示されるか
- * - API 経由でエージェント情報が正しく返るか
- * - エージェント情報に必須フィールドがあるか
+ * Test targets:
+ * - Agent list is displayed correctly
+ * - Agent information is returned correctly via API
+ * - Agent information contains required fields
  *
- * 注意:
- * KovitoBoard v0.1.0 ではエージェントは読み取り専用。
- * .claude/agents/ にエージェント定義がない場合は空配列が返る。
+ * Note:
+ * In KovitoBoard v0.1.0, agents are read-only.
+ * An empty array is returned if no agent definitions exist in .claude/agents/.
  */
 import { test, expect } from '@playwright/test'
 
@@ -28,7 +28,7 @@ test.describe('エージェント管理', () => {
     expect(res.ok()).toBeTruthy()
 
     const agents = await res.json()
-    // エージェントが存在する場合のみフィールドを検証
+    // Only validate fields when agents exist
     for (const agent of agents) {
       expect(agent).toHaveProperty('id')
       expect(agent).toHaveProperty('displayName')
@@ -38,7 +38,7 @@ test.describe('エージェント管理', () => {
   })
 
   test('エージェントが存在する場合、カードが表示される', async ({ page, request }) => {
-    // API からエージェント数を取得
+    // Get agent count from API
     const res = await request.get(`${API_BASE}/api/agents`)
     const agents = await res.json()
 
@@ -46,11 +46,11 @@ test.describe('エージェント管理', () => {
     await page.waitForLoadState('networkidle')
 
     if (agents.length > 0) {
-      // 最初のエージェントの displayName が画面に表示されている
+      // The first agent's displayName is shown on screen
       const content = await page.textContent('body')
       expect(content).toContain(agents[0].displayName)
     } else {
-      // エージェントがない場合は案内メッセージが表示される
+      // A guidance message is displayed when no agents exist
       const content = await page.textContent('body')
       expect(content).toContain('エージェントが見つかりません')
     }
@@ -60,22 +60,22 @@ test.describe('エージェント管理', () => {
     const res = await request.get(`${API_BASE}/api/agents`)
     const agents = await res.json()
 
-    // エージェントが存在しない場合はスキップ
+    // Skip if no agents exist
     test.skip(agents.length === 0, 'エージェント定義が存在しないためスキップ')
 
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
-    // 最初のエージェント名を含むカードをクリック
+    // Click the card containing the first agent's name
     const firstAgent = agents[0]
     const agentCard = page.locator('button').filter({ hasText: firstAgent.displayName }).first()
     await agentCard.click()
     await page.waitForTimeout(500)
 
-    // 詳細画面にエージェント情報が表示される
+    // Agent information is displayed on the detail screen
     const content = await page.textContent('body')
     expect(content).toContain(firstAgent.displayName)
-    // 読み取り専用バナーが表示される
+    // Read-only banner is displayed
     expect(content).toContain('読み取り専用')
   })
 })

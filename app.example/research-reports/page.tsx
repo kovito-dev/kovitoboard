@@ -123,16 +123,16 @@ export default function ResearchReportsPage() {
       if ('error' in result) {
         switch (result.error) {
           case 'theme-required':
-            setError('調査テーマを入力してください。')
+            setError('Please enter a research theme.')
             break
           case 'theme-too-long':
-            setError(`テーマは ${MAX_THEME_LENGTH} 文字以内で入力してください。`)
+            setError(`Theme must be ${MAX_THEME_LENGTH} characters or less.`)
             break
           case 'queue-full':
-            setError(`同時実行上限（${result.maxConcurrent} 件）に達しています。完了をお待ちください。`)
+            setError(`Concurrent job limit (${result.maxConcurrent}) reached. Please wait for a job to finish.`)
             break
           default:
-            setError('エラーが発生しました。')
+            setError('An error occurred.')
         }
       } else {
         setTheme('')
@@ -140,7 +140,7 @@ export default function ResearchReportsPage() {
         await refreshList()
       }
     } catch {
-      setError('サーバーとの通信に失敗しました。')
+      setError('Failed to communicate with the server.')
     } finally {
       setSubmitting(false)
     }
@@ -166,13 +166,13 @@ export default function ResearchReportsPage() {
   const statusBadge = (status: string) => {
     switch (status) {
       case 'queued':
-        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300">待機中</span>
+        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300">Queued</span>
       case 'running':
-        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300">調査中...</span>
+        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300">Researching...</span>
       case 'completed':
-        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-300">完了</span>
+        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-300">Completed</span>
       case 'failed':
-        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300">失敗</span>
+        return <span className="inline-block px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300">Failed</span>
       default:
         return <span className="inline-block px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">{status}</span>
     }
@@ -195,7 +195,7 @@ export default function ResearchReportsPage() {
               data-testid="rr-theme-input"
               value={theme}
               onChange={(e) => setTheme(e.target.value.slice(0, MAX_THEME_LENGTH))}
-              placeholder="調査テーマを入力..."
+              placeholder="Enter a research theme..."
               rows={3}
               className="w-full p-2 rounded border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-primary)] text-sm placeholder-[var(--text-dim)] resize-none focus:outline-none focus:border-[var(--accent-text)]"
               onKeyDown={(e) => {
@@ -214,7 +214,7 @@ export default function ResearchReportsPage() {
                 disabled={!theme.trim() || submitting}
                 className="px-3 py-1 rounded text-xs font-medium bg-[var(--accent-text)] text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
               >
-                {submitting ? '送信中...' : '調査開始'}
+                {submitting ? 'Submitting...' : 'Start Research'}
               </button>
             </div>
           </div>
@@ -227,7 +227,7 @@ export default function ResearchReportsPage() {
         {activeJobs.length > 0 && (
           <div className="p-3 border-b border-[var(--border)]">
             <h2 className="text-xs font-semibold text-[var(--text-secondary)] mb-2 uppercase tracking-wider">
-              進行中
+              In Progress
             </h2>
             <div className="space-y-1">
               {activeJobs.map((job) => (
@@ -249,10 +249,10 @@ export default function ResearchReportsPage() {
         {/* Finished jobs list */}
         <div className="flex-1 overflow-y-auto p-3">
           <h2 className="text-xs font-semibold text-[var(--text-secondary)] mb-2 uppercase tracking-wider">
-            レポート一覧
+            Reports
           </h2>
           {finishedJobs.length === 0 ? (
-            <p className="text-xs text-[var(--text-dim)]">まだレポートはありません</p>
+            <p className="text-xs text-[var(--text-dim)]">No reports yet</p>
           ) : (
             <div className="space-y-1">
               {finishedJobs.map((job) => (
@@ -270,7 +270,7 @@ export default function ResearchReportsPage() {
                   <div className="flex items-center gap-2 mb-1">
                     {statusBadge(job.status)}
                     <span className="text-[10px] text-[var(--text-dim)]">
-                      {new Date(job.startedAt).toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      {new Date(job.startedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
                   <span className="text-xs text-[var(--text-primary)] line-clamp-2">
@@ -287,7 +287,7 @@ export default function ResearchReportsPage() {
       <div className="flex-1 overflow-y-auto bg-[var(--bg-base)]">
         {reportLoading ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-sm text-[var(--text-dim)]">読み込み中...</p>
+            <p className="text-sm text-[var(--text-dim)]">Loading...</p>
           </div>
         ) : reportData ? (
           <div className="p-6 max-w-4xl mx-auto" data-testid="rr-report-body">
@@ -296,7 +296,7 @@ export default function ResearchReportsPage() {
                 {reportData.theme}
               </h2>
               <p className="text-xs text-[var(--text-dim)] mt-1">
-                ジョブ ID: {reportData.jobId}
+                Job ID: {reportData.jobId}
               </p>
             </div>
             <div className="bg-[var(--bg-surface)] rounded-lg p-6 border border-[var(--border)]">
@@ -305,7 +305,7 @@ export default function ResearchReportsPage() {
             {reportData.sources.length > 0 && (
               <div className="mt-6">
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] mb-2">
-                  参照ソース ({reportData.sources.length} 件)
+                  Sources ({reportData.sources.length})
                 </h3>
                 <ul className="space-y-1">
                   {reportData.sources.map((source, i) => (
@@ -319,7 +319,7 @@ export default function ResearchReportsPage() {
                         {source.title || source.url}
                       </a>
                       <span className="text-[var(--text-dim)] ml-2">
-                        {new Date(source.fetchedAt).toLocaleString('ja-JP')}
+                        {new Date(source.fetchedAt).toLocaleString('en-US')}
                       </span>
                     </li>
                   ))}
@@ -331,10 +331,10 @@ export default function ResearchReportsPage() {
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <p className="text-sm text-[var(--text-dim)]">
-                左のリストからレポートを選択してください
+                Select a report from the list on the left
               </p>
               <p className="text-xs text-[var(--text-dim)] mt-2">
-                または、テーマを入力して新しい調査を開始します
+                Or enter a theme to start a new research
               </p>
             </div>
           </div>

@@ -14,7 +14,7 @@ import type { AppMenuEntry } from '../src/renderer/types/app-types'
 export const menuEntries: AppMenuEntry[] = [
   {
     id: 'example',
-    label: 'サンプル',
+    label: 'Example',
     icon: 'content',
     component: () => import('./pages/ExamplePage'),
   },

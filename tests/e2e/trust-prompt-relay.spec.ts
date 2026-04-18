@@ -1,15 +1,15 @@
 /**
- * trust-prompt-relay テスト
+ * trust-prompt-relay tests
  *
- * テスト対象:
- * - trust-prompt 関連の API が応答するか
- * - WebSocket 接続が確立できるか
- * - 初期状態で TrustPromptModal が表示されていないことを確認
+ * Test targets:
+ * - trust-prompt related APIs respond
+ * - WebSocket connections can be established
+ * - TrustPromptModal is not displayed in the initial state
  *
- * 注意:
- * trust-prompt の完全な E2E フロー（tmux パネル監視 → 検出 → UI モーダル → 応答）は
- * tmux 環境に依存するため、このテストでは API レベルの動作確認に留める。
- * tmux 連携の統合テストは Phase 8 の実機確認で実施する。
+ * Note:
+ * The full E2E flow (tmux pane monitoring -> detection -> UI modal -> response)
+ * depends on a tmux environment, so this test only verifies API-level behavior.
+ * Integration tests with tmux are performed in Phase 8 live verification.
  */
 import { test, expect } from '@playwright/test'
 import { WebSocket } from 'ws'
@@ -22,7 +22,7 @@ test.describe('trust-prompt-relay', () => {
     expect(res.ok()).toBeTruthy()
 
     const status = await res.json()
-    // tmux セッションが存在しない環境でも、エラーにならずステータスを返す
+    // Returns status without error even in environments without a tmux session
     expect(status).toBeTruthy()
   })
 
@@ -54,7 +54,7 @@ test.describe('trust-prompt-relay', () => {
     const ws = new WebSocket('ws://127.0.0.1:3001/ws')
 
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('接続タイムアウト')), 5000)
+      const timeout = setTimeout(() => reject(new Error('connection timeout')), 5000)
       ws.on('open', () => {
         clearTimeout(timeout)
         resolve()
@@ -65,8 +65,8 @@ test.describe('trust-prompt-relay', () => {
       })
     })
 
-    // trust_prompt_respond メッセージを送信
-    // tmux セッションがない場合は無視される（サーバーはクラッシュしない）
+    // Send a trust_prompt_respond message
+    // Ignored when no tmux session exists (server does not crash)
     const message = JSON.stringify({
       type: 'trust_prompt_respond',
       payload: {
@@ -76,13 +76,13 @@ test.describe('trust-prompt-relay', () => {
       },
     })
 
-    // 送信がエラーなく完了することを確認（送信自体は成功する）
+    // Verify that sending completes without error (the send itself succeeds)
     ws.send(message)
 
-    // 少し待ってからサーバーがクラッシュしていないことを確認
+    // Wait briefly, then verify the server has not crashed
     await new Promise(r => setTimeout(r, 1000))
 
-    // サーバーが生きていることを確認（新しい接続が張れる）
+    // Verify the server is alive (a new connection can be established)
     const ws2 = new WebSocket('ws://127.0.0.1:3001/ws')
     const reconnected = await new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
@@ -109,8 +109,8 @@ test.describe('trust-prompt-relay', () => {
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
-    // TrustPromptModal は trust prompt 検知時のみ表示される
-    // 初期状態では role="dialog" の要素が存在しないことを確認
+    // TrustPromptModal is only shown when a trust prompt is detected
+    // Verify that no role="dialog" element exists in the initial state
     const modal = page.locator('[role="dialog"][aria-modal="true"]')
     await expect(modal).toHaveCount(0)
   })
