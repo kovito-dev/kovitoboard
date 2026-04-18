@@ -20,6 +20,7 @@ KB の `app/` ディレクトリ（ユーザー拡張領域）を理解し、独
 - §5 レシピとの違い
 - §6 レシピとしてエクスポートする方法
 - §7 事例: Intel ビュアー風アプリ
+- §8 長時間処理を伴う BE 付きアプリのパターン
 
 ---
 
@@ -375,6 +376,107 @@ api:
 ```
 
 ただし本格的に書き換えるには path トラバーサル対策等も見直す必要があります。レシピ化の支援は「Kovito 開発者」エージェントに依頼するのが確実です。
+
+---
+
+## §8 長時間処理を伴う BE 付きアプリのパターン
+
+§7 は即座に結果が返る処理でしたが、**Web 検索・外部 API 連携・長時間の生成処理** など、数秒〜数十分かかる処理を扱う場合、以下のパターンを推奨します。
+
+### 8.1 ジョブキュー + ポーリング構成
+
+処理を同期 API の応答内で完結させず、「起動 → 進行中 → 完了」の 3 状態に分けて扱います。
+
+- 起動 API は即座に `jobId` を返す（処理は背後で走る）
+- フロントは `jobId` を使ってステータス API を定期ポーリングする（間隔 10 秒を推奨）
+- ステータス値は `queued | running | completed | failed` の 4 値に揃える
+- 完了後にデータ取得 API を 1 回呼ぶ
+
+WebSocket を使わないのは、BE 依存を増やすと `app/` の導入障壁が上がるためです。ポーリングで支障が出るスケール（秒単位の更新が必要等）になるまでは、シンプルな HTTP で十分です。
+
+### 8.2 データとコードの分離
+
+長時間処理の生成物は `app/` 配下ではなく、**運用データ領域 `.kovitoboard/{app-name}/` に保存** します。
+
+| 種類 | 置き場所 | 理由 |
+|---|---|---|
+| コード（`.ts` / `.tsx`） | `app/{app-name}/` | Git 管理（ユーザー判断でバックアップ）対象、レシピ化の出発点 |
+| ジョブデータ（レポート本文・ログ等） | `.kovitoboard/{app-name}/` | `.gitignore` 扱いが一貫し、誤コミット事故が起きにくい |
+
+ジョブ一覧のメタデータは JSONL（1 行 1 ジョブの追記オンリー）で持つと、同時書き込み時の破損リスクが下がります。
+
+### 8.3 tmux サブセッションから Claude Code を呼ぶ
+
+Web 検索や生成処理を Claude Code に任せたい場合、**メインセッション（ユーザー対話中のセッション）を占有せずに独立した tmux pane で処理を走らせる** 構成が基本です。
+
+- `src/server/tmux-bridge.ts` / `session-manager.ts` をユーザー定義 BE API から import し、サブセッションを起動
+- プロンプト雛形は `app/{app-name}/prompts/*.md` に配置（Git 管理したいテキストはこちら）
+- 完了検知は以下のいずれか:
+  - tmux 出力のパターンマッチ（「completed」等の特定文字列）
+  - 成果物ファイル（`.kovitoboard/{app-name}/{job-id}/status.json`）の監視
+
+セッション管理は既存機構をそのまま利用します。サブセッション側のログや中間成果物も `.kovitoboard/{app-name}/{job-id}/` 配下に集約すると、後の運用（削除・再実行・デバッグ）が楽になります。
+
+### 8.4 ディレクトリ構成例
+
+```
+app/{app-name}/
+├── page.tsx               ← 入力フォーム + 一覧 + 選択表示
+├── api/
+│   ├── start.ts           ← ジョブ起動（jobId 返却）
+│   ├── status.ts          ← ポーリング用
+│   ├── list.ts            ← 完了ジョブ一覧
+│   └── get.ts             ← 個別結果取得
+└── prompts/
+    └── worker.md          ← サブセッション用システムプロンプト
+
+.kovitoboard/{app-name}/
+├── jobs.jsonl             ← ジョブ一覧メタデータ（追記のみ）
+└── {job-id}/
+    ├── status.json        ← { status, startedAt, finishedAt, error? }
+    ├── result.md          ← 本体成果物
+    └── sources.json       ← 付随データ（あれば）
+```
+
+`api/start.ts` の核になる流れは以下のような形です（抜粋）:
+
+```typescript
+// app/api/start.ts
+import { Router } from 'express'
+import { createSession } from '../../src/server/session-manager'
+import { appendFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+
+const router = Router()
+const dataDir = join(process.cwd(), '.kovitoboard', 'my-app')
+
+router.post('/', async (req, res) => {
+  const jobId = `job-${Date.now()}`
+  mkdirSync(join(dataDir, jobId), { recursive: true })
+  appendFileSync(join(dataDir, 'jobs.jsonl'),
+    JSON.stringify({ jobId, theme: req.body.theme, status: 'queued', startedAt: new Date().toISOString() }) + '\n')
+
+  // サブセッションを起動して非同期に処理を回す（await しない）
+  createSession({ label: jobId, promptPath: 'app/my-app/prompts/worker.md',
+    vars: { JOB_ID: jobId, OUTPUT_DIR: join(dataDir, jobId) } })
+
+  res.json({ jobId })
+})
+
+export default router
+```
+
+`api/status.ts` 側は `.kovitoboard/{app-name}/{job-id}/status.json` を読んで返すだけの薄い実装で構いません。
+
+### 8.5 参考実装
+
+[`app.example/research-reports/`](../../app.example/research-reports/) を参照してください。調査依頼 → Web 検索 → レポート生成 → 一覧表示までの一連の流れが実装されています。本章 §8.1〜§8.4 のパターンがそのまま適用されている具体例です。
+
+### 8.6 このパターンが適さないケース
+
+- **処理が 3 秒以内に終わる** → §7 の同期パターンで十分。ジョブ ID や status.json を設けるオーバーヘッドのほうが大きくなります
+- **第三者への配布が目的** → レシピ化を先に検討してください。サブセッション起動は Category A では表現できないため、レシピ化は困難です
+- **完全オフラインで動く必要がある** → Web 検索は Claude Code 経由（WebFetch）になるため、前提が崩れます
 
 ---
 
