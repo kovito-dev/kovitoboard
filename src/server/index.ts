@@ -21,6 +21,8 @@ import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest } from './types'
 import { mountAppApiRoutes } from './app-api-loader'
+import { createConfigRouter } from './routes/config-routes'
+import { createTemplateRouter } from './routes/template-routes'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import { applyRecipe } from './recipe-applicator'
@@ -129,6 +131,12 @@ function resolveAndValidatePath(requestedPath: string): string | null {
   }
   return resolved
 }
+
+// --- Route modules ---
+// ルーターは /api/config/setting 等のサブパスを処理するため、
+// 既存の app.get('/api/config') より先にマウントして優先させる
+app.use('/api/config', createConfigRouter(fs))
+app.use('/api/templates/agents', createTemplateRouter(fs))
 
 // --- REST API ---
 app.get('/api/sessions', (_req, res) => {
