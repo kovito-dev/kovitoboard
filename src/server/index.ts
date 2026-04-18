@@ -23,6 +23,7 @@ import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartA
 import { mountAppApiRoutes } from './app-api-loader'
 import { createConfigRouter } from './routes/config-routes'
 import { createTemplateRouter } from './routes/template-routes'
+import { createAvatarRouter } from './routes/avatar-routes'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import { applyRecipe } from './recipe-applicator'
@@ -51,7 +52,7 @@ app.use((_req, res, next) => {
     "connect-src 'self' ws://localhost:* ws://127.0.0.1:*",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",  // Tailwind inline styles
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
   ].join('; '))
   next()
 })
@@ -137,6 +138,7 @@ function resolveAndValidatePath(requestedPath: string): string | null {
 // 既存の app.get('/api/config') より先にマウントして優先させる
 app.use('/api/config', createConfigRouter(fs))
 app.use('/api/templates/agents', createTemplateRouter(fs))
+app.use('/api/agents', createAvatarRouter(fs))
 
 // --- REST API ---
 app.get('/api/sessions', (_req, res) => {

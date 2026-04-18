@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { AgentInfo, SessionSummary } from '../types'
 import { AgentAvatar } from './AgentAvatar'
+import { AgentAvatarUpload } from './AgentAvatarUpload'
 import { MarkdownPreview } from './MarkdownPreview'
 import { MessageInput } from './MessageInput'
 import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../utils/format'
@@ -14,6 +15,8 @@ interface AgentDetailProps {
   onStartNewSession?: (agentId: string, message: string) => Promise<void>
   /** 新規セッション検出待機中 */
   isPendingNewSession?: boolean
+  /** アバター変更時のコールバック（エージェント一覧のリフレッシュ等に使用） */
+  onAvatarChange?: () => void
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
@@ -30,6 +33,7 @@ export function AgentDetail({
   agent, sessions,
   onBack, onSelectSession, onStartNewSession,
   isPendingNewSession,
+  onAvatarChange,
   theme = 'dark',
 }: AgentDetailProps) {
   const [activeTab, setActiveTab] = useState<TabId>('profile')
@@ -252,6 +256,7 @@ export function AgentDetail({
               totalMessages={totalMessages}
               totalToolCalls={totalToolCalls}
               totalTokens={totalTokens}
+              onAvatarChange={onAvatarChange}
             />
           )}
           {activeTab === 'sessions' && (
@@ -277,9 +282,10 @@ interface ProfileTabProps {
   totalMessages: number
   totalToolCalls: number
   totalTokens: number
+  onAvatarChange?: () => void
 }
 
-function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens }: ProfileTabProps) {
+function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens, onAvatarChange }: ProfileTabProps) {
   return (
     <div className="p-3 md:p-6 space-y-4 md:space-y-6">
       {/* 読み取り専用バナー */}
@@ -313,6 +319,18 @@ function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, total
           <InfoRow label="モデル" value={shortModel(agent.model)} subValue={agent.model} />
           <InfoRow label="起動コマンド" value={agent.command} mono />
           <InfoRow label="テーマカラー" value={agent.color} color={agent.color} />
+        </div>
+      </div>
+
+      {/* アバター設定 */}
+      <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">
+        <h3 className="text-sm font-semibold text-[var(--text-tertiary)] mb-4">アバター</h3>
+        <div className="flex items-start gap-4">
+          <AgentAvatar name={agent.displayName} color={agent.color} size={64} avatar={agent.avatar} agentId={agent.id} />
+          <AgentAvatarUpload
+            agentId={agent.id}
+            onUploadComplete={onAvatarChange || (() => {})}
+          />
         </div>
       </div>
 
