@@ -338,6 +338,62 @@ export class TmuxBridge {
   }
 
   /**
+   * Start a generic job in a new tmux window with `claude` in interactive mode.
+   *
+   * Unlike startAgent (which uses --agent flag), this starts claude without
+   * arguments, allowing the caller to send an arbitrary prompt via sendMessage.
+   *
+   * Intended for app-level background jobs (e.g., Research Reports).
+   */
+  startJobWindow(windowName: string, cwd?: string): TmuxSendResult {
+    if (!isValidTmuxName(windowName)) {
+      return { success: false, error: `Invalid window name: "${windowName}"` }
+    }
+    const workDir = cwd || resolveProjectRoot(this.fs)
+
+    const windows = this.listWindows()
+    if (windows.find((w) => w.name === windowName)) {
+      return { success: false, error: `Window "${windowName}" already exists` }
+    }
+
+    this.ensureSession()
+
+    try {
+      execFileSync('tmux', [
+        'new-window', '-t', this.sessionName, '-n', windowName, '-c', workDir,
+        'claude',
+      ], { stdio: 'pipe' })
+      console.log(`[tmux-bridge] Job window started: ${windowName} in ${workDir}`)
+      return { success: true }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[tmux-bridge] Job window start error:`, errorMsg)
+      return { success: false, error: errorMsg }
+    }
+  }
+
+  /**
+   * Kill (close) a tmux window by name.
+   *
+   * Idempotent: returns true if the window was killed or did not exist.
+   */
+  killWindow(windowName: string): boolean {
+    if (!isValidTmuxName(windowName)) return false
+    if (!this.hasSession()) return true // session gone → window is already gone
+
+    try {
+      execFileSync('tmux', [
+        'kill-window', '-t', `${this.sessionName}:${windowName}`,
+      ], { stdio: 'pipe' })
+      console.log(`[tmux-bridge] Window killed: ${windowName}`)
+      return true
+    } catch {
+      // Window may not exist — that's fine (idempotent)
+      return true
+    }
+  }
+
+  /**
    * Get the current pane content of a window.
    *
    * Called from the Phase 5 detection loop (capture-pane -p -S -<lines> -E -).
