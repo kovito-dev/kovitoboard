@@ -17,6 +17,8 @@ interface AgentDetailProps {
   isPendingNewSession?: boolean
   /** アバター変更時のコールバック（エージェント一覧のリフレッシュ等に使用） */
   onAvatarChange?: () => void
+  /** エージェント編集ページへの遷移 */
+  onEdit?: (agentId: string) => void
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
@@ -34,6 +36,7 @@ export function AgentDetail({
   onBack, onSelectSession, onStartNewSession,
   isPendingNewSession,
   onAvatarChange,
+  onEdit,
   theme = 'dark',
 }: AgentDetailProps) {
   const [activeTab, setActiveTab] = useState<TabId>('profile')
@@ -257,6 +260,7 @@ export function AgentDetail({
               totalToolCalls={totalToolCalls}
               totalTokens={totalTokens}
               onAvatarChange={onAvatarChange}
+              onEdit={onEdit}
             />
           )}
           {activeTab === 'sessions' && (
@@ -283,21 +287,36 @@ interface ProfileTabProps {
   totalToolCalls: number
   totalTokens: number
   onAvatarChange?: () => void
+  onEdit?: (agentId: string) => void
 }
 
-function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens, onAvatarChange }: ProfileTabProps) {
+function ProfileTab({ agent, totalSessions, totalMessages, totalToolCalls, totalTokens, onAvatarChange, onEdit }: ProfileTabProps) {
   return (
     <div className="p-3 md:p-6 space-y-4 md:space-y-6">
-      {/* 読み取り専用バナー */}
-      <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border)]">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-faint)] shrink-0">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-        </svg>
-        <span className="text-xs text-[var(--text-dim)]">
-          エージェント定義は読み取り専用です。編集機能は v0.2.0 以降で追加予定です。
-        </span>
-      </div>
+      {/* 編集ボタンバナー */}
+      {onEdit && (
+        <div className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border)]">
+          <div className="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-faint)] shrink-0">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+            <span className="text-xs text-[var(--text-dim)]">
+              表示名・性格・口調・追加指示を編集できます
+            </span>
+          </div>
+          <button
+            onClick={() => onEdit(agent.id)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--accent-bg)] text-[var(--accent-text)] hover:opacity-90 transition-opacity shrink-0"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+            編集
+          </button>
+        </div>
+      )}
 
       {/* 概要カード */}
       <div className="bg-[var(--bg-elevated)] rounded-xl p-5 border border-[var(--border)]">

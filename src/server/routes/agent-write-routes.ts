@@ -1,12 +1,21 @@
 /**
- * エージェント作成 REST API ルーター
+ * エージェント作成・更新 REST API ルーター
  *
- * POST /api/agents/create — テンプレートからエージェントを作成
+ * POST   /api/agents/create        — テンプレートからエージェントを作成
+ * GET    /api/agents/:id/sections   — 構造化フィールドの現在値を取得
+ * PUT    /api/agents/:id            — エージェント属性を更新
  */
 
 import { Router } from 'express'
 import type { FileAccessLayer } from '../fs-layer'
-import { createAgentFromTemplate, type CreateAgentOptions } from '../agent-writer'
+import {
+  createAgentFromTemplate,
+  updateAgentSections,
+  extractMarkerSections,
+  isValidAgentId,
+  type CreateAgentOptions,
+  type UpdateAgentOptions,
+} from '../agent-writer'
 
 export function createAgentWriteRouter(fs: FileAccessLayer): Router {
   const router = Router()
@@ -48,6 +57,57 @@ export function createAgentWriteRouter(fs: FileAccessLayer): Router {
       agentId: options.agentId,
       filePath: result.filePath,
     })
+  })
+
+  // GET /api/agents/:id/sections — 構造化フィールドの現在値を取得
+  router.get('/:id/sections', (req, res) => {
+    const agentId = req.params.id
+    if (!isValidAgentId(agentId)) {
+      res.status(400).json({ error: 'Invalid agent ID' })
+      return
+    }
+
+    const sections = extractMarkerSections(fs, agentId)
+    if (!sections) {
+      res.status(404).json({ error: 'Agent not found' })
+      return
+    }
+
+    res.json(sections)
+  })
+
+  // PUT /api/agents/:id — エージェント属性を更新
+  router.put('/:id', (req, res) => {
+    const agentId = req.params.id
+    if (!isValidAgentId(agentId)) {
+      res.status(400).json({ error: 'Invalid agent ID' })
+      return
+    }
+
+    const body = req.body as Partial<UpdateAgentOptions>
+
+    // 少なくとも 1 つの更新項目が必要
+    if (body.displayName === undefined && !body.sections) {
+      res.status(400).json({ error: 'At least one field to update is required (displayName or sections)' })
+      return
+    }
+
+    const options: UpdateAgentOptions = {
+      displayName: typeof body.displayName === 'string' ? body.displayName : undefined,
+      sections: sanitizeCustomizations(body.sections),
+    }
+
+    const result = updateAgentSections(fs, agentId, options)
+
+    if (!result.success) {
+      const status = result.error?.includes('not found') ? 404
+        : result.error?.includes('markers') ? 422
+        : 400
+      res.status(status).json({ error: result.error })
+      return
+    }
+
+    res.json({ success: true })
   })
 
   return router

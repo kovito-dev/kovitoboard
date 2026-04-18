@@ -104,6 +104,10 @@ export function AgentDetailPage({
     navigate('/agents')
   }, [navigate])
 
+  const handleEdit = useCallback((agentId: string) => {
+    navigate(`/agents/${agentId}/edit`)
+  }, [navigate])
+
   if (!agent) {
     return <Navigate to="/agents" replace />
   }
@@ -116,6 +120,7 @@ export function AgentDetailPage({
       onSelectSession={handleSelectSession}
       onStartNewSession={handleStartNewSession}
       isPendingNewSession={isPendingNewSession}
+      onEdit={handleEdit}
       theme={theme}
     />
   )

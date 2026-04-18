@@ -1,8 +1,8 @@
 /**
- * エージェント作成ロジック
+ * エージェント作成・更新ロジック
  *
- * テンプレートを読み取り、カスタマイズを適用して
- * .claude/agents/ に新規エージェント定義ファイルを展開する。
+ * - createAgentFromTemplate: テンプレートから新規エージェントを作成
+ * - updateAgentSections: 既存エージェントの構造化フィールドを部分更新
  */
 
 import { join } from 'path'
@@ -38,7 +38,7 @@ export interface CreateAgentResult {
 }
 
 /** エージェント ID のバリデーション */
-function isValidAgentId(id: string): boolean {
+export function isValidAgentId(id: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id) && id.length <= 64
 }
 
@@ -117,6 +117,151 @@ export function createAgentFromTemplate(
   }
 }
 
+/** updateAgentSections のオプション */
+export interface UpdateAgentOptions {
+  /** 表示名の変更（undefined = 変更なし） */
+  displayName?: string
+  /** 構造化フィールドのカスタマイズ値 */
+  sections?: {
+    personality?: string
+    toneSample?: string
+    extraInstructions?: string
+  }
+}
+
+/** updateAgentSections の戻り値 */
+export interface UpdateAgentResult {
+  success: boolean
+  error?: string
+}
+
+/** 抽出されたマーカーセクションの内容 */
+export interface ExtractedSections {
+  /** マーカーが存在するかどうか */
+  hasMarkers: boolean
+  /** frontmatter の displayName（未設定なら undefined） */
+  displayName?: string
+  personality?: string
+  toneSample?: string
+  extraInstructions?: string
+}
+
+/**
+ * 既存エージェントの構造化フィールドを部分更新する。
+ *
+ * - マーカーが存在するファイル: 該当セクションのみ置換
+ * - マーカーが無いファイル（手動作成・レガシー）: エラーを返す（壊さない）
+ * - displayName 変更: frontmatter の `displayName` フィールドを gray-matter で更新
+ */
+export function updateAgentSections(
+  fs: FileAccessLayer,
+  agentId: string,
+  options: UpdateAgentOptions,
+): UpdateAgentResult {
+  if (!isValidAgentId(agentId)) {
+    return { success: false, error: 'Invalid agent ID' }
+  }
+
+  const projectRoot = resolveProjectRoot(fs)
+  const filePath = join(projectRoot, '.claude', 'agents', `${agentId}.md`)
+
+  if (!fs.existsSync(filePath)) {
+    return { success: false, error: `Agent not found: ${agentId}` }
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const { data: frontmatterData, content: bodyContent } = matter(raw)
+
+    // セクション更新が要求されている場合、マーカーの存在を確認
+    if (options.sections) {
+      const hasAnyMarker = MARKER_NAMES.some(name => {
+        const startMarker = `<!-- KB:${name}_START -->`
+        return bodyContent.includes(startMarker)
+      })
+
+      if (!hasAnyMarker) {
+        return {
+          success: false,
+          error: 'This agent file does not contain structured field markers (KB:*). Manual files cannot be edited through this API.',
+        }
+      }
+    }
+
+    // displayName 更新
+    if (options.displayName !== undefined) {
+      if (options.displayName.trim() === '') {
+        // 空文字の場合は displayName フィールドを削除
+        delete frontmatterData.displayName
+      } else {
+        frontmatterData.displayName = options.displayName
+      }
+    }
+
+    // マーカーベースのセクション置換
+    let processedBody = bodyContent
+    if (options.sections) {
+      if (options.sections.personality !== undefined) {
+        processedBody = replaceMarkerSection(processedBody, 'PERSONALITY', options.sections.personality)
+      }
+      if (options.sections.toneSample !== undefined) {
+        processedBody = replaceMarkerSection(processedBody, 'TONE_SAMPLE', options.sections.toneSample)
+      }
+      if (options.sections.extraInstructions !== undefined) {
+        processedBody = replaceMarkerSection(processedBody, 'EXTRA_INSTRUCTIONS', options.sections.extraInstructions)
+      }
+    }
+
+    const finalContent = matter.stringify(processedBody, frontmatterData)
+    fs.writeFileSync(filePath, finalContent, 'utf-8')
+
+    return { success: true }
+  } catch (err) {
+    console.error('[agent-writer] Failed to update agent file:', err)
+    return { success: false, error: 'Failed to update agent file' }
+  }
+}
+
+/**
+ * エージェントファイルから構造化フィールドの現在値を抽出する。
+ * 編集 UI が初期値を表示するために使用。
+ */
+export function extractMarkerSections(
+  fs: FileAccessLayer,
+  agentId: string,
+): ExtractedSections | null {
+  if (!isValidAgentId(agentId)) return null
+
+  const projectRoot = resolveProjectRoot(fs)
+  const filePath = join(projectRoot, '.claude', 'agents', `${agentId}.md`)
+
+  if (!fs.existsSync(filePath)) return null
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const { data: frontmatterData, content: bodyContent } = matter(raw)
+
+    const personality = extractSingleSection(bodyContent, 'PERSONALITY')
+    const toneSample = extractSingleSection(bodyContent, 'TONE_SAMPLE')
+    const extraInstructions = extractSingleSection(bodyContent, 'EXTRA_INSTRUCTIONS')
+
+    const hasMarkers = personality !== undefined || toneSample !== undefined || extraInstructions !== undefined
+
+    return {
+      hasMarkers,
+      displayName: typeof frontmatterData.displayName === 'string' ? frontmatterData.displayName : undefined,
+      personality,
+      toneSample,
+      extraInstructions,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 全マーカー名のリスト */
+const MARKER_NAMES = ['PERSONALITY', 'TONE_SAMPLE', 'EXTRA_INSTRUCTIONS'] as const
+
 /**
  * マーカーで囲まれたセクションを置換する。
  *
@@ -142,4 +287,26 @@ function replaceMarkerSection(content: string, markerName: string, newValue: str
   const after = content.substring(endIdx)
 
   return `${before}\n${newValue}\n${after}`
+}
+
+/**
+ * マーカーで囲まれたセクションの内容を抽出する。
+ * マーカーが存在しない場合は undefined を返す。
+ */
+function extractSingleSection(content: string, markerName: string): string | undefined {
+  const startMarker = `<!-- KB:${markerName}_START -->`
+  const endMarker = `<!-- KB:${markerName}_END -->`
+
+  const startIdx = content.indexOf(startMarker)
+  const endIdx = content.indexOf(endMarker)
+
+  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+    return undefined
+  }
+
+  // マーカータグの直後から終了マーカーの直前まで
+  const sectionContent = content.substring(startIdx + startMarker.length, endIdx)
+
+  // 前後の空行を除去
+  return sectionContent.replace(/^\n/, '').replace(/\n$/, '')
 }
