@@ -177,7 +177,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private extractProjectName(projectPath: string): string {
-    // "-home-irikura-anode-workspace" → "anode-workspace"
+    // "-home-user-some-workspace" → "some-workspace"
     const parts = projectPath.replace(/^-/, '').split('-')
     // Extract the last meaningful parts
     if (parts.length >= 2) {

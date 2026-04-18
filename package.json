@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:debug": "playwright test --debug"
+    "test:e2e:debug": "playwright test --debug",
+    "check:hygiene": "node tools/check-release-hygiene.mjs"
   },
   "dependencies": {
     "chokidar": "^5.0.0",
