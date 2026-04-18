@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { OnboardingPage } from './pages/OnboardingPage'
 import { useIPC } from './hooks/useIPC'
 import { useTheme } from './hooks/useTheme'
 import { TitleBar, type AgentStatus } from './components/TitleBar'
@@ -48,6 +49,29 @@ export function App() {
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
+
+  // Onboarding state: null = loading, true = completed, false = not completed
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    fetch('/api/config/setting')
+      .then((res) => {
+        if (!res.ok) {
+          // Setting file not found = onboarding not completed
+          setOnboardingComplete(false)
+          return null
+        }
+        return res.json()
+      })
+      .then((data) => {
+        if (data) {
+          setOnboardingComplete(data.onboarding?.completedAt != null)
+        }
+      })
+      .catch(() => {
+        setOnboardingComplete(false)
+      })
+  }, [])
 
   // User extension menu entries from app/menu.ts
   const [userMenuEntries, setUserMenuEntries] = useState<AppMenuEntry[]>([])
@@ -153,6 +177,21 @@ export function App() {
       )
     }
     return null
+  }
+
+  // Onboarding routing logic
+  if (location.pathname === '/onboarding') {
+    if (onboardingComplete === true) {
+      return <Navigate to="/" replace />
+    }
+    return <OnboardingPage />
+  }
+  if (onboardingComplete === null) {
+    // Still checking onboarding status — show blank screen to avoid flash
+    return <div className="h-screen bg-[var(--bg-base)]" />
+  }
+  if (onboardingComplete === false) {
+    return <Navigate to="/onboarding" replace />
   }
 
   return (

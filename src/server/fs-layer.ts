@@ -20,6 +20,7 @@ import {
   statSync as fsStatSync,
   mkdirSync as fsMkdirSync,
   unlinkSync as fsUnlinkSync,
+  symlinkSync as fsSymlinkSync,
   openSync as fsOpenSync,
   readSync as fsReadSync,
   closeSync as fsCloseSync,
@@ -81,6 +82,8 @@ export interface FileAccessLayer {
   statSync(path: string): FileStat
   readdirSync(path: string): string[]
   mkdirSync(path: string, options?: { recursive?: boolean }): void
+  /** Symbolic link creation (for agent-ref setup etc.) */
+  symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void
 
   // --- Watch ---
   watch(
@@ -143,6 +146,10 @@ export class DirectFsLayer implements FileAccessLayer {
 
   mkdirSync(path: string, options?: { recursive?: boolean }): void {
     fsMkdirSync(path, options)
+  }
+
+  symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void {
+    fsSymlinkSync(target, path, type)
   }
 
   watch(

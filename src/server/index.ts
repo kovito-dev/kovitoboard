@@ -23,6 +23,7 @@ import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartA
 import { mountAppApiRoutes } from './app-api-loader'
 import { getInitialPrompt } from './services/initial-prompts'
 import { readSetting } from './setting-manager'
+import { createOnboardingRedirect } from './middleware/onboarding-redirect'
 import { createConfigRouter } from './routes/config-routes'
 import { createTemplateRouter } from './routes/template-routes'
 import { createAvatarRouter } from './routes/avatar-routes'
@@ -780,6 +781,9 @@ await mountAppApiRoutes(app, fs)
 
 // Production: serve built static files
 app.use(express.static(join(__dirname, '../../dist')))
+
+// Onboarding redirect: redirect to /onboarding if not completed
+app.use(createOnboardingRedirect(fs))
 
 // SPA fallback: serve index.html for all non-API, non-WS routes
 // Express 5 requires named wildcard parameters (path-to-regexp v8)
