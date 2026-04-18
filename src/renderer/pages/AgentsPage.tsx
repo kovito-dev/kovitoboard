@@ -39,5 +39,9 @@ export function AgentsPage({ agents, sessions, config, theme }: AgentsPageProps)
     )
   }
 
-  return <AgentList agents={agents} onSelectAgent={handleAgentSelect} theme={theme} />
+  const handleAddAgent = () => {
+    navigate('/agents/new')
+  }
+
+  return <AgentList agents={agents} onSelectAgent={handleAgentSelect} onAddAgent={handleAddAgent} theme={theme} />
 }

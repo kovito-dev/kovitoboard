@@ -9,6 +9,7 @@ import { SessionList } from './components/SessionList'
 import { SettingsModal } from './components/SettingsModal'
 import { TrustPromptModal } from './components/TrustPromptModal'
 import { AgentsPage } from './pages/AgentsPage'
+import { AgentCreatePage } from './pages/AgentCreatePage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
@@ -194,6 +195,7 @@ export function App() {
                 theme={theme}
               />
             } />
+            <Route path="/agents/new" element={<AgentCreatePage />} />
             <Route path="/agents/:id" element={
               <AgentDetailPage
                 agents={agents}

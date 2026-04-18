@@ -24,6 +24,7 @@ import { mountAppApiRoutes } from './app-api-loader'
 import { createConfigRouter } from './routes/config-routes'
 import { createTemplateRouter } from './routes/template-routes'
 import { createAvatarRouter } from './routes/avatar-routes'
+import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import { applyRecipe } from './recipe-applicator'
@@ -139,6 +140,7 @@ function resolveAndValidatePath(requestedPath: string): string | null {
 app.use('/api/config', createConfigRouter(fs))
 app.use('/api/templates/agents', createTemplateRouter(fs))
 app.use('/api/agents', createAvatarRouter(fs))
+app.use('/api/agents', createAgentWriteRouter(fs))
 
 // --- REST API ---
 app.get('/api/sessions', (_req, res) => {

@@ -4,6 +4,8 @@ import { AgentAvatar } from './AgentAvatar'
 interface AgentListProps {
   agents: AgentInfo[]
   onSelectAgent: (agentId: string) => void
+  /** 新規エージェント追加ボタンのクリックハンドラ */
+  onAddAgent?: () => void
   /** UIテーマ */
   theme?: 'dark' | 'light'
 }
@@ -25,18 +27,31 @@ function sortByEmployeeId(agents: AgentInfo[]): AgentInfo[] {
   })
 }
 
-export function AgentList({ agents, onSelectAgent, theme = 'dark' }: AgentListProps) {
+export function AgentList({ agents, onSelectAgent, onAddAgent, theme = 'dark' }: AgentListProps) {
   const sortedAgents = sortByEmployeeId(agents)
 
   return (
     <div className="flex-1 overflow-y-auto p-3 md:p-6">
       {/* ヘッダー */}
-      <div className="mb-6">
-        <h2 className="text-lg font-semibold text-[var(--text-secondary)]">エージェント</h2>
-        <p className="text-sm text-[var(--text-dim)] mt-1">
-          {agents.length} エージェントが登録されています
-          <span className="ml-2 text-[10px] text-[var(--text-faint)]">（読み取り専用 · 編集は v0.2.0 以降で対応予定）</span>
-        </p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-[var(--text-secondary)]">エージェント</h2>
+          <p className="text-sm text-[var(--text-dim)] mt-1">
+            {agents.length} エージェントが登録されています
+          </p>
+        </div>
+        {onAddAgent && (
+          <button
+            onClick={onAddAgent}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[var(--accent-bg)] text-[var(--accent-text)] hover:opacity-90 transition-opacity shrink-0"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            追加
+          </button>
+        )}
       </div>
 
       {/* エージェントカードグリッド */}
