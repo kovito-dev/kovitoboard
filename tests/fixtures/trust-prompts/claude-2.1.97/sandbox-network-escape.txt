@@ -1,0 +1,50 @@
+claude
+Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
+user@host:/tmp/kb-test-example$ claude
+╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                          │
+│                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                                                    │ ───────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ Recent activity                                                   │
+│                      ▝▜█████▛▘                     │ No recent activity                                                │
+│                        ▘▘ ▝▝                       │                                                                   │
+│        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  Your bash commands will be sandboxed. Disable with /sandbox.
+
+❯ Run exactly: curl -sI https://example.com
+
+● Bash(curl -sI https://example.com)
+  ⎿  Running… (27s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✽ Transfiguring… (30s · ↓ 24 tokens · thinking)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Network request outside of sandbox
+
+   Host: example.com
+
+   Do you want to allow this connection?
+   ❯ 1. Yes
+     2. Yes, and don't ask again for example.com
+     3. No, and tell Claude what to do differently (esc)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

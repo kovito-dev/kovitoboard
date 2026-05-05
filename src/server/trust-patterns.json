@@ -1,0 +1,144 @@
+{
+  "version": "2026-05-03",
+  "primaryTestedVersion": "2.1.126",
+  "primaryTestedChannel": "stable",
+  "bestEffortVersions": ["2.1.x", "2.2.x"],
+  "_compatibleClaudeCodeVersions_DEPRECATED": ["2.1.x", "2.2.x"],
+  "_description": "Trust prompt detection patterns for Claude Code. primaryTestedVersion tracks Anthropic's @stable dist-tag (2.1.126 as of 2026-05-03; bumped from 2.1.104 because 2.1.126 dropped the per-session 'Yes, allow this session' row from bash-command, breaking the static keys mapping). bestEffortVersions denotes the range that may work but is not SLA-covered. See DEC-015 v1.1 for strategy details. matchAny / footer / extract / degenerateForms / labelPattern hold RegExp source strings; compiled to RegExp by the loader. Each choice's labelPattern is matched against the visible '1. ...' / '2. ...' rows so KB resolves the actual keystroke at detection time instead of assuming a fixed menu order; the static 'keys' field is a fallback used only when on-screen parsing fails.",
+  "patterns": [
+    {
+      "id": "folder-trust-initial",
+      "kind": "folder-trust",
+      "priority": 100,
+      "matchAny": [
+        "Accessing workspace:",
+        "Quick safety check: Is this a project you created",
+        "Yes, I trust this folder"
+      ],
+      "footer": "Enter to confirm · Esc to cancel",
+      "extract": {
+        "workspace": "Accessing workspace:\\s*\\n\\s*\\n\\s*(.+?)\\s*\\n"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes, I trust this folder", "keys": "Enter", "labelPattern": "Yes,?\\s+I\\s+trust\\s+this\\s+folder" },
+        { "id": "no", "label": "No, exit", "keys": "2\n", "labelPattern": "No,?\\s+exit" }
+      ]
+    },
+    {
+      "id": "auto-mode-enable",
+      "kind": "other",
+      "priority": 95,
+      "matchAny": [
+        "Enable auto mode\\?",
+        "Auto mode lets Claude handle permission prompts automatically",
+        "Yes, and make it my default mode",
+        "Yes, enable auto mode"
+      ],
+      "footer": "Enter to confirm · Esc to cancel",
+      "choices": [
+        { "id": "yes-default", "label": "Yes, and make it my default mode", "keys": "1\n", "labelPattern": "Yes,?\\s+and\\s+make\\s+it\\s+my\\s+default" },
+        { "id": "yes-session", "label": "Yes, enable auto mode", "keys": "2\n", "labelPattern": "Yes,?\\s+enable\\s+auto\\s+mode" },
+        { "id": "no", "label": "No, exit", "keys": "3\n", "labelPattern": "No,?\\s+exit" }
+      ]
+    },
+    {
+      "id": "edit-update-existing",
+      "kind": "edit",
+      "priority": 90,
+      "matchAny": [
+        "Do you want to make this edit to .+\\?",
+        "^● Update\\(.+\\)",
+        "^\\s*Edit file\\s*$"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "extract": {
+        "path": "● Update\\((.+?)\\)"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n", "labelPattern": "^Yes$" },
+        { "id": "yes-session", "label": "Yes, allow all edits during this session", "keys": "2\n", "labelPattern": "Yes,?\\s+allow\\s+all\\s+edits\\s+during\\s+this\\s+session" },
+        { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
+      ]
+    },
+    {
+      "id": "write-create-new",
+      "kind": "write",
+      "priority": 90,
+      "matchAny": [
+        "Do you want to create .+\\?",
+        "^● Write\\(.+\\)",
+        "^\\s*Create file\\s*$"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "extract": {
+        "path": "● Write\\((.+?)\\)"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n", "labelPattern": "^Yes$" },
+        { "id": "yes-session", "label": "Yes, and allow for this session", "keys": "2\n", "labelPattern": "Yes,?\\s+and\\s+allow\\s+for\\s+this\\s+session" },
+        { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
+      ]
+    },
+    {
+      "id": "bash-command",
+      "kind": "bash",
+      "priority": 85,
+      "matchAny": [
+        "Do you want to proceed\\?",
+        "^\\s*Bash command\\s*$",
+        "^● Bash\\("
+      ],
+      "footer": "ctrl\\+e to explain",
+      "extract": {
+        "command": "● Bash\\((.+?)\\)"
+      },
+      "degenerateForms": ["Unhandled node type: file_redirect"],
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n", "labelPattern": "^Yes$" },
+        { "id": "yes-session", "label": "Yes, and allow this session", "keys": "2\n", "labelPattern": "Yes,?\\s+and\\s+allow\\s+this\\s+session" },
+        { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
+      ]
+    },
+    {
+      "id": "read-file",
+      "kind": "read",
+      "priority": 85,
+      "matchAny": [
+        "^\\s*Read file\\s*$",
+        "^● Read\\(.+\\)",
+        "Do you want to proceed\\?"
+      ],
+      "footer": "Esc to cancel · Tab to amend",
+      "degenerateForms": [
+        "Do you want to proceed\\?"
+      ],
+      "extract": {
+        "path": "● Read\\((.+?)\\)"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n", "labelPattern": "^Yes$" },
+        { "id": "yes-session", "label": "Yes, allow all reads during this session", "keys": "2\n", "labelPattern": "Yes,?\\s+allow\\s+all\\s+reads\\s+during\\s+this\\s+session" },
+        { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
+      ]
+    },
+    {
+      "id": "sandbox-network-escape",
+      "kind": "sandbox-network",
+      "priority": 80,
+      "matchAny": [
+        "Network request outside of sandbox",
+        "Do you want to allow this connection\\?",
+        "Host: .+$"
+      ],
+      "footer": "tell Claude what to do differently",
+      "extract": {
+        "host": "Host: (.+?)$"
+      },
+      "choices": [
+        { "id": "yes", "label": "Yes", "keys": "1\n", "labelPattern": "^Yes$" },
+        { "id": "yes-session", "label": "Yes, and allow this host", "keys": "2\n", "labelPattern": "Yes,?\\s+and\\s+allow\\s+this\\s+host" },
+        { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+tmp/
+.npm-cache/
+*.tsbuildinfo
+test-results/
+projects/*/
+!projects/.gitkeep
+.DS_Store
+.playwright-mcp/
+app/
+# L1 fixture ext app must be tracked even though `app/` is otherwise
+# ignored — the AmbientSidebar (DEC-024 #3 §F7) only mounts on
+# /ext/<appId>, so L1 specs need a stable ext app baked into the
+# `blank-onboarded` fixture. Keep this exception narrow.
+!tests/fixtures/projects/blank-onboarded/app/
+.kovitoboard/
+public/avatars/custom/*
+!public/avatars/custom/.gitkeep
+public/avatars/user/*
+!public/avatars/user/.gitkeep
+docs/specs/

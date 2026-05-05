@@ -1,0 +1,21 @@
+# Default: all text files are LF, regardless of committer's autocrlf settings.
+* text=auto eol=lf
+
+# Explicit shell / scripts (kept for clarity)
+*.sh text eol=lf
+*.mjs text eol=lf
+
+# Binary assets (preventive declaration for future additions)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.gz binary
+*.pdf binary

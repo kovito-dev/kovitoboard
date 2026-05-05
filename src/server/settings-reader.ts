@@ -1,0 +1,350 @@
+/*
+ * KovitoBoard
+ * Copyright (C) 2026 Anode LLC
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+/**
+ * settings-reader.ts
+ * Reads CLAUDE.md and configuration files under .claude/ and returns structured data
+ */
+
+import { join } from 'path'
+import type { FileAccessLayer } from './fs-layer'
+import { readSetting } from './setting-manager'
+import { loadAgentDefinitions } from './agent-reader'
+import type { ViewerConfig } from './types'
+
+// --- Type definitions ---
+
+export interface BasicSettings {
+  projectName: string
+  description: string
+  concept: string
+  userName: string
+  /**
+   * Q11 / SM-4 user avatar relative path (e.g. `user/avatar.png`).
+   * Empty string when the operator has not uploaded one yet — the
+   * renderer falls back to the runtime SVG generator. The relative
+   * form (rather than an absolute URL) matches how agent avatars
+   * are surfaced via `/api/config`.
+   */
+  userAvatar: string
+  language: string
+  agents: { id: string; name: string; role: string; employeeId?: string }[]
+}
+
+export interface SkillInfo {
+  name: string
+  description: string
+  category: 'operation' | 'procedure' | 'knowledge'
+  invocation: string
+}
+
+export interface HookInfo {
+  event: string
+  type: 'command'
+  command: string
+}
+
+export interface AutomationSettings {
+  hooks: HookInfo[]
+  crons: []
+}
+
+export interface IntegrationInfo {
+  name: string
+  type: string
+  status: 'configured'
+}
+
+export interface RuleInfo {
+  name: string
+  content: string
+}
+
+// --- Implementation ---
+
+/**
+ * Read project basic settings.
+ * Uses the project + agents sections of viewer.config.json as the primary data source,
+ * with CLAUDE.md as a supplementary fallback.
+ */
+export function readBasicSettings(fs: FileAccessLayer, projectRoot: string): BasicSettings {
+  const settings: BasicSettings = {
+    projectName: '',
+    description: '',
+    concept: '',
+    userName: '',
+    userAvatar: '',
+    language: '日本語',
+    agents: [],
+  }
+
+  // Read from viewer.config.json (legacy primary source — may be absent)
+  const configPath = join(projectRoot, 'config', 'viewer.config.json')
+  if (fs.existsSync(configPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+
+      // project section
+      if (config.project) {
+        settings.projectName = config.project.name || ''
+        settings.description = config.project.description || ''
+        settings.concept = config.project.concept || ''
+      }
+
+      // user section
+      if (config.user?.name) {
+        settings.userName = config.user.name
+      }
+
+      // agents section
+      if (config.agents) {
+        for (const [id, agentCfg] of Object.entries(config.agents)) {
+          if (id === 'default') continue
+          const cfg = agentCfg as { name?: string; summary?: string }
+          settings.agents.push({
+            id,
+            name: cfg.name || id,
+            role: cfg.summary || '',
+          })
+        }
+      }
+    } catch {
+      // Fallback on read failure
+    }
+  }
+
+  // Overlay .kovitoboard/setting.json — the onboarding wizard writes the
+  // user's display name and project metadata here, so it always takes
+  // precedence over the legacy viewer.config.json values.
+  const setting = readSetting(fs)
+  if (setting) {
+    if (setting.project?.name) settings.projectName = setting.project.name
+    if (setting.project?.description) settings.description = setting.project.description
+    if (setting.user?.displayName) settings.userName = setting.user.displayName
+    if (setting.user?.avatar) settings.userAvatar = setting.user.avatar
+    if (setting.locale === 'en') settings.language = 'English'
+    else if (setting.locale === 'ja') settings.language = '日本語'
+  }
+
+  // Merge agents declared under .claude/agents/*.md. Without this the
+  // modal only showed entries from viewer.config.json (typically empty),
+  // hiding agents the user just created via onboarding.
+  const minimalConfig = { agents: {} } as unknown as ViewerConfig
+  const agentDefs = loadAgentDefinitions(fs, minimalConfig)
+  const existingIds = new Set(settings.agents.map((a) => a.id))
+  for (const agent of agentDefs) {
+    if (existingIds.has(agent.id)) continue
+    settings.agents.push({
+      id: agent.id,
+      name: agent.displayName || agent.id,
+      role: agent.role || agent.summary || '',
+      employeeId: agent.employeeId,
+    })
+  }
+
+  // Supplement from CLAUDE.md (retrieve info not available in viewer.config.json)
+  const claudeMdPath = join(projectRoot, 'CLAUDE.md')
+  if (fs.existsSync(claudeMdPath)) {
+    try {
+      const content = fs.readFileSync(claudeMdPath, 'utf-8')
+
+      // Project name (if not yet obtained)
+      if (!settings.projectName) {
+        const nameMatch = content.match(/プロジェクト名:\s*(.+)/)
+        if (nameMatch) settings.projectName = nameMatch[1].trim()
+      }
+
+      // Description (if not yet obtained)
+      if (!settings.description) {
+        const descMatch = content.match(/説明:\s*(.+)/)
+        if (descMatch) settings.description = descMatch[1].trim()
+      }
+
+      // Concept (if not yet obtained)
+      if (!settings.concept) {
+        const conceptMatch = content.match(/システムコンセプト:\s*(.+)/)
+        if (conceptMatch) {
+          const val = conceptMatch[1].trim()
+          if (val !== '未設定') settings.concept = val
+        }
+      }
+
+      // Language setting
+      if (content.includes('常に日本語で会話する')) {
+        settings.language = '日本語'
+      } else if (content.includes('Always communicate in English')) {
+        settings.language = 'English'
+      }
+
+      // Supplement agent info with employee_id from team composition table
+      const agentsDir = join(projectRoot, '.claude', 'agents')
+      if (fs.existsSync(agentsDir)) {
+        const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
+        for (const file of files) {
+          const agentId = file.replace('.md', '')
+          const agentContent = fs.readFileSync(join(agentsDir, file), 'utf-8')
+          const empIdMatch = agentContent.match(/employee_id:\s*"?(\d+)"?/)
+          if (empIdMatch) {
+            const existing = settings.agents.find((a) => a.id === agentId)
+            if (existing) {
+              existing.employeeId = empIdMatch[1]
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore read failures
+    }
+  }
+
+  return settings
+}
+
+/**
+ * Read the list of skills.
+ */
+export function readSkills(fs: FileAccessLayer, projectRoot: string): SkillInfo[] {
+  const skillsDir = join(projectRoot, '.claude', 'skills')
+  if (!fs.existsSync(skillsDir)) return []
+
+  const skills: SkillInfo[] = []
+
+  try {
+    const dirs = fs.readdirSync(skillsDir)
+    for (const dirName of dirs) {
+      const skillDir = join(skillsDir, dirName)
+      const skillFile = join(skillDir, 'SKILL.md')
+      if (!fs.existsSync(skillFile)) continue
+
+      try {
+        const content = fs.readFileSync(skillFile, 'utf-8')
+
+        // Extract metadata from YAML frontmatter
+        let description = ''
+        let category: SkillInfo['category'] = 'procedure'
+
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/)
+        if (frontmatterMatch) {
+          const fm = frontmatterMatch[1]
+
+          const descMatch = fm.match(/description:\s*"?(.+?)"?\s*$/m)
+          if (descMatch) description = descMatch[1].trim()
+
+          // Category determination
+          if (fm.includes('disable-model-invocation: true')) {
+            category = 'operation'
+          } else if (fm.includes('user-invocable: false')) {
+            category = 'knowledge'
+          }
+        }
+
+        skills.push({
+          name: dirName,
+          description,
+          category,
+          invocation: `/${dirName}`,
+        })
+      } catch {
+        // Skip individual skill read failures
+      }
+    }
+  } catch {
+    // Directory read failure
+  }
+
+  return skills
+}
+
+/**
+ * Read automation settings (hooks + cron).
+ */
+export function readAutomations(fs: FileAccessLayer, projectRoot: string): AutomationSettings {
+  const result: AutomationSettings = { hooks: [], crons: [] }
+
+  const settingsPath = join(projectRoot, '.claude', 'settings.json')
+  if (!fs.existsSync(settingsPath)) return result
+
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
+
+    // hooks section
+    if (settings.hooks) {
+      for (const [event, hookList] of Object.entries(settings.hooks)) {
+        if (!Array.isArray(hookList)) continue
+        for (const hook of hookList) {
+          const h = hook as { type?: string; command?: string }
+          if (h.type === 'command' && h.command) {
+            result.hooks.push({
+              event,
+              type: 'command',
+              command: h.command,
+            })
+          }
+        }
+      }
+    }
+  } catch {
+    // Return empty on read failure
+  }
+
+  return result
+}
+
+/**
+ * Read external integration settings (MCP servers, etc.).
+ */
+export function readIntegrations(fs: FileAccessLayer, projectRoot: string): IntegrationInfo[] {
+  const integrations: IntegrationInfo[] = []
+
+  const settingsPath = join(projectRoot, '.claude', 'settings.json')
+  if (!fs.existsSync(settingsPath)) return integrations
+
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
+
+    if (settings.mcpServers) {
+      for (const name of Object.keys(settings.mcpServers)) {
+        integrations.push({
+          name,
+          type: 'mcp',
+          status: 'configured',
+        })
+      }
+    }
+  } catch {
+    // Return empty on read failure
+  }
+
+  return integrations
+}
+
+/**
+ * Read the list of rules.
+ */
+export function readRules(fs: FileAccessLayer, projectRoot: string): RuleInfo[] {
+  const rulesDir = join(projectRoot, '.claude', 'rules')
+  if (!fs.existsSync(rulesDir)) return []
+
+  const rules: RuleInfo[] = []
+
+  try {
+    const files = fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md'))
+    for (const file of files) {
+      try {
+        const content = fs.readFileSync(join(rulesDir, file), 'utf-8')
+        rules.push({
+          name: file.replace('.md', ''),
+          content: content.trim(),
+        })
+      } catch {
+        // Skip individual file read failures
+      }
+    }
+  } catch {
+    // Directory read failure
+  }
+
+  return rules
+}

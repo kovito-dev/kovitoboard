@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KovitoBoard
+  Copyright (C) 2026 Anode LLC
+  SPDX-License-Identifier: AGPL-3.0-or-later
+
+  Avatar placeholder for the system-managed default agent (Q13 /
+  AA-7). Intentionally drawn as a neutral monogram-style mark
+  ("CC" inside a soft purple disc) rather than the official Claude
+  brand asset; KB does not have permission to reproduce Anthropic's
+  trademarks. The colour matches the system-agent accent
+  (#a855f7) used in the AgentList legend.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Claude (default) avatar">
+  <defs>
+    <linearGradient id="claude-default-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c084fc" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#claude-default-bg)" />
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2" />
+  <text
+    x="32"
+    y="40"
+    text-anchor="middle"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    font-size="24"
+    font-weight="700"
+    fill="#ffffff"
+    letter-spacing="-1"
+  >CC</text>
+</svg>

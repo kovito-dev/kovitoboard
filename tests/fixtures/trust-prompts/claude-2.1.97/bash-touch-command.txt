@@ -1,0 +1,50 @@
+claude
+Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops, idea, wrt
+user@host:/tmp/kb-test-example$ claude
+╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                          │
+│                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                                                    │ ───────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ Recent activity                                                   │
+│                      ▝▜█████▛▘                     │ No recent activity                                                │
+│                        ▘▘ ▝▝                       │                                                                   │
+│        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ Run the command: echo hello > test.txt
+
+● Bash(echo hello > test.txt)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Now run just: echo hello
+
+● Bash(echo hello)
+  ⎿  hello
+
+● hello が出力されました。
+
+❯ Please run: touch newfile.txt
+
+● Bash(touch newfile.txt)
+  ⎿  Running…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   touch newfile.txt
+   Create empty newfile.txt
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to kb-test-example/ from this project
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+
+
+
+
+
+

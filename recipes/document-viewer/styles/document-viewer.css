@@ -1,0 +1,154 @@
+/* Document Viewer — markdown styling */
+
+.dv-prose {
+  max-width: 48rem;
+  margin: 0 auto;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+/* Headings */
+.dv-prose h1,
+.dv-prose h2,
+.dv-prose h3,
+.dv-prose h4,
+.dv-prose h5,
+.dv-prose h6 {
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.dv-prose h1:first-child,
+.dv-prose h2:first-child,
+.dv-prose h3:first-child {
+  margin-top: 0;
+}
+.dv-prose h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.dv-prose h2 {
+  font-size: 1.25em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.2em;
+}
+.dv-prose h3 { font-size: 1.1em; }
+.dv-prose h4 { font-size: 1em; }
+
+/* Paragraphs */
+.dv-prose p {
+  margin-top: 0;
+  margin-bottom: 1em;
+}
+.dv-prose p:last-child {
+  margin-bottom: 0;
+}
+
+/* Lists */
+.dv-prose ul,
+.dv-prose ol {
+  margin-bottom: 1em;
+  padding-left: 1.5em;
+}
+.dv-prose li {
+  margin-bottom: 0.25em;
+}
+.dv-prose ul { list-style-type: disc; }
+.dv-prose ol { list-style-type: decimal; }
+.dv-prose li > ul,
+.dv-prose li > ol {
+  margin-bottom: 0;
+}
+
+/* Task lists (GFM) */
+.dv-prose input[type="checkbox"] {
+  margin-right: 0.4em;
+  cursor: default;
+}
+
+/* Inline code */
+.dv-prose :not(pre) > code {
+  font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-size: 0.875em;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+}
+
+/* Code blocks */
+.dv-prose pre {
+  margin-bottom: 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+}
+.dv-prose pre code {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+/* Blockquotes */
+.dv-prose blockquote {
+  border-left: 3px solid var(--border);
+  padding: 0.25em 1em;
+  margin: 0 0 1em 0;
+  color: var(--text-secondary);
+}
+.dv-prose blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* Tables (GFM) */
+.dv-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1em;
+  font-size: 0.875em;
+  display: block;
+  overflow-x: auto;
+}
+.dv-prose th,
+.dv-prose td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.8em;
+  text-align: left;
+}
+.dv-prose th {
+  background: var(--bg-elevated);
+  font-weight: 600;
+}
+
+/* Horizontal rule */
+.dv-prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
+/* Links */
+.dv-prose a {
+  color: var(--accent-text, #3b82f6);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dv-prose a:hover {
+  opacity: 0.8;
+}
+
+/* Images */
+.dv-prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Emphasis */
+.dv-prose strong { font-weight: 600; }
+.dv-prose em { font-style: italic; }

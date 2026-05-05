@@ -1,0 +1,178 @@
+/* =============================================
+   Theme definitions — Dark mode / Light mode
+   =============================================
+   Switched via data-theme attribute. Default is dark.
+*/
+
+:root,
+[data-theme="dark"] {
+  /* Background colors */
+  --bg-base: #1a1a2e;       /* Main background */
+  --bg-surface: #16162a;    /* Header, sidebar, input area */
+  --bg-elevated: #1e1e38;   /* Cards, hover state */
+  --bg-nav: #111122;        /* Navigation */
+  --bg-inset: #0e0e1e;      /* Deep inset (input fields) */
+  --bg-hover: #24243e;      /* Hover background */
+
+  /* Borders */
+  --border: #2a2a4a;
+  --border-subtle: #1e1e38;
+  --border-strong: #3a3a5a;
+
+  /* Text */
+  --text-primary: #f3f4f6;    /* Brightest */
+  --text-secondary: #e5e7eb;
+  --text-tertiary: #d1d5db;
+  --text-muted: #9ca3af;
+  --text-dim: #6b7280;
+  --text-faint: #4b5563;
+
+  /* Accent colors (blue family) */
+  --accent: #3b82f6;                    /* blue-500: primary accent */
+  --accent-hover: #60a5fa;              /* blue-400: hover state */
+  --accent-strong: #2563eb;             /* blue-600: button background, etc. */
+  --accent-text: #93c5fd;               /* blue-300: accent text */
+  --accent-text-vivid: #60a5fa;         /* blue-400: emphasized text */
+  --accent-bg: rgba(29, 78, 216, 0.35); /* blue-700/35: active background */
+  --accent-bg-subtle: rgba(29, 78, 216, 0.18); /* blue-700/18: subtle background */
+  --accent-bg-strong: rgba(29, 78, 216, 0.55); /* blue-700/55: strong background */
+  --accent-badge-bg: rgba(59, 130, 246, 0.2);  /* blue-500/20: badge background */
+  --accent-border: #60a5fa;             /* blue-400: border */
+  --accent-border-subtle: rgba(37, 99, 235, 0.3); /* blue-600/30: subtle border */
+  --accent-shadow: rgba(30, 58, 138, 0.3);        /* blue-900/30: shadow */
+  --accent-ring: rgba(59, 130, 246, 0.3);         /* blue-500/30: focus ring */
+
+  /* Warning (amber family) — used for trust-prompt advisories */
+  --warning-text: #fde68a;                       /* amber-200 */
+  --warning-bg: rgba(245, 158, 11, 0.10);        /* amber-500/10 */
+  --warning-border: rgba(245, 158, 11, 0.40);    /* amber-500/40 */
+
+  /* Onboarding accent (OB-4): the global `--accent` blue read as too
+     vivid against the wizard's calm cream-on-cream layout. The
+     onboarding-only palette pulls from Kobi's clothing colors
+     (`#005f99` / `#0070c0` in his SVG) and dampens the saturation so
+     the buttons feel more in-character with the mascot. Scoped to a
+     dedicated variable so the rest of the UI keeps its existing
+     `--accent` everywhere it matters. */
+  --onboarding-accent: #4a8fbf;          /* dampened steel-blue, paired with Kobi */
+  --onboarding-accent-hover: #5fa3d3;    /* slight lift on hover */
+  --onboarding-accent-text: #c7e0f0;     /* soft tint for ring colors */
+
+  /* Scrollbar */
+  --scrollbar-thumb: #4a4a6a;
+  --scrollbar-thumb-hover: #6a6a8a;
+
+  /* Markdown */
+  --md-code-bg: #2d2d4a;
+  --md-pre-bg: #16162a;
+  --md-th-bg: #2a2a4a;
+  --md-table-border: #3a3a5a;
+  --md-blockquote-border: #4a4a6a;
+  --md-blockquote-text: #a0a0c0;
+
+  /* Markdown (document variant) */
+  --md-doc-text: #d4d4e0;
+  --md-doc-h1-border: #E94560;
+  --md-doc-h1-text: #f0f0f5;
+  --md-doc-h2-text: #e8e8f0;
+  --md-doc-h2-border: #2a2a4a;
+  --md-doc-h3-text: #e0e0ec;
+  --md-doc-h4-text: #d8d8e8;
+  --md-doc-pre-bg: #12122a;
+  --md-doc-code-bg: #2a2a48;
+  --md-doc-code-text: #bfdbfe;
+  --md-doc-th-bg: #252548;
+  --md-doc-th-text: #d0d0e0;
+  --md-doc-table-border: #33335a;
+  --md-doc-row-even: #1a1a36;
+  --md-doc-row-hover: #22224a;
+  --md-doc-strong: #ececf5;
+  --md-doc-hr: #2a2a4a;
+  --md-doc-marker: #6a6a8a;
+}
+
+[data-theme="light"] {
+  /* Background colors */
+  --bg-base: #f3f4f6;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e9eaef;
+  --bg-nav: #ebedf2;
+  --bg-inset: #e2e4e9;
+  --bg-hover: #dcdee5;
+
+  /* Borders */
+  --border: #d1d5db;
+  --border-subtle: #e5e7eb;
+  --border-strong: #9ca3af;
+
+  /* Text */
+  --text-primary: #111827;
+  --text-secondary: #1f2937;
+  --text-tertiary: #374151;
+  --text-muted: #4b5563;
+  --text-dim: #6b7280;
+  --text-faint: #9ca3af;
+
+  /* Accent colors (blue family — light mode: high contrast) */
+  --accent: #2563eb;                    /* blue-600 */
+  --accent-hover: #1d4ed8;              /* blue-700 */
+  --accent-strong: #2563eb;             /* blue-600 */
+  --accent-text: #1d4ed8;              /* blue-700: readable on light backgrounds */
+  --accent-text-vivid: #2563eb;         /* blue-600 */
+  --accent-bg: rgba(37, 99, 235, 0.12); /* Light blue background */
+  --accent-bg-subtle: rgba(37, 99, 235, 0.07);
+  --accent-bg-strong: rgba(37, 99, 235, 0.2);
+  --accent-badge-bg: rgba(37, 99, 235, 0.1);
+  --accent-border: #2563eb;             /* blue-600 */
+  --accent-border-subtle: rgba(37, 99, 235, 0.25);
+  --accent-shadow: rgba(37, 99, 235, 0.12);
+  --accent-ring: rgba(37, 99, 235, 0.3);
+
+  /* Warning (amber family) — used for trust-prompt advisories.
+     Light mode uses a darker text color so the message is readable
+     against the light surface; the background tint is slightly
+     boosted to keep the banner visible. */
+  --warning-text: #92400e;                       /* amber-800 */
+  --warning-bg: rgba(245, 158, 11, 0.15);        /* amber-500/15 */
+  --warning-border: rgba(180, 83, 9, 0.45);      /* amber-700/45 */
+
+  /* Onboarding accent (OB-4): light variant. Kept slightly darker
+     than the dark-mode value so the white-text label retains
+     sufficient contrast against a white card while still reading as
+     a softer blue than the global `--accent`. */
+  --onboarding-accent: #356f9b;
+  --onboarding-accent-hover: #2c5f87;
+  --onboarding-accent-text: #1f4d70;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #b0b4c0;
+  --scrollbar-thumb-hover: #8a8e9a;
+
+  /* Markdown */
+  --md-code-bg: #e2e4ea;
+  --md-pre-bg: #ebedf2;
+  --md-th-bg: #dfe1e6;
+  --md-table-border: #c8cad0;
+  --md-blockquote-border: #b0b4c0;
+  --md-blockquote-text: #4b5563;
+
+  /* Markdown (document variant) */
+  --md-doc-text: #1f2937;
+  --md-doc-h1-border: #E94560;
+  --md-doc-h1-text: #111827;
+  --md-doc-h2-text: #1f2937;
+  --md-doc-h2-border: #d1d5db;
+  --md-doc-h3-text: #374151;
+  --md-doc-h4-text: #4b5563;
+  --md-doc-pre-bg: #ebedf2;
+  --md-doc-code-bg: #dfe1e8;
+  --md-doc-code-text: #1e40af;
+  --md-doc-th-bg: #e2e4ea;
+  --md-doc-th-text: #374151;
+  --md-doc-table-border: #c8cad0;
+  --md-doc-row-even: #f0f1f5;
+  --md-doc-row-hover: #e5e7ed;
+  --md-doc-strong: #111827;
+  --md-doc-hr: #d1d5db;
+  --md-doc-marker: #9ca3af;
+}

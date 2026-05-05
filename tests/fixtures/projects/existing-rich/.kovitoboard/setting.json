@@ -1,0 +1,17 @@
+{
+  "version": "1.1",
+  "user": {
+    "displayName": "Test User",
+    "avatar": null
+  },
+  "project": {
+    "name": "rich-test-project",
+    "description": "E2E test project with agents, recipes, and docs",
+    "path": "<tmpdir>"
+  },
+  "locale": "en",
+  "onboarding": {
+    "completedAt": "2026-04-18T00:00:00.000Z",
+    "wizardVersion": "0.1.0"
+  }
+}
