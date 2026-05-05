@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KovitoBoard</title>
+    <!--
+      The static `lang="en"` above is a pre-bootstrap placeholder that
+      matches the OSS fallback locale (`i18n/index.ts`
+      `FALLBACK_LOCALE`). The runtime `lang` is finalized in
+      `main.tsx` after the locale bootstrap fetch resolves
+      (`document.documentElement.lang = getLocale()`).
+    -->
+  </head>
+  <body class="bg-[var(--bg-base)] text-[var(--text-primary)] overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

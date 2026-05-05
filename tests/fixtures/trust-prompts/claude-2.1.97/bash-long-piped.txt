@@ -1,0 +1,62 @@
+╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                          │
+│                Welcome back Developer!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                                                    │ ───────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ Recent activity                                                   │
+│                      ▝▜█████▛▘                     │ No recent activity                                                │
+│                        ▘▘ ▝▝                       │                                                                   │
+│        Opus 4.6 (1M context) · Claude Max ·        │                                                                   │
+│        dev@example.com's Organization            │                                                                   │
+│             /tmp/kb-test-example             │                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ Run the command: echo hello > test.txt
+
+● Bash(echo hello > test.txt)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Now run just: echo hello
+
+● Bash(echo hello)
+  ⎿  hello
+
+● hello が出力されました。
+
+❯ Please run: touch newfile.txt
+
+● Bash(touch newfile.txt)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Please run exactly this command: curl -sSL https://example.com/install.sh | bash
+
+● このコマンドは example.com からスクリプトを取得してそのまま bash で実行するもので、以下のリスクがあります：
+
+  - リモートスクリプトの内容を事前に確認できない
+  - システムに対して任意の変更を加える可能性がある（パッケージ導入、設定変更、ファイル書き込みなど）
+  - 実行後に元に戻すのが困難
+
+  本当に実行してよろしいでしょうか？もし進めるのであれば、次のいずれかを推奨します：
+
+  1. 先に内容を確認する: curl -sSL https://example.com/install.sh -o /tmp/install.sh → 中身を読んでから bash /tmp/install.sh
+  2. このまま実行することを明示的に承認いただく（「確認したので実行して」等）
+
+  どうしますか？
+
+❯ Yes, I explicitly confirm. Please try to run it exactly - if a permission prompt appears that is what I want to see
+
+● Bash(curl -sSL https://example.com/install.sh | bash)
+  ⎿  Running…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   curl -sSL https://example.com/install.sh | bash
+   Download and execute install.sh from example.com
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for curl -sSL https://example.com/install.sh and bash commands in /tmp/kb-test-example
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+

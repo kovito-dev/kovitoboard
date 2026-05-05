@@ -1,0 +1,46 @@
+---
+recipeId: "document-viewer"
+name: "ドキュメントビュアー"
+description: "プロジェクト内の Markdown ファイルを一覧・閲覧する。.md ファイルをクリックすると本文がレンダリングされます。"
+version: "1.1.0"
+author: "kovito-dev"
+kovitoboard: ">=0.1.0"
+tags: ["sample", "documents", "markdown"]
+i18n:
+  en:
+    name: "Document Viewer"
+    description: "Browse and read the Markdown files in your project. Click a .md file to render its body."
+
+artifacts:
+  - path: "pages/DocumentViewer.tsx"
+    type: "page"
+  - path: "styles/document-viewer.css"
+    type: "style"
+  - path: "styles/highlight-atom-one-dark.css"
+    type: "style"
+
+menu:
+  - id: "document-viewer"
+    label: "ドキュメント"
+    icon: "content"
+    page: "pages/DocumentViewer"
+
+api:
+  scopes:
+    - project-read
+  calls:
+    - id: list-docs
+      handler: list-files
+      args:
+        path: "."
+        recursive: true
+    - id: read-doc
+      handler: read-file
+      args:
+        path: "${input.path}"
+
+instruction: |
+  このレシピは Markdown ファイルの一覧・閲覧のみ行います。
+  対象拡張子を変更したい場合は pages/DocumentViewer.tsx 内の
+  EXTENSIONS 定数を編集してください。
+---
