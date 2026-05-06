@@ -9,7 +9,7 @@ import type { MessageKey } from './ja'
 const en: Record<MessageKey, string> = {
   // Onboarding
   'onboarding.welcome.title': 'Welcome to KovitoBoard (KB)',
-  'onboarding.welcome.subtitle': 'Let\'s set up your AI agent team',
+  'onboarding.welcome.subtitle': 'Build your dedicated AI agent team',
   'onboarding.welcome.intro': 'KovitoBoard is a local, open-source web app that lets you drive Claude Code from your browser. Run agent sessions, build your own pages, or install external apps (recipes).',
   'onboarding.welcome.language': 'Choose your language',
   'onboarding.user.title': 'Tell us about yourself',
@@ -61,7 +61,7 @@ const en: Record<MessageKey, string> = {
   'ambientSidebar.toggle.expand': 'Open sidebar',
   'ambientSidebar.toggle.collapse': 'Close sidebar',
   'ambientSidebar.openInSessions': 'Open in sessions screen',
-  'ambientSidebar.placeholder': 'Pick an agent and start chatting.',
+  'ambientSidebar.placeholder': 'Pick an agent and send your first message.',
   'ambientSidebar.resize.handle': 'Resize sidebar',
   'ambientSidebar.picker.label': 'Sessions with agents',
   'ambientSidebar.picker.unselected': '(unselected)',
@@ -637,7 +637,7 @@ const en: Record<MessageKey, string> = {
   'version.kb.label': 'KovitoBoard',
   'version.claudeCode.label': 'Claude Code',
   'version.loading': 'Loading version info…',
-  'version.loadFailed': 'Failed to load version info',
+  'version.loadFailed': 'Could not retrieve version info',
   'version.kb.upToDate': '✅ Up to date',
   'version.kb.outdated': '⚠️ {latest} is available',
   'version.kb.fetchFailed': 'ℹ️ Update info not available yet (will turn on after the public release)',
