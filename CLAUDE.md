@@ -19,6 +19,72 @@ Internal design memos, decisions, and specs are deliberately kept out
 of this repository — they live in the private `kovitoboard-dev`
 companion repository.
 
+## PR-based workflow
+
+All changes to `main` and `staging` must go through a pull request.
+Direct pushes to `main` and `staging` are blocked by branch protection
+(no admin bypass). Hotfixes are no exception — they also go through a
+PR.
+
+### Workflow summary for AI agents
+
+1. Cut a feature branch from the latest `staging`. Branch naming
+   conventions:
+   - kebab-case, ASCII letters / digits / hyphen only, max 50 chars
+   - prefixes: `feature/` / `fix/` / `chore/` / `docs/` / `release/`
+   - no internal IDs (no DEC-xxx, no BL-xxxx, no `(agent: <id>)`)
+   - examples: `feature/recipe-export-rework`,
+     `fix/trust-prompt-race`
+2. Commit on the feature branch following commit message rules below.
+3. Push the branch and open a draft PR against `staging`:
+   ```bash
+   gh pr create --draft --base staging \
+     --title "<title>" --body "<body>"
+   ```
+4. When the change is ready for review, mark it ready:
+   ```bash
+   gh pr ready <pr-number>
+   ```
+   This triggers the `codex-pr-review` automation: a CodeX-based
+   reviewer leaves structured findings as a PR comment.
+5. The agent reads the findings, auto-fixes Low/Medium issues
+   (capped at 3 attempts), and escalates High/Critical issues to the
+   maintainer. Detailed escalation rules live in the private
+   `kovitoboard-dev` companion repository.
+6. Once approved, the PR is merged with **squash merge** (feature →
+   staging). Releases are merged from staging to `main` with a
+   **merge commit**. Branches are deleted automatically after merge.
+
+### Commit message rules (recap)
+
+- Use feature-name / behaviour / module wording. Do **not** include
+  internal identifiers used inside the private companion repository
+  (DEC IDs, BL IDs, internal issue numbers, `(agent: <id>)`).
+- Do **not** add `Co-Authored-By: Claude ...` or similar AI trailers.
+  A local `commit-msg` hook strips them automatically.
+- Recommended prefixes: `[core]`, `[template]`, `[test]`, `[script]`,
+  `[meta]`. Examples:
+  ```
+  [core] persist agent themeColor in settings
+  [core] add CLI override for kb-start port resolution
+  [test] cover ambient sidebar handover into the file preview
+  ```
+
+### Where the full rules live
+
+The complete operational rules for AI agents working on this
+repository (full PR flow, Level 4 auto-fix loop, escalation paths,
+session-log conventions) live in the private `kovitoboard-dev`
+companion repository under `.claude/rules/pr-operations.md` and
+`.claude/rules/git-commit.md`. They are intentionally not shipped
+with this repository because they target internal AI-agent
+operations rather than the OSS distribution itself.
+
+External contributors are not expected to follow that internal flow
+beyond the surface rules listed above. A contributor-facing
+`CONTRIBUTING.md` will be expanded before external pull requests are
+accepted (see the project's release roadmap).
+
 ## CI verification rule (DEC-018)
 
 AI agents must follow this rule whenever they commit and push to this
