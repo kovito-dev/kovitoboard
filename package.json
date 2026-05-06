@@ -1,6 +1,6 @@
 {
   "name": "@kovito/kovitoboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "KovitoBoard - Self-extending AI agent team system on Claude Code",
   "license": "AGPL-3.0-or-later",
   "author": "Anode LLC",
