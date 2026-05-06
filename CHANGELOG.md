@@ -7,6 +7,21 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-06
+
+Validation release for the self-update detection and agent-driven upgrade flow.
+No new features — minor i18n wording adjustments to provide a known surface
+for upgrade-time merge handling.
+
+### Changed
+
+- `onboarding.welcome.subtitle`: rephrased the welcome subtitle on the
+  onboarding screen (`src/renderer/i18n/{ja,en}.ts`).
+- `ambientSidebar.placeholder`: rephrased the empty-state hint shown in the
+  ambient session sidebar (`src/renderer/i18n/{ja,en}.ts`).
+- `version.loadFailed`: rephrased the error message displayed when version
+  information cannot be loaded (`src/renderer/i18n/{ja,en}.ts`).
+
 ## [0.1.0] - 2026-05-05
 
 Initial release (closed beta).

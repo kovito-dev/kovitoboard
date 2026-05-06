@@ -7,6 +7,21 @@ KovitoBoard の主要な変更点を本ファイルに記録します。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に準拠し、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従います。
 
+## [0.1.1] - 2026-05-06
+
+自動更新検出 + エージェント主導アップグレードフローの検証用リリース。
+新機能なし — アップグレード時のマージ処理を検証するための既知サーフェスとして、
+i18n 文言の軽微な調整のみを実施。
+
+### 変更
+
+- `onboarding.welcome.subtitle`: オンボーディング画面のサブタイトル文言を変更
+  (`src/renderer/i18n/{ja,en}.ts`)。
+- `ambientSidebar.placeholder`: アンビエントセッションサイドバーの空状態
+  プレースホルダ文言を変更(`src/renderer/i18n/{ja,en}.ts`)。
+- `version.loadFailed`: バージョン情報取得失敗時のエラーメッセージ文言を変更
+  (`src/renderer/i18n/{ja,en}.ts`)。
+
 ## [0.1.0] - 2026-05-05
 
 初回リリース(クローズドβ)。

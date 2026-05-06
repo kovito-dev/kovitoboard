@@ -7,7 +7,7 @@
 const ja = {
   // オンボーディング
   'onboarding.welcome.title': 'KovitoBoard（略称：KB）へようこそ',
-  'onboarding.welcome.subtitle': 'あなたの AI エージェントチームを始めましょう',
+  'onboarding.welcome.subtitle': 'あなた専用の AI エージェントチームを構築しましょう',
   'onboarding.welcome.intro': 'KovitoBoard はブラウザ上から Claude Code を操作できる、ローカル動作のオープンソース Web アプリケーションです。エージェントとのセッションのほか、独自アプリを作成したり、外部アプリ（レシピ）をインストールできます。',
   'onboarding.welcome.language': '言語を選択してください',
   'onboarding.user.title': 'あなたについて教えてください',
@@ -59,7 +59,7 @@ const ja = {
   'ambientSidebar.toggle.expand': 'サイドバーを開く',
   'ambientSidebar.toggle.collapse': 'サイドバーを閉じる',
   'ambientSidebar.openInSessions': 'セッション画面で開く',
-  'ambientSidebar.placeholder': 'エージェントを選んで話しかけてみましょう。',
+  'ambientSidebar.placeholder': 'エージェントを選んでメッセージを送ってみましょう。',
   'ambientSidebar.resize.handle': 'サイドバーの幅を調整',
   'ambientSidebar.picker.label': 'エージェントとのセッション',
   'ambientSidebar.picker.unselected': '（未選択）',
@@ -635,7 +635,7 @@ const ja = {
   'version.kb.label': 'KovitoBoard',
   'version.claudeCode.label': 'Claude Code',
   'version.loading': 'バージョン情報を読み込み中…',
-  'version.loadFailed': 'バージョン情報の読み込みに失敗しました',
+  'version.loadFailed': 'バージョン情報を取得できませんでした',
   'version.kb.upToDate': '✅ 最新です',
   'version.kb.outdated': '⚠️ {latest} が公開されています',
   'version.kb.fetchFailed': 'ℹ️ 最新版情報は未公開です（公式リリース後に取得可能になります）',
