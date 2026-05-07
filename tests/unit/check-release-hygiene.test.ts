@@ -15,6 +15,7 @@ import {
   isInternalIdTemplateAgentFile,
   parseArgs,
   scanFile,
+  scanFileForPatterns,
   severityForPattern,
   shouldScanFileForInternalId,
 } from '../../tools/check-release-hygiene.mjs'
@@ -310,6 +311,56 @@ describe('countMatchesInText: counts every occurrence on a single line', () => {
     const re = /DEC-[0-9]+/
     expect(countMatchesInText('DEC-001 DEC-002 DEC-003', re)).toBe(3)
     expect(re.flags.includes('g')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// scanFileForPatterns: single-read multi-pattern scan (CodeX feedback fix)
+// ---------------------------------------------------------------------------
+
+describe('scanFileForPatterns: reads file once and scans every pattern', () => {
+  it('returns hits for matching patterns and empty arrays for the rest', () => {
+    const out = scanFileForPatterns(join(FIXTURE_DIR, 'dirty.ts'), INTERNAL_ID_PATTERNS)
+    expect(out.skipped).toBe(false)
+    if (out.skipped) return
+    const byId = new Map(out.results.map((r: { pattern: { id: string }; hits: unknown[] }) => [r.pattern.id, r.hits]))
+    expect((byId.get('P-1') as unknown[]).length).toBeGreaterThanOrEqual(1)
+    expect((byId.get('P-2') as unknown[]).length).toBeGreaterThanOrEqual(1)
+    expect((byId.get('P-7') as unknown[]).length).toBeGreaterThanOrEqual(1)
+    // No agent: tag in dirty.ts → P-3 must be empty.
+    expect(byId.get('P-3') as unknown[]).toEqual([])
+  })
+
+  it('returns size-cap envelope when the file exceeds the cap', () => {
+    const out = scanFileForPatterns(
+      join(FIXTURE_DIR, 'dirty.ts'),
+      INTERNAL_ID_PATTERNS,
+      { sizeCap: 1 }, // 1 byte — guaranteed to trip
+    )
+    expect(out.skipped).toBe(true)
+    if (!out.skipped) return
+    expect(out.reason).toBe('size-cap')
+    expect(out.results).toEqual([])
+    expect(out.size).toBeGreaterThan(1)
+  })
+
+  it('returns read-error envelope for missing files', () => {
+    const out = scanFileForPatterns(
+      join(FIXTURE_DIR, 'does-not-exist.ts'),
+      INTERNAL_ID_PATTERNS,
+    )
+    expect(out.skipped).toBe(true)
+    if (!out.skipped) return
+    expect(out.reason).toBe('read-error')
+  })
+
+  it('clean.ts produces zero hits across all patterns', () => {
+    const out = scanFileForPatterns(join(FIXTURE_DIR, 'clean.ts'), INTERNAL_ID_PATTERNS)
+    expect(out.skipped).toBe(false)
+    if (out.skipped) return
+    for (const r of out.results) {
+      expect(r.hits, `${r.pattern.id} matched clean.ts unexpectedly`).toEqual([])
+    }
   })
 })
 
