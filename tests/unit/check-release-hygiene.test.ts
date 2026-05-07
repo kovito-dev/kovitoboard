@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import {
+  countMatchesInText,
   INTERNAL_ID_DEFAULT_MODE,
   INTERNAL_ID_MODES,
   INTERNAL_ID_PATTERNS,
@@ -134,9 +135,19 @@ describe('T-3: hygiene script self-exclusion', () => {
     expect(shouldScanFileForInternalId('tools/check-release-hygiene.mjs')).toBe(false)
   })
 
+  it('also excludes the matching unit-test file (it embeds intentional samples)', () => {
+    expect(
+      shouldScanFileForInternalId('tests/unit/check-release-hygiene.test.ts'),
+    ).toBe(false)
+  })
+
   it('still includes other tool files', () => {
     expect(shouldScanFileForInternalId('tools/kb-start.mjs')).toBe(true)
     expect(shouldScanFileForInternalId('tools/kb-diagnose.mjs')).toBe(true)
+  })
+
+  it('still includes other unit-test files', () => {
+    expect(shouldScanFileForInternalId('tests/unit/log-config.test.ts')).toBe(true)
   })
 })
 
@@ -272,6 +283,33 @@ describe('T-8: parseArgs / --internal-id-only / --internal-id-mode', () => {
 
   it('exposes the canonical mode list for callers', () => {
     expect(INTERNAL_ID_MODES).toEqual(['warn-only', 'partial-error', 'full-error'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// countMatchesInText: per-line occurrence counter (CodeX feedback fix)
+// ---------------------------------------------------------------------------
+
+describe('countMatchesInText: counts every occurrence on a single line', () => {
+  it('returns 1 for a single match', () => {
+    expect(countMatchesInText('see DEC-018 for details', /DEC-[0-9]+/)).toBe(1)
+  })
+
+  it('returns N for N matches on the same line', () => {
+    // Multiple P-7 matches on a single line.
+    const re = getPattern('P-7').regex
+    expect(countMatchesInText('see SS-3 / Q4 / AA-7 in supplementary review', re)).toBe(3)
+  })
+
+  it('returns 0 when the regex does not match', () => {
+    expect(countMatchesInText('clean text without any IDs', /DEC-[0-9]+/)).toBe(0)
+  })
+
+  it('handles regex flags by injecting a global flag copy', () => {
+    // Original regex without /g; helper must not mutate it.
+    const re = /DEC-[0-9]+/
+    expect(countMatchesInText('DEC-001 DEC-002 DEC-003', re)).toBe(3)
+    expect(re.flags.includes('g')).toBe(false)
   })
 })
 

@@ -179,8 +179,15 @@ export const INTERNAL_ID_MODES = ['warn-only', 'partial-error', 'full-error']
 export const INTERNAL_ID_DEFAULT_MODE = 'warn-only'
 
 // Files that are never scanned for internal IDs.
+//
+// The hygiene script itself contains the patterns we're looking for, and the
+// matching unit-test file embeds intentional sample strings to exercise those
+// patterns. Both must be excluded — otherwise stricter modes (partial-error /
+// full-error) would flag the project's own test corpus instead of release
+// content.
 export const INTERNAL_ID_EXCLUDE_FILES = new Set([
   'tools/check-release-hygiene.mjs',
+  'tests/unit/check-release-hygiene.test.ts',
 ])
 
 // Path prefixes that are never scanned for internal IDs.
@@ -419,6 +426,26 @@ export function getMetaScanFiles() {
  */
 export function getInternalIdScanFiles() {
   return getAllTrackedTextFiles().filter(shouldScanFileForInternalId)
+}
+
+/**
+ * Count every regex occurrence inside a single text line. `scanFile` returns
+ * one entry per matching line which is the right granularity for surfacing
+ * code locations, but a line such as `// SS-3 / Q4 dual-write` contains two
+ * actual matches; the cleanup metric tracks the total occurrence count, not
+ * the matching-line count.
+ *
+ * @param {string} text
+ * @param {RegExp} regex - non-global regex; a global copy is used internally.
+ * @returns {number}
+ */
+export function countMatchesInText(text, regex) {
+  const globalRe = new RegExp(
+    regex.source,
+    regex.flags.includes('g') ? regex.flags : regex.flags + 'g',
+  )
+  const matches = text.match(globalRe)
+  return matches ? matches.length : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -689,24 +716,32 @@ function runInternalIdCheck(report, mode) {
       if (isAgentTemplate && pattern.id !== 'P-4') continue
       const hits = scanFile(absPath, pattern.regex)
       if (hits.length === 0) continue
+      // Sum actual regex occurrences per line — a line may contain multiple
+      // matches (e.g. "SS-3 / Q4") and the cleanup metric tracks every one.
+      let occurrenceCount = 0
+      for (const h of hits) {
+        occurrenceCount += countMatchesInText(h.text, pattern.regex)
+      }
+      // Defensive fallback: every matching line should yield at least 1.
+      if (occurrenceCount < hits.length) occurrenceCount = hits.length
       const severity = severityForPattern(pattern, mode)
       perPatternCounts.set(
         pattern.id,
-        (perPatternCounts.get(pattern.id) ?? 0) + hits.length,
+        (perPatternCounts.get(pattern.id) ?? 0) + occurrenceCount,
       )
       report(
         severity,
-        `${file} [${pattern.id} ${pattern.label}] (${hits.length} occurrence${hits.length > 1 ? 's' : ''})`,
-        hits.length,
+        `${file} [${pattern.id} ${pattern.label}] (${occurrenceCount} occurrence${occurrenceCount > 1 ? 's' : ''} on ${hits.length} line${hits.length > 1 ? 's' : ''})`,
+        occurrenceCount,
       )
       for (const h of hits.slice(0, 3)) {
         console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
       }
       if (hits.length > 3) {
-        console.log(`         ... and ${hits.length - 3} more`)
+        console.log(`         ... and ${hits.length - 3} more line${hits.length - 3 > 1 ? 's' : ''}`)
       }
-      if (severity === 'error') totalErrors += hits.length
-      else totalWarns += hits.length
+      if (severity === 'error') totalErrors += occurrenceCount
+      else totalWarns += occurrenceCount
     }
   }
 
