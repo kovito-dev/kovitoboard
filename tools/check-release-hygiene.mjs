@@ -19,7 +19,7 @@
 // `main()` call at the bottom runs the full check.
 
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -177,6 +177,12 @@ export const INTERNAL_ID_PATTERNS = [
 export const INTERNAL_ID_MODES = ['warn-only', 'partial-error', 'full-error']
 
 export const INTERNAL_ID_DEFAULT_MODE = 'warn-only'
+
+// Internal-ID scan must read each candidate file once. To bound CI memory and
+// CPU even if a large text file (e.g. a generated fixture) sneaks past the
+// extension allowlist, apply a hard size cap. Files larger than the cap are
+// reported once and skipped.
+export const INTERNAL_ID_FILE_SIZE_CAP = 1024 * 1024 // 1 MiB
 
 // Files that are never scanned for internal IDs.
 //
@@ -431,9 +437,9 @@ export function getInternalIdScanFiles() {
 /**
  * Count every regex occurrence inside a single text line. `scanFile` returns
  * one entry per matching line which is the right granularity for surfacing
- * code locations, but a line such as `// SS-3 / Q4 dual-write` contains two
- * actual matches; the cleanup metric tracks the total occurrence count, not
- * the matching-line count.
+ * code locations, but a line such as a comment listing several question IDs
+ * contains multiple actual matches; the cleanup metric tracks the total
+ * occurrence count, not the matching-line count.
  *
  * @param {string} text
  * @param {RegExp} regex - non-global regex; a global copy is used internally.
@@ -446,6 +452,58 @@ export function countMatchesInText(text, regex) {
   )
   const matches = text.match(globalRe)
   return matches ? matches.length : 0
+}
+
+/**
+ * Read a file once and evaluate every supplied pattern against it.
+ *
+ * `scanFile` is convenient when a section runs a single regex per file (the
+ * Japanese / PII / multiline-meta-note paths), but the internal-ID detector
+ * runs ~7 patterns per file. Calling `scanFile` per pattern would re-read and
+ * re-split the same file each time. This helper does the I/O once.
+ *
+ * If the file is missing, unreadable, or larger than `sizeCap`, it returns a
+ * skipped envelope so the caller can surface a single diagnostic instead of
+ * silently dropping data.
+ *
+ * @param {string} filePath - absolute path
+ * @param {Array<{ regex: RegExp }>} patterns
+ * @param {{ sizeCap?: number }} [opts]
+ * @returns {{
+ *   skipped: false,
+ *   results: Array<{ pattern: { regex: RegExp }, hits: { line: number, text: string }[] }>,
+ * } | {
+ *   skipped: true,
+ *   reason: 'size-cap' | 'read-error',
+ *   size?: number,
+ *   results: [],
+ * }}
+ */
+export function scanFileForPatterns(filePath, patterns, opts = {}) {
+  const { sizeCap } = opts
+  let content
+  try {
+    if (typeof sizeCap === 'number') {
+      const stats = statSync(filePath)
+      if (stats.size > sizeCap) {
+        return { skipped: true, reason: 'size-cap', size: stats.size, results: [] }
+      }
+    }
+    content = readFileSync(filePath, 'utf-8')
+  } catch {
+    return { skipped: true, reason: 'read-error', results: [] }
+  }
+  const lines = content.split('\n')
+  const results = patterns.map((p) => ({ pattern: p, hits: [] }))
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    for (const r of results) {
+      if (r.pattern.regex.test(line)) {
+        r.hits.push({ line: i + 1, text: line.trim() })
+      }
+    }
+  }
+  return { skipped: false, results }
 }
 
 // ---------------------------------------------------------------------------
@@ -704,20 +762,34 @@ function runInternalIdCheck(report, mode) {
 
   let totalErrors = 0
   let totalWarns = 0
+  let skippedBySizeCap = 0
   /** @type {Map<string, number>} */
   const perPatternCounts = new Map()
 
   for (const file of targetFiles) {
     const isAgentTemplate = isInternalIdTemplateAgentFile(file)
-    const absPath = join(ROOT, file)
-    for (const pattern of INTERNAL_ID_PATTERNS) {
-      // In agent template files only the KB-prefixed names (P-4) are flagged;
-      // other patterns are legitimately part of agent definitions.
-      if (isAgentTemplate && pattern.id !== 'P-4') continue
-      const hits = scanFile(absPath, pattern.regex)
+    // In agent template files only KB-prefixed names (P-4) are flagged;
+    // other patterns are legitimately part of agent definitions.
+    const patternsForFile = isAgentTemplate
+      ? INTERNAL_ID_PATTERNS.filter((p) => p.id === 'P-4')
+      : INTERNAL_ID_PATTERNS
+    const scan = scanFileForPatterns(join(ROOT, file), patternsForFile, {
+      sizeCap: INTERNAL_ID_FILE_SIZE_CAP,
+    })
+    if (scan.skipped) {
+      if (scan.reason === 'size-cap') {
+        skippedBySizeCap++
+        console.log(
+          `  [skipped] ${file} (${scan.size} bytes > ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
+        )
+      }
+      continue
+    }
+    for (const { pattern, hits } of scan.results) {
       if (hits.length === 0) continue
       // Sum actual regex occurrences per line — a line may contain multiple
-      // matches (e.g. "SS-3 / Q4") and the cleanup metric tracks every one.
+      // matches (e.g. a comment listing several question IDs at once) and
+      // the cleanup metric tracks every one.
       let occurrenceCount = 0
       for (const h of hits) {
         occurrenceCount += countMatchesInText(h.text, pattern.regex)
@@ -747,12 +819,18 @@ function runInternalIdCheck(report, mode) {
 
   if (totalErrors === 0 && totalWarns === 0) {
     console.log('  \x1b[32mOK\x1b[0m    No internal-ID patterns found')
+    if (skippedBySizeCap > 0) {
+      console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
+    }
     return
   }
 
   console.log('')
   if (totalErrors > 0) console.log(`  Found ${totalErrors} internal-ID error(s)`)
   if (totalWarns > 0) console.log(`  Found ${totalWarns} internal-ID warning(s)`)
+  if (skippedBySizeCap > 0) {
+    console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
+  }
   for (const pattern of INTERNAL_ID_PATTERNS) {
     const c = perPatternCounts.get(pattern.id)
     if (c) {
