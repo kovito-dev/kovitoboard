@@ -68,21 +68,36 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   const appRoot = join(appDir, appId)
 
   if (!fs.existsSync(appRoot)) {
-    return { artifacts: [], menu: [], totalSize: 0, customBeFiles: [] }
+    return {
+      artifacts: [],
+      menu: [],
+      totalSize: 0,
+      customBeFiles: [],
+      customBeFilesCount: 0,
+    }
   }
 
   const artifacts: AppScanResult['artifacts'] = []
   const customBeFiles: AppScanResult['customBeFiles'] = []
+  /**
+   * Sample size for `customBeFiles`. The full count is tracked in
+   * `customBeFilesCount`; this only bounds how many path strings we
+   * keep in memory + send back to the UI. Large `api/` trees should
+   * not be able to drive an unbounded allocation here.
+   */
+  const CUSTOM_BE_FILES_SAMPLE_CAP = 50
+  let customBeFilesCount = 0
   let totalSize = 0
 
   // Recursive walk rooted at `app/<appId>/`. We deliberately keep
   // `node_modules` and dotfiles out — recipes ship source, not
-  // bundled output. Files under `api/` are now collected into
-  // `customBeFiles` instead of `artifacts`: the recipe install path
-  // refuses `api/`-prefixed artifacts anyway (path-prefix
-  // restriction in the inspector), so packaging them was unsound.
-  // Callers should treat a non-empty `customBeFiles` as "refuse the
-  // export" and surface the guidance message at the API boundary.
+  // bundled output. Any file under `api/` (regardless of extension)
+  // is collected into `customBeFiles` instead of `artifacts`: the
+  // recipe install path rejects every `api/`-prefixed artifact via
+  // recipe-inspector's path-prefix restriction, so packaging anything
+  // under `api/` was unsound. Callers should treat a non-zero
+  // `customBeFilesCount` as "refuse the export" and surface the
+  // guidance message at the API boundary.
   function scanDir(dir: string): void {
     const entries = fs.readdirSync(dir)
     for (const entry of entries) {
@@ -108,12 +123,22 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
         // prefix forms can match here — directories are dispatched
         // through the `isDir` branch above before we reach this
         // file-handling block, so `relativePath === 'api'` is not
-        // reachable for files.
+        // reachable for files. Any extension under `api/` qualifies:
+        // recipe-inspector rejects the whole prefix at install time
+        // (not just `.ts`), so the same goes for `.json` / `.md` /
+        // fixtures / etc.
         if (
           relativePath.startsWith(`api${sep}`) ||
           relativePath.startsWith('api/')
         ) {
-          customBeFiles.push({ relativePath, sizeBytes })
+          customBeFilesCount += 1
+          // Bound the in-memory sample. Past the cap we still keep
+          // counting (so the response can show an accurate total)
+          // but stop allocating per-file metadata, closing the
+          // resource-exhaustion path on a pathological `api/` tree.
+          if (customBeFiles.length < CUSTOM_BE_FILES_SAMPLE_CAP) {
+            customBeFiles.push({ relativePath, sizeBytes })
+          }
           continue
         }
         artifacts.push({
@@ -148,7 +173,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
     }
   }
 
-  return { artifacts, menu, totalSize, customBeFiles }
+  return { artifacts, menu, totalSize, customBeFiles, customBeFilesCount }
 }
 
 /**

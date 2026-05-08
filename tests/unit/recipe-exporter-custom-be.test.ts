@@ -175,3 +175,42 @@ describe('scanAppDirectory — T-2: existing artifact classification preserved',
     expect(result.customBeFiles[0].sizeBytes).toBe(50)
   })
 })
+
+describe('scanAppDirectory — sample cap on customBeFiles', () => {
+  it('keeps customBeFiles bounded but customBeFilesCount accurate when api/ has many files', () => {
+    // Pathological case: an `api/` tree with 60 files. The scanner
+    // must not allocate per-file metadata for every single one (that
+    // is the resource-exhaustion path the cap is meant to close),
+    // but the response still needs an accurate total so the UI can
+    // surface "...and N more".
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 60; i += 1) {
+      files[`${PROJECT_ROOT}/app/foo/api/h${i}.ts`] = 'export {}'
+    }
+    files[`${PROJECT_ROOT}/app/foo/pages/Foo.tsx`] = 'export {}'
+    const fs = makeFs(files)
+    const result = scanAppDirectory(fs, 'foo')
+    expect(result.customBeFilesCount).toBe(60)
+    expect(result.customBeFiles.length).toBeLessThanOrEqual(50)
+    expect(result.artifacts.map((a) => a.path)).toEqual(['pages/Foo.tsx'])
+  })
+
+  it('treats non-.ts files under api/ as custom BE too (path-prefix is the rule, not extension)', () => {
+    // recipe-inspector's path-prefix restriction rejects every
+    // artifact whose path starts with `api/` regardless of
+    // extension, so the exporter must agree: a JSON fixture or a
+    // README under api/ blocks the export the same way a .ts handler
+    // would. Otherwise the exported recipe would still fail to
+    // install — just with a more confusing error message.
+    const fs = makeFs({
+      [`${PROJECT_ROOT}/app/foo/api/data.json`]: '{}',
+      [`${PROJECT_ROOT}/app/foo/api/README.md`]: 'docs',
+      [`${PROJECT_ROOT}/app/foo/pages/Foo.tsx`]: 'export {}',
+    })
+    const result = scanAppDirectory(fs, 'foo')
+    const beSorted = result.customBeFiles.map((f) => f.relativePath).sort()
+    expect(beSorted).toEqual(['api/README.md', 'api/data.json'])
+    expect(result.customBeFilesCount).toBe(2)
+    expect(result.artifacts.map((a) => a.path)).toEqual(['pages/Foo.tsx'])
+  })
+})

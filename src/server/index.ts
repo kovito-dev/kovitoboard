@@ -1118,25 +1118,28 @@ app.post('/api/recipes/export', (req, res) => {
     // boundary at the export boundary with an actionable guidance
     // message.
     //
-    // The file list is capped (`MAX_CUSTOM_BE_FILES_IN_RESPONSE`)
-    // and the total count is sent separately so an app with a
-    // pathologically large `api/` tree cannot blow up the JSON
-    // payload, the client-side string concat, or the modal that
-    // renders the message. The cap is pure response-shaping: the
-    // refusal itself still triggers as soon as ≥ 1 BE file exists.
+    // The scanner already bounds `customBeFiles` to a fixed sample
+    // size (see `recipe-exporter.ts`); we additionally trim the
+    // response payload to the first 10 entries so the JSON we ship
+    // and the string the modal concatenates stay small even when
+    // the sample cap is set higher upstream. `customBeFilesCount`
+    // is the accurate total (counted while scanning) and is what
+    // the UI uses to show "...and N more". The cap is pure
+    // response-shaping: refusal triggers as soon as ≥ 1 file under
+    // `app/<appId>/api/` exists, regardless of extension.
     const MAX_CUSTOM_BE_FILES_IN_RESPONSE = 10
-    if (scan.customBeFiles.length > 0) {
+    if (scan.customBeFilesCount > 0) {
       const sample = scan.customBeFiles
         .slice(0, MAX_CUSTOM_BE_FILES_IN_RESPONSE)
         .map((f) => f.relativePath)
       res.status(400).json({
         error: 'CustomBeNotExportable',
         message:
-          'This app contains custom backend extensions under app/<appId>/api/*.ts which cannot be packaged into a recipe. Recipes are limited to Category A handlers (window.kb.call) for safety boundary reasons.',
+          'This app contains files under app/<appId>/api/ which cannot be packaged into a recipe. Recipes are limited to Category A handlers (window.kb.call) for safety boundary reasons; recipe-inspector rejects every artifact whose path starts with api/, regardless of extension.',
         files: sample,
-        filesCount: scan.customBeFiles.length,
+        filesCount: scan.customBeFilesCount,
         guidance:
-          "To distribute this app: (1) rewrite the BE logic using Category A handlers (declarative api.calls in recipe.yaml + window.kb.call from the page), or (2) document the BE part separately and ask recipients to implement it via agent assistance after recipe install. Custom BE code runs outside KB's safety boundary and is the recipient's responsibility to review.",
+          "To distribute this app: (1) rewrite the BE logic using Category A handlers (declarative api.calls in recipe.yaml + window.kb.call from the page), or (2) document the api/ part separately and ask recipients to implement or reproduce it via agent assistance after recipe install. Files under api/ run outside KB's safety boundary and stay the recipient's responsibility to review.",
       })
       return
     }

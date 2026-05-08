@@ -162,6 +162,7 @@ describe('scanAppDirectory(fs, appId)', () => {
       menu: [],
       totalSize: 0,
       customBeFiles: [],
+      customBeFilesCount: 0,
     })
   })
 

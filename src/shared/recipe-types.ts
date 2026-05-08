@@ -352,12 +352,25 @@ export interface AppScanResult {
   menu: RecipeMenuEntry[]
   totalSize: number
   /**
-   * Files under `app/<appId>/api/` that the exporter detected. These
-   * are NOT included in `artifacts` because backend route handlers
-   * are deliberately outside the safety boundary that recipe install
-   * relies on (the inspector + renderer-only confinement). The
-   * caller should refuse the export when this array is non-empty so
-   * the boundary is enforced at packaging time.
+   * Sample of files under `app/<appId>/api/` that the exporter
+   * detected. These are NOT included in `artifacts` because anything
+   * under `api/` is rejected by recipe-inspector's path-prefix
+   * restriction at install time, so packaging them would produce a
+   * recipe the consumer cannot install. The caller should refuse
+   * the export when this array (or `customBeFilesCount`) is
+   * non-empty.
+   *
+   * The list is bounded — the scanner stops accumulating once it
+   * has collected enough entries to drive a clear UI message.
+   * Use `customBeFilesCount` for the total count (accurate even when
+   * the array is at the cap).
    */
   customBeFiles: Array<{ relativePath: string; sizeBytes: number }>
+  /**
+   * Total number of files the scanner found under
+   * `app/<appId>/api/`, regardless of whether each one was stored
+   * in `customBeFiles`. Equal to `customBeFiles.length` when the
+   * total fits inside the cap.
+   */
+  customBeFilesCount: number
 }
