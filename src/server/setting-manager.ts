@@ -65,7 +65,9 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
     fs.mkdirSync(dir, { recursive: true })
   }
 
-  fs.writeFileSync(settingPath, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  // Atomic replace: setting.json is read on every boot; a partial
+  // write would invalidate onboarding state and force a recovery flow.
+  fs.writeFileAtomic(settingPath, JSON.stringify(data, null, 2) + '\n')
 }
 
 /** Manual validation (without zod) */

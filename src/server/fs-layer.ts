@@ -20,6 +20,8 @@
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
+  appendFileSync as fsAppendFileSync,
+  renameSync as fsRenameSync,
   existsSync as fsExistsSync,
   readdirSync as fsReaddirSync,
   statSync as fsStatSync,
@@ -30,7 +32,10 @@ import {
   openSync as fsOpenSync,
   readSync as fsReadSync,
   closeSync as fsCloseSync,
+  fsyncSync as fsFsyncSync,
 } from 'fs'
+import { dirname, basename } from 'path'
+import { randomBytes } from 'crypto'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 
 // --- Type definitions ---
@@ -64,6 +69,23 @@ export interface WatchOptions {
   depth?: number
 }
 
+/** Options for `writeFileAtomic`. */
+export interface WriteFileAtomicOptions {
+  /**
+   * File mode for the destination file. Defaults to `0o600` so the
+   * captured content (which can include onboarding state, recipe
+   * history entries, etc.) is not world-readable on shared hosts.
+   */
+  mode?: number
+  /**
+   * When true (default), call `fsync` on the temp file before the
+   * rename. This guarantees that the new content has been flushed to
+   * disk before it becomes visible. Disable only when the caller has
+   * already proven the durability cost is unacceptable.
+   */
+  fsync?: boolean
+}
+
 // --- FileAccessLayer interface ---
 
 /**
@@ -81,6 +103,30 @@ export interface FileAccessLayer {
 
   // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
+  /**
+   * Atomically replace the destination file's contents. The file is
+   * either the previous version or the new version, never half-written
+   * — useful for JSON stores where a partial write would surface as a
+   * `JSON.parse` failure on the next load. Backed by a same-directory
+   * temp file + `fsync` (optional) + POSIX `rename(2)`.
+   */
+  writeFileAtomic(
+    path: string,
+    content: string | Buffer,
+    options?: WriteFileAtomicOptions
+  ): void
+  /**
+   * Append content to a file (create if missing). Used by JSONL stores
+   * where each call writes one line. Avoids the read-modify-write race
+   * that `writeFileSync` would have on a shared append target.
+   */
+  appendFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding?: BufferEncoding
+  ): void
+  /** Rename a file. Used internally by atomic writes and by `.corrupted` fallback paths. */
+  renameSync(oldPath: string, newPath: string): void
   unlinkSync(path: string): void
   /**
    * Remove a path. With `{ recursive: true }` removes a directory and
@@ -138,6 +184,95 @@ export class DirectFsLayer implements FileAccessLayer {
     } else {
       fsWriteFileSync(path, content)
     }
+  }
+
+  writeFileAtomic(
+    path: string,
+    content: string | Buffer,
+    options?: WriteFileAtomicOptions
+  ): void {
+    // Same-directory rename is the only atomic-replace path POSIX
+    // gives us — `rename(2)` across devices falls back to copy+unlink
+    // and loses the atomicity guarantee. So the temp file MUST be a
+    // sibling of the destination.
+    const dir = dirname(path)
+    const base = basename(path)
+    // pid + 8 hex chars from /dev/urandom: cheap collision avoidance
+    // when multiple processes race to write the same destination
+    // (e.g. two browser tabs saving settings concurrently).
+    const tempName = `${base}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
+    const tempPath = `${dir}/${tempName}`
+    const mode = options?.mode ?? 0o600
+    const wantFsync = options?.fsync !== false
+
+    let fd: number | undefined
+    try {
+      // O_WRONLY | O_CREAT | O_EXCL: refuse to clobber a stale temp
+      // file (whose presence would mean another writer just lost the
+      // race or crashed mid-write — we cannot safely reuse it).
+      fd = fsOpenSync(tempPath, 'wx', mode)
+      if (typeof content === 'string') {
+        fsWriteFileSync(fd, content, 'utf-8')
+      } else {
+        fsWriteFileSync(fd, content)
+      }
+      if (wantFsync) {
+        this._fsync(fd)
+      }
+      fsCloseSync(fd)
+      fd = undefined
+      this._rename(tempPath, path)
+    } catch (err) {
+      // Best-effort cleanup. Either the open failed (no fd, no temp
+      // file to remove), or the write/rename failed (stale temp file
+      // we should remove). Suppress errors here — the original error
+      // is what the caller cares about, and a leftover temp file is
+      // recoverable (next successful write will rename over it).
+      if (fd !== undefined) {
+        try {
+          fsCloseSync(fd)
+        } catch {
+          // already closed or invalid fd; nothing more we can do
+        }
+      }
+      try {
+        fsUnlinkSync(tempPath)
+      } catch {
+        // temp file may not exist (open failed) or may already be gone
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Hook around `fs.renameSync`, isolated as a protected method so
+   * tests can inject failure modes (ENOSPC / EXDEV) by subclassing
+   * `DirectFsLayer`. ESM `vi.spyOn` cannot redefine module namespace
+   * exports, so per-call indirection is the cleanest seam.
+   */
+  protected _rename(oldPath: string, newPath: string): void {
+    fsRenameSync(oldPath, newPath)
+  }
+
+  /** Hook around `fs.fsyncSync`. See `_rename` for rationale. */
+  protected _fsync(fd: number): void {
+    fsFsyncSync(fd)
+  }
+
+  appendFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding: BufferEncoding = 'utf-8'
+  ): void {
+    if (typeof content === 'string') {
+      fsAppendFileSync(path, content, encoding)
+    } else {
+      fsAppendFileSync(path, content)
+    }
+  }
+
+  renameSync(oldPath: string, newPath: string): void {
+    fsRenameSync(oldPath, newPath)
   }
 
   unlinkSync(path: string): void {

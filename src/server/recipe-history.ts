@@ -18,24 +18,77 @@ export function getRecipeHistoryPath(fs: FileAccessLayer): string {
   return join(getKovitoboardDir(fs), HISTORY_FILENAME)
 }
 
-/** Read all recipe history entries. Returns empty array if file doesn't exist. */
+/**
+ * Read all recipe history entries. Returns an empty array when the file
+ * does not exist.
+ *
+ * Per-line parsing: a single corrupted line (e.g. a half-written entry
+ * left by a crashed process before this module switched to
+ * `appendFileSync`) is logged and skipped rather than failing the whole
+ * read. If every non-empty line fails to parse the file is presumed
+ * fully corrupted and renamed to `<path>.corrupted` so the next
+ * `appendRecipeHistory` call can start fresh; downstream code will see
+ * an empty history rather than a hard error loop.
+ */
 export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   const path = getRecipeHistoryPath(fs)
   if (!fs.existsSync(path)) return []
 
+  let content: string
   try {
-    const content = fs.readFileSync(path, 'utf-8')
-    return content
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as RecipeHistoryEntry)
+    content = fs.readFileSync(path, 'utf-8')
   } catch (err) {
     console.error('[recipe-history] Failed to read history:', err)
     return []
   }
+
+  const lines = content.split('\n').filter((line) => line.trim().length > 0)
+  const entries: RecipeHistoryEntry[] = []
+  let parseFailures = 0
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line) as RecipeHistoryEntry)
+    } catch (err) {
+      parseFailures += 1
+      console.warn(
+        '[recipe-history] Skipping unparseable line:',
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
+  // Whole-file corruption: every non-empty line failed to parse.
+  // Rename out of the way so the next append starts a fresh file
+  // instead of accumulating more bad lines on top of the corruption.
+  if (parseFailures > 0 && entries.length === 0 && lines.length > 0) {
+    const corruptedPath = `${path}.corrupted`
+    try {
+      fs.renameSync(path, corruptedPath)
+      console.error(
+        `[recipe-history] All ${lines.length} line(s) failed to parse; moved to ${corruptedPath}.`,
+      )
+    } catch (err) {
+      console.error(
+        '[recipe-history] Failed to rename corrupted history file:',
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
+  return entries
 }
 
-/** Append a single history entry to the JSONL file. */
+/**
+ * Append a single history entry to the JSONL file.
+ *
+ * Implementation note: this used to read the entire file, concatenate
+ * the new line, and `writeFileSync` it back — a read-modify-write cycle
+ * that lost entries when two callers raced (Codex review #17) and that
+ * could leave a half-written file behind on a crash (review S10). The
+ * current implementation uses `appendFileSync`, which on POSIX is a
+ * single `write(2)` for short payloads and therefore atomic with
+ * respect to other appends to the same file.
+ */
 export function appendRecipeHistory(fs: FileAccessLayer, entry: RecipeHistoryEntry): void {
   const path = getRecipeHistoryPath(fs)
   const dir = getKovitoboardDir(fs)
@@ -45,14 +98,7 @@ export function appendRecipeHistory(fs: FileAccessLayer, entry: RecipeHistoryEnt
   }
 
   const line = JSON.stringify(entry) + '\n'
-
-  // Append to file (create if not exists)
-  if (fs.existsSync(path)) {
-    const existing = fs.readFileSync(path, 'utf-8')
-    fs.writeFileSync(path, existing + line, 'utf-8')
-  } else {
-    fs.writeFileSync(path, line, 'utf-8')
-  }
+  fs.appendFileSync(path, line, 'utf-8')
 }
 
 /**
