@@ -183,6 +183,9 @@ describe('T-3: hygiene script self-exclusion', () => {
     expect(shouldScanFileForInternalId('lefthook.yml')).toBe(true)
     expect(shouldScanFileForInternalId('vitest.config.ts')).toBe(true)
     expect(shouldScanFileForInternalId('playwright.config.l1.ts')).toBe(true)
+    // `.mjs` / `.js` are commonly used for tooling configs at the root.
+    expect(shouldScanFileForInternalId('eslint.config.mjs')).toBe(true)
+    expect(shouldScanFileForInternalId('build.js')).toBe(true)
   })
 
   it('excludes generated and external root files explicitly', () => {

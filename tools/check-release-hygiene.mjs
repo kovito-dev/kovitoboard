@@ -215,7 +215,18 @@ export const INTERNAL_ID_EXCLUDE_PREFIXES = [
 // silently bypass the gate by virtue of not appearing in a hard-coded list.
 // Only documentation and config formats are scanned; binary and license
 // files are not in scope.
-export const INTERNAL_ID_ROOT_EXTENSIONS = ['.md', '.json', '.yml', '.yaml', '.ts']
+//
+// `.js` and `.mjs` are included because tooling configs often live at the
+// repo root (e.g. `eslint.config.mjs`, a future `vite.config.mjs`).
+export const INTERNAL_ID_ROOT_EXTENSIONS = [
+  '.md',
+  '.json',
+  '.yml',
+  '.yaml',
+  '.ts',
+  '.mjs',
+  '.js',
+]
 
 // Root-level files that are deliberately excluded from the scan even though
 // their extension would otherwise qualify them. `package-lock.json` is
@@ -807,49 +818,38 @@ function runInternalIdCheck(report, mode) {
       sizeCap: INTERNAL_ID_FILE_SIZE_CAP,
     })
     if (scan.skipped) {
+      // Skip reasons are ALWAYS reported as errors, regardless of mode.
+      //
+      // The warn-only promise applies to pattern matches: those are
+      // intentionally non-fatal while the cleanup is in progress. A skipped
+      // file is different — the scan could not run at all, so we do not
+      // know what is inside, and a contributor could otherwise hide internal
+      // IDs behind a symlink, an oversized blob, or an unreadable path. The
+      // only way to keep the gate honest is to fail CI on every skip.
       if (scan.reason === 'special-file') {
-        // Symlinks, FIFOs, devices, and other non-regular files are refused
-        // by the scanner. Surfaced loud so a tracked symlink cannot be used
-        // to bypass the gate by deflecting reads outside the repo.
         skippedBySpecialFile++
-        const severity = mode === 'warn-only' ? 'warn' : 'error'
         report(
-          severity,
+          'error',
           `${file} not scanned for internal-IDs (symlink or non-regular file)`,
           1,
         )
-        if (severity === 'error') totalErrors++
-        else totalWarns++
+        totalErrors++
       } else if (scan.reason === 'size-cap') {
-        // Surface oversized files: the size cap exists to bound CI memory,
-        // not to give large files a free pass. Without this counter, a
-        // tracked file > 1 MiB carrying internal IDs would slip through CI
-        // entirely. Reported as a warning in warn-only mode and as an
-        // error in stricter modes so it cannot be silently ignored.
         skippedBySizeCap++
-        const severity = mode === 'warn-only' ? 'warn' : 'error'
         report(
-          severity,
+          'error',
           `${file} not scanned for internal-IDs (${scan.size} bytes exceeds ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
           1,
         )
-        if (severity === 'error') totalErrors++
-        else totalWarns++
+        totalErrors++
       } else if (scan.reason === 'read-error') {
-        // Surface read failures loudly: a broken symlink or permission issue
-        // would otherwise let a tracked file pass the scan silently and hide
-        // any internal IDs it contains. Always reported as a warning so the
-        // count flows into the summary; partial-error / full-error modes
-        // promote it through the same severity table the patterns use.
         skippedByReadError++
-        const severity = mode === 'warn-only' ? 'warn' : 'error'
         report(
-          severity,
+          'error',
           `${file} could not be read for internal-ID scan (broken symlink or permission issue?)`,
           1,
         )
-        if (severity === 'error') totalErrors++
-        else totalWarns++
+        totalErrors++
       }
       continue
     }
