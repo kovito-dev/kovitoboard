@@ -50,7 +50,7 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
           )
         }
       } catch (refErr) {
-        serverLogger.warn({ refErr }, '[config-routes] Failed to install agent-ref docs:')
+        serverLogger.warn({ err: refErr }, '[config-routes] Failed to install agent-ref docs')
       }
 
       res.json({ success: true })

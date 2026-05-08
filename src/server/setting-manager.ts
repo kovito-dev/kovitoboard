@@ -43,7 +43,7 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
         writeSetting(fs, data as unknown as KovitoboardSetting)
         settingLog.info('[setting-manager] Migrated setting.json: 1.0 -> 1.1')
       } catch (writeErr) {
-        settingLog.warn({ writeErr }, '[setting-manager] Migration write-back failed:')
+        settingLog.warn({ err: writeErr }, '[setting-manager] Migration write-back failed')
       }
     }
 
