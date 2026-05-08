@@ -71,6 +71,8 @@ import {
   symlinkSync,
   readlinkSync,
   mkdirSync,
+  openSync,
+  closeSync,
 } from 'fs'
 import {
   decideDetach,
@@ -150,6 +152,13 @@ Examples:
   process.exit(0)
 }
 
+const projectRoot =
+  (parseStringFlag(process.argv, '--project-root')
+    ? resolve(parseStringFlag(process.argv, '--project-root'))
+    : null) ||
+  process.env.KOVITOBOARD_PROJECT_ROOT ||
+  null
+
 // ---------------------------------------------------------------------------
 // Detach branch: re-exec self in the background, then exit
 //
@@ -158,6 +167,11 @@ Examples:
 // wire it up so it survives the parent shell, and exit. The child
 // inherits `KOVITOBOARD_DETACHED=1` and therefore takes the normal
 // foreground branch below — no recursion, no double fork.
+//
+// Placement: this branch runs AFTER projectRoot resolution because the
+// detach log directory is anchored under projectRoot. Putting detach
+// before that step would either lose the resolved log location or
+// require duplicating the resolution.
 //
 // Stopping is intentionally manual for v0.2.0: the supervisor PID is
 // printed and the user kills it directly. A `kb:stop` script will be
@@ -171,29 +185,88 @@ if (decideDetach(process.argv.slice(2), process.env)) {
     process.env,
     process.execArgv,
   )
+
+  // Anchor early-startup diagnostics to a real log file. Without this,
+  // `stdio: 'ignore'` would swallow any failure that happens before the
+  // server's pino pipeline initialises, leaving a "started but not
+  // running" silent failure that violates the README's promise that
+  // logs are findable under .kovitoboard/logs/.
+  //
+  // Anchor: prefer projectRoot, fall back to repoRoot (the latter
+  // covers tests and the diagnostic command run without a project).
+  const logBase = projectRoot ?? repoRoot
+  const logDir = resolve(logBase, '.kovitoboard', 'logs')
+  let logFd
+  let logPath
+  try {
+    mkdirSync(logDir, { recursive: true })
+    logPath = resolve(logDir, 'kb-detach-startup.log')
+    logFd = openSync(logPath, 'a')
+  } catch (err) {
+    console.error(
+      `[kb-start] Failed to prepare detach log at ${logDir}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+    process.exit(1)
+  }
+
   // Use process.execPath rather than process.argv[0] so symlinked /
   // aliased entrypoints (e.g. `nodejs` on Debian, nvm shims) resolve to
   // the actual node binary. Pair it with execArgv prepended via
   // buildDetachedSpawnArgs so loaders, inspector ports, and future
   // permission flags carry over to the child.
-  const child = spawn(process.execPath, childArgs, {
-    detached: true,
-    stdio: 'ignore',
-    env: childEnv,
+  let child
+  try {
+    child = spawn(process.execPath, childArgs, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: childEnv,
+    })
+  } catch (err) {
+    closeSync(logFd)
+    console.error(
+      `[kb-start] Failed to spawn detached supervisor: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+    process.exit(1)
+  }
+
+  // `spawn` may either throw synchronously, emit an `error` event
+  // asynchronously, or return a child without a pid (e.g. EACCES,
+  // EMFILE, ENOMEM). Treat any of these as a hard failure so we never
+  // print a fake-success message and exit 0.
+  child.on('error', (err) => {
+    console.error(
+      `[kb-start] Detached supervisor failed to start: ${err.message}`,
+    )
+    try {
+      closeSync(logFd)
+    } catch {
+      // best-effort; the parent is exiting anyway
+    }
+    process.exit(1)
   })
+
+  if (typeof child.pid !== 'number' || child.pid <= 0) {
+    closeSync(logFd)
+    console.error('[kb-start] Detached supervisor produced no pid.')
+    process.exit(1)
+  }
+
   child.unref()
+  // The parent's reference to the log fd is no longer needed; the
+  // child inherited dup'd handles for its stdout/stderr. Leaving the
+  // parent fd open would just leak it on exit.
+  closeSync(logFd)
+
   console.log(
     `[kb-start] Detached (pid=${child.pid}). Stop with 'kill ${child.pid}'.`,
   )
+  console.log(`[kb-start] Detach startup log: ${logPath}`)
   process.exit(0)
 }
-
-const projectRoot =
-  (parseStringFlag(process.argv, '--project-root')
-    ? resolve(parseStringFlag(process.argv, '--project-root'))
-    : null) ||
-  process.env.KOVITOBOARD_PROJECT_ROOT ||
-  null
 
 let cliBackendPort
 let cliVitePort
