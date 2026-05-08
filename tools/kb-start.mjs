@@ -202,7 +202,12 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   try {
     mkdirSync(logDir, { recursive: true })
     logPath = resolve(logDir, 'kb-detach-stderr.log')
-    logFd = openSync(logPath, 'a')
+    // 'w' (O_TRUNC) instead of 'a': each detach run starts with a
+    // fresh capture so disk usage stays bounded by a single run's
+    // worst-case stderr volume. The supervisor's pino pipeline remains
+    // the SSOT for cross-run history; this file is a one-shot
+    // bootstrap-crash trace, not a permanent log.
+    logFd = openSync(logPath, 'w')
   } catch (err) {
     console.error(
       `[kb-start] Failed to prepare detach log at ${logDir}: ${
@@ -265,6 +270,34 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   if (typeof child.pid !== 'number' || child.pid <= 0) {
     closeSync(logFd)
     console.error('[kb-start] Detached supervisor produced no pid.')
+    process.exit(1)
+  }
+
+  // Early-exit window: after the fork is confirmed via the 'spawn'
+  // event, watch briefly for an immediate `'exit'` so a child that
+  // crashes during initial setup (e.g. invalid CLI args, bad
+  // execArgv) does not present as a successful detach. The window is
+  // intentionally short — full startup readiness (port bind, server
+  // listening) is out of scope for this PR and belongs with the
+  // process-lifecycle Phase 1 handshake work.
+  const EARLY_EXIT_WINDOW_MS = 200
+  const earlyExitCheck = await new Promise((resolveCheck) => {
+    const timer = setTimeout(() => resolveCheck({ ok: true }), EARLY_EXIT_WINDOW_MS)
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer)
+      resolveCheck({ ok: false, code, signal })
+    })
+  })
+
+  if (!earlyExitCheck.ok) {
+    closeSync(logFd)
+    const reason =
+      earlyExitCheck.signal !== null
+        ? `signal=${earlyExitCheck.signal}`
+        : `code=${earlyExitCheck.code}`
+    console.error(
+      `[kb-start] Detached supervisor exited during early startup (${reason}). See ${logPath} for stderr.`,
+    )
     process.exit(1)
   }
 
