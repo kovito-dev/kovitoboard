@@ -1013,7 +1013,7 @@ function stripStringsAndLineComments(line, state) {
       continue
     }
     const c = line[i]
-    if (c === '"' || c === "'" || c === '`') {
+    if (c === '"' || c === "'") {
       const quote = c
       out += quote
       i++
@@ -1026,6 +1026,49 @@ function stripStringsAndLineComments(line, state) {
           out += quote
           i++
           break
+        }
+        i++
+      }
+      continue
+    }
+    if (c === '`') {
+      // Template literal: drop the inert text but keep
+      // `${...}` interpolations as code so a buried
+      // `console.log(...)` inside an interpolation is still
+      // visible to the regex below. Brace depth is tracked so
+      // nested object literals inside the interpolation do not
+      // close the `${ }` early.
+      out += '`'
+      i++
+      while (i < line.length) {
+        if (line[i] === '\\' && i + 1 < line.length) {
+          i += 2
+          continue
+        }
+        if (line[i] === '`') {
+          out += '`'
+          i++
+          break
+        }
+        if (line[i] === '$' && line[i + 1] === '{') {
+          out += '${'
+          i += 2
+          let depth = 1
+          while (i < line.length && depth > 0) {
+            const ch = line[i]
+            if (ch === '{') depth++
+            if (ch === '}') {
+              depth--
+              if (depth === 0) {
+                out += '}'
+                i++
+                break
+              }
+            }
+            out += ch
+            i++
+          }
+          continue
         }
         i++
       }
