@@ -98,6 +98,37 @@ export function RecipeInstallWarningDialog({
           <p className="text-[var(--text-secondary)]">
             {t('recipe.install.warning.note')}
           </p>
+
+          {/* Safety boundary disclosure (D-4): the inspector + the
+              renderer-only confinement keep recipes inside a known
+              perimeter even when the warning above is displayed. */}
+          <section
+            data-testid="recipe-install-warning-safety-boundary"
+            className="mt-4 pt-3 border-t border-[var(--border)]"
+          >
+            <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-1">
+              {t('recipe.install.warning.safetyBoundary.heading')}
+            </h4>
+            <p className="text-[var(--text-secondary)] text-xs leading-relaxed">
+              {t('recipe.install.warning.safetyBoundary.body')}
+            </p>
+          </section>
+
+          {/* Trusted-code disclosure (D-4): even with the safety
+              boundary above, recipe pages run with first-party
+              privileges in the same realm as KB's built-in UI, so
+              source trust is the user's call. */}
+          <section
+            data-testid="recipe-install-warning-trusted-code"
+            className="mt-3"
+          >
+            <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-1">
+              {t('recipe.install.warning.trustedCode.heading')}
+            </h4>
+            <p className="text-[var(--text-secondary)] text-xs leading-relaxed">
+              {t('recipe.install.warning.trustedCode.body')}
+            </p>
+          </section>
         </div>
 
         {/* Footer */}

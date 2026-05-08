@@ -251,6 +251,14 @@ const ja = {
   'recipe.install.warning.pattern.shell-exec': 'exec / spawn の使用',
   'recipe.install.warning.pattern.process-env-write': '環境変数の書き換え',
 
+  // レシピインストール — 安全境界・信頼コード明示 (D-4)
+  'recipe.install.warning.safetyBoundary.heading': '安全境界',
+  'recipe.install.warning.safetyBoundary.body':
+    'このレシピは KovitoBoard の安全境界内で動作します。レシピのアーティファクトは検査されており(拡張子の whitelist / パスプレフィックスの制限 / type api の禁止 / 危険パターンの検出)、renderer 側のみで動作します。バックエンドのルートハンドラはレシピに含めることができません。',
+  'recipe.install.warning.trustedCode.heading': 'レシピページは信頼コードとして動作します',
+  'recipe.install.warning.trustedCode.body':
+    'レシピのページは KovitoBoard の組み込み UI と同じ JavaScript realm 内で first-party 権限で動作します。/api/* エンドポイントの呼び出し、WebSocket 通信、localStorage / sessionStorage へのアクセスが可能です。上記のハンドラスコープは window.kb.call() ハンドラに適用される範囲で、ページは直接の fetch / WebSocket でこれを bypass できます。信頼できるソースのレシピのみをインストールしてください。',
+
   // アプリ削除フロー (DEC-024 #3)
   'nav.action.removeApp': 'アプリを削除',
   'nav.action.appActions': 'アプリ操作',
