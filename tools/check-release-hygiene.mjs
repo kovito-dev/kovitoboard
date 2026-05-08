@@ -967,7 +967,70 @@ const CONSOLE_EXCLUDE_FILES = new Set([
   'src/server/log-config.ts',
   'src/renderer/lib/logger.ts',
 ])
-const CONSOLE_OPT_OUT_TAG = 'hygiene-allow: console-bootstrap'
+// Anchored on the trailing `// hygiene-allow: console-bootstrap`
+// comment so the opt-out cannot be smuggled in via a string literal
+// or an unrelated comment that happens to contain the same words.
+const CONSOLE_OPT_OUT_RE = /\/\/\s*hygiene-allow:\s*console-bootstrap\s*$/
+
+/**
+ * Strip text that does not represent executable code on a single
+ * line: full-line `//` comments and double-/single-/back-tick
+ * quoted string contents. Block comments that span multiple lines
+ * are tracked across calls via the closure state in `runConsoleCheck`.
+ *
+ * Intentionally simple: this is not a real tokenizer, just enough
+ * to keep the regex from flagging mentions of `console.log` inside
+ * strings or comments. False positives caused by exotic syntax
+ * (template tags, regex literals containing the word, etc.) can be
+ * silenced with the line-tag opt-out above.
+ */
+function stripStringsAndLineComments(line, state) {
+  let out = ''
+  let i = 0
+  let inBlockComment = state.inBlockComment
+  while (i < line.length) {
+    if (inBlockComment) {
+      const end = line.indexOf('*/', i)
+      if (end === -1) {
+        i = line.length
+      } else {
+        i = end + 2
+        inBlockComment = false
+      }
+      continue
+    }
+    const two = line.slice(i, i + 2)
+    if (two === '//') break
+    if (two === '/*') {
+      inBlockComment = true
+      i += 2
+      continue
+    }
+    const c = line[i]
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c
+      out += quote
+      i++
+      while (i < line.length) {
+        if (line[i] === '\\' && i + 1 < line.length) {
+          i += 2
+          continue
+        }
+        if (line[i] === quote) {
+          out += quote
+          i++
+          break
+        }
+        i++
+      }
+      continue
+    }
+    out += c
+    i++
+  }
+  state.inBlockComment = inBlockComment
+  return out
+}
 
 function runConsoleCheck(warn) {
   console.log('\n\x1b[1m[7/7] Direct console.* call detection\x1b[0m')
@@ -984,9 +1047,32 @@ function runConsoleCheck(warn) {
   let totalHits = 0
   let fileCount = 0
   for (const file of sourceFiles) {
-    const hits = scanFile(join(ROOT, file), CONSOLE_DIRECT_RE).filter(
-      (h) => !h.text.includes(CONSOLE_OPT_OUT_TAG),
-    )
+    let content
+    try {
+      content = readFileSync(join(ROOT, file), 'utf-8')
+    } catch {
+      continue
+    }
+    const lines = content.split(/\r?\n/)
+    const state = { inBlockComment: false }
+    const hits = []
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i]
+      // Honour the line-tagged opt-out before scrubbing the line, so
+      // the trailing `// hygiene-allow: console-bootstrap` comment
+      // is the gate (not the substring).
+      if (CONSOLE_OPT_OUT_RE.test(raw)) {
+        // Still let the block-comment tracker advance through this
+        // line in case the opt-out tag immediately precedes a
+        // multi-line comment.
+        stripStringsAndLineComments(raw, state)
+        continue
+      }
+      const codeOnly = stripStringsAndLineComments(raw, state)
+      if (CONSOLE_DIRECT_RE.test(codeOnly)) {
+        hits.push({ line: i + 1, text: raw })
+      }
+    }
     if (hits.length === 0) continue
     fileCount++
     totalHits += hits.length

@@ -164,7 +164,7 @@ export class ClaudeBridge extends EventEmitter {
 
     child.on('error', (err) => {
       managed.status = 'error'
-      tmuxLogger.error({ err: err.message }, `[claude-bridge] Process error(${processId.slice(0, 8)})`)
+      tmuxLogger.error({ err }, `[claude-bridge] Process error(${processId.slice(0, 8)})`)
       this.emit('process_end', processId, 'error', -1)
     })
 
