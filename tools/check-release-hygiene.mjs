@@ -89,9 +89,13 @@ export const META_ERROR_MULTILINE = [
 ]
 
 // WARNING-level patterns are logged but do not fail the check.
+//
+// Note: `biz-dev` was previously listed here too. It is now owned by section
+// [6/6]'s standalone agent name pattern (the "false-positive prone" set), so
+// keeping it here would double-count every hit and make the summary noisy.
+// `kovito-hq` is unique to this list — section [6/6] does not check for it.
 export const META_WARN_PATTERNS = [
   { label: 'TODO/FIXME/XXX/TBD', regex: /(^|\s)(?:TODO:|FIXME:|XXX:|TBD\b)/ },
-  { label: 'biz-dev (internal team)', regex: /biz-dev/i },
   { label: 'kovito-hq (internal repo)', regex: /kovito-hq/i },
 ]
 
@@ -498,12 +502,22 @@ export function scanFileForPatterns(filePath, patterns, opts = {}) {
     return { skipped: true, reason: 'read-error', results: [] }
   }
   const lines = content.split('\n')
+  // Defensive: build a non-stateful regex copy for each pattern so a future
+  // /g or /y flag would not leak `lastIndex` across lines and skip matches
+  // nondeterministically. Today's internal-ID patterns are all non-global,
+  // but the helper is generic and the cost of one fresh RegExp per scan is
+  // negligible.
+  const localRegexes = patterns.map((p) =>
+    p.regex.global || p.regex.sticky
+      ? new RegExp(p.regex.source, p.regex.flags.replace(/[gy]/g, ''))
+      : p.regex,
+  )
   const results = patterns.map((p) => ({ pattern: p, hits: [] }))
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    for (const r of results) {
-      if (r.pattern.regex.test(line)) {
-        r.hits.push({ line: i + 1, text: line.trim() })
+    for (let pi = 0; pi < results.length; pi++) {
+      if (localRegexes[pi].test(line)) {
+        results[pi].hits.push({ line: i + 1, text: line.trim() })
       }
     }
   }
@@ -783,10 +797,20 @@ function runInternalIdCheck(report, mode) {
     })
     if (scan.skipped) {
       if (scan.reason === 'size-cap') {
+        // Surface oversized files: the size cap exists to bound CI memory,
+        // not to give large files a free pass. Without this counter, a
+        // tracked file > 1 MiB carrying internal IDs would slip through CI
+        // entirely. Reported as a warning in warn-only mode and as an
+        // error in stricter modes so it cannot be silently ignored.
         skippedBySizeCap++
-        console.log(
-          `  [skipped] ${file} (${scan.size} bytes > ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
+        const severity = mode === 'warn-only' ? 'warn' : 'error'
+        report(
+          severity,
+          `${file} not scanned for internal-IDs (${scan.size} bytes exceeds ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
+          1,
         )
+        if (severity === 'error') totalErrors++
+        else totalWarns++
       } else if (scan.reason === 'read-error') {
         // Surface read failures loudly: a broken symlink or permission issue
         // would otherwise let a tracked file pass the scan silently and hide
@@ -794,8 +818,7 @@ function runInternalIdCheck(report, mode) {
         // count flows into the summary; partial-error / full-error modes
         // promote it through the same severity table the patterns use.
         skippedByReadError++
-        const severity =
-          mode === 'warn-only' ? 'warn' : 'error'
+        const severity = mode === 'warn-only' ? 'warn' : 'error'
         report(
           severity,
           `${file} could not be read for internal-ID scan (broken symlink or permission issue?)`,
