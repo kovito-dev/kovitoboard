@@ -85,7 +85,7 @@ beyond the surface rules listed above. A contributor-facing
 `CONTRIBUTING.md` will be expanded before external pull requests are
 accepted (see the project's release roadmap).
 
-## CI verification rule (DEC-018)
+## CI verification rule
 
 AI agents must follow this rule whenever they commit and push to this
 repository.
@@ -111,8 +111,8 @@ status:
 - Never bypass pre-commit / pre-push hooks unless explicitly
   authorised (no `--no-verify`).
 
-The full rationale and operational rules live in DEC-018 v1.1 in the
-private kovitoboard-dev repository.
+The full rationale and operational rules live in the kovitoboard-dev
+companion repository under `.claude/rules/ci-protocol.md`.
 
 ## Language policy
 
@@ -120,4 +120,6 @@ This repository is OSS-distributed. All code, comments, log strings,
 console messages, error messages, commit messages, PR titles, and
 issue titles must be in English. The narrow exceptions
 (`src/renderer/i18n/ja.ts`, Japanese-paired template files, the
-`tests/` tree pending migration) are documented in DEC-012.
+`tests/` tree pending migration) follow the language-zone rules in
+the kovitoboard-dev companion repository's `CLAUDE.md` and
+`.claude/rules/git-commit.md`.
