@@ -152,13 +152,16 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
           if (customBeFiles.length < CUSTOM_BE_FILES_SAMPLE_CAP) {
             customBeFiles.push({ relativePath, sizeBytes })
           }
-          // Past the cap we stop walking entirely: the export is
-          // already guaranteed to be refused, so continuing the
-          // recursion just to make `customBeFilesCount` exact would
-          // waste CPU + IO on an adversarial `api/` tree. The
-          // `aborted` flag is propagated to the response as
-          // `customBeFilesCountApproximate` so callers can show
-          // "50+ files" rather than a misleadingly precise total.
+          // Past the cap we stop the entire walk — the export is
+          // already guaranteed to be refused, so spending more CPU
+          // / IO to make `customBeFilesCount` (and incidentally
+          // `artifacts` / `menu` / `totalSize`) exact has no
+          // consumer. The result becomes "partial but
+          // refusal-certain"; the AppScanResult contract documents
+          // that artifacts / menu / totalSize MAY be incomplete
+          // when customBeFiles is non-empty, and
+          // `customBeFilesCountApproximate` explicitly flags the
+          // count itself as a lower bound.
           if (customBeFilesCount >= CUSTOM_BE_FILES_SAMPLE_CAP) {
             aborted = true
             return

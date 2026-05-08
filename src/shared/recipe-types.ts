@@ -347,41 +347,50 @@ export interface RecipeExportErrorResponse {
   error: string
 }
 
+/**
+ * Result of `scanAppDirectory(fs, appId)`.
+ *
+ * **Completeness contract:** when `customBeFiles` is empty (and
+ * therefore `customBeFilesCount === 0`), every other field is the
+ * accurate result of a full walk and the export can proceed.
+ * When `customBeFiles` is non-empty, the caller MUST refuse the
+ * export — anything under `api/` is rejected by recipe-inspector at
+ * install time, so packaging it would produce an uninstallable
+ * recipe. In that refusal-path case, `artifacts`, `menu`, and
+ * `totalSize` may be partial: the scanner short-circuits as soon as
+ * the refusal is certain, so it does not waste CPU / IO walking the
+ * rest of the tree on a request that is guaranteed to fail. The
+ * refusal does not consume those fields, so the partiality is
+ * harmless in practice; new callers that DO want full
+ * artifacts / menu / totalSize should first verify
+ * `customBeFilesCount === 0`.
+ */
 export interface AppScanResult {
   artifacts: Array<{ path: string; type: ArtifactType; sizeBytes: number }>
   menu: RecipeMenuEntry[]
   totalSize: number
   /**
    * Sample of files under `app/<appId>/api/` that the exporter
-   * detected. These are NOT included in `artifacts` because anything
-   * under `api/` is rejected by recipe-inspector's path-prefix
-   * restriction at install time, so packaging them would produce a
-   * recipe the consumer cannot install. The caller should refuse
-   * the export when this array (or `customBeFilesCount`) is
-   * non-empty.
-   *
-   * The list is bounded — the scanner stops accumulating once it
-   * has collected enough entries to drive a clear UI message.
-   * Use `customBeFilesCount` for the total count (accurate even when
-   * the array is at the cap).
+   * detected. The list is bounded so a pathological tree cannot
+   * drive an unbounded allocation — use `customBeFilesCount` for
+   * the count and `customBeFilesCountApproximate` to know whether
+   * that count is exact.
    */
   customBeFiles: Array<{ relativePath: string; sizeBytes: number }>
   /**
-   * Total number of files the scanner found under
-   * `app/<appId>/api/`, regardless of whether each one was stored
-   * in `customBeFiles`. Equal to `customBeFiles.length` when the
-   * total fits inside the cap. When the scanner hit its cap and
-   * stopped walking, this is a best-effort lower bound rather than
-   * a true total — see `customBeFilesCountApproximate`.
+   * Number of files the scanner observed under `app/<appId>/api/`
+   * before it stopped walking. Equal to `customBeFiles.length`
+   * when the cap was not hit; a best-effort lower bound otherwise
+   * (see `customBeFilesCountApproximate`).
    */
   customBeFilesCount: number
   /**
    * True when the scanner short-circuited after collecting enough
    * `api/` matches to drive the refusal. In that case
    * `customBeFilesCount` is the lower bound it reached before it
-   * stopped, not the true number of files in `app/<appId>/api/`.
-   * Callers should render "N+ files" rather than "N files" when
-   * this is true.
+   * stopped, not the true number of files in `app/<appId>/api/`,
+   * and the rest of the result (artifacts / menu / totalSize) is
+   * also partial — see the interface-level note above.
    */
   customBeFilesCountApproximate: boolean
 }
