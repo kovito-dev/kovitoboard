@@ -34,6 +34,7 @@ import {
   closeSync as fsCloseSync,
   fsyncSync as fsFsyncSync,
   fchmodSync as fsFchmodSync,
+  fchownSync as fsFchownSync,
 } from 'fs'
 import { dirname, basename } from 'path'
 import { randomBytes } from 'crypto'
@@ -119,11 +120,26 @@ export interface FileAccessLayer {
   // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
   /**
-   * Atomically replace the destination file's contents. The file is
-   * either the previous version or the new version, never half-written
-   * — useful for JSON stores where a partial write would surface as a
-   * `JSON.parse` failure on the next load. Backed by a same-directory
-   * temp file + `fsync` (optional) + POSIX `rename(2)`.
+   * Atomically replace the destination file's contents.
+   *
+   * Scope: this helper is intended for KB-internal JSON / text stores
+   * under `.kovitoboard/` and `app/<appId>/` — files KB itself
+   * creates and owns. It is **not** a generic file-replacement helper:
+   * because it publishes via `rename(2)` over a fresh inode, only the
+   * mode bits and (best-effort) owner/group of the previous file are
+   * carried over. POSIX ACLs, extended attributes, and security
+   * labels are lost by design. For generic file replacement that
+   * needs full metadata preservation, prefer an in-place helper or
+   * `cp --preserve=all` style routine.
+   *
+   * String content is always written as UTF-8 (matching how callers
+   * stringify JSON); Buffer content is written verbatim.
+   *
+   * Backed by a same-directory temp file + `fsync` (optional) + POSIX
+   * `rename(2)`. The file is either the previous version or the new
+   * version, never half-written — useful for JSON stores where a
+   * partial write would surface as a `JSON.parse` failure on the
+   * next load.
    */
   writeFileAtomic(
     path: string,
@@ -232,13 +248,22 @@ export class DirectFsLayer implements FileAccessLayer {
     //   not ours to bypass for new files).
     const explicitMode = options?.mode ?? null
     let preservedMode: number | null = null
+    let preservedUid: number | null = null
+    let preservedGid: number | null = null
     if (explicitMode === null && fsExistsSync(path)) {
       try {
+        const st = fsStatSync(path)
         // Mask 0o7777 keeps the standard rwx triplet *and* the
         // setuid/setgid/sticky bits. Plain 0o777 would strip them
         // and silently change the security semantics of any file
         // the operator had explicitly chmodded with those bits.
-        preservedMode = fsStatSync(path).mode & 0o7777
+        preservedMode = st.mode & 0o7777
+        // Record uid/gid for best-effort post-rename preservation.
+        // chown(2) requires CAP_CHOWN unless the new owner is the
+        // current process — which is the common case here, so
+        // failures are non-fatal and silently swallowed below.
+        preservedUid = st.uid
+        preservedGid = st.gid
       } catch {
         preservedMode = null
       }
@@ -258,6 +283,23 @@ export class DirectFsLayer implements FileAccessLayer {
       // open is intentional and we leave it alone.
       if (enforcedMode !== null) {
         fsFchmodSync(fd, enforcedMode)
+      }
+      // Best-effort owner/group preservation when rewriting an
+      // existing file. chown(2) succeeds without privileges only
+      // when the target uid/gid match the calling process — which
+      // is the typical case for KB JSON stores (KB created the file
+      // and is rewriting it). Any failure here is swallowed; the
+      // intent is "don't silently change owner if we can avoid it",
+      // not "guarantee owner preservation across privilege barriers".
+      if (preservedUid !== null && preservedGid !== null) {
+        try {
+          fsFchownSync(fd, preservedUid, preservedGid)
+        } catch {
+          // Likely EPERM (different owner, no CAP_CHOWN). The new
+          // file inherits the caller's effective uid/gid, which is
+          // already the standard behaviour for any new file in this
+          // tree.
+        }
       }
       if (typeof content === 'string') {
         fsWriteFileSync(fd, content, 'utf-8')

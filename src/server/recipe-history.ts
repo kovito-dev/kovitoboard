@@ -55,6 +55,22 @@ const MIN_FAILURES_TO_ROTATE = 5
 const MAX_HISTORY_BYTES = 10 * 1024 * 1024
 
 /**
+ * Per-line size cap for `appendRecipeHistory`. POSIX `write(2)`
+ * is atomic-with-respect-to-other-writers only for payloads up to
+ * `PIPE_BUF` (4 KiB on Linux). Beyond that, two concurrent appends
+ * could be split into multiple syscalls and interleave their bytes,
+ * corrupting the JSONL store the same way the old read-modify-write
+ * loop did.
+ *
+ * 4 KiB is generous for a real `RecipeHistoryEntry` — typical
+ * payloads are a few hundred bytes — so the cap functions as an
+ * abuse / accident guard rather than a normal-path limit. Callers
+ * that need to record larger artefacts should reference them by
+ * path / hash instead of inlining their bodies into the history.
+ */
+const MAX_ENTRY_BYTES = 4 * 1024
+
+/**
  * Minimum runtime guard for a `RecipeHistoryEntry` shape. Catches a
  * syntactically valid JSON line that does not carry the required
  * fields — a `JSON.parse(line) as RecipeHistoryEntry` cast alone
@@ -256,12 +272,18 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
  * Append a single history entry to the JSONL file.
  *
  * Implementation note: this used to read the entire file, concatenate
- * the new line, and `writeFileSync` it back — a read-modify-write cycle
- * that lost entries when two callers raced (Codex review #17) and that
- * could leave a half-written file behind on a crash (review S10). The
- * current implementation uses `appendFileSync`, which on POSIX is a
- * single `write(2)` for short payloads and therefore atomic with
- * respect to other appends to the same file.
+ * the new line, and `writeFileSync` it back — a read-modify-write
+ * cycle that lost entries when two callers raced and that could leave
+ * a half-written file behind on a crash. The current implementation
+ * uses `appendFileSync`, which on POSIX is a single `write(2)` for
+ * short payloads (<= `PIPE_BUF`, 4 KiB on Linux) and therefore atomic
+ * with respect to other concurrent appends to the same file.
+ *
+ * Payloads larger than `MAX_ENTRY_BYTES` would risk being split into
+ * multiple `write(2)` calls and could interleave with concurrent
+ * appends, so they are rejected outright. Real recipe entries fit
+ * comfortably within the cap; artefacts that would exceed it should
+ * be recorded by reference (path / hash) rather than inlined.
  */
 export function appendRecipeHistory(fs: FileAccessLayer, entry: RecipeHistoryEntry): void {
   const path = getRecipeHistoryPath(fs)
@@ -272,6 +294,12 @@ export function appendRecipeHistory(fs: FileAccessLayer, entry: RecipeHistoryEnt
   }
 
   const line = JSON.stringify(entry) + '\n'
+  const lineSize = Buffer.byteLength(line, 'utf-8')
+  if (lineSize > MAX_ENTRY_BYTES) {
+    throw new Error(
+      `recipe history entry size ${lineSize} bytes exceeds ${MAX_ENTRY_BYTES} byte cap; record large artefacts by reference instead`,
+    )
+  }
   fs.appendFileSync(path, line, 'utf-8')
 }
 
