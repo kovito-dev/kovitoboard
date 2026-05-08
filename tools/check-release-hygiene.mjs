@@ -128,15 +128,19 @@ export const META_EXCLUDE_PREFIXES = [
 
 export const INTERNAL_ID_PATTERNS = [
   {
+    // Anchored with `\b` so substrings inside longer identifiers, hashes, or
+    // URL fragments do not produce noise. The commit-msg hook uses the
+    // unanchored form because messages are short and false positives are
+    // tolerable; code scanning needs the tighter bound.
     id: 'P-1',
     label: 'DEC ID (DEC-NNN)',
-    regex: /DEC-[0-9]+/,
+    regex: /\bDEC-[0-9]+\b/,
     errorInPhases: new Set(['partial-error', 'full-error']),
   },
   {
     id: 'P-2',
     label: 'BL ID (BL-YYYY-NNN)',
-    regex: /BL-[0-9]{4}-[0-9]+/,
+    regex: /\bBL-[0-9]{4}-[0-9]+\b/,
     errorInPhases: new Set(['partial-error', 'full-error']),
   },
   {
@@ -763,6 +767,7 @@ function runInternalIdCheck(report, mode) {
   let totalErrors = 0
   let totalWarns = 0
   let skippedBySizeCap = 0
+  let skippedByReadError = 0
   /** @type {Map<string, number>} */
   const perPatternCounts = new Map()
 
@@ -782,6 +787,22 @@ function runInternalIdCheck(report, mode) {
         console.log(
           `  [skipped] ${file} (${scan.size} bytes > ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
         )
+      } else if (scan.reason === 'read-error') {
+        // Surface read failures loudly: a broken symlink or permission issue
+        // would otherwise let a tracked file pass the scan silently and hide
+        // any internal IDs it contains. Always reported as a warning so the
+        // count flows into the summary; partial-error / full-error modes
+        // promote it through the same severity table the patterns use.
+        skippedByReadError++
+        const severity =
+          mode === 'warn-only' ? 'warn' : 'error'
+        report(
+          severity,
+          `${file} could not be read for internal-ID scan (broken symlink or permission issue?)`,
+          1,
+        )
+        if (severity === 'error') totalErrors++
+        else totalWarns++
       }
       continue
     }
@@ -801,17 +822,18 @@ function runInternalIdCheck(report, mode) {
         pattern.id,
         (perPatternCounts.get(pattern.id) ?? 0) + occurrenceCount,
       )
+      // Line numbers only — never echo the matching line content. CI logs
+      // for the OSS repository are public, and printing the matched text
+      // would aggregate the very internal IDs the gate is meant to keep out.
+      // Locations are enough to grep with.
+      const lineNumbers = hits.slice(0, 10).map((h) => `L${h.line}`)
+      const lineSuffix =
+        hits.length > 10 ? ` (+${hits.length - 10} more)` : ''
       report(
         severity,
-        `${file} [${pattern.id} ${pattern.label}] (${occurrenceCount} occurrence${occurrenceCount > 1 ? 's' : ''} on ${hits.length} line${hits.length > 1 ? 's' : ''})`,
+        `${file} [${pattern.id} ${pattern.label}] (${occurrenceCount} occurrence${occurrenceCount > 1 ? 's' : ''} on ${hits.length} line${hits.length > 1 ? 's' : ''}): ${lineNumbers.join(', ')}${lineSuffix}`,
         occurrenceCount,
       )
-      for (const h of hits.slice(0, 3)) {
-        console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
-      }
-      if (hits.length > 3) {
-        console.log(`         ... and ${hits.length - 3} more line${hits.length - 3 > 1 ? 's' : ''}`)
-      }
       if (severity === 'error') totalErrors += occurrenceCount
       else totalWarns += occurrenceCount
     }
@@ -822,6 +844,9 @@ function runInternalIdCheck(report, mode) {
     if (skippedBySizeCap > 0) {
       console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
     }
+    if (skippedByReadError > 0) {
+      console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
+    }
     return
   }
 
@@ -830,6 +855,9 @@ function runInternalIdCheck(report, mode) {
   if (totalWarns > 0) console.log(`  Found ${totalWarns} internal-ID warning(s)`)
   if (skippedBySizeCap > 0) {
     console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
+  }
+  if (skippedByReadError > 0) {
+    console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
   }
   for (const pattern of INTERNAL_ID_PATTERNS) {
     const c = perPatternCounts.get(pattern.id)
