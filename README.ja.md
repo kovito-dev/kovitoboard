@@ -75,6 +75,7 @@ npm start -- --project-root ..
 - **環境変数で指定:** `KOVITOBOARD_PROJECT_ROOT=/path npm start`
 - **コントリビューター / 本番モード(静的ビルド):** [CONTRIBUTING.md](./CONTRIBUTING.md) を参照。エンドユーザーには不要です
 - **永続設定:** オンボーディング完了後、`.kovitoboard/setting.json` がプロジェクトパスを記憶します。同じディレクトリから起動する場合は次回以降 `--project-root` を省略できます
+- **バックグラウンド起動(detach):** `npm run start:detach`、`npm start -- --detach`、または `KOVITOBOARD_DETACH=1 npm start` で supervisor をバックグラウンドに再実行し、シェルに即座に制御が戻ります。supervisor の PID が表示されるので、停止は `kill <pid>` で行ってください。ログは引き続き `.kovitoboard/logs/` に書き出されます(動作確認は `current.log` を tail してください)。フラグなしの起動は従来どおり foreground のままです
 - **ポート:** Vite dev server は既定で **5173**、バックエンド API は既定で **3001** です。supervisor(`tools/kb-start.mjs`)が起動時に両ポートをプローブし、使用中なら次に空いているポート(`5174`, `5175`, …/ `3002`, `3003`, …)にフォールバックします。必ず `[kb-start] Frontend: http://localhost:<port>` の行に出ている URL を開いてください。
 
   特定のポートに固定したい場合(使用中ならフォールバックせず即エラーで終わらせる場合):

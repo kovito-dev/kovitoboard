@@ -91,6 +91,13 @@ You can point `--project-root` at any of the following:
 - **Persisted setting:** After completing onboarding, `.kovitoboard/setting.json`
   remembers the project path. Subsequent launches can omit `--project-root`
   when started from the same directory.
+- **Background launch (detach):** `npm run start:detach`, `npm start -- --detach`,
+  or `KOVITOBOARD_DETACH=1 npm start` re-execs the supervisor in the
+  background and returns control to the shell immediately. The
+  resolved supervisor PID is printed; stop it later with `kill <pid>`.
+  Logs continue to be written to `.kovitoboard/logs/` (tail
+  `current.log` to follow activity). Foreground launch is still the
+  default — passing no flag keeps the current behaviour.
 - **Ports:** the Vite dev server defaults to **5173** and the backend API
   defaults to **3001**. The supervisor (`tools/kb-start.mjs`) probes both
   ports on launch and falls back to the next free one (`5174`, `5175`, …
