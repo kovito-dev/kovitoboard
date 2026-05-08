@@ -33,6 +33,7 @@ import {
   readSync as fsReadSync,
   closeSync as fsCloseSync,
   fsyncSync as fsFsyncSync,
+  fchmodSync as fsFchmodSync,
 } from 'fs'
 import { dirname, basename } from 'path'
 import { randomBytes } from 'crypto'
@@ -226,6 +227,12 @@ export class DirectFsLayer implements FileAccessLayer {
       // file (whose presence would mean another writer just lost the
       // race or crashed mid-write — we cannot safely reuse it).
       fd = fsOpenSync(tempPath, 'wx', mode)
+      // The mode passed to `open(2)` is masked by the process umask
+      // (e.g. umask 0o077 turns 0o644 into 0o600). `fchmod(2)` sets
+      // the mode bits verbatim, so we apply it after open to make the
+      // helper's mode contract independent of whatever umask the
+      // caller happened to inherit.
+      fsFchmodSync(fd, mode)
       if (typeof content === 'string') {
         fsWriteFileSync(fd, content, 'utf-8')
       } else {

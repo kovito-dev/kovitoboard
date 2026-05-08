@@ -55,6 +55,34 @@ const MIN_FAILURES_TO_ROTATE = 5
 const MAX_HISTORY_BYTES = 10 * 1024 * 1024
 
 /**
+ * Minimum runtime guard for a `RecipeHistoryEntry` shape. Catches a
+ * syntactically valid JSON line that does not carry the required
+ * fields — a `JSON.parse(line) as RecipeHistoryEntry` cast alone
+ * would otherwise let `null`, arrays, or arbitrary objects flow into
+ * the returned history array and break callers that assume the
+ * shape. Optional fields (`action`, `author`, etc.) are not enforced
+ * here because legacy entries written before those fields existed
+ * must still be readable; the schema doc on `RecipeHistoryEntry`
+ * defines the read-side defaults.
+ */
+function isRecipeHistoryEntry(obj: unknown): obj is RecipeHistoryEntry {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+    return false
+  }
+  const o = obj as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.name === 'string' &&
+    typeof o.version === 'string' &&
+    typeof o.source === 'string' &&
+    typeof o.hash === 'string' &&
+    typeof o.appliedAt === 'string' &&
+    Array.isArray(o.artifacts) &&
+    Array.isArray(o.menu)
+  )
+}
+
+/**
  * Read all recipe history entries. Returns an empty array when the file
  * does not exist.
  *
@@ -115,21 +143,32 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
 
   const lines = content.split('\n').filter((line) => line.trim().length > 0)
   const entries: RecipeHistoryEntry[] = []
+  // Both syntax errors *and* shape mismatches count toward the
+  // failure tally — schema-violating entries are just as load-
+  // bearing for downstream code as unparseable garbage, and treating
+  // them the same simplifies the rotation rule.
   let parseFailures = 0
   let warnedCount = 0
-  for (const line of lines) {
-    try {
-      entries.push(JSON.parse(line) as RecipeHistoryEntry)
-    } catch (err) {
-      parseFailures += 1
-      if (warnedCount < MAX_PARSE_WARNINGS) {
-        console.warn(
-          '[recipe-history] Skipping unparseable line:',
-          err instanceof Error ? err.message : String(err),
-        )
-        warnedCount += 1
-      }
+  const reportLineIssue = (reason: string): void => {
+    parseFailures += 1
+    if (warnedCount < MAX_PARSE_WARNINGS) {
+      console.warn(`[recipe-history] Skipping unusable line: ${reason}`)
+      warnedCount += 1
     }
+  }
+  for (const line of lines) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch (err) {
+      reportLineIssue(err instanceof Error ? err.message : String(err))
+      continue
+    }
+    if (!isRecipeHistoryEntry(parsed)) {
+      reportLineIssue('does not match RecipeHistoryEntry shape')
+      continue
+    }
+    entries.push(parsed)
   }
   if (parseFailures > MAX_PARSE_WARNINGS) {
     console.warn(
