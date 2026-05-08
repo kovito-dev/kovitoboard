@@ -163,12 +163,22 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
         // Surface a localized summary instead of the bare error code
         // so the user understands why the export was refused.
         if (data?.error === 'CustomBeNotExportable') {
-          const fileList = Array.isArray(data?.files)
-            ? data.files.join(', ')
-            : ''
+          const sample = Array.isArray(data?.files) ? data.files : []
+          const totalCount =
+            typeof data?.filesCount === 'number' && data.filesCount > 0
+              ? data.filesCount
+              : sample.length
+          // Show only the bounded sample in the modal; if the actual
+          // count exceeds it, append a "...and N more" tail so the
+          // user knows the list was truncated.
+          const filesText =
+            totalCount > sample.length
+              ? `${sample.join(', ')}, ...and ${totalCount - sample.length} more`
+              : sample.join(', ')
           throw new Error(
             t('recipe.export.error.customBeNotExportable', {
-              files: fileList,
+              appId,
+              files: filesText,
             }),
           )
         }

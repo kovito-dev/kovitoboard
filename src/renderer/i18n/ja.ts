@@ -422,7 +422,7 @@ const ja = {
   'recipe.export.error.recipeIdRequired': 'レシピ ID は必須です。',
   'recipe.export.error.recipeIdFormat': 'レシピ ID は半角英数字 / _ / - / . / / / @ のみ、1〜256 文字で入力してください。',
   'recipe.export.error.customBeNotExportable':
-    'このアプリはレシピとしてエクスポートできません: app/<appId>/api/ 配下に独自バックエンドファイル({files})が含まれており、レシピの安全境界の外側で動作するためです。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) BE 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
+    'このアプリはレシピとしてエクスポートできません: app/{appId}/api/ 配下に独自バックエンドファイル({files})が含まれており、レシピの安全境界の外側で動作するためです。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) BE 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
 
   // レシピインポート
   'recipe.import.verdict.blocked': 'ブロック',

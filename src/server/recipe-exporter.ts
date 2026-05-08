@@ -104,9 +104,12 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
         const stat = fs.statSync(fullPath)
         const sizeBytes = stat.size
         // Collect `api/<file>` (and any nested `api/<sub>/<file>`)
-        // into the BE side-channel instead of artifacts.
+        // into the BE side-channel instead of artifacts. Only the
+        // prefix forms can match here — directories are dispatched
+        // through the `isDir` branch above before we reach this
+        // file-handling block, so `relativePath === 'api'` is not
+        // reachable for files.
         if (
-          relativePath === 'api' ||
           relativePath.startsWith(`api${sep}`) ||
           relativePath.startsWith('api/')
         ) {
