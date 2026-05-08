@@ -351,4 +351,13 @@ export interface AppScanResult {
   artifacts: Array<{ path: string; type: ArtifactType; sizeBytes: number }>
   menu: RecipeMenuEntry[]
   totalSize: number
+  /**
+   * Files under `app/<appId>/api/` that the exporter detected. These
+   * are NOT included in `artifacts` because backend route handlers
+   * are deliberately outside the safety boundary that recipe install
+   * relies on (the inspector + renderer-only confinement). The
+   * caller should refuse the export when this array is non-empty so
+   * the boundary is enforced at packaging time.
+   */
+  customBeFiles: Array<{ relativePath: string; sizeBytes: number }>
 }

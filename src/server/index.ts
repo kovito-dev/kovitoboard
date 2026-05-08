@@ -1108,6 +1108,27 @@ app.post('/api/recipes/export', (req, res) => {
     }
 
     const scan = scanAppDirectory(fs, appId.trim())
+
+    // Refuse export when the app contains custom backend files.
+    // Backend route handlers (`app/<appId>/api/*.ts`) live outside
+    // the recipe safety boundary — recipe-inspector's path-prefix
+    // restriction rejects `api/` at install time, so packaging them
+    // would produce a recipe that cannot be re-installed. Instead of
+    // silently dropping or repackaging them as `lib`, surface the
+    // boundary at the export boundary with an actionable guidance
+    // message.
+    if (scan.customBeFiles.length > 0) {
+      res.status(400).json({
+        error: 'CustomBeNotExportable',
+        message:
+          'This app contains custom backend extensions (app/<appId>/api/*.ts) which cannot be packaged into a recipe. Recipes are limited to Category A handlers (window.kb.call) for safety boundary reasons.',
+        files: scan.customBeFiles.map((f) => f.relativePath),
+        guidance:
+          "To distribute this app: (1) rewrite the BE logic using Category A handlers (declarative api.calls in recipe.yaml + window.kb.call from the page), or (2) document the BE part separately and ask recipients to implement it via agent assistance after recipe install. Custom BE code runs outside KB's safety boundary and is the recipient's responsibility to review.",
+      })
+      return
+    }
+
     if (scan.artifacts.length === 0) {
       res.status(400).json({ error: `No artifacts found under app/${appId.trim()}/` })
       return

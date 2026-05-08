@@ -22,7 +22,7 @@
  *     disk during export. `exportAsMarkdown` is now a pure function
  *     that returns the document as a string.
  */
-import { join, extname, relative } from 'path'
+import { join, extname, relative, sep } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
 import { parseMenuTsForApp } from './services/menu-extractor'
@@ -36,18 +36,20 @@ import type {
 
 /**
  * Infer artifact type from a relative path under `app/<appId>/`.
- * `api/*.ts` (route handlers / declarative `api:` callees) maps to
- * `lib`, mirroring the loose-bucket policy DEC-024 #5 settled on for
- * v0.1.0 — a dedicated `'api'` artifact type was deliberately not
- * introduced because the recipe consumer already has the `api:`
- * section as the source of truth for handler shape.
+ *
+ * Note: `api/*.ts` files are NOT mapped here. They are filtered out
+ * of `artifacts` by `scanAppDirectory` and surfaced separately via
+ * `customBeFiles`. Backend route handlers live outside the recipe
+ * safety boundary (recipe-inspector path-prefix restriction rejects
+ * `api/` at install time anyway), so the exporter refuses to package
+ * them; callers map this back to a 400 with guidance on how to
+ * distribute the BE half separately.
  */
 export function inferArtifactType(relativePath: string): ArtifactType {
   if (relativePath.startsWith('pages/')) return 'page'
   if (relativePath.startsWith('styles/')) return 'style'
   if (relativePath.startsWith('hooks/')) return 'hook'
   if (relativePath.startsWith('utils/')) return 'util'
-  if (relativePath.startsWith('api/')) return 'lib'
   return 'lib' // fallback
 }
 
@@ -66,16 +68,21 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   const appRoot = join(appDir, appId)
 
   if (!fs.existsSync(appRoot)) {
-    return { artifacts: [], menu: [], totalSize: 0 }
+    return { artifacts: [], menu: [], totalSize: 0, customBeFiles: [] }
   }
 
   const artifacts: AppScanResult['artifacts'] = []
+  const customBeFiles: AppScanResult['customBeFiles'] = []
   let totalSize = 0
 
   // Recursive walk rooted at `app/<appId>/`. We deliberately keep
   // `node_modules` and dotfiles out — recipes ship source, not
-  // bundled output — but **no longer skip `api/`** so route handlers
-  // are part of the export (DEC-024 #5 §B1-1).
+  // bundled output. Files under `api/` are now collected into
+  // `customBeFiles` instead of `artifacts`: the recipe install path
+  // refuses `api/`-prefixed artifacts anyway (path-prefix
+  // restriction in the inspector), so packaging them was unsound.
+  // Callers should treat a non-empty `customBeFiles` as "refuse the
+  // export" and surface the guidance message at the API boundary.
   function scanDir(dir: string): void {
     const entries = fs.readdirSync(dir)
     for (const entry of entries) {
@@ -96,6 +103,16 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
       } else {
         const stat = fs.statSync(fullPath)
         const sizeBytes = stat.size
+        // Collect `api/<file>` (and any nested `api/<sub>/<file>`)
+        // into the BE side-channel instead of artifacts.
+        if (
+          relativePath === 'api' ||
+          relativePath.startsWith(`api${sep}`) ||
+          relativePath.startsWith('api/')
+        ) {
+          customBeFiles.push({ relativePath, sizeBytes })
+          continue
+        }
         artifacts.push({
           path: relativePath,
           type: inferArtifactType(relativePath),
@@ -128,7 +145,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
     }
   }
 
-  return { artifacts, menu, totalSize }
+  return { artifacts, menu, totalSize, customBeFiles }
 }
 
 /**

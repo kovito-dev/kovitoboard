@@ -156,8 +156,22 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
         body: JSON.stringify({ appId, metadata }),
       })
       if (!res.ok) {
-        // Error path returns JSON `{ error }`; success returns binary.
+        // Error path returns JSON `{ error, ... }`; success returns binary.
         const data = await res.json().catch(() => ({}))
+        // The custom-BE refusal carries a structured shape with
+        // `error: 'CustomBeNotExportable'` + `files` + `guidance`.
+        // Surface a localized summary instead of the bare error code
+        // so the user understands why the export was refused.
+        if (data?.error === 'CustomBeNotExportable') {
+          const fileList = Array.isArray(data?.files)
+            ? data.files.join(', ')
+            : ''
+          throw new Error(
+            t('recipe.export.error.customBeNotExportable', {
+              files: fileList,
+            }),
+          )
+        }
         throw new Error(
           typeof data?.error === 'string' && data.error.length > 0
             ? data.error

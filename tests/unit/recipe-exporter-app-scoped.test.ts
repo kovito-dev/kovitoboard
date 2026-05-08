@@ -114,14 +114,21 @@ describe('scanAppDirectory(fs, appId)', () => {
     expect(result.artifacts.map((a) => a.path)).toEqual(['pages/FooPage.tsx'])
   })
 
-  it('includes api/*.ts (was excluded before the rework)', () => {
+  it('routes api/*.ts into customBeFiles instead of artifacts (recipe safety boundary)', () => {
+    // Recipe install rejects `api/`-prefixed artifacts at the
+    // path-prefix step, so packaging them into a recipe was always
+    // unsound. Backend handlers are now collected into a separate
+    // bucket so the export route can refuse them with a guidance
+    // message instead of pretending to ship them.
     const fs = makeFs({
       [`${PROJECT_ROOT}/app/foo/pages/FooPage.tsx`]: 'export {}',
       [`${PROJECT_ROOT}/app/foo/api/handler.ts`]: 'export {}',
     })
     const result = scanAppDirectory(fs, 'foo')
-    const paths = result.artifacts.map((a) => a.path).sort()
-    expect(paths).toEqual(['api/handler.ts', 'pages/FooPage.tsx'])
+    const artifactPaths = result.artifacts.map((a) => a.path).sort()
+    expect(artifactPaths).toEqual(['pages/FooPage.tsx'])
+    const beRelativePaths = result.customBeFiles.map((f) => f.relativePath).sort()
+    expect(beRelativePaths).toEqual(['api/handler.ts'])
   })
 
   it('strips the appId prefix from artifact paths', () => {
@@ -150,7 +157,12 @@ describe('scanAppDirectory(fs, appId)', () => {
   it('returns empty artifacts when the app directory does not exist', () => {
     const fs = makeFs({})
     const result = scanAppDirectory(fs, 'missing-app')
-    expect(result).toEqual({ artifacts: [], menu: [], totalSize: 0 })
+    expect(result).toEqual({
+      artifacts: [],
+      menu: [],
+      totalSize: 0,
+      customBeFiles: [],
+    })
   })
 
   it('reports cumulative size in bytes', () => {

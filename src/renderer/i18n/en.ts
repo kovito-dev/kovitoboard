@@ -425,6 +425,8 @@ const en: Record<MessageKey, string> = {
   'recipe.export.error.appIdMissing': 'Cannot resolve appId. Make sure an app screen is open.',
   'recipe.export.error.recipeIdRequired': 'Recipe ID is required.',
   'recipe.export.error.recipeIdFormat': 'Recipe ID must contain only A-Z / a-z / 0-9 / _ / - / . / / / @ and be 1–256 characters.',
+  'recipe.export.error.customBeNotExportable':
+    'This app cannot be exported as a recipe: it contains custom backend files ({files}) under app/<appId>/api/ which run outside the recipe safety boundary. To distribute this app, either rewrite the BE logic using Category A handlers (declarative api.calls + window.kb.call) or document the BE part separately and ask recipients to implement it via agent assistance after recipe install.',
 
   // Recipe import
   'recipe.import.verdict.blocked': 'Blocked',
