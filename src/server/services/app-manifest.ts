@@ -22,10 +22,11 @@
  * Reads are best-effort: `readAppManifest` returns `null` for
  * missing / malformed files (with a warn line) so callers can
  * surface a recoverable "half-installed" state to the UI without
- * having to wrap every read in try/catch. Writes are atomic-ish
- * (mkdir + writeFileSync) and do throw — the agent's "mark
- * installed" step needs the failure to bubble up so the install
- * does not silently complete with no manifest.
+ * having to wrap every read in try/catch. Writes are atomic
+ * (`writeFileAtomic`: same-directory temp + fsync + rename) and do
+ * throw — the agent's "mark installed" step needs the failure to
+ * bubble up so the install does not silently complete with no
+ * manifest.
  *
  * @see docs/specs/v0.1.0-app-id-and-manifest.md §3.2
  * @see DEC-024 D-4-a, recipe-system.md v2.0 § 13-3
@@ -119,7 +120,7 @@ export function writeAppManifest(
     fs.mkdirSync(dir, { recursive: true })
   }
   const path = join(dir, APP_MANIFEST_FILENAME)
-  fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n', 'utf-8')
+  fs.writeFileAtomic(path, JSON.stringify(manifest, null, 2) + '\n')
 }
 
 /**
