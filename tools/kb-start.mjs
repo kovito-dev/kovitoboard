@@ -40,6 +40,11 @@
  *   --vite-port=<n>         Vite dev server port. Same precedence /
  *                           probing rules as `--port`, with defaults
  *                           5173..5182 and `process.env.VITE_PORT`.
+ *   --detach                Re-exec the supervisor in the background and
+ *                           exit. Equivalent env var:
+ *                           `KOVITOBOARD_DETACH=1`. Default behaviour is
+ *                           still foreground; detach is purely additive
+ *                           in v0.2.0.
  *   -h, --help              Print this help.
  *
  * Port resolution order (highest to lowest priority):
@@ -66,7 +71,14 @@ import {
   symlinkSync,
   readlinkSync,
   mkdirSync,
+  openSync,
+  closeSync,
+  constants as fsConstants,
 } from 'fs'
+import {
+  decideDetach,
+  buildDetachedSpawnArgs,
+} from './kb-detach-helpers.mjs'
 
 const RESTART_EXIT_CODE = 42
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -124,6 +136,11 @@ Options:
   --vite-port=<n>         Vite dev server port.
                           Defaults: probe 5173..5182, then env VITE_PORT.
                           Errors out when the specified port is in use.
+  --detach                Run the supervisor in the background. The
+                          parent shell returns immediately after spawning
+                          the supervisor; stop it later with
+                          \`kill <pid>\`. Equivalent env var:
+                          \`KOVITOBOARD_DETACH=1\`.
   -h, --help              Print this help.
 
 Examples:
@@ -131,6 +148,7 @@ Examples:
   node tools/kb-start.mjs --port=8080                    # backend fixed
   node tools/kb-start.mjs --port=8080 --vite-port=8000   # both fixed
   PORT=8080 node tools/kb-start.mjs                      # env fallback
+  node tools/kb-start.mjs --detach                       # background launch
 `)
   process.exit(0)
 }
@@ -141,6 +159,172 @@ const projectRoot =
     : null) ||
   process.env.KOVITOBOARD_PROJECT_ROOT ||
   null
+
+// ---------------------------------------------------------------------------
+// Detach branch: re-exec self in the background, then exit
+//
+// When the user invokes `--detach` (or sets `KOVITOBOARD_DETACH=1`), we
+// fork a fresh node process with the same arguments minus `--detach`,
+// wire it up so it survives the parent shell, and exit. The child
+// inherits `KOVITOBOARD_DETACHED=1` and therefore takes the normal
+// foreground branch below — no recursion, no double fork.
+//
+// Placement: this branch runs AFTER projectRoot resolution because the
+// detach log directory is anchored under projectRoot. Putting detach
+// before that step would either lose the resolved log location or
+// require duplicating the resolution.
+//
+// Stopping is intentionally manual for v0.2.0: the supervisor PID is
+// printed and the user kills it directly. A `kb:stop` script will be
+// added by the process-lifecycle Phase 1 work; once landed, this
+// message will mention `npm run kb:stop` as the preferred command.
+// ---------------------------------------------------------------------------
+
+if (decideDetach(process.argv.slice(2), process.env)) {
+  const { childArgs, childEnv } = buildDetachedSpawnArgs(
+    process.argv,
+    process.env,
+    process.execArgv,
+  )
+
+  // Anchor early-startup diagnostics to a real file so an EACCES /
+  // EMFILE / ENOMEM at fork time leaves a trace. We only redirect
+  // stderr — stdout is `'ignore'` because the regular server pipeline
+  // (pino) writes its own rotated `.kovitoboard/logs/server.*.log` and
+  // duplicating its output here would (a) double the on-disk volume
+  // and (b) accidentally persist anything an app prints to stdout
+  // (e.g. recipe install scripts). The stderr file is intentionally
+  // narrow: it captures bootstrap-time crashes, not the steady-state
+  // process output.
+  const logBase = projectRoot ?? repoRoot
+  const logDir = resolve(logBase, '.kovitoboard', 'logs')
+  let logFd
+  let logPath
+  try {
+    mkdirSync(logDir, { recursive: true })
+    logPath = resolve(logDir, 'kb-detach-stderr.log')
+    // Open with explicit numeric flags rather than the 'w' shorthand
+    // so we can add `O_NOFOLLOW`. Without it, an attacker (or a buggy
+    // earlier run) that replaced the path with a symlink could redirect
+    // our truncate-and-write into a file outside `.kovitoboard/logs/`.
+    // `O_TRUNC` keeps the per-run-fresh semantics (disk usage bounded
+    // to a single run); `0o600` blocks other users on shared hosts
+    // from reading whatever stderr captures.
+    logFd = openSync(
+      logPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    )
+  } catch (err) {
+    const reason =
+      err instanceof Error && /** @type {{code?: string}} */ (err).code === 'ELOOP'
+        ? `${logPath} is a symlink (refused by O_NOFOLLOW); remove it and retry.`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    console.error(`[kb-start] Failed to prepare detach log at ${logDir}: ${reason}`)
+    process.exit(1)
+  }
+
+  // Use process.execPath rather than process.argv[0] so symlinked /
+  // aliased entrypoints (e.g. `nodejs` on Debian, nvm shims) resolve
+  // to the actual node binary. Pair it with execArgv prepended via
+  // buildDetachedSpawnArgs so loaders, inspector ports, and future
+  // permission flags carry over to the child.
+  let child
+  try {
+    child = spawn(process.execPath, childArgs, {
+      detached: true,
+      stdio: ['ignore', 'ignore', logFd],
+      env: childEnv,
+    })
+  } catch (err) {
+    closeSync(logFd)
+    console.error(
+      `[kb-start] Failed to spawn detached supervisor: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+    process.exit(1)
+  }
+
+  // Positive confirmation: wait for either the `'spawn'` event
+  // (Node 15.1+, the child has actually been forked) or an `'error'`
+  // event (async failure such as EACCES delivered after `spawn()`
+  // returned). Without this, the parent could exit `0` and print the
+  // "Detached" line before the kernel reported the spawn failure,
+  // leaving the user staring at a fake success.
+  const spawnResult = await new Promise((resolveSpawn) => {
+    let settled = false
+    child.once('spawn', () => {
+      if (settled) return
+      settled = true
+      resolveSpawn({ ok: true })
+    })
+    child.once('error', (err) => {
+      if (settled) return
+      settled = true
+      resolveSpawn({ ok: false, err })
+    })
+  })
+
+  if (!spawnResult.ok) {
+    closeSync(logFd)
+    console.error(
+      `[kb-start] Detached supervisor failed to start: ${spawnResult.err.message}`,
+    )
+    process.exit(1)
+  }
+
+  if (typeof child.pid !== 'number' || child.pid <= 0) {
+    closeSync(logFd)
+    console.error('[kb-start] Detached supervisor produced no pid.')
+    process.exit(1)
+  }
+
+  // Early-exit window: after the fork is confirmed via the 'spawn'
+  // event, watch briefly for an immediate `'exit'` so a child that
+  // crashes during initial setup (e.g. invalid CLI args, bad
+  // execArgv) does not present as a successful detach. The window is
+  // intentionally short — full startup readiness (port bind, server
+  // listening) is out of scope for this PR and belongs with the
+  // process-lifecycle Phase 1 handshake work.
+  const EARLY_EXIT_WINDOW_MS = 200
+  const earlyExitCheck = await new Promise((resolveCheck) => {
+    const timer = setTimeout(() => resolveCheck({ ok: true }), EARLY_EXIT_WINDOW_MS)
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer)
+      resolveCheck({ ok: false, code, signal })
+    })
+  })
+
+  if (!earlyExitCheck.ok) {
+    closeSync(logFd)
+    const reason =
+      earlyExitCheck.signal !== null
+        ? `signal=${earlyExitCheck.signal}`
+        : `code=${earlyExitCheck.code}`
+    console.error(
+      `[kb-start] Detached supervisor exited during early startup (${reason}). See ${logPath} for stderr.`,
+    )
+    process.exit(1)
+  }
+
+  child.unref()
+  // The parent's reference to the log fd is no longer needed; the
+  // child inherited a dup'd handle for its stderr. Leaving the parent
+  // fd open would just leak it on exit.
+  closeSync(logFd)
+
+  console.log(
+    `[kb-start] Detached (pid=${child.pid}). Stop with 'kill ${child.pid}'.`,
+  )
+  console.log(`[kb-start] Detach stderr log: ${logPath}`)
+  process.exit(0)
+}
 
 let cliBackendPort
 let cliVitePort

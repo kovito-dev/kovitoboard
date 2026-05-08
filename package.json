@@ -10,6 +10,7 @@
     "dev": "concurrently -n server,client -c blue,green \"NODE_ENV=development tsx watch src/server/index.ts\" \"vite\"",
     "build": "vite build && tsc -b tsconfig.node.json --force && mkdir -p dist/server && cp src/server/trust-patterns.json dist/server/trust-patterns.json",
     "start": "node tools/kb-start.mjs",
+    "start:detach": "node tools/kb-start.mjs --detach",
     "prod": "KOVITOBOARD_MODE=prod tsx src/server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
