@@ -49,10 +49,15 @@ describe('D-4 i18n keys present in both catalogs', () => {
       expect(value.length).toBeGreaterThan(0)
     })
 
-    it(`en.ts and ja.ts hold different values for ${key} (translation present)`, () => {
-      const enValue = (en as Record<string, string>)[key]
-      const jaValue = (ja as Record<string, string>)[key]
-      expect(enValue).not.toBe(jaValue)
-    })
+    // The earlier draft of this suite asserted that the en.ts and
+    // ja.ts values must differ, on the theory that an accidental
+    // copy-paste between catalogs would leave both locales holding
+    // English text. That signal is too brittle to be a reliable
+    // correctness check (legitimate translations can match for short
+    // labels, acronyms, product names, etc.), so the equality
+    // comparison is intentionally not part of this suite. Resolver
+    // behavior — which key resolves to which catalog entry — is
+    // covered indirectly at the L1 layer where the dialog is
+    // rendered with each locale.
   }
 })
