@@ -9,6 +9,9 @@
  * Designed to receive a FileAccessLayer.
  * Validation is implemented manually (without zod).
  */
+import { lazyChildLogger } from './logger'
+
+const settingLog = lazyChildLogger('setting-manager')
 import { join } from 'path'
 import { getKovitoboardDir } from './paths'
 import type { FileAccessLayer } from './fs-layer'
@@ -38,19 +41,19 @@ export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
       data.project = project
       try {
         writeSetting(fs, data as unknown as KovitoboardSetting)
-        console.log('[setting-manager] Migrated setting.json: 1.0 -> 1.1')
+        settingLog.info('[setting-manager] Migrated setting.json: 1.0 -> 1.1')
       } catch (writeErr) {
-        console.warn('[setting-manager] Migration write-back failed:', writeErr)
+        settingLog.warn({ writeErr }, '[setting-manager] Migration write-back failed:')
       }
     }
 
     if (!validateSetting(data)) {
-      console.warn('[setting-manager] Invalid setting file, returning null')
+      settingLog.warn('[setting-manager] Invalid setting file, returning null')
       return null
     }
     return data
   } catch (err) {
-    console.error('[setting-manager] Failed to read setting:', err)
+    settingLog.error({ err }, '[setting-manager] Failed to read setting:')
     return null
   }
 }

@@ -27,7 +27,7 @@ import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { Router } from 'express'
 import type { TmuxBridge } from '../tmux-bridge'
-import { lazyChildLogger } from '../logger'
+import { lazyChildLogger, serverLogger } from '../logger'
 
 const adminLog = lazyChildLogger('admin-routes')
 
@@ -166,7 +166,7 @@ export function createAdminRouter(
     const rawPid = process.env.KOVITOBOARD_SUPERVISOR_PID
     const supPid = rawPid ? Number.parseInt(rawPid, 10) : NaN
     if (Number.isFinite(supPid) && supPid > 0) {
-      console.log(
+      serverLogger.info(
         `[KovitoBoard] Restart requested via UI. Sending SIGUSR2 to supervisor (pid=${supPid})...`,
       )
       setTimeout(() => {
@@ -177,7 +177,7 @@ export function createAdminRouter(
           // outer wrapper (or `npm run prod` style direct launch)
           // can still pick it up.
           const msg = err instanceof Error ? err.message : String(err)
-          console.warn(
+          serverLogger.warn(
             `[KovitoBoard] SIGUSR2 to supervisor failed: ${msg}. Falling back to exit 42.`,
           )
           process.exit(42)
@@ -188,7 +188,7 @@ export function createAdminRouter(
 
     // Fallback: no supervisor pid available (e.g. `npm run prod` or a
     // direct `tsx src/server/index.ts` invocation). Exit with code 42.
-    console.log(
+    serverLogger.info(
       '[KovitoBoard] Restart requested via UI. Exiting with code 42 (no supervisor pid)...',
     )
     setTimeout(() => process.exit(42), 100)
@@ -197,7 +197,7 @@ export function createAdminRouter(
   // POST /api/admin/stop
   router.post('/stop', (_req, res) => {
     res.json({ ok: true, message: 'Server stop initiated' })
-    console.log(
+    serverLogger.info(
       '[KovitoBoard] Stop requested via UI. Exiting normally...',
     )
     setTimeout(() => process.exit(0), 100)

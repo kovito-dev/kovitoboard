@@ -13,6 +13,7 @@
  * @stable v0.1.0
  */
 
+import { serverLogger } from '../logger'
 import type { CategoryAHandlerName, HandlerDef } from './types.js'
 
 // =========================================
@@ -27,7 +28,7 @@ const handlers = new Map<CategoryAHandlerName, HandlerDef>()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerHandler(handler: HandlerDef<any, any>): void {
   if (handlers.has(handler.name)) {
-    console.warn(`[handler-registry] Handler "${handler.name}" is already registered, overwriting`)
+    serverLogger.warn(`[handler-registry] Handler "${handler.name}" is already registered, overwriting`)
   }
   handlers.set(handler.name, handler)
 }

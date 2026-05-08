@@ -15,6 +15,7 @@
  * @stable v0.1.0
  */
 
+import { serverLogger } from './logger'
 import type {
   HandlerResponse,
   HandlerErrorCode,
@@ -315,7 +316,7 @@ export async function dispatch(
     return result
   } catch (err) {
     const durationMs = Date.now() - startTime
-    console.error(`[dispatcher] Handler "${handlerName}" threw:`, err)
+    serverLogger.error({ err }, `[dispatcher] Handler "${handlerName}" threw`)
 
     // Audit log (exception)
     writeAuditLog(

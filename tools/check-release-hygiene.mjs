@@ -91,9 +91,9 @@ export const META_ERROR_MULTILINE = [
 // WARNING-level patterns are logged but do not fail the check.
 //
 // Note: `biz-dev` was previously listed here too. It is now owned by section
-// [6/6]'s standalone agent name pattern (the "false-positive prone" set), so
+// [6/7]'s standalone agent name pattern (the "false-positive prone" set), so
 // keeping it here would double-count every hit and make the summary noisy.
-// `kovito-hq` is unique to this list — section [6/6] does not check for it.
+// `kovito-hq` is unique to this list — section [6/7] does not check for it.
 export const META_WARN_PATTERNS = [
   { label: 'TODO/FIXME/XXX/TBD', regex: /(^|\s)(?:TODO:|FIXME:|XXX:|TBD\b)/ },
   { label: 'kovito-hq (internal repo)', regex: /kovito-hq/i },
@@ -613,7 +613,7 @@ function makeInternalIdReport(counters) {
 // ---------------------------------------------------------------------------
 
 function runJapaneseCheck(warn) {
-  console.log('\n\x1b[1m[1/6] Japanese character detection\x1b[0m')
+  console.log('\n\x1b[1m[1/7] Japanese character detection\x1b[0m')
 
   const sourceFiles = getTrackedSourceFiles(SOURCE_EXTENSIONS).filter(
     (f) => !isJapaneseExcluded(f),
@@ -642,7 +642,7 @@ function runJapaneseCheck(warn) {
 }
 
 function runPiiCheck(error) {
-  console.log('\n\x1b[1m[2/6] Personal information detection\x1b[0m')
+  console.log('\n\x1b[1m[2/7] Personal information detection\x1b[0m')
 
   const allTextFiles = getAllTrackedTextFiles()
   let piiFound = false
@@ -666,7 +666,7 @@ function runPiiCheck(error) {
 }
 
 function runSpecsDirCheck(error) {
-  console.log('\n\x1b[1m[3/6] docs/specs/ directory check\x1b[0m')
+  console.log('\n\x1b[1m[3/7] docs/specs/ directory check\x1b[0m')
 
   const specsDir = join(ROOT, 'docs', 'specs')
   if (existsSync(specsDir)) {
@@ -677,7 +677,7 @@ function runSpecsDirCheck(error) {
 }
 
 function runMetaCheck(warn, error) {
-  console.log('\n\x1b[1m[4/6] Internal meta-note detection\x1b[0m')
+  console.log('\n\x1b[1m[4/7] Internal meta-note detection\x1b[0m')
 
   const metaFiles = getMetaScanFiles()
   let metaErrorCount = 0
@@ -734,7 +734,7 @@ function runMetaCheck(warn, error) {
 }
 
 function runLicenseCheck(error) {
-  console.log('\n\x1b[1m[5/6] License consistency check\x1b[0m')
+  console.log('\n\x1b[1m[5/7] License consistency check\x1b[0m')
 
   const EXPECTED_LICENSE = 'AGPL-3.0-or-later'
   const EXPECTED_AUTHOR = 'Anode LLC'
@@ -801,7 +801,7 @@ function runLicenseCheck(error) {
 }
 
 function runInternalIdCheck(report, mode) {
-  console.log('\n\x1b[1m[6/6] Internal-ID detection\x1b[0m')
+  console.log('\n\x1b[1m[6/7] Internal-ID detection\x1b[0m')
   console.log(`  Mode: ${mode}`)
 
   const targetFiles = getInternalIdScanFiles()
@@ -931,6 +931,85 @@ function runInternalIdCheck(report, mode) {
 // main()
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// [7/7] Direct console.* detection
+// ---------------------------------------------------------------------------
+//
+// Logger discipline (logging-baseline.md §5.1) requires every log line to
+// flow through pino so home-path masking + structured-component routing are
+// in effect. A direct `console.error` / `console.warn` / `console.log` (or
+// `info` / `debug` / `trace`) call bypasses both — the message lands on raw
+// stdout / stderr instead of `.kovitoboard/logs/server.*.log`, which leaks
+// `/home/<user>/...` paths and kills GitHub Issue triage.
+//
+// This section catches accidental regressions during Phase 1 of the
+// console-to-logger migration. A future Phase 2 will eventually also add an
+// ESLint / Biome `no-console` rule; the hygiene-side check is intentionally
+// kept after that as a release-time gate so the two surfaces double-check
+// each other.
+//
+// Scope:
+//   - Files under `src/server/` and `src/renderer/` only.
+//   - The logger implementations themselves (`src/server/logger.ts`,
+//     `src/renderer/lib/logger.ts`) and `log-config.ts` (which runs *before*
+//     the logger pipeline is built) are excluded by path; tests / tools /
+//     scripts are out of scope by directory.
+//   - A single in-source escape hatch is honoured: a line with the trailing
+//     comment `// hygiene-allow: console-bootstrap` opts that line out, for
+//     the bootstrap-fallback case where the logger is not yet initialised.
+//     The reason string is fixed; freeform reasons are not accepted so the
+//     scope of the exception cannot creep over time.
+
+const CONSOLE_DIRECT_RE = /\bconsole\.(error|warn|log|info|debug|trace)\b/
+const CONSOLE_SCAN_PREFIXES = ['src/server/', 'src/renderer/']
+const CONSOLE_EXCLUDE_FILES = new Set([
+  'src/server/logger.ts',
+  'src/server/log-config.ts',
+  'src/renderer/lib/logger.ts',
+])
+const CONSOLE_OPT_OUT_TAG = 'hygiene-allow: console-bootstrap'
+
+function runConsoleCheck(warn) {
+  console.log('\n\x1b[1m[7/7] Direct console.* call detection\x1b[0m')
+
+  const sourceFiles = getTrackedSourceFiles(['.ts', '.tsx']).filter((file) => {
+    if (!CONSOLE_SCAN_PREFIXES.some((p) => file.startsWith(p))) return false
+    if (CONSOLE_EXCLUDE_FILES.has(file)) return false
+    if (file.startsWith('tests/')) return false
+    if (file.startsWith('tools/')) return false
+    if (file.startsWith('scripts/')) return false
+    return true
+  })
+
+  let totalHits = 0
+  let fileCount = 0
+  for (const file of sourceFiles) {
+    const hits = scanFile(join(ROOT, file), CONSOLE_DIRECT_RE).filter(
+      (h) => !h.text.includes(CONSOLE_OPT_OUT_TAG),
+    )
+    if (hits.length === 0) continue
+    fileCount++
+    totalHits += hits.length
+    warn(
+      `${file} (${hits.length} occurrence${hits.length > 1 ? 's' : ''}) — use a child logger from src/server/logger.ts or src/renderer/lib/logger.ts`,
+    )
+    for (const h of hits.slice(0, 3)) {
+      console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
+    }
+    if (hits.length > 3) {
+      console.log(`         ... and ${hits.length - 3} more`)
+    }
+  }
+
+  if (totalHits === 0) {
+    console.log('  \x1b[32mOK\x1b[0m    No direct console.* calls in src/')
+  } else {
+    console.log(
+      `\n  Found ${totalHits} direct console.* call(s) across ${fileCount} file(s). Route them through the pino-backed loggers instead. See logging-baseline.md §5.1.`,
+    )
+  }
+}
+
 function main() {
   let opts
   try {
@@ -951,6 +1030,7 @@ function main() {
   if (opts.runAll || opts.metaOnly) runMetaCheck(warn, error)
   if (opts.runAll) runLicenseCheck(error)
   if (opts.runAll || opts.internalIdOnly) runInternalIdCheck(internalIdReport, opts.internalIdMode)
+  if (opts.runAll) runConsoleCheck(warn)
 
   console.log('\n\x1b[1m--- Summary ---\x1b[0m')
   if (counters.errors > 0) {

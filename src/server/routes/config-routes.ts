@@ -11,6 +11,7 @@
  * GET  /api/config/project-root  — Return the projectRoot resolved at startup (DEC-009)
  * POST /api/config/setup-agent-ref — Create agent-ref symlink (deprecated; copy approach preferred)
  */
+import { serverLogger } from '../logger'
 import { Router } from 'express'
 import { join, resolve } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
@@ -44,17 +45,17 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       try {
         const result = installAgentRefDocs(fs, body.project.path, body.locale)
         if (result.installed) {
-          console.log(
+          serverLogger.info(
             `[config-routes] Installed agent-ref docs to ${body.project.path}/.kovitoboard/agent-ref/`
           )
         }
       } catch (refErr) {
-        console.warn('[config-routes] Failed to install agent-ref docs:', refErr)
+        serverLogger.warn({ refErr }, '[config-routes] Failed to install agent-ref docs:')
       }
 
       res.json({ success: true })
     } catch (err) {
-      console.error('[config-routes] Failed to write setting:', err)
+      serverLogger.error({ err }, '[config-routes] Failed to write setting:')
       res.status(500).json({ error: 'Failed to write setting' })
     }
   })
@@ -97,7 +98,7 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       fs.symlinkSync(source, targetLink, 'dir')
       res.json({ success: true, skipped: false, link: targetLink, target: source })
     } catch (err) {
-      console.error('[config-routes] Failed to create agent-ref symlink:', err)
+      serverLogger.error({ err }, '[config-routes] Failed to create agent-ref symlink:')
       res.status(500).json({ error: 'Failed to create agent-ref symlink' })
     }
   })

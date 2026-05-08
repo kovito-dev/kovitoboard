@@ -22,6 +22,7 @@
  *     disk during export. `exportAsMarkdown` is now a pure function
  *     that returns the document as a string.
  */
+import { recipeLogger } from './logger'
 import { join, extname, relative, sep } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
@@ -196,7 +197,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
         page: entry.page,
       }))
     } catch (err) {
-      console.warn('[recipe-exporter] Failed to parse app/menu.ts:', err)
+      recipeLogger.warn({ err }, '[recipe-exporter] Failed to parse app/menu.ts:')
     }
   }
 
