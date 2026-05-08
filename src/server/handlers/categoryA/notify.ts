@@ -7,13 +7,16 @@
  * notify handler — Sends a notification to the user.
  *
  * In v0.1.0, only UI toasts are supported (no OS-level notifications).
- * At Phase E, WebSocket is not yet integrated, so console.log is used as a fallback.
+ * At Phase E, WebSocket is not yet integrated, so notifyLog.info is used as a fallback.
  * Will be replaced with kb-notification event via WebSocket in Phase J/K.
  *
  * @see recipe-system.md §12-2-1 notify
  * @stable v0.1.0
  */
 
+import { lazyChildLogger } from '../../logger'
+
+const notifyLog = lazyChildLogger('notify')
 import type {
   HandlerDef,
   NotifyInput,
@@ -69,9 +72,9 @@ export const notifyHandler: HandlerDef<NotifyInput, NotifyOk> = {
 
     try {
       // TODO: Replace with kb-notification event via WebSocket in Phase J/K
-      // Currently using console.log as a fallback
+      // Currently using notifyLog.info as a fallback
       const prefix = level === 'warning' ? '[WARN]' : '[INFO]'
-      console.log(`[notify] ${prefix} ${input.title}: ${input.body}`)
+      notifyLog.info(`[notify] ${prefix} ${input.title}: ${input.body}`)
 
       return handlerOk({ ok: true as const })
     } catch (err: unknown) {

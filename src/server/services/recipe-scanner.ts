@@ -9,6 +9,7 @@
  * Used by Phase G to provide `GET /api/recipes/sample` with pre-scanned recipe info.
  * Gracefully handles missing directories and parse failures (logs warning, skips).
  */
+import { recipeLogger } from '../logger'
 import { join, resolve, dirname } from 'path'
 import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
@@ -49,7 +50,7 @@ export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
   const recipesDir = join(kbRoot, 'recipes')
 
   if (!fs.existsSync(recipesDir)) {
-    console.log('[recipe-scanner] recipes/ directory not found — returning empty list')
+    recipeLogger.info('[recipe-scanner] recipes/ directory not found — returning empty list')
     sampleRecipeCache = []
     return sampleRecipeCache
   }
@@ -98,16 +99,16 @@ export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
         }
         // Other items are silently skipped
       } catch (err) {
-        console.warn(`[recipe-scanner] Failed to parse recipe "${item}":`, err instanceof Error ? err.message : err)
+        recipeLogger.warn({ err }, `[recipe-scanner] Failed to parse recipe "${item}"`)
         // Skip this recipe, continue scanning others
       }
     }
   } catch (err) {
-    console.error('[recipe-scanner] Failed to read recipes/ directory:', err)
+    recipeLogger.error({ err }, '[recipe-scanner] Failed to read recipes/ directory:')
   }
 
   sampleRecipeCache = entries
-  console.log(`[recipe-scanner] Scanned ${entries.length} sample recipe(s)`)
+  recipeLogger.info(`[recipe-scanner] Scanned ${entries.length} sample recipe(s)`)
   return sampleRecipeCache
 }
 

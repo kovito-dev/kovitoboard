@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+import { watcherLogger } from './logger'
 import { EventEmitter } from 'events'
 import type { Session, SessionSummary, SessionStats, ParsedEvent, SessionOrigin } from './types'
 
@@ -168,7 +169,7 @@ export class SessionManager extends EventEmitter {
    */
   setInitialized(): void {
     this.initializing = false
-    console.log(`[SessionManager] Initialization complete: ${this.sessions.size} sessions loaded`)
+    watcherLogger.info(`[SessionManager] Initialization complete: ${this.sessions.size} sessions loaded`)
   }
 
   /** Returns a map of session ID to agent ID */

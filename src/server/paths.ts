@@ -16,6 +16,9 @@
  * `resolveProjectRoot()` uses a module-level cache (DEC-009),
  * so repeated calls do not incur fs access.
  */
+import { lazyChildLogger } from './logger'
+
+const pathsLog = lazyChildLogger('paths')
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { FileAccessLayer } from './fs-layer'
@@ -60,7 +63,7 @@ export function ensureKovitoboardDir(fs: FileAccessLayer): void {
   const dir = getKovitoboardDir(fs)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
-    console.log(`[paths] Created .kovitoboard/: ${dir}`)
+    pathsLog.info(`[paths] Created .kovitoboard/: ${dir}`)
   }
 }
 
@@ -73,6 +76,6 @@ export function ensureLogsDir(fs: FileAccessLayer): void {
   const dir = getLogsDir(fs)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
-    console.log(`[paths] Created .kovitoboard/logs/: ${dir}`)
+    pathsLog.info(`[paths] Created .kovitoboard/logs/: ${dir}`)
   }
 }

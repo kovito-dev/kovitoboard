@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+import { tmuxLogger } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
@@ -101,8 +102,8 @@ export class ClaudeBridge extends EventEmitter {
 
     // Do not log the message body (last argument)
     const safeArgs = args.slice(0, -1).join(' ')
-    console.log(`[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`)
-    console.log(`[claude-bridge] cwd: ${cwd}`)
+    tmuxLogger.info(`[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`)
+    tmuxLogger.info(`[claude-bridge] cwd: ${cwd}`)
 
     // Remove Claude Code related env vars to avoid nested instance detection
     const env = { ...process.env }
@@ -141,17 +142,21 @@ export class ClaudeBridge extends EventEmitter {
       const text = data.toString()
       managed.stderr += text
       // Output stderr as debug information
-      console.log(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
+      // Per-chunk stderr at debug, not info: a noisy or failing
+      // subprocess can otherwise burn through the retention budget
+      // and bury actionable events. Operators can still reach the
+      // chunks by enabling KOVITOBOARD_DEBUG.
+      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
     })
 
     child.on('close', (code) => {
       if (code === 0) {
         managed.status = 'completed'
-        console.log(`[claude-bridge] Completed(${processId.slice(0, 8)}): exit ${code}`)
+        tmuxLogger.info(`[claude-bridge] Completed(${processId.slice(0, 8)}): exit ${code}`)
       } else {
         managed.status = 'error'
         managed.stdout += managed.stderr
-        console.error(`[claude-bridge] Error(${processId.slice(0, 8)}): exit ${code}`)
+        tmuxLogger.error(`[claude-bridge] Error(${processId.slice(0, 8)}): exit ${code}`)
       }
       this.emit('process_end', processId, managed.status, code)
 
@@ -163,7 +168,23 @@ export class ClaudeBridge extends EventEmitter {
 
     child.on('error', (err) => {
       managed.status = 'error'
-      console.error(`[claude-bridge] Process error(${processId.slice(0, 8)}):`, err.message)
+      // Whitelist a narrow subset of the Error rather than handing
+      // pino the whole object: Node's child_process spawn errors
+      // carry `spawnargs`, which on this code path includes the
+      // Claude message body as the final argv entry. Logging the raw
+      // error would persist that body into server.log even though
+      // the rest of this file deliberately avoids it (see L104 where
+      // we log a length only).
+      const safeErr = {
+        name: err instanceof Error ? err.name : 'Error',
+        message: err instanceof Error ? err.message : String(err),
+        code: (err as NodeJS.ErrnoException).code,
+        path: (err as NodeJS.ErrnoException).path,
+      }
+      tmuxLogger.error(
+        { err: safeErr },
+        `[claude-bridge] Process error(${processId.slice(0, 8)})`,
+      )
       this.emit('process_end', processId, 'error', -1)
     })
 

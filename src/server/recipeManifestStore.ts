@@ -20,6 +20,7 @@
  * @stable v0.1.0
  */
 
+import { recipeLogger } from './logger'
 import { join } from 'path'
 import type { FileAccessLayer } from './fs-layer.js'
 import type { RecipeManifest } from './recipe/apiTypes.js'
@@ -67,17 +68,17 @@ export class RecipeManifestStore {
         const parsed = JSON.parse(raw) as unknown
         const validationError = validateManifest(parsed)
         if (validationError) {
-          console.warn(`[manifest-store] Skipping invalid manifest: ${manifestPath} — ${validationError}`)
+          recipeLogger.warn(`[manifest-store] Skipping invalid manifest: ${manifestPath} — ${validationError}`)
           continue
         }
         const manifest = parsed as RecipeManifest
         this.cache.set(manifest.appId, manifest)
       } catch (err) {
-        console.warn(`[manifest-store] Failed to load manifest: ${manifestPath}`, err)
+        recipeLogger.warn({ err }, `[manifest-store] Failed to load manifest: ${manifestPath}`)
       }
     }
 
-    console.log(`[manifest-store] Loaded ${this.cache.size} manifest(s)`)
+    recipeLogger.info(`[manifest-store] Loaded ${this.cache.size} manifest(s)`)
   }
 
   /**
