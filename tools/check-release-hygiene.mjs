@@ -1139,11 +1139,14 @@ function runConsoleCheck(warn) {
     warn(
       `${file} (${hits.length} occurrence${hits.length > 1 ? 's' : ''}) — use a child logger from src/server/logger.ts or src/renderer/lib/logger.ts`,
     )
-    for (const h of hits.slice(0, 3)) {
-      console.log(`         L${h.line}: ${h.text.substring(0, 80)}`)
+    // Print line numbers only — no source snippets — so a hardcoded
+    // secret that happens to live inside a flagged `console.*` call
+    // is not echoed verbatim into CI / release logs by this gate.
+    for (const h of hits.slice(0, 5)) {
+      console.log(`         L${h.line}`)
     }
-    if (hits.length > 3) {
-      console.log(`         ... and ${hits.length - 3} more`)
+    if (hits.length > 5) {
+      console.log(`         ... and ${hits.length - 5} more`)
     }
   }
 
