@@ -155,4 +155,51 @@ describe('buildDetachedSpawnArgs', () => {
     // make the child take the foreground branch.
     expect(decideDetach(childArgs.slice(1), childEnv)).toBe(false)
   })
+
+  it('prepends execArgv when provided so node-level flags survive the re-exec', () => {
+    // Without this, loaders / inspectors / future permission flags
+    // would silently drop on detach, changing the child's runtime
+    // posture relative to the parent.
+    const { childArgs } = buildDetachedSpawnArgs(
+      [
+        '/usr/bin/node',
+        '/repo/tools/kb-start.mjs',
+        '--detach',
+        '--project-root',
+        '/work',
+      ],
+      {},
+      ['--inspect', '--experimental-loader=./loader.mjs', '--no-warnings'],
+    )
+    expect(childArgs).toEqual([
+      '--inspect',
+      '--experimental-loader=./loader.mjs',
+      '--no-warnings',
+      '/repo/tools/kb-start.mjs',
+      '--project-root',
+      '/work',
+    ])
+  })
+
+  it('keeps the no-execArgv default behaviour stable for existing callers', () => {
+    // Two-argument callers (typed { childArgs: string[]; childEnv: ... })
+    // must continue to work — execArgv defaults to [].
+    const { childArgs } = buildDetachedSpawnArgs(
+      ['/usr/bin/node', '/repo/tools/kb-start.mjs', '--detach'],
+      {},
+    )
+    expect(childArgs).toEqual(['/repo/tools/kb-start.mjs'])
+  })
+
+  it('does not strip --detach from execArgv (it should never appear there, but guard against it bleeding in)', () => {
+    // Defensive: the filter only targets the user-args portion. A
+    // hypothetical `--detach` token in execArgv stays put — that would
+    // be a weird input but the helper should not silently mutate it.
+    const { childArgs } = buildDetachedSpawnArgs(
+      ['/usr/bin/node', '/repo/tools/kb-start.mjs', '--detach'],
+      {},
+      ['--detach'],
+    )
+    expect(childArgs).toEqual(['--detach', '/repo/tools/kb-start.mjs'])
+  })
 })

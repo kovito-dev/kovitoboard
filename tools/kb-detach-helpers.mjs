@@ -62,23 +62,35 @@ export function decideDetach(args, env) {
 /**
  * Build the `(childArgs, childEnv)` pair for a detached re-exec.
  *
- * - `childArgs` is `argv.slice(1)` with all `--detach` occurrences
- *   stripped, so the child does not loop on the same flag.
+ * - `childArgs` is `[...execArgv, ...argv.slice(1)]` with all
+ *   `--detach` occurrences in the user-args portion stripped. Putting
+ *   `execArgv` (e.g. `--inspect`, `--experimental-loader=...`,
+ *   `--no-warnings`) at the head preserves the runtime / security
+ *   posture the parent was launched with — without it the child would
+ *   silently drop loaders, inspector ports, and any future Node
+ *   permission flags.
  * - `childEnv` clones the parent env, removes `KOVITOBOARD_DETACH` (so
  *   the env-var path also does not loop), and sets
  *   `KOVITOBOARD_DETACHED=1` so the child takes the foreground branch
  *   in `decideDetach()`.
+ *
+ * The caller is expected to spawn `process.execPath` (NOT
+ * `process.argv[0]`, which can be a symlinked / aliased entrypoint)
+ * with the returned `childArgs`.
  *
  * @param {readonly string[]} argv - the parent's full argv array
  *   (typically `process.argv`). Index 0 is the node binary, index 1 is
  *   the script path, indices 2+ are user args.
  * @param {Readonly<Record<string, string | undefined>>} env - the
  *   parent environment (typically `process.env`).
+ * @param {readonly string[]} [execArgv] - the parent's
+ *   `process.execArgv` (Node-level flags, defaults to `[]` for tests).
  *
  * @returns {{ childArgs: string[], childEnv: Record<string, string> }}
  */
-export function buildDetachedSpawnArgs(argv, env) {
-  const childArgs = argv.slice(1).filter((a) => a !== DETACH_FLAG)
+export function buildDetachedSpawnArgs(argv, env, execArgv = []) {
+  const userArgs = argv.slice(1).filter((a) => a !== DETACH_FLAG)
+  const childArgs = [...execArgv, ...userArgs]
   /** @type {Record<string, string>} */
   const childEnv = {}
   for (const [key, value] of Object.entries(env)) {

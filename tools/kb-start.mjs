@@ -169,8 +169,14 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   const { childArgs, childEnv } = buildDetachedSpawnArgs(
     process.argv,
     process.env,
+    process.execArgv,
   )
-  const child = spawn(process.argv[0], childArgs, {
+  // Use process.execPath rather than process.argv[0] so symlinked /
+  // aliased entrypoints (e.g. `nodejs` on Debian, nvm shims) resolve to
+  // the actual node binary. Pair it with execArgv prepended via
+  // buildDetachedSpawnArgs so loaders, inspector ports, and future
+  // permission flags carry over to the child.
+  const child = spawn(process.execPath, childArgs, {
     detached: true,
     stdio: 'ignore',
     env: childEnv,
