@@ -255,6 +255,14 @@ const en: Record<MessageKey, string> = {
   'recipe.install.warning.pattern.shell-exec': 'exec / spawn usage',
   'recipe.install.warning.pattern.process-env-write': 'process.env writes',
 
+  // Recipe install — safety boundary + trusted code disclosure (D-4)
+  'recipe.install.warning.safetyBoundary.heading': 'Safety boundary',
+  'recipe.install.warning.safetyBoundary.body':
+    'This recipe runs inside KovitoBoard\'s safety boundary. Recipe artifacts are inspected (extension whitelist, path prefix restriction, type \'api\' forbidden, dangerous pattern detection) and confined to the renderer side; backend route handlers cannot be packaged into a recipe.',
+  'recipe.install.warning.trustedCode.heading': 'Recipe page = trusted code',
+  'recipe.install.warning.trustedCode.body':
+    'Recipe pages run with first-party privileges in the same JavaScript realm as KovitoBoard\'s built-in UI. They can call any /api/* endpoint, send WebSocket messages, and access localStorage / sessionStorage. The handler scopes shown above apply to window.kb.call() handlers; pages may bypass them via direct fetch / WebSocket. Install only recipes from sources you trust.',
+
   // App removal flow (DEC-024 #3)
   'nav.action.removeApp': 'Remove app',
   'nav.action.appActions': 'App actions',
