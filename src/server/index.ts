@@ -1132,14 +1132,14 @@ app.post('/api/recipes/export', (req, res) => {
       const sample = scan.customBeFiles
         .slice(0, MAX_CUSTOM_BE_FILES_IN_RESPONSE)
         .map((f) => f.relativePath)
+      // Send only structured data; the user-facing prose is
+      // localized client-side (single source of truth for the
+      // policy text, no drift between server and i18n catalogs).
       res.status(400).json({
         error: 'CustomBeNotExportable',
-        message:
-          'This app contains files under app/<appId>/api/ which cannot be packaged into a recipe. Recipes are limited to Category A handlers (window.kb.call) for safety boundary reasons; recipe-inspector rejects every artifact whose path starts with api/, regardless of extension.',
         files: sample,
         filesCount: scan.customBeFilesCount,
-        guidance:
-          "To distribute this app: (1) rewrite the BE logic using Category A handlers (declarative api.calls in recipe.yaml + window.kb.call from the page), or (2) document the api/ part separately and ask recipients to implement or reproduce it via agent assistance after recipe install. Files under api/ run outside KB's safety boundary and stay the recipient's responsibility to review.",
+        filesCountApproximate: scan.customBeFilesCountApproximate,
       })
       return
     }

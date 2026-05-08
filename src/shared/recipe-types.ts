@@ -370,7 +370,18 @@ export interface AppScanResult {
    * Total number of files the scanner found under
    * `app/<appId>/api/`, regardless of whether each one was stored
    * in `customBeFiles`. Equal to `customBeFiles.length` when the
-   * total fits inside the cap.
+   * total fits inside the cap. When the scanner hit its cap and
+   * stopped walking, this is a best-effort lower bound rather than
+   * a true total — see `customBeFilesCountApproximate`.
    */
   customBeFilesCount: number
+  /**
+   * True when the scanner short-circuited after collecting enough
+   * `api/` matches to drive the refusal. In that case
+   * `customBeFilesCount` is the lower bound it reached before it
+   * stopped, not the true number of files in `app/<appId>/api/`.
+   * Callers should render "N+ files" rather than "N files" when
+   * this is true.
+   */
+  customBeFilesCountApproximate: boolean
 }

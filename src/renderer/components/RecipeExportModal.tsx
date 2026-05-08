@@ -168,12 +168,16 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
             typeof data?.filesCount === 'number' && data.filesCount > 0
               ? data.filesCount
               : sample.length
-          // Show only the bounded sample in the modal; if the actual
-          // count exceeds it, append a "...and N more" tail so the
-          // user knows the list was truncated.
+          const approximate = data?.filesCountApproximate === true
+          // Show only the bounded sample in the modal; if the
+          // actual count exceeds it, append a tail so the user
+          // knows the list was truncated. When the scanner stopped
+          // early it reports a lower-bound count, so the tail
+          // becomes "...and N+ more" instead of "...and N more".
+          const remaining = totalCount - sample.length
           const filesText =
-            totalCount > sample.length
-              ? `${sample.join(', ')}, ...and ${totalCount - sample.length} more`
+            remaining > 0
+              ? `${sample.join(', ')}, ...and ${remaining}${approximate ? '+' : ''} more`
               : sample.join(', ')
           throw new Error(
             t('recipe.export.error.customBeNotExportable', {

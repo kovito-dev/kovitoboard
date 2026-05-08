@@ -163,6 +163,7 @@ describe('scanAppDirectory(fs, appId)', () => {
       totalSize: 0,
       customBeFiles: [],
       customBeFilesCount: 0,
+      customBeFilesCountApproximate: false,
     })
   })
 

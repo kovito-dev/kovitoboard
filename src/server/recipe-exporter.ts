@@ -37,20 +37,26 @@ import type {
 /**
  * Infer artifact type from a relative path under `app/<appId>/`.
  *
- * Note: `api/*.ts` files are NOT mapped here. They are filtered out
- * of `artifacts` by `scanAppDirectory` and surfaced separately via
- * `customBeFiles`. Backend route handlers live outside the recipe
- * safety boundary (recipe-inspector path-prefix restriction rejects
- * `api/` at install time anyway), so the exporter refuses to package
- * them; callers map this back to a 400 with guidance on how to
- * distribute the BE half separately.
+ * **Caller contract:** this function expects paths that have
+ * already been vetted as exportable by `scanAppDirectory` — i.e.
+ * not under `api/`. `api/`-prefixed paths still map to `'lib'`
+ * through the fallback branch (kept for backward compatibility
+ * with the existing `ArtifactType` union, which has no dedicated
+ * "rejected" entry), but that mapping is **not** the public
+ * meaning of this function: feeding such a path here would silently
+ * reintroduce the pre-rework misclassification that the inspector
+ * then rejects at install time.
+ *
+ * If you need to know whether a path is exportable at all, use
+ * `scanAppDirectory` (which routes `api/` into `customBeFiles`)
+ * rather than calling this directly.
  */
 export function inferArtifactType(relativePath: string): ArtifactType {
   if (relativePath.startsWith('pages/')) return 'page'
   if (relativePath.startsWith('styles/')) return 'style'
   if (relativePath.startsWith('hooks/')) return 'hook'
   if (relativePath.startsWith('utils/')) return 'util'
-  return 'lib' // fallback
+  return 'lib' // fallback for vetted paths only — see contract note
 }
 
 /**
@@ -74,6 +80,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
       totalSize: 0,
       customBeFiles: [],
       customBeFilesCount: 0,
+      customBeFilesCountApproximate: false,
     }
   }
 
@@ -84,9 +91,17 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
    * `customBeFilesCount`; this only bounds how many path strings we
    * keep in memory + send back to the UI. Large `api/` trees should
    * not be able to drive an unbounded allocation here.
+   *
+   * The scanner short-circuits once the count crosses this cap to
+   * also bound CPU/IO: an adversarial `api/` tree must not turn
+   * every guaranteed-failing export request into a deep filesystem
+   * walk + a stat per file. The flag below propagates the
+   * "approximate" state up to the response so callers know the
+   * count may be a lower bound rather than the true total.
    */
   const CUSTOM_BE_FILES_SAMPLE_CAP = 50
   let customBeFilesCount = 0
+  let aborted = false
   let totalSize = 0
 
   // Recursive walk rooted at `app/<appId>/`. We deliberately keep
@@ -99,8 +114,10 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   // `customBeFilesCount` as "refuse the export" and surface the
   // guidance message at the API boundary.
   function scanDir(dir: string): void {
+    if (aborted) return
     const entries = fs.readdirSync(dir)
     for (const entry of entries) {
+      if (aborted) return
       const fullPath = join(dir, entry)
       const relativePath = relative(appRoot, fullPath)
 
@@ -132,12 +149,19 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
           relativePath.startsWith('api/')
         ) {
           customBeFilesCount += 1
-          // Bound the in-memory sample. Past the cap we still keep
-          // counting (so the response can show an accurate total)
-          // but stop allocating per-file metadata, closing the
-          // resource-exhaustion path on a pathological `api/` tree.
           if (customBeFiles.length < CUSTOM_BE_FILES_SAMPLE_CAP) {
             customBeFiles.push({ relativePath, sizeBytes })
+          }
+          // Past the cap we stop walking entirely: the export is
+          // already guaranteed to be refused, so continuing the
+          // recursion just to make `customBeFilesCount` exact would
+          // waste CPU + IO on an adversarial `api/` tree. The
+          // `aborted` flag is propagated to the response as
+          // `customBeFilesCountApproximate` so callers can show
+          // "50+ files" rather than a misleadingly precise total.
+          if (customBeFilesCount >= CUSTOM_BE_FILES_SAMPLE_CAP) {
+            aborted = true
+            return
           }
           continue
         }
@@ -173,7 +197,14 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
     }
   }
 
-  return { artifacts, menu, totalSize, customBeFiles, customBeFilesCount }
+  return {
+    artifacts,
+    menu,
+    totalSize,
+    customBeFiles,
+    customBeFilesCount,
+    customBeFilesCountApproximate: aborted,
+  }
 }
 
 /**

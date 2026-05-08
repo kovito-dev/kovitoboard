@@ -177,12 +177,14 @@ describe('scanAppDirectory — T-2: existing artifact classification preserved',
 })
 
 describe('scanAppDirectory — sample cap on customBeFiles', () => {
-  it('keeps customBeFiles bounded but customBeFilesCount accurate when api/ has many files', () => {
+  it('short-circuits on a large api/ tree and reports an approximate count', () => {
     // Pathological case: an `api/` tree with 60 files. The scanner
-    // must not allocate per-file metadata for every single one (that
-    // is the resource-exhaustion path the cap is meant to close),
-    // but the response still needs an accurate total so the UI can
-    // surface "...and N more".
+    // is expected to stop walking after it has accumulated enough
+    // entries to drive the refusal, so the count it reports is a
+    // lower bound rather than the true total. The test does NOT
+    // assert customBeFilesCount === 60 anymore — that would force
+    // the scanner to walk the entire rejected tree, defeating the
+    // CPU/IO bound that the cap is meant to enforce.
     const files: Record<string, string> = {}
     for (let i = 0; i < 60; i += 1) {
       files[`${PROJECT_ROOT}/app/foo/api/h${i}.ts`] = 'export {}'
@@ -190,9 +192,20 @@ describe('scanAppDirectory — sample cap on customBeFiles', () => {
     files[`${PROJECT_ROOT}/app/foo/pages/Foo.tsx`] = 'export {}'
     const fs = makeFs(files)
     const result = scanAppDirectory(fs, 'foo')
-    expect(result.customBeFilesCount).toBe(60)
     expect(result.customBeFiles.length).toBeLessThanOrEqual(50)
-    expect(result.artifacts.map((a) => a.path)).toEqual(['pages/Foo.tsx'])
+    expect(result.customBeFilesCount).toBeGreaterThanOrEqual(50)
+    expect(result.customBeFilesCount).toBeLessThanOrEqual(60)
+    expect(result.customBeFilesCountApproximate).toBe(true)
+  })
+
+  it('reports an exact (non-approximate) count when api/ stays under the cap', () => {
+    const fs = makeFs({
+      [`${PROJECT_ROOT}/app/foo/api/handler.ts`]: 'export {}',
+      [`${PROJECT_ROOT}/app/foo/pages/Foo.tsx`]: 'export {}',
+    })
+    const result = scanAppDirectory(fs, 'foo')
+    expect(result.customBeFilesCount).toBe(1)
+    expect(result.customBeFilesCountApproximate).toBe(false)
   })
 
   it('treats non-.ts files under api/ as custom BE too (path-prefix is the rule, not extension)', () => {
