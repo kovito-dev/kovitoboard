@@ -22,7 +22,7 @@
  *     disk during export. `exportAsMarkdown` is now a pure function
  *     that returns the document as a string.
  */
-import { join, extname, relative } from 'path'
+import { join, extname, relative, sep } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
 import { parseMenuTsForApp } from './services/menu-extractor'
@@ -36,19 +36,27 @@ import type {
 
 /**
  * Infer artifact type from a relative path under `app/<appId>/`.
- * `api/*.ts` (route handlers / declarative `api:` callees) maps to
- * `lib`, mirroring the loose-bucket policy DEC-024 #5 settled on for
- * v0.1.0 — a dedicated `'api'` artifact type was deliberately not
- * introduced because the recipe consumer already has the `api:`
- * section as the source of truth for handler shape.
+ *
+ * **Caller contract:** this function expects paths that have
+ * already been vetted as exportable by `scanAppDirectory` — i.e.
+ * not under `api/`. `api/`-prefixed paths still map to `'lib'`
+ * through the fallback branch (kept for backward compatibility
+ * with the existing `ArtifactType` union, which has no dedicated
+ * "rejected" entry), but that mapping is **not** the public
+ * meaning of this function: feeding such a path here would silently
+ * reintroduce the pre-rework misclassification that the inspector
+ * then rejects at install time.
+ *
+ * If you need to know whether a path is exportable at all, use
+ * `scanAppDirectory` (which routes `api/` into `customBeFiles`)
+ * rather than calling this directly.
  */
 export function inferArtifactType(relativePath: string): ArtifactType {
   if (relativePath.startsWith('pages/')) return 'page'
   if (relativePath.startsWith('styles/')) return 'style'
   if (relativePath.startsWith('hooks/')) return 'hook'
   if (relativePath.startsWith('utils/')) return 'util'
-  if (relativePath.startsWith('api/')) return 'lib'
-  return 'lib' // fallback
+  return 'lib' // fallback for vetted paths only — see contract note
 }
 
 /**
@@ -66,19 +74,50 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   const appRoot = join(appDir, appId)
 
   if (!fs.existsSync(appRoot)) {
-    return { artifacts: [], menu: [], totalSize: 0 }
+    return {
+      artifacts: [],
+      menu: [],
+      totalSize: 0,
+      customBeFiles: [],
+      customBeFilesCount: 0,
+      customBeFilesCountApproximate: false,
+    }
   }
 
   const artifacts: AppScanResult['artifacts'] = []
+  const customBeFiles: AppScanResult['customBeFiles'] = []
+  /**
+   * Sample size for `customBeFiles`. The full count is tracked in
+   * `customBeFilesCount`; this only bounds how many path strings we
+   * keep in memory + send back to the UI. Large `api/` trees should
+   * not be able to drive an unbounded allocation here.
+   *
+   * The scanner short-circuits once the count crosses this cap to
+   * also bound CPU/IO: an adversarial `api/` tree must not turn
+   * every guaranteed-failing export request into a deep filesystem
+   * walk + a stat per file. The flag below propagates the
+   * "approximate" state up to the response so callers know the
+   * count may be a lower bound rather than the true total.
+   */
+  const CUSTOM_BE_FILES_SAMPLE_CAP = 50
+  let customBeFilesCount = 0
+  let aborted = false
   let totalSize = 0
 
   // Recursive walk rooted at `app/<appId>/`. We deliberately keep
   // `node_modules` and dotfiles out — recipes ship source, not
-  // bundled output — but **no longer skip `api/`** so route handlers
-  // are part of the export (DEC-024 #5 §B1-1).
+  // bundled output. Any file under `api/` (regardless of extension)
+  // is collected into `customBeFiles` instead of `artifacts`: the
+  // recipe install path rejects every `api/`-prefixed artifact via
+  // recipe-inspector's path-prefix restriction, so packaging anything
+  // under `api/` was unsound. Callers should treat a non-zero
+  // `customBeFilesCount` as "refuse the export" and surface the
+  // guidance message at the API boundary.
   function scanDir(dir: string): void {
+    if (aborted) return
     const entries = fs.readdirSync(dir)
     for (const entry of entries) {
+      if (aborted) return
       const fullPath = join(dir, entry)
       const relativePath = relative(appRoot, fullPath)
 
@@ -96,6 +135,39 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
       } else {
         const stat = fs.statSync(fullPath)
         const sizeBytes = stat.size
+        // Collect `api/<file>` (and any nested `api/<sub>/<file>`)
+        // into the BE side-channel instead of artifacts. Only the
+        // prefix forms can match here — directories are dispatched
+        // through the `isDir` branch above before we reach this
+        // file-handling block, so `relativePath === 'api'` is not
+        // reachable for files. Any extension under `api/` qualifies:
+        // recipe-inspector rejects the whole prefix at install time
+        // (not just `.ts`), so the same goes for `.json` / `.md` /
+        // fixtures / etc.
+        if (
+          relativePath.startsWith(`api${sep}`) ||
+          relativePath.startsWith('api/')
+        ) {
+          customBeFilesCount += 1
+          if (customBeFiles.length < CUSTOM_BE_FILES_SAMPLE_CAP) {
+            customBeFiles.push({ relativePath, sizeBytes })
+          }
+          // Past the cap we stop the entire walk — the export is
+          // already guaranteed to be refused, so spending more CPU
+          // / IO to make `customBeFilesCount` (and incidentally
+          // `artifacts` / `menu` / `totalSize`) exact has no
+          // consumer. The result becomes "partial but
+          // refusal-certain"; the AppScanResult contract documents
+          // that artifacts / menu / totalSize MAY be incomplete
+          // when customBeFiles is non-empty, and
+          // `customBeFilesCountApproximate` explicitly flags the
+          // count itself as a lower bound.
+          if (customBeFilesCount >= CUSTOM_BE_FILES_SAMPLE_CAP) {
+            aborted = true
+            return
+          }
+          continue
+        }
         artifacts.push({
           path: relativePath,
           type: inferArtifactType(relativePath),
@@ -128,7 +200,14 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
     }
   }
 
-  return { artifacts, menu, totalSize }
+  return {
+    artifacts,
+    menu,
+    totalSize,
+    customBeFiles,
+    customBeFilesCount,
+    customBeFilesCountApproximate: aborted,
+  }
 }
 
 /**
