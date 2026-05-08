@@ -12,6 +12,7 @@ import {
   INTERNAL_ID_DEFAULT_MODE,
   INTERNAL_ID_MODES,
   INTERNAL_ID_PATTERNS,
+  INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS,
   isInternalIdTemplateAgentFile,
   parseArgs,
   scanFile,
@@ -189,6 +190,18 @@ describe('T-4: fixture trees are excluded', () => {
   it('still includes other tests/ files', () => {
     expect(shouldScanFileForInternalId('tests/unit/some.test.ts')).toBe(true)
     expect(shouldScanFileForInternalId('tests/e2e/helpers/foo.ts')).toBe(true)
+  })
+
+  it('only the false-positive-prone agent-name patterns are skipped in agent templates', () => {
+    // Skipping more (e.g. P-1 / P-2 / P-3 / P-7) would create a coverage gap
+    // — agent template files must still be checked for DEC IDs, BL IDs,
+    // agent: tags, KB-prefixed names, and question IDs.
+    expect(INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS).toEqual(new Set(['P-5', 'P-6']))
+    // Sanity check: the skipped IDs are real entries in the pattern list.
+    const patternIds = new Set(INTERNAL_ID_PATTERNS.map((p: { id: string }) => p.id))
+    for (const skipped of INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS) {
+      expect(patternIds.has(skipped as string)).toBe(true)
+    }
   })
 
   it('isInternalIdTemplateAgentFile matches .md and .en.md at the templates/agents/ flat path', () => {
@@ -383,22 +396,29 @@ describe('scanFileForPatterns: reads file once and scans every pattern', () => {
 
   it('does not leak lastIndex across lines when given a global regex', () => {
     // Defensive: a stateful (/g) regex would advance `lastIndex` per `.test()`
-    // call. Without an internal copy, every other line could be skipped
-    // depending on where the previous match ended. Verify the helper handles
-    // such a pattern correctly.
+    // call. The fixture is laid out specifically to trip that bug:
+    //   line 1: "prefix MATCH end"          (MATCH at column 7, lastIndex -> 12)
+    //   line 2: "MATCH at column zero ..."  (MATCH at column 0)
+    // Without the defensive copy, the second `.test()` would search from
+    // lastIndex 12, find no match in line 2's tail, return false, and the
+    // line-2 MATCH would be silently dropped.
     const globalPattern = { id: 'TEST', label: 'global probe', regex: /MATCH/g }
-    // Build a synthetic file where every line should match.
-    const probeFile = join(FIXTURE_DIR, 'dirty.ts')
+    const probeFile = join(FIXTURE_DIR, 'multi-match.txt')
+
     const out = scanFileForPatterns(probeFile, [globalPattern])
     expect(out.skipped).toBe(false)
     if (out.skipped) return
-    // Re-scan with the same array — the second call must produce identical
-    // results (no carry-over state from the first call's RegExp instance).
+    // Lines 1, 2, and 4 contain MATCH; line 3 does not. With the defensive
+    // copy the helper finds all three. Without it, line 2 would be missed.
+    expect(out.results[0].hits.map((h: { line: number }) => h.line)).toEqual([1, 2, 4])
+
+    // Re-scan with the same regex object — must still produce the same hits.
     const out2 = scanFileForPatterns(probeFile, [globalPattern])
     expect(out2.skipped).toBe(false)
     if (out2.skipped) return
     expect(out2.results[0].hits).toEqual(out.results[0].hits)
-    // The original regex's lastIndex must remain untouched (not advanced).
+
+    // The original regex's lastIndex must remain at 0 — we work on a copy.
     expect(globalPattern.regex.lastIndex).toBe(0)
   })
 })

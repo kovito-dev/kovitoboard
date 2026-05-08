@@ -230,9 +230,15 @@ const INTERNAL_ID_ROOT_FILE_WILDCARDS = [
   /^vite\.config(?:\.[a-z0-9-]+)?\.ts$/,
 ]
 
-// Files where only kb-prefixed agent names (P-4) should be detected;
-// other patterns (e.g. "secretary", "developer") legitimately appear as
-// agent template definitions.
+// In agent template files the false-positive-prone agent-name patterns are
+// skipped because those identifiers legitimately appear as template content
+// (each template defines its own agent ID). The genuine internal-ID patterns
+// (DEC IDs, BL IDs, agent: tags, KB-prefixed names, question IDs) still
+// apply: those identifiers have no business living in a public agent
+// template either, and skipping them would create a coverage gap in the
+// release-hygiene gate.
+export const INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS = new Set(['P-5', 'P-6'])
+
 export function isInternalIdTemplateAgentFile(relPath) {
   return /^templates\/agents\/[^/]+\.md$/.test(relPath)
 }
@@ -787,10 +793,10 @@ function runInternalIdCheck(report, mode) {
 
   for (const file of targetFiles) {
     const isAgentTemplate = isInternalIdTemplateAgentFile(file)
-    // In agent template files only KB-prefixed names (P-4) are flagged;
-    // other patterns are legitimately part of agent definitions.
     const patternsForFile = isAgentTemplate
-      ? INTERNAL_ID_PATTERNS.filter((p) => p.id === 'P-4')
+      ? INTERNAL_ID_PATTERNS.filter(
+          (p) => !INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS.has(p.id),
+        )
       : INTERNAL_ID_PATTERNS
     const scan = scanFileForPatterns(join(ROOT, file), patternsForFile, {
       sizeCap: INTERNAL_ID_FILE_SIZE_CAP,
