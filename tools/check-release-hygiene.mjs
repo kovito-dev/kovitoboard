@@ -12,31 +12,26 @@
 //   3. No docs/specs/ directory
 //   4. No internal meta-notes in user-facing content
 //   5. License consistency (package.json + LICENSE file + AGPL marker)
+//   6. No internal IDs (DEC / BL / agent: tags / question IDs / agent names)
+//
+// This module exports its pattern definitions and helpers so unit tests can
+// exercise them in isolation. When invoked directly (CI or lefthook), the
+// `main()` call at the bottom runs the full check.
 
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const __filename = fileURLToPath(import.meta.url)
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
 // ---------------------------------------------------------------------------
-// CLI flags
+// Section [1] / [2] / [4] configuration
 // ---------------------------------------------------------------------------
 
-const args = process.argv.slice(2)
-const PII_ONLY = args.includes('--pii-only')
-const JAPANESE_ONLY = args.includes('--japanese-only')
-const META_ONLY = args.includes('--meta-only')
-const STRICT = args.includes('--strict')  // Treat warnings (Japanese) as errors
-const RUN_ALL = !PII_ONLY && !JAPANESE_ONLY && !META_ONLY
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.css']
+export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.css']
 
 // Relative paths excluded from Japanese character checks.
 // These files legitimately contain Japanese for:
@@ -44,14 +39,14 @@ const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.css']
 //   - CLAUDE.md parsing regex (settings-reader.ts, agent-reader.ts)
 //   - Security inspection patterns (recipe-inspector.ts)
 //   - Agent prompt templates (app-creation-prompt.ts, recipe-applicator.ts)
-const JAPANESE_EXCLUDE = new Set([
+export const JAPANESE_EXCLUDE = new Set([
   'src/renderer/i18n/ja.ts',
   'src/renderer/i18n/en.ts',       // language endonyms are intentional
   'src/server/services/initial-prompts.ts',
   'src/server/services/upgrade-prompts.ts',
-  'src/shared/app-creation-prompt.ts',  // agent prompt template (ja-fixed for v0.1.0)
-  'src/shared/app-removal-prompt.ts',   // agent prompt template (ja-fixed for v0.1.0; DEC-024 #3 app removal)
-  'src/server/recipe-applicator.ts',    // agent prompt template (ja-fixed for v0.1.0; v2.0 install handover)
+  'src/shared/app-creation-prompt.ts',  // agent prompt template
+  'src/shared/app-removal-prompt.ts',   // agent prompt template
+  'src/server/recipe-applicator.ts',    // agent prompt template
   'src/server/settings-reader.ts',
   'src/server/agent-reader.ts',
   'src/server/recipe-inspector.ts',
@@ -61,13 +56,13 @@ const JAPANESE_EXCLUDE = new Set([
 // Path prefixes excluded from Japanese character checks.
 // tests/ is developer-facing test code that does not impact OSS end-user UX,
 // so Japanese describe/it identifiers are allowed there.
-const JAPANESE_EXCLUDE_PREFIXES = [
+export const JAPANESE_EXCLUDE_PREFIXES = [
   'templates/agents/',
   'tests/',
 ]
 
 // Personal information patterns (always error)
-const PII_PATTERNS = [
+export const PII_PATTERNS = [
   { label: 'irikura', regex: /irikura/i },
   { label: '@Zenbook', regex: /@Zenbook/i },
   { label: 'orolira', regex: /orolira/i },
@@ -76,12 +71,12 @@ const PII_PATTERNS = [
 ]
 
 // Japanese character ranges (Hiragana + Katakana + CJK Unified Ideographs)
-const JAPANESE_RE = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/
+export const JAPANESE_RE = /[぀-ゟ゠-ヿ一-鿿]/
 
 
 // Internal meta-note patterns that should not appear in OSS release content.
 // ERROR-level patterns cause CI failure (scanned per line).
-const META_ERROR_PATTERNS = [
+export const META_ERROR_PATTERNS = [
   { label: '叩き台 (draft/scaffold)', regex: /叩き台/ },
   { label: '(draft)', regex: /\(draft\)/i },
   { label: '改訂履歴 (revision history)', regex: /改訂履歴/ },
@@ -89,19 +84,23 @@ const META_ERROR_PATTERNS = [
 
 // ERROR-level pattern that requires multi-line context (scanned against full content).
 // Matches "Revision history" as a heading followed within a few lines by a table header.
-const META_ERROR_MULTILINE = [
+export const META_ERROR_MULTILINE = [
   { label: 'Revision history table', regex: /Revision\s+history[^\n]*\n(?:[^\n]*\n){0,3}\s*\|/i },
 ]
 
 // WARNING-level patterns are logged but do not fail the check.
-const META_WARN_PATTERNS = [
+//
+// Note: `biz-dev` was previously listed here too. It is now owned by section
+// [6/6]'s standalone agent name pattern (the "false-positive prone" set), so
+// keeping it here would double-count every hit and make the summary noisy.
+// `kovito-hq` is unique to this list — section [6/6] does not check for it.
+export const META_WARN_PATTERNS = [
   { label: 'TODO/FIXME/XXX/TBD', regex: /(^|\s)(?:TODO:|FIXME:|XXX:|TBD\b)/ },
-  { label: 'biz-dev (internal team)', regex: /biz-dev/i },
   { label: 'kovito-hq (internal repo)', regex: /kovito-hq/i },
 ]
 
 // Directories and files scanned for internal meta-note patterns.
-const META_SCAN_TARGETS = [
+export const META_SCAN_TARGETS = [
   'templates/',
   'docs/agent-ref/',
   'app.example/',
@@ -111,7 +110,7 @@ const META_SCAN_TARGETS = [
 ]
 
 // Paths excluded from meta-note scanning.
-const META_EXCLUDE_PREFIXES = [
+export const META_EXCLUDE_PREFIXES = [
   'tests/',
   'docs/specs/',
   'node_modules/',
@@ -119,25 +118,240 @@ const META_EXCLUDE_PREFIXES = [
 ]
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Section [6] internal-ID detection configuration
+// ---------------------------------------------------------------------------
+//
+// Patterns mirror tools/githooks/kovitoboard-commit-msg in the kovitoboard-dev
+// workspace (the SSOT for the commit-msg hook). Because that hook lives in a
+// different repository, the definitions are intentionally duplicated here;
+// keep the two in sync when either evolves.
+//
+// Each pattern declares the modes in which it should produce an error
+// (`errorInPhases`). In the default `warn-only` mode every pattern emits a
+// warning so that the C-4 cleanup work has a measurable signal.
+
+export const INTERNAL_ID_PATTERNS = [
+  {
+    // Anchored with `\b` so substrings inside longer identifiers, hashes, or
+    // URL fragments do not produce noise. The commit-msg hook uses the
+    // unanchored form because messages are short and false positives are
+    // tolerable; code scanning needs the tighter bound.
+    id: 'P-1',
+    label: 'DEC ID (DEC-NNN)',
+    regex: /\bDEC-[0-9]+\b/,
+    errorInPhases: new Set(['partial-error', 'full-error']),
+  },
+  {
+    id: 'P-2',
+    label: 'BL ID (BL-YYYY-NNN)',
+    regex: /\bBL-[0-9]{4}-[0-9]+\b/,
+    errorInPhases: new Set(['partial-error', 'full-error']),
+  },
+  {
+    id: 'P-3',
+    label: 'agent: tag',
+    regex: /\(agent:[^)]+\)/,
+    errorInPhases: new Set(['partial-error', 'full-error']),
+  },
+  {
+    id: 'P-4',
+    label: 'KB-prefixed agent name (kb-architect / kb-pdm)',
+    regex: /\bkb-(?:architect|pdm)\b/,
+    errorInPhases: new Set(['partial-error', 'full-error']),
+  },
+  {
+    id: 'P-5',
+    label: 'standalone agent name (false-positive prone)',
+    // Excludes "developer / tester / pdm" — those are captured by P-6.
+    regex: /\b(?:architect|biz-dev|secretary|workspace-architect|idea-partner|researcher|planner|writer|pipeline-dev|media-ops)\b/,
+    // Permanently warn (see C-4 design notes §2.2).
+    errorInPhases: new Set(),
+  },
+  {
+    id: 'P-6',
+    label: 'common-word agent name (max false-positive)',
+    regex: /\b(?:developer|tester|pdm)\b/,
+    // Permanently warn (strongly recommended in C-4 design notes §2.2).
+    errorInPhases: new Set(),
+  },
+  {
+    id: 'P-7',
+    label: 'internal question ID (Q / SS / SM / SDA / AA / BB prefixes)',
+    regex: /\bQ[0-9]+\b|\bSS-[0-9]+\b|\bSM-[0-9]+\b|\bSDA-[0-9]+\b|\bAA-[0-9]+\b|\bBB-[0-9]+\b/,
+    errorInPhases: new Set(['partial-error', 'full-error']),
+  },
+]
+
+export const INTERNAL_ID_MODES = ['warn-only', 'partial-error', 'full-error']
+
+export const INTERNAL_ID_DEFAULT_MODE = 'warn-only'
+
+// Internal-ID scan must read each candidate file once. To bound CI memory and
+// CPU even if a large text file (e.g. a generated fixture) sneaks past the
+// extension allowlist, apply a hard size cap. Files larger than the cap are
+// reported once and skipped.
+export const INTERNAL_ID_FILE_SIZE_CAP = 1024 * 1024 // 1 MiB
+
+// Files that are never scanned for internal IDs.
+//
+// The hygiene script itself contains the patterns we're looking for, and the
+// matching unit-test file embeds intentional sample strings to exercise those
+// patterns. Both must be excluded — otherwise stricter modes (partial-error /
+// full-error) would flag the project's own test corpus instead of release
+// content.
+export const INTERNAL_ID_EXCLUDE_FILES = new Set([
+  'tools/check-release-hygiene.mjs',
+  'tests/unit/check-release-hygiene.test.ts',
+])
+
+// Path prefixes that are never scanned for internal IDs.
+export const INTERNAL_ID_EXCLUDE_PREFIXES = [
+  'tests/fixtures/projects/',
+  'tests/fixtures/hygiene-internal-id/',
+]
+
+// Root-level scanning is pattern-based rather than allowlist-based: a new
+// root file (a future RELEASE-NOTES.md, a new tooling config, etc.) cannot
+// silently bypass the gate by virtue of not appearing in a hard-coded list.
+// Only documentation and config formats are scanned; binary and license
+// files are not in scope.
+//
+// `.js` and `.mjs` are included because tooling configs often live at the
+// repo root (e.g. `eslint.config.mjs`, a future `vite.config.mjs`).
+export const INTERNAL_ID_ROOT_EXTENSIONS = [
+  '.md',
+  '.json',
+  '.yml',
+  '.yaml',
+  '.ts',
+  '.mjs',
+  '.js',
+]
+
+// Root-level files that are deliberately excluded from the scan even though
+// their extension would otherwise qualify them. `package-lock.json` is
+// generated and dwarfs the size cap; LICENSE is external GPL/AGPL text.
+export const INTERNAL_ID_ROOT_FILE_EXCLUDES = new Set([
+  'package-lock.json',
+])
+
+// In agent template files the false-positive-prone agent-name patterns are
+// skipped because those identifiers legitimately appear as template content
+// (each template defines its own agent ID). The genuine internal-ID patterns
+// (DEC IDs, BL IDs, agent: tags, KB-prefixed names, question IDs) still
+// apply: those identifiers have no business living in a public agent
+// template either, and skipping them would create a coverage gap in the
+// release-hygiene gate.
+export const INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS = new Set(['P-5', 'P-6'])
+
+export function isInternalIdTemplateAgentFile(relPath) {
+  return /^templates\/agents\/[^/]+\.md$/.test(relPath)
+}
+
+// Decide whether a tracked file belongs to the internal-ID scan set.
+export function shouldScanFileForInternalId(relPath) {
+  if (INTERNAL_ID_EXCLUDE_FILES.has(relPath)) return false
+  for (const prefix of INTERNAL_ID_EXCLUDE_PREFIXES) {
+    if (relPath.startsWith(prefix)) return false
+  }
+  if (relPath.startsWith('src/') && /\.(?:ts|tsx|js|mjs|css)$/.test(relPath)) return true
+  if (relPath.startsWith('tools/') && /\.(?:mjs|js|ts|sh)$/.test(relPath)) return true
+  if (relPath.startsWith('tests/') && /\.(?:ts|tsx|js|mjs)$/.test(relPath)) return true
+  if (relPath.startsWith('templates/') && /\.(?:md|json|yaml|yml)$/.test(relPath)) return true
+  if (relPath.startsWith('docs/') && relPath.endsWith('.md')) return true
+  if (relPath.startsWith('app.example/')) return true
+  if (relPath.startsWith('recipes/')) return true
+  // Root-level files (no slash). Pattern-based: any documentation or config
+  // format at the repo root, minus an explicit exclude list for generated /
+  // external content.
+  if (!relPath.includes('/')) {
+    if (INTERNAL_ID_ROOT_FILE_EXCLUDES.has(relPath)) return false
+    return INTERNAL_ID_ROOT_EXTENSIONS.some((ext) => relPath.endsWith(ext))
+  }
+  return false
+}
+
+// Map (pattern, mode) -> 'warn' | 'error'. Pure function for unit testing.
+export function severityForPattern(pattern, mode) {
+  if (mode === 'warn-only') return 'warn'
+  return pattern.errorInPhases.has(mode) ? 'error' : 'warn'
+}
+
+// ---------------------------------------------------------------------------
+// CLI argument parsing (exported for unit testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse argv into a normalized options object.
+ *
+ * @param {string[]} argv - process.argv-shaped array (we slice from index 2).
+ * @returns {{
+ *   piiOnly: boolean,
+ *   japaneseOnly: boolean,
+ *   metaOnly: boolean,
+ *   internalIdOnly: boolean,
+ *   strict: boolean,
+ *   internalIdMode: 'warn-only' | 'partial-error' | 'full-error',
+ *   runAll: boolean,
+ * }}
+ * @throws {Error} when --internal-id-mode receives an unknown value.
+ */
+export function parseArgs(argv) {
+  const args = argv.slice(2)
+  const piiOnly = args.includes('--pii-only')
+  const japaneseOnly = args.includes('--japanese-only')
+  const metaOnly = args.includes('--meta-only')
+  const internalIdOnly = args.includes('--internal-id-only')
+  const strict = args.includes('--strict')
+
+  const modeArg = args.find((a) => a.startsWith('--internal-id-mode='))
+  const internalIdMode = modeArg
+    ? modeArg.slice('--internal-id-mode='.length)
+    : INTERNAL_ID_DEFAULT_MODE
+  if (!INTERNAL_ID_MODES.includes(internalIdMode)) {
+    throw new Error(
+      `Invalid --internal-id-mode: "${internalIdMode}". Must be one of: ${INTERNAL_ID_MODES.join(', ')}`,
+    )
+  }
+
+  const runAll = !piiOnly && !japaneseOnly && !metaOnly && !internalIdOnly
+
+  return {
+    piiOnly,
+    japaneseOnly,
+    metaOnly,
+    internalIdOnly,
+    strict,
+    internalIdMode,
+    runAll,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers (exported for unit testing)
 // ---------------------------------------------------------------------------
 
 /**
  * Get git-tracked files matching given extensions.
- * @param {string[]} extensions - file extensions to match (e.g. ['.ts', '.tsx'])
- * @returns {string[]} list of relative file paths
+ *
+ * Uses `git ls-files -z` so filenames are separated by NUL bytes rather than
+ * newlines: Git permits tracked filenames containing newlines, and naive
+ * line-splitting can corrupt the file list and let crafted paths slip past
+ * the hygiene scan.
+ *
+ * @param {string[]} extensions
+ * @returns {string[]}
  */
-function getTrackedSourceFiles(extensions) {
+export function getTrackedSourceFiles(extensions) {
   try {
-    const output = execSync('git ls-files', {
+    const output = execSync('git ls-files -z', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     return output
-      .trim()
-      .split('\n')
-      .filter(f => f && extensions.some(ext => f.endsWith(ext)))
+      .split('\0')
+      .filter((f) => f && extensions.some((ext) => f.endsWith(ext)))
   } catch {
     return []
   }
@@ -145,20 +359,24 @@ function getTrackedSourceFiles(extensions) {
 
 /**
  * Get all git-tracked text files (excludes known binary extensions).
+ *
+ * Uses `git ls-files -z` for the same reason — filenames may contain newlines.
+ *
  * @returns {string[]}
  */
-function getAllTrackedTextFiles() {
-  const BINARY_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot'])
+export function getAllTrackedTextFiles() {
+  const BINARY_EXTS = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot',
+  ])
   try {
-    const output = execSync('git ls-files', {
+    const output = execSync('git ls-files -z', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     return output
-      .trim()
-      .split('\n')
-      .filter(f => {
+      .split('\0')
+      .filter((f) => {
         if (!f) return false
         const ext = f.substring(f.lastIndexOf('.'))
         return !BINARY_EXTS.has(ext)
@@ -168,14 +386,10 @@ function getAllTrackedTextFiles() {
   }
 }
 
-/**
- * Check if a file path is excluded from Japanese checks.
- * @param {string} relPath
- * @returns {boolean}
- */
-function isJapaneseExcluded(relPath) {
+/** @param {string} relPath */
+export function isJapaneseExcluded(relPath) {
   if (JAPANESE_EXCLUDE.has(relPath)) return true
-  return JAPANESE_EXCLUDE_PREFIXES.some(prefix => relPath.startsWith(prefix))
+  return JAPANESE_EXCLUDE_PREFIXES.some((prefix) => relPath.startsWith(prefix))
 }
 
 /**
@@ -184,7 +398,7 @@ function isJapaneseExcluded(relPath) {
  * @param {RegExp} pattern
  * @returns {{ line: number, text: string }[]}
  */
-function scanFile(filePath, pattern) {
+export function scanFile(filePath, pattern) {
   try {
     const content = readFileSync(filePath, 'utf-8')
     const lines = content.split('\n')
@@ -202,19 +416,20 @@ function scanFile(filePath, pattern) {
 
 /**
  * Scan a file for a multi-line regex match against the full content.
- * Returns the line number of the first character of each match.
  * @param {string} filePath - absolute path
- * @param {RegExp} pattern - regex to match (should NOT have 'g' flag; a copy with 'g' is used)
+ * @param {RegExp} pattern
  * @returns {{ line: number, text: string }[]}
  */
-function scanFileMultiline(filePath, pattern) {
+export function scanFileMultiline(filePath, pattern) {
   try {
     const content = readFileSync(filePath, 'utf-8')
-    const globalPattern = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g')
+    const globalPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+    )
     const hits = []
     let match
     while ((match = globalPattern.exec(content)) !== null) {
-      // Count newlines before the match to determine line number
       const before = content.substring(0, match.index)
       const line = before.split('\n').length
       const matchedLine = content.split('\n')[line - 1] || ''
@@ -228,51 +443,181 @@ function scanFileMultiline(filePath, pattern) {
 
 /**
  * Get git-tracked text files that match META_SCAN_TARGETS and are not excluded.
- * @returns {string[]} list of relative file paths
+ * @returns {string[]}
  */
-function getMetaScanFiles() {
+export function getMetaScanFiles() {
   const allFiles = getAllTrackedTextFiles()
-  return allFiles.filter(f => {
-    // Must be inside one of the target directories or match a target file
-    const isTarget = META_SCAN_TARGETS.some(t =>
-      t.endsWith('/') ? f.startsWith(t) : f === t
+  return allFiles.filter((f) => {
+    const isTarget = META_SCAN_TARGETS.some((t) =>
+      t.endsWith('/') ? f.startsWith(t) : f === t,
     )
     if (!isTarget) return false
-    // Must not be in an excluded prefix
-    const isExcluded = META_EXCLUDE_PREFIXES.some(prefix => f.startsWith(prefix))
+    const isExcluded = META_EXCLUDE_PREFIXES.some((prefix) => f.startsWith(prefix))
     return !isExcluded
   })
 }
 
+/**
+ * Get git-tracked files that should be scanned for internal IDs.
+ * @returns {string[]}
+ */
+export function getInternalIdScanFiles() {
+  return getAllTrackedTextFiles().filter(shouldScanFileForInternalId)
+}
+
+/**
+ * Count every regex occurrence inside a single text line. `scanFile` returns
+ * one entry per matching line which is the right granularity for surfacing
+ * code locations, but a line such as a comment listing several question IDs
+ * contains multiple actual matches; the cleanup metric tracks the total
+ * occurrence count, not the matching-line count.
+ *
+ * @param {string} text
+ * @param {RegExp} regex - non-global regex; a global copy is used internally.
+ * @returns {number}
+ */
+export function countMatchesInText(text, regex) {
+  const globalRe = new RegExp(
+    regex.source,
+    regex.flags.includes('g') ? regex.flags : regex.flags + 'g',
+  )
+  const matches = text.match(globalRe)
+  return matches ? matches.length : 0
+}
+
+/**
+ * Read a file once and evaluate every supplied pattern against it.
+ *
+ * `scanFile` is convenient when a section runs a single regex per file (the
+ * Japanese / PII / multiline-meta-note paths), but the internal-ID detector
+ * runs ~7 patterns per file. Calling `scanFile` per pattern would re-read and
+ * re-split the same file each time. This helper does the I/O once.
+ *
+ * If the file is missing, unreadable, or larger than `sizeCap`, it returns a
+ * skipped envelope so the caller can surface a single diagnostic instead of
+ * silently dropping data.
+ *
+ * @param {string} filePath - absolute path
+ * @param {Array<{ regex: RegExp }>} patterns
+ * @param {{ sizeCap?: number }} [opts]
+ * @returns {{
+ *   skipped: false,
+ *   results: Array<{ pattern: { regex: RegExp }, hits: { line: number, text: string }[] }>,
+ * } | {
+ *   skipped: true,
+ *   reason: 'size-cap' | 'read-error',
+ *   size?: number,
+ *   results: [],
+ * }}
+ */
+export function scanFileForPatterns(filePath, patterns, opts = {}) {
+  const { sizeCap } = opts
+  let content
+  try {
+    // `lstatSync` does NOT follow symlinks, so a tracked symlink pointing
+    // outside the repo or to a special file (FIFO, device, socket) is
+    // detected and refused before we open it. Without this, `readFileSync`
+    // on a symlink to /dev/zero or a FIFO can hang or exhaust CI memory.
+    const stats = lstatSync(filePath)
+    if (!stats.isFile()) {
+      return { skipped: true, reason: 'special-file', results: [] }
+    }
+    if (typeof sizeCap === 'number' && stats.size > sizeCap) {
+      return { skipped: true, reason: 'size-cap', size: stats.size, results: [] }
+    }
+    content = readFileSync(filePath, 'utf-8')
+  } catch {
+    return { skipped: true, reason: 'read-error', results: [] }
+  }
+  const lines = content.split('\n')
+  // Defensive: build a non-stateful regex copy for each pattern so a future
+  // /g or /y flag would not leak `lastIndex` across lines and skip matches
+  // nondeterministically. Today's internal-ID patterns are all non-global,
+  // but the helper is generic and the cost of one fresh RegExp per scan is
+  // negligible.
+  const localRegexes = patterns.map((p) =>
+    p.regex.global || p.regex.sticky
+      ? new RegExp(p.regex.source, p.regex.flags.replace(/[gy]/g, ''))
+      : p.regex,
+  )
+  const results = patterns.map((p) => ({ pattern: p, hits: [] }))
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    for (let pi = 0; pi < results.length; pi++) {
+      if (localRegexes[pi].test(line)) {
+        results[pi].hits.push({ line: i + 1, text: line.trim() })
+      }
+    }
+  }
+  return { skipped: false, results }
+}
+
 // ---------------------------------------------------------------------------
-// Checks
+// Reporters
 // ---------------------------------------------------------------------------
 
-let warnings = 0
-let errors = 0
-
-function warn(msg) {
-  if (STRICT) {
-    // In strict mode (CI), warnings become errors
-    console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
-    errors++
-  } else {
-    console.log(`  \x1b[33mWARN\x1b[0m  ${msg}`)
-    warnings++
+class Counters {
+  constructor() {
+    this.warnings = 0
+    this.errors = 0
   }
 }
 
-function error(msg) {
-  console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
-  errors++
+/**
+ * Generic warn helper used by sections [1] / [4] only. In `--strict` mode the
+ * existing CI policy escalates these warnings to errors.
+ *
+ * Section [6] internal-ID detection deliberately does NOT use this helper —
+ * its severity is controlled by `--internal-id-mode`, independent of `--strict`.
+ */
+function makeWarn(counters, strict) {
+  return (msg) => {
+    if (strict) {
+      console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
+      counters.errors++
+    } else {
+      console.log(`  \x1b[33mWARN\x1b[0m  ${msg}`)
+      counters.warnings++
+    }
+  }
 }
 
-// --- Check 1: Japanese characters in source files ---
-if (RUN_ALL || JAPANESE_ONLY) {
-  console.log('\n\x1b[1m[1/5] Japanese character detection\x1b[0m')
+function makeError(counters) {
+  return (msg) => {
+    console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
+    counters.errors++
+  }
+}
 
-  const sourceFiles = getTrackedSourceFiles(SOURCE_EXTENSIONS)
-    .filter(f => !isJapaneseExcluded(f))
+/**
+ * Internal-ID specific reporter. Severity is derived from `--internal-id-mode`
+ * via {@link severityForPattern}; the global `--strict` flag does NOT promote
+ * these warnings to errors. Counts go to the shared counters per-occurrence
+ * (not per emitted line) so that the final summary reflects the total number
+ * of internal-ID hits — the metric the C-4 cleanup work tracks.
+ */
+function makeInternalIdReport(counters) {
+  return (severity, msg, hitCount) => {
+    if (severity === 'error') {
+      console.log(`  \x1b[31mERROR\x1b[0m ${msg}`)
+      counters.errors += hitCount
+    } else {
+      console.log(`  \x1b[33mWARN\x1b[0m  ${msg}`)
+      counters.warnings += hitCount
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section runners
+// ---------------------------------------------------------------------------
+
+function runJapaneseCheck(warn) {
+  console.log('\n\x1b[1m[1/6] Japanese character detection\x1b[0m')
+
+  const sourceFiles = getTrackedSourceFiles(SOURCE_EXTENSIONS).filter(
+    (f) => !isJapaneseExcluded(f),
+  )
 
   let japaneseFileCount = 0
   for (const file of sourceFiles) {
@@ -296,16 +641,14 @@ if (RUN_ALL || JAPANESE_ONLY) {
   }
 }
 
-// --- Check 2: Personal information patterns ---
-if (RUN_ALL || PII_ONLY) {
-  console.log('\n\x1b[1m[2/5] Personal information detection\x1b[0m')
+function runPiiCheck(error) {
+  console.log('\n\x1b[1m[2/6] Personal information detection\x1b[0m')
 
   const allTextFiles = getAllTrackedTextFiles()
   let piiFound = false
 
   for (const { label, regex } of PII_PATTERNS) {
     for (const file of allTextFiles) {
-      // Skip this hygiene script itself
       if (file === 'tools/check-release-hygiene.mjs') continue
       const hits = scanFile(join(ROOT, file), regex)
       if (hits.length > 0) {
@@ -322,9 +665,8 @@ if (RUN_ALL || PII_ONLY) {
   }
 }
 
-// --- Check 3: docs/specs/ directory ---
-if (RUN_ALL) {
-  console.log('\n\x1b[1m[3/5] docs/specs/ directory check\x1b[0m')
+function runSpecsDirCheck(error) {
+  console.log('\n\x1b[1m[3/6] docs/specs/ directory check\x1b[0m')
 
   const specsDir = join(ROOT, 'docs', 'specs')
   if (existsSync(specsDir)) {
@@ -334,21 +676,17 @@ if (RUN_ALL) {
   }
 }
 
-// --- Check 4: Internal meta-note patterns ---
-if (RUN_ALL || META_ONLY) {
-  console.log('\n\x1b[1m[4/5] Internal meta-note detection\x1b[0m')
+function runMetaCheck(warn, error) {
+  console.log('\n\x1b[1m[4/6] Internal meta-note detection\x1b[0m')
 
   const metaFiles = getMetaScanFiles()
   let metaErrorCount = 0
   let metaWarnCount = 0
 
   for (const file of metaFiles) {
-    // Skip this hygiene script itself (it defines the patterns)
     if (file === 'tools/check-release-hygiene.mjs') continue
-
     const absPath = join(ROOT, file)
 
-    // Check ERROR-level patterns (per-line)
     for (const { label, regex } of META_ERROR_PATTERNS) {
       const hits = scanFile(absPath, regex)
       if (hits.length > 0) {
@@ -360,7 +698,6 @@ if (RUN_ALL || META_ONLY) {
       }
     }
 
-    // Check ERROR-level patterns (multi-line context)
     for (const { label, regex } of META_ERROR_MULTILINE) {
       const hits = scanFileMultiline(absPath, regex)
       if (hits.length > 0) {
@@ -372,7 +709,6 @@ if (RUN_ALL || META_ONLY) {
       }
     }
 
-    // Check WARNING-level patterns
     for (const { label, regex } of META_WARN_PATTERNS) {
       const hits = scanFile(absPath, regex)
       if (hits.length > 0) {
@@ -397,15 +733,13 @@ if (RUN_ALL || META_ONLY) {
   }
 }
 
-// --- Check 5: License consistency ---
-if (RUN_ALL) {
-  console.log('\n\x1b[1m[5/5] License consistency check\x1b[0m')
+function runLicenseCheck(error) {
+  console.log('\n\x1b[1m[5/6] License consistency check\x1b[0m')
 
   const EXPECTED_LICENSE = 'AGPL-3.0-or-later'
   const EXPECTED_AUTHOR = 'Anode LLC'
   const EXPECTED_LICENSE_MARKER = 'GNU AFFERO GENERAL PUBLIC LICENSE'
 
-  // Check package.json license / author fields
   const pkgPath = join(ROOT, 'package.json')
   if (!existsSync(pkgPath)) {
     error('package.json not found at repo root')
@@ -427,7 +761,6 @@ if (RUN_ALL) {
     }
   }
 
-  // Check LICENSE file existence and AGPL marker
   const licensePath = join(ROOT, 'LICENSE')
   if (!existsSync(licensePath)) {
     error('LICENSE file not found at repo root')
@@ -440,18 +773,10 @@ if (RUN_ALL) {
     }
   }
 
-  // Check source file headers (SPDX-License-Identifier) for all eligible files.
-  // Auto-fix path: lefthook pre-commit `license-header` hook + scripts/add-license-header.mjs
-  // Detection path: this check (also runs in CI as a safety net)
   const HEADER_TARGET_EXTS = ['.ts', '.tsx', '.mjs', '.js']
-  // Paths excluded from header check.
-  // - tests/fixtures/projects/: synthetic project fixtures emulating user repos;
-  //   these files represent end-user content, not KovitoBoard source.
-  const HEADER_EXCLUDE_PREFIXES = [
-    'tests/fixtures/projects/',
-  ]
+  const HEADER_EXCLUDE_PREFIXES = ['tests/fixtures/projects/']
   const headerTargets = getTrackedSourceFiles(HEADER_TARGET_EXTS).filter(
-    (f) => !HEADER_EXCLUDE_PREFIXES.some((p) => f.startsWith(p))
+    (f) => !HEADER_EXCLUDE_PREFIXES.some((p) => f.startsWith(p)),
   )
   const missingHeader = []
   for (const file of headerTargets) {
@@ -475,21 +800,174 @@ if (RUN_ALL) {
   }
 }
 
+function runInternalIdCheck(report, mode) {
+  console.log('\n\x1b[1m[6/6] Internal-ID detection\x1b[0m')
+  console.log(`  Mode: ${mode}`)
+
+  const targetFiles = getInternalIdScanFiles()
+
+  let totalErrors = 0
+  let totalWarns = 0
+  let skippedBySizeCap = 0
+  let skippedByReadError = 0
+  let skippedBySpecialFile = 0
+  /** @type {Map<string, number>} */
+  const perPatternCounts = new Map()
+
+  for (const file of targetFiles) {
+    const isAgentTemplate = isInternalIdTemplateAgentFile(file)
+    const patternsForFile = isAgentTemplate
+      ? INTERNAL_ID_PATTERNS.filter(
+          (p) => !INTERNAL_ID_TEMPLATE_AGENT_SKIPPED_PATTERN_IDS.has(p.id),
+        )
+      : INTERNAL_ID_PATTERNS
+    const scan = scanFileForPatterns(join(ROOT, file), patternsForFile, {
+      sizeCap: INTERNAL_ID_FILE_SIZE_CAP,
+    })
+    if (scan.skipped) {
+      // Skip reasons are ALWAYS reported as errors, regardless of mode.
+      //
+      // The warn-only promise applies to pattern matches: those are
+      // intentionally non-fatal while the cleanup is in progress. A skipped
+      // file is different — the scan could not run at all, so we do not
+      // know what is inside, and a contributor could otherwise hide internal
+      // IDs behind a symlink, an oversized blob, or an unreadable path. The
+      // only way to keep the gate honest is to fail CI on every skip.
+      if (scan.reason === 'special-file') {
+        skippedBySpecialFile++
+        report(
+          'error',
+          `${file} not scanned for internal-IDs (symlink or non-regular file)`,
+          1,
+        )
+        totalErrors++
+      } else if (scan.reason === 'size-cap') {
+        skippedBySizeCap++
+        report(
+          'error',
+          `${file} not scanned for internal-IDs (${scan.size} bytes exceeds ${INTERNAL_ID_FILE_SIZE_CAP} cap)`,
+          1,
+        )
+        totalErrors++
+      } else if (scan.reason === 'read-error') {
+        skippedByReadError++
+        report(
+          'error',
+          `${file} could not be read for internal-ID scan (broken symlink or permission issue?)`,
+          1,
+        )
+        totalErrors++
+      }
+      continue
+    }
+    for (const { pattern, hits } of scan.results) {
+      if (hits.length === 0) continue
+      // Sum actual regex occurrences per line — a line may contain multiple
+      // matches (e.g. a comment listing several question IDs at once) and
+      // the cleanup metric tracks every one.
+      let occurrenceCount = 0
+      for (const h of hits) {
+        occurrenceCount += countMatchesInText(h.text, pattern.regex)
+      }
+      // Defensive fallback: every matching line should yield at least 1.
+      if (occurrenceCount < hits.length) occurrenceCount = hits.length
+      const severity = severityForPattern(pattern, mode)
+      perPatternCounts.set(
+        pattern.id,
+        (perPatternCounts.get(pattern.id) ?? 0) + occurrenceCount,
+      )
+      // Line numbers only — never echo the matching line content. CI logs
+      // for the OSS repository are public, and printing the matched text
+      // would aggregate the very internal IDs the gate is meant to keep out.
+      // Locations are enough to grep with.
+      const lineNumbers = hits.slice(0, 10).map((h) => `L${h.line}`)
+      const lineSuffix =
+        hits.length > 10 ? ` (+${hits.length - 10} more)` : ''
+      report(
+        severity,
+        `${file} [${pattern.id} ${pattern.label}] (${occurrenceCount} occurrence${occurrenceCount > 1 ? 's' : ''} on ${hits.length} line${hits.length > 1 ? 's' : ''}): ${lineNumbers.join(', ')}${lineSuffix}`,
+        occurrenceCount,
+      )
+      if (severity === 'error') totalErrors += occurrenceCount
+      else totalWarns += occurrenceCount
+    }
+  }
+
+  if (totalErrors === 0 && totalWarns === 0) {
+    console.log('  \x1b[32mOK\x1b[0m    No internal-ID patterns found')
+    if (skippedBySizeCap > 0) {
+      console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
+    }
+    if (skippedByReadError > 0) {
+      console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
+    }
+    if (skippedBySpecialFile > 0) {
+      console.log(`         (${skippedBySpecialFile} file(s) skipped as non-regular file)`)
+    }
+    return
+  }
+
+  console.log('')
+  if (totalErrors > 0) console.log(`  Found ${totalErrors} internal-ID error(s)`)
+  if (totalWarns > 0) console.log(`  Found ${totalWarns} internal-ID warning(s)`)
+  if (skippedBySizeCap > 0) {
+    console.log(`         (${skippedBySizeCap} file(s) skipped over the size cap)`)
+  }
+  if (skippedByReadError > 0) {
+    console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
+  }
+  if (skippedBySpecialFile > 0) {
+    console.log(`         (${skippedBySpecialFile} file(s) skipped as non-regular file)`)
+  }
+  for (const pattern of INTERNAL_ID_PATTERNS) {
+    const c = perPatternCounts.get(pattern.id)
+    if (c) {
+      console.log(`         ${pattern.id} (${pattern.label}): ${c}`)
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Summary
+// main()
 // ---------------------------------------------------------------------------
 
-console.log('\n\x1b[1m--- Summary ---\x1b[0m')
-if (errors > 0) {
-  console.log(`  \x1b[31m${errors} error(s)\x1b[0m, ${warnings} warning(s)`)
-  console.log('  Release hygiene check \x1b[31mFAILED\x1b[0m\n')
-  process.exit(1)
-} else if (warnings > 0) {
-  console.log(`  ${warnings} warning(s), 0 errors`)
-  console.log('  Release hygiene check \x1b[33mPASSED with warnings\x1b[0m\n')
-  process.exit(0)
-} else {
-  console.log('  All checks passed')
-  console.log('  Release hygiene check \x1b[32mPASSED\x1b[0m\n')
-  process.exit(0)
+function main() {
+  let opts
+  try {
+    opts = parseArgs(process.argv)
+  } catch (e) {
+    console.error(e.message)
+    process.exit(2)
+  }
+
+  const counters = new Counters()
+  const warn = makeWarn(counters, opts.strict)
+  const error = makeError(counters)
+  const internalIdReport = makeInternalIdReport(counters)
+
+  if (opts.runAll || opts.japaneseOnly) runJapaneseCheck(warn)
+  if (opts.runAll || opts.piiOnly) runPiiCheck(error)
+  if (opts.runAll) runSpecsDirCheck(error)
+  if (opts.runAll || opts.metaOnly) runMetaCheck(warn, error)
+  if (opts.runAll) runLicenseCheck(error)
+  if (opts.runAll || opts.internalIdOnly) runInternalIdCheck(internalIdReport, opts.internalIdMode)
+
+  console.log('\n\x1b[1m--- Summary ---\x1b[0m')
+  if (counters.errors > 0) {
+    console.log(`  \x1b[31m${counters.errors} error(s)\x1b[0m, ${counters.warnings} warning(s)`)
+    console.log('  Release hygiene check \x1b[31mFAILED\x1b[0m\n')
+    process.exit(1)
+  } else if (counters.warnings > 0) {
+    console.log(`  ${counters.warnings} warning(s), 0 errors`)
+    console.log('  Release hygiene check \x1b[33mPASSED with warnings\x1b[0m\n')
+    process.exit(0)
+  } else {
+    console.log('  All checks passed')
+    console.log('  Release hygiene check \x1b[32mPASSED\x1b[0m\n')
+    process.exit(0)
+  }
+}
+
+if (process.argv[1] === __filename) {
+  main()
 }
