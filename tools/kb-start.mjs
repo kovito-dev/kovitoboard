@@ -40,6 +40,11 @@
  *   --vite-port=<n>         Vite dev server port. Same precedence /
  *                           probing rules as `--port`, with defaults
  *                           5173..5182 and `process.env.VITE_PORT`.
+ *   --detach                Re-exec the supervisor in the background and
+ *                           exit. Equivalent env var:
+ *                           `KOVITOBOARD_DETACH=1`. Default behaviour is
+ *                           still foreground; detach is purely additive
+ *                           in v0.2.0.
  *   -h, --help              Print this help.
  *
  * Port resolution order (highest to lowest priority):
@@ -67,6 +72,10 @@ import {
   readlinkSync,
   mkdirSync,
 } from 'fs'
+import {
+  decideDetach,
+  buildDetachedSpawnArgs,
+} from './kb-detach-helpers.mjs'
 
 const RESTART_EXIT_CODE = 42
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -124,6 +133,11 @@ Options:
   --vite-port=<n>         Vite dev server port.
                           Defaults: probe 5173..5182, then env VITE_PORT.
                           Errors out when the specified port is in use.
+  --detach                Run the supervisor in the background. The
+                          parent shell returns immediately after spawning
+                          the supervisor; stop it later with
+                          \`kill <pid>\`. Equivalent env var:
+                          \`KOVITOBOARD_DETACH=1\`.
   -h, --help              Print this help.
 
 Examples:
@@ -131,7 +145,40 @@ Examples:
   node tools/kb-start.mjs --port=8080                    # backend fixed
   node tools/kb-start.mjs --port=8080 --vite-port=8000   # both fixed
   PORT=8080 node tools/kb-start.mjs                      # env fallback
+  node tools/kb-start.mjs --detach                       # background launch
 `)
+  process.exit(0)
+}
+
+// ---------------------------------------------------------------------------
+// Detach branch: re-exec self in the background, then exit
+//
+// When the user invokes `--detach` (or sets `KOVITOBOARD_DETACH=1`), we
+// fork a fresh node process with the same arguments minus `--detach`,
+// wire it up so it survives the parent shell, and exit. The child
+// inherits `KOVITOBOARD_DETACHED=1` and therefore takes the normal
+// foreground branch below — no recursion, no double fork.
+//
+// Stopping is intentionally manual for v0.2.0: the supervisor PID is
+// printed and the user kills it directly. A `kb:stop` script will be
+// added by the process-lifecycle Phase 1 work; once landed, this
+// message will mention `npm run kb:stop` as the preferred command.
+// ---------------------------------------------------------------------------
+
+if (decideDetach(process.argv.slice(2), process.env)) {
+  const { childArgs, childEnv } = buildDetachedSpawnArgs(
+    process.argv,
+    process.env,
+  )
+  const child = spawn(process.argv[0], childArgs, {
+    detached: true,
+    stdio: 'ignore',
+    env: childEnv,
+  })
+  child.unref()
+  console.log(
+    `[kb-start] Detached (pid=${child.pid}). Stop with 'kill ${child.pid}'.`,
+  )
   process.exit(0)
 }
 
