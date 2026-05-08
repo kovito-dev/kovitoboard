@@ -19,16 +19,36 @@ export function getRecipeHistoryPath(fs: FileAccessLayer): string {
 }
 
 /**
+ * Maximum per-call warning lines emitted for parse failures. Beyond
+ * this we collapse the rest into a single summary line so a corrupted
+ * (or hostile) JSONL file cannot turn every read into a log spam +
+ * CPU storm.
+ */
+const MAX_PARSE_WARNINGS = 10
+
+/**
+ * Fraction of non-empty lines that must parse successfully for the
+ * file to be considered "mostly OK". Below this we rotate the file to
+ * `.corrupted` so the next append starts fresh, rather than re-reading
+ * and re-warning on every call.
+ */
+const CORRUPTION_ROTATE_THRESHOLD = 0.5
+
+/**
  * Read all recipe history entries. Returns an empty array when the file
  * does not exist.
  *
  * Per-line parsing: a single corrupted line (e.g. a half-written entry
  * left by a crashed process before this module switched to
- * `appendFileSync`) is logged and skipped rather than failing the whole
- * read. If every non-empty line fails to parse the file is presumed
- * fully corrupted and renamed to `<path>.corrupted` so the next
- * `appendRecipeHistory` call can start fresh; downstream code will see
- * an empty history rather than a hard error loop.
+ * `appendFileSync`) is logged and skipped rather than failing the
+ * whole read. The first `MAX_PARSE_WARNINGS` failures are logged
+ * verbatim; any beyond that contribute only to a single summary line.
+ *
+ * Whole-file rotation: if at least half of the non-empty lines fail
+ * to parse, the file is renamed to `<path>.corrupted` and an empty
+ * history is returned. The next `appendRecipeHistory` call then
+ * starts a fresh file, which prevents an unbounded growth of bad
+ * lines that we would otherwise reprocess on every read.
  */
 export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   const path = getRecipeHistoryPath(fs)
@@ -45,27 +65,39 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   const lines = content.split('\n').filter((line) => line.trim().length > 0)
   const entries: RecipeHistoryEntry[] = []
   let parseFailures = 0
+  let warnedCount = 0
   for (const line of lines) {
     try {
       entries.push(JSON.parse(line) as RecipeHistoryEntry)
     } catch (err) {
       parseFailures += 1
-      console.warn(
-        '[recipe-history] Skipping unparseable line:',
-        err instanceof Error ? err.message : String(err),
-      )
+      if (warnedCount < MAX_PARSE_WARNINGS) {
+        console.warn(
+          '[recipe-history] Skipping unparseable line:',
+          err instanceof Error ? err.message : String(err),
+        )
+        warnedCount += 1
+      }
     }
   }
+  if (parseFailures > MAX_PARSE_WARNINGS) {
+    console.warn(
+      `[recipe-history] Suppressed ${parseFailures - MAX_PARSE_WARNINGS} additional parse warnings (corruption suspected).`,
+    )
+  }
 
-  // Whole-file corruption: every non-empty line failed to parse.
-  // Rename out of the way so the next append starts a fresh file
-  // instead of accumulating more bad lines on top of the corruption.
-  if (parseFailures > 0 && entries.length === 0 && lines.length > 0) {
+  // Whole-file corruption: at least half of the non-empty lines failed
+  // to parse. Rotate out of the way so we do not re-warn on every
+  // subsequent read; the next append will start a fresh file. The
+  // entries we *did* manage to parse are intentionally returned —
+  // dropping them would lose recoverable history for marginal benefit.
+  const failureRatio = lines.length > 0 ? parseFailures / lines.length : 0
+  if (lines.length > 0 && failureRatio >= CORRUPTION_ROTATE_THRESHOLD) {
     const corruptedPath = `${path}.corrupted`
     try {
       fs.renameSync(path, corruptedPath)
       console.error(
-        `[recipe-history] All ${lines.length} line(s) failed to parse; moved to ${corruptedPath}.`,
+        `[recipe-history] Corruption ratio ${(failureRatio * 100).toFixed(0)}% (${parseFailures}/${lines.length}); rotated to ${corruptedPath}.`,
       )
     } catch (err) {
       console.error(

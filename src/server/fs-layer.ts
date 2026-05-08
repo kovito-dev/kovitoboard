@@ -222,6 +222,19 @@ export class DirectFsLayer implements FileAccessLayer {
       fsCloseSync(fd)
       fd = undefined
       this._rename(tempPath, path)
+      // Durability of the rename itself depends on the parent
+      // directory entry reaching disk, which requires an explicit
+      // fsync(dirfd) on POSIX (a file fsync alone does not flush the
+      // dirent that points at the new inode). Without this a
+      // crash/power loss after rename can drop the entry and roll
+      // back to the previous file. We swallow errors here — the
+      // primary write succeeded, and platforms that disallow
+      // directory fsync (notably Windows) would otherwise fail every
+      // call. fsync for `--fsync=false` callers is also skipped on
+      // the directory to keep the opt-out coherent.
+      if (wantFsync) {
+        this._fsyncDir(dir)
+      }
     } catch (err) {
       // Best-effort cleanup. Either the open failed (no fd, no temp
       // file to remove), or the write/rename failed (stale temp file
@@ -257,6 +270,31 @@ export class DirectFsLayer implements FileAccessLayer {
   /** Hook around `fs.fsyncSync`. See `_rename` for rationale. */
   protected _fsync(fd: number): void {
     fsFsyncSync(fd)
+  }
+
+  /**
+   * Best-effort `fsync` on a directory descriptor so the freshly
+   * renamed dirent reaches disk. Windows / some FUSE filesystems
+   * reject `O_RDONLY` opens of directories or `fsync` on directory
+   * fds — we treat any failure here as non-fatal because the primary
+   * file write has already succeeded.
+   */
+  protected _fsyncDir(dir: string): void {
+    let dirFd: number | undefined
+    try {
+      dirFd = fsOpenSync(dir, 'r')
+      fsFsyncSync(dirFd)
+    } catch {
+      // best-effort; directory fsync is unsupported on some platforms
+    } finally {
+      if (dirFd !== undefined) {
+        try {
+          fsCloseSync(dirFd)
+        } catch {
+          // already closed; nothing to recover
+        }
+      }
+    }
   }
 
   appendFileSync(
