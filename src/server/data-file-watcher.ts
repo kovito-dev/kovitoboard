@@ -34,6 +34,7 @@
  *   }
  */
 
+import { watcherLogger } from './logger'
 import type { FileAccessLayer, WatchHandle } from './fs-layer'
 
 interface WatchEntry {
@@ -83,7 +84,7 @@ export class DataFileWatcher {
         if (event.type === 'change') {
           this.handleChange(event.path)
         } else if (event.type === 'error') {
-          console.error(`[DataFileWatcher] watch error: ${filePath}`, event.error)
+          watcherLogger.error({ err: event.error }, `[DataFileWatcher] watch error: ${filePath}`)
         }
       },
       {
@@ -94,7 +95,7 @@ export class DataFileWatcher {
     )
 
     this.watchHandles.push(handle)
-    console.log(`[DataFileWatcher] registered: ${filePath}`)
+    watcherLogger.info(`[DataFileWatcher] registered: ${filePath}`)
   }
 
   /**
@@ -140,11 +141,11 @@ export class DataFileWatcher {
 
     entry.debounceTimer = setTimeout(() => {
       entry.debounceTimer = null
-      console.log(`[DataFileWatcher] external change detected: ${filePath}`)
+      watcherLogger.info(`[DataFileWatcher] external change detected: ${filePath}`)
       try {
         entry.onReload()
       } catch (err) {
-        console.error(`[DataFileWatcher] reload error: ${filePath}`, err)
+        watcherLogger.error({ err }, `[DataFileWatcher] reload error: ${filePath}`)
       }
     }, DEBOUNCE_MS)
   }

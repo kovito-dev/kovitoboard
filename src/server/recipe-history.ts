@@ -6,6 +6,7 @@
 /**
  * Recipe history — read/write .kovitoboard/recipe-history.jsonl
  */
+import { recipeLogger } from './logger'
 import { join } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import { getKovitoboardDir } from './paths'
@@ -153,23 +154,20 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   try {
     size = fs.statSync(path).size
   } catch (err) {
-    console.error(
-      '[recipe-history] Failed to stat history file:',
-      err instanceof Error ? err.message : String(err),
-    )
+    recipeLogger.error({ err }, '[recipe-history] Failed to stat history file')
     return []
   }
   if (size > MAX_HISTORY_BYTES) {
     const corruptedPath = makeCorruptedArchivePath(path)
     try {
       fs.renameSync(path, corruptedPath)
-      console.error(
+      recipeLogger.error(
         `[recipe-history] File size ${size} bytes exceeds ${MAX_HISTORY_BYTES} byte cap; rotated to ${corruptedPath}.`,
       )
     } catch (err) {
-      console.error(
-        '[recipe-history] Failed to rotate oversized history file:',
-        err instanceof Error ? err.message : String(err),
+      recipeLogger.error(
+        { err },
+        '[recipe-history] Failed to rotate oversized history file',
       )
     }
     return []
@@ -179,7 +177,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   try {
     content = fs.readFileSync(path, 'utf-8')
   } catch (err) {
-    console.error('[recipe-history] Failed to read history:', err)
+    recipeLogger.error({ err }, '[recipe-history] Failed to read history:')
     return []
   }
 
@@ -194,7 +192,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   const reportLineIssue = (reason: string): void => {
     parseFailures += 1
     if (warnedCount < MAX_PARSE_WARNINGS) {
-      console.warn(`[recipe-history] Skipping unusable line: ${reason}`)
+      recipeLogger.warn(`[recipe-history] Skipping unusable line: ${reason}`)
       warnedCount += 1
     }
   }
@@ -213,7 +211,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     entries.push(parsed)
   }
   if (parseFailures > MAX_PARSE_WARNINGS) {
-    console.warn(
+    recipeLogger.warn(
       `[recipe-history] Suppressed ${parseFailures - MAX_PARSE_WARNINGS} additional parse warnings (corruption suspected).`,
     )
   }
@@ -234,7 +232,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     const corruptedPath = makeCorruptedArchivePath(path)
     try {
       fs.renameSync(path, corruptedPath)
-      console.error(
+      recipeLogger.error(
         `[recipe-history] Corruption ratio ${(failureRatio * 100).toFixed(0)}% (${parseFailures}/${lines.length}); rotated to ${corruptedPath}.`,
       )
       // Rewrite the recoverable entries to a fresh history file. The
@@ -247,20 +245,20 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
           entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
         try {
           fs.writeFileAtomic(path, recoveredContent)
-          console.error(
+          recipeLogger.error(
             `[recipe-history] Recovered ${entries.length} valid entries into a fresh history file.`,
           )
         } catch (writeErr) {
-          console.error(
-            '[recipe-history] Failed to rewrite recovered entries:',
-            writeErr instanceof Error ? writeErr.message : String(writeErr),
+          recipeLogger.error(
+            { err: writeErr },
+            '[recipe-history] Failed to rewrite recovered entries',
           )
         }
       }
     } catch (err) {
-      console.error(
-        '[recipe-history] Failed to rename corrupted history file:',
-        err instanceof Error ? err.message : String(err),
+      recipeLogger.error(
+        { err },
+        '[recipe-history] Failed to rename corrupted history file',
       )
     }
   }

@@ -16,6 +16,7 @@
  * skipped, missing files yield an empty array, and parse failures are
  * logged as warnings without throwing.
  */
+import { serverLogger } from '../logger'
 import { join } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
@@ -107,7 +108,7 @@ export function readUserMenuEntries(fs: FileAccessLayer): MenuEntryWithPage[] {
     const content = fs.readFileSync(menuPath, 'utf-8')
     entries = parseMenuTs(content)
   } catch (err) {
-    console.warn('[menu-extractor] Failed to read or parse app/menu.ts:', err)
+    serverLogger.warn({ err }, '[menu-extractor] Failed to read or parse app/menu.ts:')
     return []
   }
 

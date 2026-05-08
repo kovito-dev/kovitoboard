@@ -10,6 +10,7 @@
  * summaries and body content.
  * Designed to receive a FileAccessLayer. Uses gray-matter for frontmatter parsing.
  */
+import { serverLogger } from './logger'
 import { resolve, dirname, join, basename } from 'path'
 import { fileURLToPath } from 'node:url'
 import matter from 'gray-matter'
@@ -66,11 +67,11 @@ export function listAgentTemplates(fs: FileAccessLayer): AgentTemplateSummary[] 
 
         templates.push({ id, name, description, model })
       } catch (err) {
-        console.error(`[template-reader] Failed to parse template ${file}:`, err)
+        serverLogger.error({ err }, `[template-reader] Failed to parse template ${file}:`)
       }
     }
   } catch (err) {
-    console.error('[template-reader] Error reading templates directory:', err)
+    serverLogger.error({ err }, '[template-reader] Error reading templates directory:')
   }
 
   return templates
