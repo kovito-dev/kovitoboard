@@ -73,9 +73,23 @@ export interface WatchOptions {
 /** Options for `writeFileAtomic`. */
 export interface WriteFileAtomicOptions {
   /**
-   * File mode for the destination file. Defaults to `0o600` so the
-   * captured content (which can include onboarding state, recipe
-   * history entries, etc.) is not world-readable on shared hosts.
+   * File mode for the destination file.
+   *
+   * Resolution rules when this option is omitted:
+   *
+   * - The destination already exists → reuse the existing file's
+   *   mode verbatim (so an existing 0o644 menu.ts stays 0o644 after
+   *   a rewrite, instead of being silently downgraded).
+   * - The destination is new → create with mode 0o600 *subject to*
+   *   the process umask, so deployment-level hardening (for example
+   *   `umask 077`) keeps applying.
+   *
+   * When this option is supplied the requested mode is set
+   * verbatim via `fchmod(2)`, bypassing the umask. Callers that pass
+   * an explicit mode are presumed to know what they want; if they
+   * intended a hardened mode they can pass `0o600` directly, and if
+   * they intended a permissive one (e.g. `0o644` for a shared
+   * config) the helper does not silently strip bits.
    */
   mode?: number
   /**
@@ -204,35 +218,43 @@ export class DirectFsLayer implements FileAccessLayer {
     const tempName = `${base}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
     const tempPath = `${dir}/${tempName}`
     const wantFsync = options?.fsync !== false
-    // Mode resolution: caller-supplied wins; otherwise preserve the
-    // existing file's mode (so an existing 0o644 menu.ts or a custom-
-    // chmodded manifest is not silently downgraded to 0o600); fall
-    // back to 0o600 only for genuinely new files.
-    let mode: number
-    if (options?.mode !== undefined) {
-      mode = options.mode
-    } else if (fsExistsSync(path)) {
+    // Mode resolution falls into three branches:
+    //
+    // - explicitMode !== null: caller asked for an exact mode. Pass
+    //   it to `open` *and* `fchmod` so umask cannot strip bits the
+    //   caller wanted (see Finding-6 lineage).
+    // - existing file, no explicit mode: reuse the existing mode via
+    //   `fchmod` so a rewrite does not silently downgrade an existing
+    //   0o644 menu.ts to 0o600.
+    // - new file, no explicit mode: open with 0o600 and DO NOT call
+    //   `fchmod`. That keeps the process umask in force (deployment
+    //   hardening such as `umask 077` is the operator's contract,
+    //   not ours to bypass for new files).
+    const explicitMode = options?.mode ?? null
+    let preservedMode: number | null = null
+    if (explicitMode === null && fsExistsSync(path)) {
       try {
-        mode = fsStatSync(path).mode & 0o777
+        preservedMode = fsStatSync(path).mode & 0o777
       } catch {
-        mode = 0o600
+        preservedMode = null
       }
-    } else {
-      mode = 0o600
     }
+    const openMode = explicitMode ?? preservedMode ?? 0o600
+    const enforcedMode = explicitMode ?? preservedMode
 
     let fd: number | undefined
     try {
       // O_WRONLY | O_CREAT | O_EXCL: refuse to clobber a stale temp
       // file (whose presence would mean another writer just lost the
       // race or crashed mid-write — we cannot safely reuse it).
-      fd = fsOpenSync(tempPath, 'wx', mode)
-      // The mode passed to `open(2)` is masked by the process umask
-      // (e.g. umask 0o077 turns 0o644 into 0o600). `fchmod(2)` sets
-      // the mode bits verbatim, so we apply it after open to make the
-      // helper's mode contract independent of whatever umask the
-      // caller happened to inherit.
-      fsFchmodSync(fd, mode)
+      fd = fsOpenSync(tempPath, 'wx', openMode)
+      // `fchmod(2)` sets the mode bits verbatim, bypassing umask. We
+      // only call it for explicit / preserved modes (see resolution
+      // branches above); for genuinely new files the umask filter on
+      // open is intentional and we leave it alone.
+      if (enforcedMode !== null) {
+        fsFchmodSync(fd, enforcedMode)
+      }
       if (typeof content === 'string') {
         fsWriteFileSync(fd, content, 'utf-8')
       } else {

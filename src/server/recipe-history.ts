@@ -65,6 +65,10 @@ const MAX_HISTORY_BYTES = 10 * 1024 * 1024
  * must still be readable; the schema doc on `RecipeHistoryEntry`
  * defines the read-side defaults.
  */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
 function isRecipeHistoryEntry(obj: unknown): obj is RecipeHistoryEntry {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
     return false
@@ -77,9 +81,31 @@ function isRecipeHistoryEntry(obj: unknown): obj is RecipeHistoryEntry {
     typeof o.source === 'string' &&
     typeof o.hash === 'string' &&
     typeof o.appliedAt === 'string' &&
-    Array.isArray(o.artifacts) &&
-    Array.isArray(o.menu)
+    isStringArray(o.artifacts) &&
+    isStringArray(o.menu)
   )
+}
+
+/**
+ * Build a unique archive path for a corrupted/oversized history file.
+ * Without a timestamp suffix two consecutive corruption events would
+ * silently overwrite the previous `.corrupted` archive, destroying
+ * forensic data and any chance of recovering older entries by hand.
+ *
+ * Format: `<path>.corrupted.<YYYYMMDDHHmmssSSS>` (UTC, no separators
+ * so it sorts lexically and survives copying across filesystems).
+ */
+function makeCorruptedArchivePath(basePath: string): string {
+  const now = new Date()
+  const stamp =
+    now.getUTCFullYear().toString().padStart(4, '0') +
+    (now.getUTCMonth() + 1).toString().padStart(2, '0') +
+    now.getUTCDate().toString().padStart(2, '0') +
+    now.getUTCHours().toString().padStart(2, '0') +
+    now.getUTCMinutes().toString().padStart(2, '0') +
+    now.getUTCSeconds().toString().padStart(2, '0') +
+    now.getUTCMilliseconds().toString().padStart(3, '0')
+  return `${basePath}.corrupted.${stamp}`
 }
 
 /**
@@ -118,7 +144,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     return []
   }
   if (size > MAX_HISTORY_BYTES) {
-    const corruptedPath = `${path}.corrupted`
+    const corruptedPath = makeCorruptedArchivePath(path)
     try {
       fs.renameSync(path, corruptedPath)
       console.error(
@@ -189,7 +215,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     parseFailures >= MIN_FAILURES_TO_ROTATE &&
     failureRatio >= CORRUPTION_ROTATE_THRESHOLD
   ) {
-    const corruptedPath = `${path}.corrupted`
+    const corruptedPath = makeCorruptedArchivePath(path)
     try {
       fs.renameSync(path, corruptedPath)
       console.error(
