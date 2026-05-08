@@ -1631,7 +1631,9 @@ app.post('/api/recipes/uninstall', async (req, res) => {
         // 'not-found' is silent — the entry may have been removed manually.
       }
       if (mutated) {
-        fs.writeFileSync(menuPath, menuContent, 'utf-8')
+        // Atomic replace: a partial menu.ts write would surface as a
+        // syntax error on the next read and break the entire menu.
+        fs.writeFileAtomic(menuPath, menuContent)
       }
     }
 

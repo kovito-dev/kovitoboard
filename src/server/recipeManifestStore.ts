@@ -92,7 +92,10 @@ export class RecipeManifestStore {
     }
 
     const manifestPath = join(dir, 'manifest.json')
-    this.fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8')
+    // Atomic replace: a partial write here would surface on the next
+    // boot as a JSON.parse failure and drop the recipe from the
+    // manifest cache (effectively "uninstalling" it).
+    this.fs.writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2))
     this.cache.set(manifest.appId, manifest)
   }
 
