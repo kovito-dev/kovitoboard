@@ -186,21 +186,22 @@ if (decideDetach(process.argv.slice(2), process.env)) {
     process.execArgv,
   )
 
-  // Anchor early-startup diagnostics to a real log file. Without this,
-  // `stdio: 'ignore'` would swallow any failure that happens before the
-  // server's pino pipeline initialises, leaving a "started but not
-  // running" silent failure that violates the README's promise that
-  // logs are findable under .kovitoboard/logs/.
-  //
-  // Anchor: prefer projectRoot, fall back to repoRoot (the latter
-  // covers tests and the diagnostic command run without a project).
+  // Anchor early-startup diagnostics to a real file so an EACCES /
+  // EMFILE / ENOMEM at fork time leaves a trace. We only redirect
+  // stderr — stdout is `'ignore'` because the regular server pipeline
+  // (pino) writes its own rotated `.kovitoboard/logs/server.*.log` and
+  // duplicating its output here would (a) double the on-disk volume
+  // and (b) accidentally persist anything an app prints to stdout
+  // (e.g. recipe install scripts). The stderr file is intentionally
+  // narrow: it captures bootstrap-time crashes, not the steady-state
+  // process output.
   const logBase = projectRoot ?? repoRoot
   const logDir = resolve(logBase, '.kovitoboard', 'logs')
   let logFd
   let logPath
   try {
     mkdirSync(logDir, { recursive: true })
-    logPath = resolve(logDir, 'kb-detach-startup.log')
+    logPath = resolve(logDir, 'kb-detach-stderr.log')
     logFd = openSync(logPath, 'a')
   } catch (err) {
     console.error(
@@ -212,15 +213,15 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   }
 
   // Use process.execPath rather than process.argv[0] so symlinked /
-  // aliased entrypoints (e.g. `nodejs` on Debian, nvm shims) resolve to
-  // the actual node binary. Pair it with execArgv prepended via
+  // aliased entrypoints (e.g. `nodejs` on Debian, nvm shims) resolve
+  // to the actual node binary. Pair it with execArgv prepended via
   // buildDetachedSpawnArgs so loaders, inspector ports, and future
   // permission flags carry over to the child.
   let child
   try {
     child = spawn(process.execPath, childArgs, {
       detached: true,
-      stdio: ['ignore', logFd, logFd],
+      stdio: ['ignore', 'ignore', logFd],
       env: childEnv,
     })
   } catch (err) {
@@ -233,21 +234,33 @@ if (decideDetach(process.argv.slice(2), process.env)) {
     process.exit(1)
   }
 
-  // `spawn` may either throw synchronously, emit an `error` event
-  // asynchronously, or return a child without a pid (e.g. EACCES,
-  // EMFILE, ENOMEM). Treat any of these as a hard failure so we never
-  // print a fake-success message and exit 0.
-  child.on('error', (err) => {
-    console.error(
-      `[kb-start] Detached supervisor failed to start: ${err.message}`,
-    )
-    try {
-      closeSync(logFd)
-    } catch {
-      // best-effort; the parent is exiting anyway
-    }
-    process.exit(1)
+  // Positive confirmation: wait for either the `'spawn'` event
+  // (Node 15.1+, the child has actually been forked) or an `'error'`
+  // event (async failure such as EACCES delivered after `spawn()`
+  // returned). Without this, the parent could exit `0` and print the
+  // "Detached" line before the kernel reported the spawn failure,
+  // leaving the user staring at a fake success.
+  const spawnResult = await new Promise((resolveSpawn) => {
+    let settled = false
+    child.once('spawn', () => {
+      if (settled) return
+      settled = true
+      resolveSpawn({ ok: true })
+    })
+    child.once('error', (err) => {
+      if (settled) return
+      settled = true
+      resolveSpawn({ ok: false, err })
+    })
   })
+
+  if (!spawnResult.ok) {
+    closeSync(logFd)
+    console.error(
+      `[kb-start] Detached supervisor failed to start: ${spawnResult.err.message}`,
+    )
+    process.exit(1)
+  }
 
   if (typeof child.pid !== 'number' || child.pid <= 0) {
     closeSync(logFd)
@@ -257,14 +270,14 @@ if (decideDetach(process.argv.slice(2), process.env)) {
 
   child.unref()
   // The parent's reference to the log fd is no longer needed; the
-  // child inherited dup'd handles for its stdout/stderr. Leaving the
-  // parent fd open would just leak it on exit.
+  // child inherited a dup'd handle for its stderr. Leaving the parent
+  // fd open would just leak it on exit.
   closeSync(logFd)
 
   console.log(
     `[kb-start] Detached (pid=${child.pid}). Stop with 'kill ${child.pid}'.`,
   )
-  console.log(`[kb-start] Detach startup log: ${logPath}`)
+  console.log(`[kb-start] Detach stderr log: ${logPath}`)
   process.exit(0)
 }
 
