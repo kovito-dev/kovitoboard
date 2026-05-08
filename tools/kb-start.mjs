@@ -73,6 +73,7 @@ import {
   mkdirSync,
   openSync,
   closeSync,
+  constants as fsConstants,
 } from 'fs'
 import {
   decideDetach,
@@ -202,18 +203,29 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   try {
     mkdirSync(logDir, { recursive: true })
     logPath = resolve(logDir, 'kb-detach-stderr.log')
-    // 'w' (O_TRUNC) instead of 'a': each detach run starts with a
-    // fresh capture so disk usage stays bounded by a single run's
-    // worst-case stderr volume. The supervisor's pino pipeline remains
-    // the SSOT for cross-run history; this file is a one-shot
-    // bootstrap-crash trace, not a permanent log.
-    logFd = openSync(logPath, 'w')
-  } catch (err) {
-    console.error(
-      `[kb-start] Failed to prepare detach log at ${logDir}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+    // Open with explicit numeric flags rather than the 'w' shorthand
+    // so we can add `O_NOFOLLOW`. Without it, an attacker (or a buggy
+    // earlier run) that replaced the path with a symlink could redirect
+    // our truncate-and-write into a file outside `.kovitoboard/logs/`.
+    // `O_TRUNC` keeps the per-run-fresh semantics (disk usage bounded
+    // to a single run); `0o600` blocks other users on shared hosts
+    // from reading whatever stderr captures.
+    logFd = openSync(
+      logPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
     )
+  } catch (err) {
+    const reason =
+      err instanceof Error && /** @type {{code?: string}} */ (err).code === 'ELOOP'
+        ? `${logPath} is a symlink (refused by O_NOFOLLOW); remove it and retry.`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    console.error(`[kb-start] Failed to prepare detach log at ${logDir}: ${reason}`)
     process.exit(1)
   }
 
