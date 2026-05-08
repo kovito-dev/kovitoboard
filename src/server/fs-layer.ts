@@ -234,7 +234,11 @@ export class DirectFsLayer implements FileAccessLayer {
     let preservedMode: number | null = null
     if (explicitMode === null && fsExistsSync(path)) {
       try {
-        preservedMode = fsStatSync(path).mode & 0o777
+        // Mask 0o7777 keeps the standard rwx triplet *and* the
+        // setuid/setgid/sticky bits. Plain 0o777 would strip them
+        // and silently change the security semantics of any file
+        // the operator had explicitly chmodded with those bits.
+        preservedMode = fsStatSync(path).mode & 0o7777
       } catch {
         preservedMode = null
       }

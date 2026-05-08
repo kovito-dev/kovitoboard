@@ -221,6 +221,26 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
       console.error(
         `[recipe-history] Corruption ratio ${(failureRatio * 100).toFixed(0)}% (${parseFailures}/${lines.length}); rotated to ${corruptedPath}.`,
       )
+      // Rewrite the recoverable entries to a fresh history file. The
+      // first call after rotation already returns them to the caller
+      // via `entries`, but without this rewrite the *next* read would
+      // see no file at all and the recovered entries would silently
+      // disappear from the active store on process restart.
+      if (entries.length > 0) {
+        const recoveredContent =
+          entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
+        try {
+          fs.writeFileAtomic(path, recoveredContent)
+          console.error(
+            `[recipe-history] Recovered ${entries.length} valid entries into a fresh history file.`,
+          )
+        } catch (writeErr) {
+          console.error(
+            '[recipe-history] Failed to rewrite recovered entries:',
+            writeErr instanceof Error ? writeErr.message : String(writeErr),
+          )
+        }
+      }
     } catch (err) {
       console.error(
         '[recipe-history] Failed to rename corrupted history file:',
