@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import {
   countMatchesInText,
   INTERNAL_ID_DEFAULT_MODE,
@@ -168,6 +170,27 @@ describe('T-3: hygiene script self-exclusion', () => {
 
   it('still includes other unit-test files', () => {
     expect(shouldScanFileForInternalId('tests/unit/log-config.test.ts')).toBe(true)
+  })
+
+  it('scans documentation and config files at the repository root by extension', () => {
+    // Pattern-based root scanning: any documentation or config format at the
+    // root is in scope, including new files not in any hard-coded list.
+    expect(shouldScanFileForInternalId('README.md')).toBe(true)
+    expect(shouldScanFileForInternalId('CHANGELOG.ja.md')).toBe(true)
+    expect(shouldScanFileForInternalId('RELEASE-NOTES.md')).toBe(true) // hypothetical new file
+    expect(shouldScanFileForInternalId('package.json')).toBe(true)
+    expect(shouldScanFileForInternalId('tsconfig.web.json')).toBe(true)
+    expect(shouldScanFileForInternalId('lefthook.yml')).toBe(true)
+    expect(shouldScanFileForInternalId('vitest.config.ts')).toBe(true)
+    expect(shouldScanFileForInternalId('playwright.config.l1.ts')).toBe(true)
+  })
+
+  it('excludes generated and external root files explicitly', () => {
+    // package-lock.json is generated; LICENSE is external license text.
+    expect(shouldScanFileForInternalId('package-lock.json')).toBe(false)
+    expect(shouldScanFileForInternalId('LICENSE')).toBe(false) // no scanned extension
+    expect(shouldScanFileForInternalId('.gitignore')).toBe(false)
+    expect(shouldScanFileForInternalId('.gitattributes')).toBe(false)
   })
 })
 
@@ -383,6 +406,25 @@ describe('scanFileForPatterns: reads file once and scans every pattern', () => {
     expect(out.skipped).toBe(true)
     if (!out.skipped) return
     expect(out.reason).toBe('read-error')
+  })
+
+  it('returns special-file envelope for symlinks (does not follow them)', () => {
+    // Build a tracked-style symlink in a tmpdir and confirm the scanner
+    // refuses it via lstat — a symlink to /dev/zero or outside the repo
+    // would otherwise let `readFileSync` hang or read out-of-scope content.
+    const dir = mkdtempSync(join(tmpdir(), 'kb-hygiene-symlink-'))
+    const linkPath = join(dir, 'link.ts')
+    try {
+      // Symlink targeting a non-existent path is sufficient — `lstat`
+      // succeeds on the symlink itself and reports it as not-a-file.
+      symlinkSync('/tmp/does-not-exist-target', linkPath)
+      const out = scanFileForPatterns(linkPath, INTERNAL_ID_PATTERNS)
+      expect(out.skipped).toBe(true)
+      if (!out.skipped) return
+      expect(out.reason).toBe('special-file')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('clean.ts produces zero hits across all patterns', () => {

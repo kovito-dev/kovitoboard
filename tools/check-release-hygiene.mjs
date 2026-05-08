@@ -19,7 +19,7 @@
 // `main()` call at the bottom runs the full check.
 
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -210,25 +210,19 @@ export const INTERNAL_ID_EXCLUDE_PREFIXES = [
   'tests/fixtures/hygiene-internal-id/',
 ]
 
-// Specific files at the repo root that should be scanned.
-export const INTERNAL_ID_ROOT_FILES = new Set([
-  'README.md',
-  'README.ja.md',
-  'CHANGELOG.md',
-  'CHANGELOG.ja.md',
-  'CONTRIBUTING.md',
-  'CLAUDE.md',
-  'SECURITY.md',
-  'package.json',
-  'lefthook.yml',
-])
+// Root-level scanning is pattern-based rather than allowlist-based: a new
+// root file (a future RELEASE-NOTES.md, a new tooling config, etc.) cannot
+// silently bypass the gate by virtue of not appearing in a hard-coded list.
+// Only documentation and config formats are scanned; binary and license
+// files are not in scope.
+export const INTERNAL_ID_ROOT_EXTENSIONS = ['.md', '.json', '.yml', '.yaml', '.ts']
 
-// Additional root-level files matched via wildcard (config files).
-const INTERNAL_ID_ROOT_FILE_WILDCARDS = [
-  /^playwright\.config(?:\.[a-z0-9-]+)?\.ts$/,
-  /^tsconfig(?:\.[a-z0-9-]+)?\.json$/,
-  /^vite\.config(?:\.[a-z0-9-]+)?\.ts$/,
-]
+// Root-level files that are deliberately excluded from the scan even though
+// their extension would otherwise qualify them. `package-lock.json` is
+// generated and dwarfs the size cap; LICENSE is external GPL/AGPL text.
+export const INTERNAL_ID_ROOT_FILE_EXCLUDES = new Set([
+  'package-lock.json',
+])
 
 // In agent template files the false-positive-prone agent-name patterns are
 // skipped because those identifiers legitimately appear as template content
@@ -256,8 +250,13 @@ export function shouldScanFileForInternalId(relPath) {
   if (relPath.startsWith('docs/') && relPath.endsWith('.md')) return true
   if (relPath.startsWith('app.example/')) return true
   if (relPath.startsWith('recipes/')) return true
-  if (INTERNAL_ID_ROOT_FILES.has(relPath)) return true
-  if (INTERNAL_ID_ROOT_FILE_WILDCARDS.some((re) => re.test(relPath))) return true
+  // Root-level files (no slash). Pattern-based: any documentation or config
+  // format at the repo root, minus an explicit exclude list for generated /
+  // external content.
+  if (!relPath.includes('/')) {
+    if (INTERNAL_ID_ROOT_FILE_EXCLUDES.has(relPath)) return false
+    return INTERNAL_ID_ROOT_EXTENSIONS.some((ext) => relPath.endsWith(ext))
+  }
   return false
 }
 
@@ -497,11 +496,16 @@ export function scanFileForPatterns(filePath, patterns, opts = {}) {
   const { sizeCap } = opts
   let content
   try {
-    if (typeof sizeCap === 'number') {
-      const stats = statSync(filePath)
-      if (stats.size > sizeCap) {
-        return { skipped: true, reason: 'size-cap', size: stats.size, results: [] }
-      }
+    // `lstatSync` does NOT follow symlinks, so a tracked symlink pointing
+    // outside the repo or to a special file (FIFO, device, socket) is
+    // detected and refused before we open it. Without this, `readFileSync`
+    // on a symlink to /dev/zero or a FIFO can hang or exhaust CI memory.
+    const stats = lstatSync(filePath)
+    if (!stats.isFile()) {
+      return { skipped: true, reason: 'special-file', results: [] }
+    }
+    if (typeof sizeCap === 'number' && stats.size > sizeCap) {
+      return { skipped: true, reason: 'size-cap', size: stats.size, results: [] }
     }
     content = readFileSync(filePath, 'utf-8')
   } catch {
@@ -788,6 +792,7 @@ function runInternalIdCheck(report, mode) {
   let totalWarns = 0
   let skippedBySizeCap = 0
   let skippedByReadError = 0
+  let skippedBySpecialFile = 0
   /** @type {Map<string, number>} */
   const perPatternCounts = new Map()
 
@@ -802,7 +807,20 @@ function runInternalIdCheck(report, mode) {
       sizeCap: INTERNAL_ID_FILE_SIZE_CAP,
     })
     if (scan.skipped) {
-      if (scan.reason === 'size-cap') {
+      if (scan.reason === 'special-file') {
+        // Symlinks, FIFOs, devices, and other non-regular files are refused
+        // by the scanner. Surfaced loud so a tracked symlink cannot be used
+        // to bypass the gate by deflecting reads outside the repo.
+        skippedBySpecialFile++
+        const severity = mode === 'warn-only' ? 'warn' : 'error'
+        report(
+          severity,
+          `${file} not scanned for internal-IDs (symlink or non-regular file)`,
+          1,
+        )
+        if (severity === 'error') totalErrors++
+        else totalWarns++
+      } else if (scan.reason === 'size-cap') {
         // Surface oversized files: the size cap exists to bound CI memory,
         // not to give large files a free pass. Without this counter, a
         // tracked file > 1 MiB carrying internal IDs would slip through CI
@@ -876,6 +894,9 @@ function runInternalIdCheck(report, mode) {
     if (skippedByReadError > 0) {
       console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
     }
+    if (skippedBySpecialFile > 0) {
+      console.log(`         (${skippedBySpecialFile} file(s) skipped as non-regular file)`)
+    }
     return
   }
 
@@ -887,6 +908,9 @@ function runInternalIdCheck(report, mode) {
   }
   if (skippedByReadError > 0) {
     console.log(`         (${skippedByReadError} file(s) skipped due to read error)`)
+  }
+  if (skippedBySpecialFile > 0) {
+    console.log(`         (${skippedBySpecialFile} file(s) skipped as non-regular file)`)
   }
   for (const pattern of INTERNAL_ID_PATTERNS) {
     const c = perPatternCounts.get(pattern.id)
