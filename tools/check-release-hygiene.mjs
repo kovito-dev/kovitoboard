@@ -333,19 +333,24 @@ export function parseArgs(argv) {
 
 /**
  * Get git-tracked files matching given extensions.
+ *
+ * Uses `git ls-files -z` so filenames are separated by NUL bytes rather than
+ * newlines: Git permits tracked filenames containing newlines, and naive
+ * line-splitting can corrupt the file list and let crafted paths slip past
+ * the hygiene scan.
+ *
  * @param {string[]} extensions
  * @returns {string[]}
  */
 export function getTrackedSourceFiles(extensions) {
   try {
-    const output = execSync('git ls-files', {
+    const output = execSync('git ls-files -z', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     return output
-      .trim()
-      .split('\n')
+      .split('\0')
       .filter((f) => f && extensions.some((ext) => f.endsWith(ext)))
   } catch {
     return []
@@ -354,6 +359,9 @@ export function getTrackedSourceFiles(extensions) {
 
 /**
  * Get all git-tracked text files (excludes known binary extensions).
+ *
+ * Uses `git ls-files -z` for the same reason — filenames may contain newlines.
+ *
  * @returns {string[]}
  */
 export function getAllTrackedTextFiles() {
@@ -361,14 +369,13 @@ export function getAllTrackedTextFiles() {
     '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot',
   ])
   try {
-    const output = execSync('git ls-files', {
+    const output = execSync('git ls-files -z', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     return output
-      .trim()
-      .split('\n')
+      .split('\0')
       .filter((f) => {
         if (!f) return false
         const ext = f.substring(f.lastIndexOf('.'))
