@@ -154,10 +154,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   try {
     size = fs.statSync(path).size
   } catch (err) {
-    recipeLogger.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      '[recipe-history] Failed to stat history file',
-    )
+    recipeLogger.error({ err }, '[recipe-history] Failed to stat history file')
     return []
   }
   if (size > MAX_HISTORY_BYTES) {
@@ -169,7 +166,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
       )
     } catch (err) {
       recipeLogger.error(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err },
         '[recipe-history] Failed to rotate oversized history file',
       )
     }
@@ -253,14 +250,14 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
           )
         } catch (writeErr) {
           recipeLogger.error(
-            { err: writeErr instanceof Error ? writeErr.message : String(writeErr) },
+            { err: writeErr },
             '[recipe-history] Failed to rewrite recovered entries',
           )
         }
       }
     } catch (err) {
       recipeLogger.error(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err },
         '[recipe-history] Failed to rename corrupted history file',
       )
     }
