@@ -164,7 +164,23 @@ export class ClaudeBridge extends EventEmitter {
 
     child.on('error', (err) => {
       managed.status = 'error'
-      tmuxLogger.error({ err }, `[claude-bridge] Process error(${processId.slice(0, 8)})`)
+      // Whitelist a narrow subset of the Error rather than handing
+      // pino the whole object: Node's child_process spawn errors
+      // carry `spawnargs`, which on this code path includes the
+      // Claude message body as the final argv entry. Logging the raw
+      // error would persist that body into server.log even though
+      // the rest of this file deliberately avoids it (see L104 where
+      // we log a length only).
+      const safeErr = {
+        name: err instanceof Error ? err.name : 'Error',
+        message: err instanceof Error ? err.message : String(err),
+        code: (err as NodeJS.ErrnoException).code,
+        path: (err as NodeJS.ErrnoException).path,
+      }
+      tmuxLogger.error(
+        { err: safeErr },
+        `[claude-bridge] Process error(${processId.slice(0, 8)})`,
+      )
       this.emit('process_end', processId, 'error', -1)
     })
 

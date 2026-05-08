@@ -962,9 +962,15 @@ function runInternalIdCheck(report, mode) {
 
 const CONSOLE_DIRECT_RE = /\bconsole\.(error|warn|log|info|debug|trace)\b/
 const CONSOLE_SCAN_PREFIXES = ['src/server/', 'src/renderer/']
+// Only the logger implementations are file-excluded — both files are
+// `console.*` by intent (server: ConsoleFallbackLogger, renderer: the
+// DevTools-fallback path). `log-config.ts` is *not* in this set: its
+// single intentional `console.warn` is gated by the line-tagged
+// opt-out (`// hygiene-allow: console-bootstrap`) so any future
+// accidental `console.*` line elsewhere in the file would still be
+// caught.
 const CONSOLE_EXCLUDE_FILES = new Set([
   'src/server/logger.ts',
-  'src/server/log-config.ts',
   'src/renderer/lib/logger.ts',
 ])
 // Anchored on the trailing `// hygiene-allow: console-bootstrap`

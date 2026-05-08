@@ -54,12 +54,12 @@ export function clampRetention(value: number | string | undefined | null): numbe
   ) {
     // Logger is not yet initialized at config-resolution time —
     // resolveLogConfig() runs *before* initLogger() so the pino
-    // pipeline is not built yet. Falling back to console.warn is
-    // the intended bootstrap path.
-    // hygiene-allow: console-bootstrap
-    console.warn(
-      `[log-config] Invalid retentionDays value "${String(value)}", falling back to default ${DEFAULT_RETENTION_DAYS}`,
-    )
+    // pipeline is not built yet. Falling back to a single
+    // console.warn is the intended bootstrap path. The hygiene
+    // opt-out tag must sit on the same line as the call itself,
+    // so the multi-line form is collapsed onto one line below.
+    // prettier-ignore
+    console.warn(`[log-config] Invalid retentionDays value "${String(value)}", falling back to default ${DEFAULT_RETENTION_DAYS}`) // hygiene-allow: console-bootstrap
     return DEFAULT_RETENTION_DAYS
   }
   return Math.floor(n)
