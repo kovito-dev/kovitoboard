@@ -35,6 +35,26 @@ const MAX_PARSE_WARNINGS = 10
 const CORRUPTION_ROTATE_THRESHOLD = 0.5
 
 /**
+ * Minimum absolute number of parse failures before we consider
+ * whole-file rotation. Keeps small histories (e.g. one valid line +
+ * one truncated trailing line) from being rotated and "losing" their
+ * recoverable entries to the `.corrupted` archive.
+ */
+const MIN_FAILURES_TO_ROTATE = 5
+
+/**
+ * Hard size cap for the JSONL store before we treat the file as
+ * unreadable and rotate it. Without this a single oversized file
+ * (corrupted, hostile, or accidentally appended-to in a tight loop)
+ * can stall the event loop for the duration of a synchronous
+ * `readFileSync` + `JSON.parse` of every line.
+ *
+ * 10 MiB lets a recipe-history file accumulate well past normal
+ * lifetime usage (each entry is well under 1 KiB) before this trips.
+ */
+const MAX_HISTORY_BYTES = 10 * 1024 * 1024
+
+/**
  * Read all recipe history entries. Returns an empty array when the file
  * does not exist.
  *
@@ -53,6 +73,37 @@ const CORRUPTION_ROTATE_THRESHOLD = 0.5
 export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   const path = getRecipeHistoryPath(fs)
   if (!fs.existsSync(path)) return []
+
+  // Size gate: bail out before reading or parsing oversized files.
+  // The synchronous read + per-line parse below can starve the event
+  // loop on a multi-megabyte file; since legitimate histories never
+  // approach this limit, it is safer to rotate and start fresh than
+  // to honour an unbounded read.
+  let size = 0
+  try {
+    size = fs.statSync(path).size
+  } catch (err) {
+    console.error(
+      '[recipe-history] Failed to stat history file:',
+      err instanceof Error ? err.message : String(err),
+    )
+    return []
+  }
+  if (size > MAX_HISTORY_BYTES) {
+    const corruptedPath = `${path}.corrupted`
+    try {
+      fs.renameSync(path, corruptedPath)
+      console.error(
+        `[recipe-history] File size ${size} bytes exceeds ${MAX_HISTORY_BYTES} byte cap; rotated to ${corruptedPath}.`,
+      )
+    } catch (err) {
+      console.error(
+        '[recipe-history] Failed to rotate oversized history file:',
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+    return []
+  }
 
   let content: string
   try {
@@ -86,13 +137,19 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     )
   }
 
-  // Whole-file corruption: at least half of the non-empty lines failed
-  // to parse. Rotate out of the way so we do not re-warn on every
-  // subsequent read; the next append will start a fresh file. The
-  // entries we *did* manage to parse are intentionally returned —
-  // dropping them would lose recoverable history for marginal benefit.
+  // Whole-file rotation: only when corruption is *both* widespread
+  // (>= CORRUPTION_ROTATE_THRESHOLD) *and* numerous in absolute terms
+  // (>= MIN_FAILURES_TO_ROTATE). Without the absolute floor, a tiny
+  // history (e.g. one valid entry + one truncated trailing line)
+  // would trip 50% on its own and lose the recoverable entry to the
+  // `.corrupted` archive. The entries we *did* manage to parse are
+  // intentionally returned even when we do rotate, so callers see
+  // continuity instead of an empty slate.
   const failureRatio = lines.length > 0 ? parseFailures / lines.length : 0
-  if (lines.length > 0 && failureRatio >= CORRUPTION_ROTATE_THRESHOLD) {
+  if (
+    parseFailures >= MIN_FAILURES_TO_ROTATE &&
+    failureRatio >= CORRUPTION_ROTATE_THRESHOLD
+  ) {
     const corruptedPath = `${path}.corrupted`
     try {
       fs.renameSync(path, corruptedPath)

@@ -202,8 +202,23 @@ export class DirectFsLayer implements FileAccessLayer {
     // (e.g. two browser tabs saving settings concurrently).
     const tempName = `${base}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
     const tempPath = `${dir}/${tempName}`
-    const mode = options?.mode ?? 0o600
     const wantFsync = options?.fsync !== false
+    // Mode resolution: caller-supplied wins; otherwise preserve the
+    // existing file's mode (so an existing 0o644 menu.ts or a custom-
+    // chmodded manifest is not silently downgraded to 0o600); fall
+    // back to 0o600 only for genuinely new files.
+    let mode: number
+    if (options?.mode !== undefined) {
+      mode = options.mode
+    } else if (fsExistsSync(path)) {
+      try {
+        mode = fsStatSync(path).mode & 0o777
+      } catch {
+        mode = 0o600
+      }
+    } else {
+      mode = 0o600
+    }
 
     let fd: number | undefined
     try {
