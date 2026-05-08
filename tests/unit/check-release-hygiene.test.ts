@@ -41,10 +41,28 @@ describe('T-1: pattern regexes match expected strings', () => {
     expect(re.test('the DEC keyword alone')).toBe(false)
   })
 
+  it('P-1 is bounded by `\\b` so concatenated identifiers do not match', () => {
+    // Word-boundary anchor prevents substring matches inside longer tokens.
+    const re = getPattern('P-1').regex
+    expect(re.test('xDEC-018')).toBe(false)
+    expect(re.test('DEC-018foo')).toBe(false)
+    // Adjacent punctuation still matches because the punctuation itself is
+    // a word boundary.
+    expect(re.test('see DEC-018-test-quality.md')).toBe(true)
+    expect(re.test('(DEC-018) note')).toBe(true)
+  })
+
   it('P-2 matches BL-2026-083 but not BL-99 (4-digit year required)', () => {
     const re = getPattern('P-2').regex
     expect(re.test('tracked under BL-2026-083')).toBe(true)
     expect(re.test('BL-99 is not the right shape')).toBe(false)
+  })
+
+  it('P-2 is bounded by `\\b` so concatenated identifiers do not match', () => {
+    const re = getPattern('P-2').regex
+    expect(re.test('xBL-2026-083')).toBe(false)
+    expect(re.test('BL-2026-083foo')).toBe(false)
+    expect(re.test('see (BL-2026-083) reference')).toBe(true)
   })
 
   it('P-3 matches (agent: developer) and (agent: kb-architect)', () => {
