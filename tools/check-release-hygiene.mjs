@@ -1084,7 +1084,18 @@ function stripStringsAndLineComments(line, state) {
 function runConsoleCheck(warn) {
   console.log('\n\x1b[1m[7/7] Direct console.* call detection\x1b[0m')
 
-  const sourceFiles = getTrackedSourceFiles(['.ts', '.tsx']).filter((file) => {
+  // Match every JS / TS source extension used in src/{server,renderer},
+  // not just `.ts` / `.tsx`. Coverage parity with the documented
+  // scope: any future `.js` / `.jsx` / `.mjs` / `.cjs` source file
+  // under those trees should hit the same gate.
+  const sourceFiles = getTrackedSourceFiles([
+    '.ts',
+    '.tsx',
+    '.js',
+    '.jsx',
+    '.mjs',
+    '.cjs',
+  ]).filter((file) => {
     if (!CONSOLE_SCAN_PREFIXES.some((p) => file.startsWith(p))) return false
     if (CONSOLE_EXCLUDE_FILES.has(file)) return false
     if (file.startsWith('tests/')) return false

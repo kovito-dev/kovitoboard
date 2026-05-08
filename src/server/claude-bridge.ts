@@ -142,7 +142,11 @@ export class ClaudeBridge extends EventEmitter {
       const text = data.toString()
       managed.stderr += text
       // Output stderr as debug information
-      tmuxLogger.info(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
+      // Per-chunk stderr at debug, not info: a noisy or failing
+      // subprocess can otherwise burn through the retention budget
+      // and bury actionable events. Operators can still reach the
+      // chunks by enabling KOVITOBOARD_DEBUG.
+      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
     })
 
     child.on('close', (code) => {
