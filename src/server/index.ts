@@ -1108,6 +1108,42 @@ app.post('/api/recipes/export', (req, res) => {
     }
 
     const scan = scanAppDirectory(fs, appId.trim())
+
+    // Refuse export when the app contains custom backend files.
+    // Backend route handlers (`app/<appId>/api/*.ts`) live outside
+    // the recipe safety boundary — recipe-inspector's path-prefix
+    // restriction rejects `api/` at install time, so packaging them
+    // would produce a recipe that cannot be re-installed. Instead of
+    // silently dropping or repackaging them as `lib`, surface the
+    // boundary at the export boundary with an actionable guidance
+    // message.
+    //
+    // The scanner already bounds `customBeFiles` to a fixed sample
+    // size (see `recipe-exporter.ts`); we additionally trim the
+    // response payload to the first 10 entries so the JSON we ship
+    // and the string the modal concatenates stay small even when
+    // the sample cap is set higher upstream. `customBeFilesCount`
+    // is the accurate total (counted while scanning) and is what
+    // the UI uses to show "...and N more". The cap is pure
+    // response-shaping: refusal triggers as soon as ≥ 1 file under
+    // `app/<appId>/api/` exists, regardless of extension.
+    const MAX_CUSTOM_BE_FILES_IN_RESPONSE = 10
+    if (scan.customBeFilesCount > 0) {
+      const sample = scan.customBeFiles
+        .slice(0, MAX_CUSTOM_BE_FILES_IN_RESPONSE)
+        .map((f) => f.relativePath)
+      // Send only structured data; the user-facing prose is
+      // localized client-side (single source of truth for the
+      // policy text, no drift between server and i18n catalogs).
+      res.status(400).json({
+        error: 'CustomBeNotExportable',
+        files: sample,
+        filesCount: scan.customBeFilesCount,
+        filesCountApproximate: scan.customBeFilesCountApproximate,
+      })
+      return
+    }
+
     if (scan.artifacts.length === 0) {
       res.status(400).json({ error: `No artifacts found under app/${appId.trim()}/` })
       return
