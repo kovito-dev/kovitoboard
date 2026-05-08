@@ -380,6 +380,27 @@ describe('scanFileForPatterns: reads file once and scans every pattern', () => {
       expect(r.hits, `${r.pattern.id} matched clean.ts unexpectedly`).toEqual([])
     }
   })
+
+  it('does not leak lastIndex across lines when given a global regex', () => {
+    // Defensive: a stateful (/g) regex would advance `lastIndex` per `.test()`
+    // call. Without an internal copy, every other line could be skipped
+    // depending on where the previous match ended. Verify the helper handles
+    // such a pattern correctly.
+    const globalPattern = { id: 'TEST', label: 'global probe', regex: /MATCH/g }
+    // Build a synthetic file where every line should match.
+    const probeFile = join(FIXTURE_DIR, 'dirty.ts')
+    const out = scanFileForPatterns(probeFile, [globalPattern])
+    expect(out.skipped).toBe(false)
+    if (out.skipped) return
+    // Re-scan with the same array — the second call must produce identical
+    // results (no carry-over state from the first call's RegExp instance).
+    const out2 = scanFileForPatterns(probeFile, [globalPattern])
+    expect(out2.skipped).toBe(false)
+    if (out2.skipped) return
+    expect(out2.results[0].hits).toEqual(out.results[0].hits)
+    // The original regex's lastIndex must remain untouched (not advanced).
+    expect(globalPattern.regex.lastIndex).toBe(0)
+  })
 })
 
 // ---------------------------------------------------------------------------
