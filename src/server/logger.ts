@@ -206,18 +206,33 @@ export async function initLogger(
         // token verbatim, and printf-style interpolation such as
         // `logger.info('failed %o', { apiKey: '…' })` also leaks
         // through pino's internal `util.format` step. Intercept
-        // every level method, redact each string positional arg in
-        // place, and walk every object/array/Error positional arg
-        // through the same record redactor used by
-        // `formatters.log`. The redactor returns a fresh structure
-        // (the caller's object is not mutated, matching the
-        // formatters.log contract).
+        // every level method to redact those positions before pino
+        // forwards them.
+        //
+        // Crucially, **skip the first positional arg if it is an
+        // object**: pino treats arg 0 as the merging object that
+        // `formatters.log` (i.e. `maskLog`) will walk on the way
+        // out. Walking it here too would
+        //   (a) double-traverse and double-clone every structured
+        //       log record (e.g. `paneTail` arrays), defeating the
+        //       single-pass redactor, and
+        //   (b) collapse `Error`-shaped first args to `{}` because
+        //       `Object.entries` ignores the non-enumerable
+        //       `message` / `stack` — silently destroying any
+        //       future `serializers.err` expansion before
+        //       `formatters.log` ever sees the object.
+        // The merging-object path therefore stays exclusively in
+        // `formatters.log`. Trailing positional args (printf-style
+        // `%o` / interpolation extras) keep going through the hook
+        // because they are formatted by pino's `util.format` step
+        // *after* this hook returns and never reach
+        // `formatters.log`.
         logMethod(args, method) {
           for (let i = 0; i < args.length; i++) {
             const arg = args[i]
             if (typeof arg === 'string') {
               args[i] = redactSensitiveTokens(arg)
-            } else if (arg !== null && typeof arg === 'object') {
+            } else if (i > 0 && arg !== null && typeof arg === 'object') {
               args[i] = maskLog(arg as Record<string, unknown>)
             }
           }

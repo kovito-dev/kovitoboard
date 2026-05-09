@@ -188,12 +188,12 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(redactSensitiveTokens(`Bearer ${compactJwt}`)).toBe('Bearer <jwt redacted>')
   })
 
-  it('redacts an object positional arg (e.g. printf-style %o interpolation)', async () => {
+  it('redacts a printf-style trailing object positional arg', async () => {
     // `logger.info('failed %o', { apiKey: '...' })` lets pino stringify
-    // the trailing object via util.format. Without the hook walking
-    // object positional args, the embedded key would land on disk
-    // even though it was never inside the merging object that
-    // `formatters.log` saw.
+    // the trailing object via util.format AFTER `formatters.log`
+    // ran (formatters.log only sees arg 0, the merging object).
+    // The hook walks every object/array beyond index 0 so the
+    // embedded key is redacted before pino's util.format formats it.
     await initLogger(projectRoot, baseSetting())
     const log = childLogger('redact-printf')
     log.info(
@@ -206,16 +206,49 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).not.toContain('sk-ant-api03-PrintfStyleArgKeyShouldGoToo123')
   })
 
-  // Note on Error positional args: Pino's default serializer
-  // collapses Error instances to `{}` because `message` / `stack`
-  // are non-enumerable. To redact credentials inside Error
-  // messages, KovitoBoard would need to opt into pino's
-  // `serializers.err` (or equivalent) so the Error is first
-  // expanded into `{ type, message, stack }` strings that the
-  // redactor can walk. That is a separate logging-shape decision;
-  // for now, callers that want Error details on disk pass them as
-  // structured fields (e.g. `{ errMessage: err.message }`), which
-  // does run through the redactor.
+  it('does not double-walk the first object positional arg (formatters.log handles it)', async () => {
+    // The merging object at arg 0 is the path `formatters.log`
+    // already walks. Walking it in the hook too would
+    //   (a) clone the record twice (visible only as runtime cost,
+    //       not in test output), and
+    //   (b) destructively shape `Error` first-args to `{}` because
+    //       `Object.entries` skips non-enumerable `message` /
+    //       `stack`, defeating any future `serializers.err`
+    //       expansion before `formatters.log` runs.
+    // Pin the contract by exercising both an Error first arg
+    // (which must not lose its identity) and a normal object first
+    // arg (which must still be redacted by the formatters.log path).
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('first-arg')
+
+    // (a) Object first arg with a credential — formatters.log
+    //     redacts it.
+    log.info(
+      { apiKey: 'sk-ant-api03-FirstArgKeyShouldStillRedact1234' },
+      'first arg redaction',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw1 = readActiveLogFile(projectRoot)
+    expect(raw1).toContain('<sk-ant redacted>')
+    expect(raw1).not.toContain('sk-ant-api03-FirstArgKeyShouldStillRedact1234')
+
+    // (b) Error first arg — pino's default serializer (no
+    //     serializers.err opt-in) collapses it to `{}`. The hook
+    //     must NOT make this worse by clone-via-Object.entries
+    //     (which would also produce `{}`, but would also block any
+    //     future serializer.err opt-in from reaching the redactor's
+    //     output). Demonstrate the existing pino default still
+    //     applies (the in-memory Error's message survives, the
+    //     persisted record carries `"err":{}`).
+    const err = new Error(
+      'claude failed: sk-ant-api03-ErrorMessageEmbeddedKey1234567 is invalid',
+    )
+    log.error({ err }, 'subprocess crashed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw2 = readActiveLogFile(projectRoot)
+    expect(raw2).toContain('"err":{}')
+    expect(err.message).toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
+  })
 
   it('redacts API keys nested inside arrays (e.g. paneTail)', async () => {
     await initLogger(projectRoot, baseSetting())
