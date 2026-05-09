@@ -31,32 +31,38 @@ import {
   HANDLER_REQUIRED_SCOPES,
 } from '../types.js'
 import { filterExcludedEntries } from '../../scopeValidator.js'
+import { realpathUpToExisting } from '../../pathResolver.js'
 
 /**
- * Determines whether input.path falls under the own-data scope.
- * own-data scope path format: "app/data/{appId}/..." or relative
- * paths in the own-data area. The `{appId}` segment is the
- * KB-local identifier owning the data root; the dispatcher's
- * `validatePathForScope` already gates non-own-data prefixes via
- * the same `appId`.
+ * Determines whether the dispatcher-resolved base path lands inside
+ * this app's own-data root (`<projectRoot>/app/data/<appId>/`).
+ * Used solely to pick the deeper traversal limit
+ * (`LIST_FILES_MAX_DEPTH_OWN`); the actual scope check already
+ * happened in the dispatcher and the physical base path arrives via
+ * `context.resolvedPath`.
+ *
+ * Resolving against the physical own-data root (rather than the
+ * shape of `input.path`) means callers can use the natural scope-
+ * root-relative form (e.g. `.` or `notes/foo.md`) without losing the
+ * deeper traversal allowance, and it cannot be tricked by an
+ * `app/data/<appId>/...`-shaped path that resolved through some
+ * other scope.
+ *
+ * Both sides are canonicalized via `realpathUpToExisting` so a
+ * symlinked `projectRoot` (e.g. the kb-test runner's
+ * `~/test/kb-latest -> kb-blank-<ts>`) does not cause the prefix
+ * comparison to fall through; the dispatcher already returns a
+ * realpath-resolved `context.resolvedPath`.
  */
-function isOwnDataPath(inputPath: string, context: HandlerContext): boolean {
-  return context.approvedScopes.includes('own-data') &&
-    inputPath.startsWith('app/data/')
-}
-
-/**
- * Resolves the base path for directory traversal.
- */
-function resolveBasePath(inputPath: string, context: HandlerContext): string {
-  if (isOwnDataPath(inputPath, context)) {
-    // For own-data, restrict to projectRoot/app/data/{appId}/.
-    // `inputPath` arrives as "app/data/..." (already includes the
-    // appId segment as supplied by the recipe author), so join with
-    // projectRoot directly.
-    return path.join(context.projectRoot, inputPath)
+function isOwnDataBase(context: HandlerContext): boolean {
+  if (!context.approvedScopes.includes('own-data') || !context.resolvedPath) {
+    return false
   }
-  return path.join(context.projectRoot, inputPath)
+  const ownDataRoot = realpathUpToExisting(
+    path.join(context.projectRoot, 'app', 'data', context.appId),
+  )
+  const base = context.resolvedPath
+  return base === ownDataRoot || base.startsWith(ownDataRoot + path.sep)
 }
 
 /**
@@ -141,7 +147,15 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
     input: ListFilesInput,
     context: HandlerContext,
   ): Promise<HandlerResponse<ListFilesOutput>> => {
-    const basePath = resolveBasePath(input.path, context)
+    // Use the physical base path the dispatcher resolved during
+    // scope validation. Re-joining `context.projectRoot + input.path`
+    // here would bypass the per-scope root (e.g. `own-data` lives
+    // under `app/data/<appId>/`, not the project root) and re-open
+    // the symlink-swap window between validate and readdir.
+    if (!context.resolvedPath) {
+      return handlerError('Internal', 'list-files requires a dispatcher-resolved path')
+    }
+    const basePath = context.resolvedPath
     const recursive = input.recursive ?? false
 
     // Check directory existence
@@ -159,7 +173,7 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
     }
 
     // Switch max depth based on whether the path is own-data
-    const maxDepth = isOwnDataPath(input.path, context)
+    const maxDepth = isOwnDataBase(context)
       ? HANDLER_LIMITS.LIST_FILES_MAX_DEPTH_OWN
       : HANDLER_LIMITS.LIST_FILES_MAX_DEPTH_OTHER
 

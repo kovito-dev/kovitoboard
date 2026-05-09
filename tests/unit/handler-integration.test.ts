@@ -686,6 +686,140 @@ describe('T8: テンプレート展開', () => {
 })
 
 // =========================================
+// T9: Cross-scope path escape — own-data with relative path stays inside own-data root
+// =========================================
+//
+// Regression for the dispatcher resolving a path under one scope while
+// the handler re-derived the path from `projectRoot + input.path`.
+// Without the dispatcher-resolved path being threaded through
+// HandlerContext, an `own-data`-only manifest could read or write
+// arbitrary project files by passing a relative path that the
+// dispatcher accepted under `app/data/<appId>/<relative>` but the
+// handler then resolved against `projectRoot/<relative>`.
+
+describe('T9: クロススコープ path escape — own-data の相対 path は own-data ルート内にとどまる', () => {
+  it('own-data のみ承認 + read-file("README.md") は own-data ルート配下を見に行き、project root の README.md は読まれない', async () => {
+    // Sanity-check that the project-root file we want to *not* see
+    // is genuinely there, so the assertion below has teeth.
+    expect(fs.existsSync(path.join(projectRoot, 'README.md'))).toBe(true)
+
+    const ownDataReadme = path.join(projectRoot, 'app', 'data', RECIPE_ID, 'README.md')
+    if (fs.existsSync(ownDataReadme)) {
+      fs.unlinkSync(ownDataReadme)
+    }
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'read-relative',
+          handler: 'read-file',
+          args: { path: '${input.path}' },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      { appId: RECIPE_ID, callId: 'read-relative', input: { path: 'README.md' } },
+      manifestStore,
+      projectRoot,
+    )
+
+    // Pre-fix, dispatcher resolves under own-data root, but the
+    // handler joined input.path against projectRoot and returned
+    // the project README. With the dispatcher-resolved path now
+    // threaded through HandlerContext, the handler reads the
+    // own-data target instead and returns NotFound when it is
+    // missing.
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('NotFound')
+  })
+
+  it('own-data のみ承認 + write-file("escape.txt") は own-data ルート配下に書き込まれ、project root に作成されない', async () => {
+    const projectRootEscape = path.join(projectRoot, 'escape.txt')
+    if (fs.existsSync(projectRootEscape)) {
+      fs.unlinkSync(projectRootEscape)
+    }
+    const ownDataEscape = path.join(
+      projectRoot,
+      'app',
+      'data',
+      RECIPE_ID,
+      'escape.txt',
+    )
+    if (fs.existsSync(ownDataEscape)) {
+      fs.unlinkSync(ownDataEscape)
+    }
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'write-escape',
+          handler: 'write-file',
+          args: {
+            path: '${input.path}',
+            content: '${input.content}',
+            createDirs: true,
+          },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'write-escape',
+        input: { path: 'escape.txt', content: 'should land under own-data' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(true)
+    // Did NOT escape to project root.
+    expect(fs.existsSync(projectRootEscape)).toBe(false)
+    // DID land in own-data.
+    expect(fs.existsSync(ownDataEscape)).toBe(true)
+    expect(fs.readFileSync(ownDataEscape, 'utf-8')).toBe('should land under own-data')
+  })
+
+  it('own-data のみ承認 + list-files(".") は own-data ルート配下のみを返し、project root の README.md は出ない', async () => {
+    const ownDataDir = path.join(projectRoot, 'app', 'data', RECIPE_ID)
+    fs.writeFileSync(path.join(ownDataDir, 'marker.txt'), 'inside own-data')
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'list-relative',
+          handler: 'list-files',
+          args: { path: '${input.path}' },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      { appId: RECIPE_ID, callId: 'list-relative', input: { path: '.' } },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const data = result.data as { entries: Array<{ name: string }> }
+    const names = data.entries.map((e) => e.name)
+    expect(names).toContain('marker.txt')
+    // README.md sits at the project root, NOT inside own-data.
+    expect(names).not.toContain('README.md')
+  })
+})
+
+// =========================================
 // KV store integration tests
 // =========================================
 
