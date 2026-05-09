@@ -31,6 +31,7 @@ import {
   HANDLER_REQUIRED_SCOPES,
 } from '../types.js'
 import { filterExcludedEntries } from '../../scopeValidator.js'
+import { realpathUpToExisting } from '../../pathResolver.js'
 
 /**
  * Determines whether the dispatcher-resolved base path lands inside
@@ -46,14 +47,20 @@ import { filterExcludedEntries } from '../../scopeValidator.js'
  * deeper traversal allowance, and it cannot be tricked by an
  * `app/data/<appId>/...`-shaped path that resolved through some
  * other scope.
+ *
+ * Both sides are canonicalized via `realpathUpToExisting` so a
+ * symlinked `projectRoot` (e.g. the kb-test runner's
+ * `~/test/kb-latest -> kb-blank-<ts>`) does not cause the prefix
+ * comparison to fall through; the dispatcher already returns a
+ * realpath-resolved `context.resolvedPath`.
  */
 function isOwnDataBase(context: HandlerContext): boolean {
   if (!context.approvedScopes.includes('own-data') || !context.resolvedPath) {
     return false
   }
-  const ownDataRoot = path.join(context.projectRoot, 'app', 'data', context.appId)
-  // Tolerate symlink-resolved projectRoot vs. context.projectRoot
-  // by comparing on realpath when both sides exist.
+  const ownDataRoot = realpathUpToExisting(
+    path.join(context.projectRoot, 'app', 'data', context.appId),
+  )
   const base = context.resolvedPath
   return base === ownDataRoot || base.startsWith(ownDataRoot + path.sep)
 }
