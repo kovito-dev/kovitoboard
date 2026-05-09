@@ -255,27 +255,31 @@ export function consumeInstallSession(nonce: unknown): InstallSession | null {
 }
 
 /**
- * Set-equality comparison on the approvedScopes array. The handler
- * uses this to verify the body the agent posted to mark-installed
- * matches what KB inspected at install time. Order is not stable
- * (different recipe parsers / serializers produce different orders),
- * so we compare as a set of unique strings.
- *
- * Both inputs are converted to sets to defend against duplicate-laden
- * inputs that would otherwise pass a length+membership-only check
- * (e.g. `['x','y']` vs `['x','x']` both have length 2 and every
- * member of the second exists in the first, but they describe
- * different scope multisets — the second is structurally invalid).
+ * Multiset-equality comparison on the approvedScopes array. The
+ * handler uses this to verify the body the agent posted to mark-
+ * installed matches what KB inspected at install time. Order is not
+ * stable (different recipe parsers / serializers produce different
+ * orders), but per-scope occurrence count is — counting per scope
+ * defeats both the "different unique members at the same length"
+ * case (`['x','y']` vs `['x','x']`) and the "same unique members
+ * with different counts" case (`['x','x','y','y']` vs
+ * `['x','x','x','y']`) that a length+set check would let through.
  */
 export function approvedScopesMatch(a: Scope[], b: Scope[]): boolean {
   if (!Array.isArray(a) || !Array.isArray(b)) return false
   if (a.length !== b.length) return false
-  const sa = new Set<Scope>(a)
-  const sb = new Set<Scope>(b)
-  if (sa.size !== sb.size) return false
-  for (const scope of sb) {
-    if (!sa.has(scope)) return false
+  const counts = new Map<Scope, number>()
+  for (const scope of a) {
+    counts.set(scope, (counts.get(scope) ?? 0) + 1)
   }
+  for (const scope of b) {
+    const remaining = counts.get(scope)
+    if (remaining === undefined || remaining === 0) return false
+    counts.set(scope, remaining - 1)
+  }
+  // Every entry in `a` was matched off; the map of remainders must
+  // therefore be all zeros. We do not need to check explicitly
+  // because the equal-length precondition guarantees it.
   return true
 }
 

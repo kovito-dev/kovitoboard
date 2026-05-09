@@ -2408,8 +2408,15 @@ if (process.env.KB_E2E_MODE === '1') {
   app.post('/api/recipes/_test/clear-manifest', (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>
     const { appId } = body
-    if (typeof appId !== 'string' || appId.length === 0) {
-      res.status(400).json({ error: 'appId must be a non-empty string' })
+    // Reuse the same `appId` validator the production mark-installed
+    // path uses. Without this guard a literal `../something` could
+    // escape the manifest namespace under `manifestStore.delete()`,
+    // which derives a filesystem path from `appId`.
+    const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+    if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
+      res
+        .status(400)
+        .json({ error: 'appId must match /^[a-z][a-z0-9-]{0,63}$/' })
       return
     }
     manifestStore.delete(appId)

@@ -237,6 +237,19 @@ describe('approvedScopesMatch', () => {
       approvedScopesMatch(['project-read', 'own-data'] as Scope[], ['project-read', 'project-read'] as Scope[]),
     ).toBe(false)
   })
+
+  it('rejects multisets with the same unique members but different per-scope counts', () => {
+    // Pre-fix bug: ['x','x','y','y'] vs ['x','x','x','y'] both have
+    // length 4 and the same Set {x, y}, so a length + set check
+    // would pass them as equal. The multiset / occurrence-count
+    // compare must reject.
+    expect(
+      approvedScopesMatch(
+        ['project-read', 'project-read', 'own-data', 'own-data'] as Scope[],
+        ['project-read', 'project-read', 'project-read', 'own-data'] as Scope[],
+      ),
+    ).toBe(false)
+  })
 })
 
 describe('canonicalizeJson', () => {
