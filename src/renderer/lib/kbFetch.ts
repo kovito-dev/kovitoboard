@@ -205,7 +205,22 @@ function handleStaleTokenResponse(): void {
  * via one reload.
  */
 export function kbFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers ?? undefined)
+  // Build the outgoing header set so that `kbFetch` is genuinely a
+  // drop-in `fetch` replacement when the caller passes a `Request`
+  // object: start from the Request's own headers, layer the explicit
+  // `init.headers` on top (caller intent wins), and finally inject
+  // the launch token. Without that order, headers attached to the
+  // original Request (`Authorization`, `Content-Type` for a custom
+  // body, etc.) would be silently dropped, which is a subtle
+  // foot-gun for any caller treating Request and string inputs as
+  // interchangeable.
+  const baseHeaders =
+    typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined
+  const headers = new Headers(baseHeaders)
+  if (init?.headers) {
+    const overrides = new Headers(init.headers)
+    overrides.forEach((value, key) => headers.set(key, value))
+  }
   if (shouldAttachToken(input)) {
     headers.set('X-Kovitoboard-Token', getLaunchToken())
   }
@@ -225,10 +240,42 @@ export function kbFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
  * Append `?token=<token>` (or `&token=<token>` when the URL already
  * has a query string) to a WebSocket URL. The server's
  * `verifyWsClient` reads the same key during the upgrade handshake.
+ *
+ * The helper applies the same fail-closed filter as `kbFetch`: the
+ * token is only attached when the URL is a same-origin
+ * `ws://.../api/ws` (or `wss://`) endpoint. Any other host or path
+ * — a future call site that targets a different WS server, a typo
+ * that lands on `/ws/foo` — receives the URL unmodified, so the
+ * launch token cannot be exfiltrated to an unintended destination.
  */
 export function appendLaunchTokenQuery(wsUrl: string): string {
   const token = getLaunchToken()
   if (!token) return wsUrl
+  if (typeof location === 'undefined') return wsUrl
+
+  let parsed: URL
+  try {
+    parsed = new URL(wsUrl)
+  } catch {
+    return wsUrl
+  }
+
+  // Map the WS scheme back to its HTTP counterpart so we can compare
+  // against the document's `location.origin`. Anything that is not
+  // `ws:` / `wss:` is rejected outright — those are the only schemes
+  // the server-side WebSocket upgrade handles.
+  let httpProtocol: string
+  if (parsed.protocol === 'ws:') {
+    httpProtocol = 'http:'
+  } else if (parsed.protocol === 'wss:') {
+    httpProtocol = 'https:'
+  } else {
+    return wsUrl
+  }
+  const httpOrigin = `${httpProtocol}//${parsed.host}`
+  if (httpOrigin !== location.origin) return wsUrl
+  if (parsed.pathname !== '/api/ws') return wsUrl
+
   const separator = wsUrl.includes('?') ? '&' : '?'
   return `${wsUrl}${separator}token=${encodeURIComponent(token)}`
 }

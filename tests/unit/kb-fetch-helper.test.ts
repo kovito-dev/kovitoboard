@@ -151,6 +151,40 @@ describe('kbFetch', () => {
     expect(sessionStorage.getItem(RELOAD_MARKER_KEY)).toBeNull()
   })
 
+  it('preserves headers carried by an input Request and adds the token', async () => {
+    const { kbFetch } = await loadFresh()
+    const fetchMock = makeFetchMock(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const req = new Request(`${location.origin}/api/agents`, {
+      method: 'POST',
+      headers: { 'X-Caller-Tag': 'session-flow', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'abc' }),
+    })
+    await kbFetch(req)
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const headers = new Headers(init.headers)
+    expect(headers.get('X-Caller-Tag')).toBe('session-flow')
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(headers.get('X-Kovitoboard-Token')).toBe(SAMPLE_TOKEN)
+  })
+
+  it('lets init.headers override the input Request headers', async () => {
+    const { kbFetch } = await loadFresh()
+    const fetchMock = makeFetchMock(async () => new Response('', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const req = new Request(`${location.origin}/api/agents`, {
+      headers: { 'X-Caller-Tag': 'request-default' },
+    })
+    await kbFetch(req, { headers: { 'X-Caller-Tag': 'init-override' } })
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const headers = new Headers(init.headers)
+    expect(headers.get('X-Caller-Tag')).toBe('init-override')
+  })
+
   it('does NOT reload on 403 (Origin allowlist failures are config bugs)', async () => {
     const { kbFetch } = await loadFresh()
     const fetchMock = makeFetchMock(async () => new Response('', { status: 403 }))
@@ -165,10 +199,29 @@ describe('kbFetch', () => {
 })
 
 describe('appendLaunchTokenQuery', () => {
+  let stubLocation: { origin: string; protocol: string; host: string; hostname: string; port: string }
+
   beforeEach(() => {
     document.head.innerHTML = ''
     sessionStorage.clear()
+    // Stub location so the helper's same-origin check has a stable
+    // origin to compare against. The default jsdom origin is
+    // http://localhost:3000; we line the test stub up with the WS
+    // endpoint we want to exercise so happy-path URLs match.
+    const original = window.location
+    stubLocation = {
+      origin: 'http://127.0.0.1:3001',
+      protocol: 'http:',
+      host: '127.0.0.1:3001',
+      hostname: '127.0.0.1',
+      port: '3001',
+    }
+    vi.stubGlobal('location', { ...original, ...stubLocation, reload: vi.fn() })
     injectMetaTag(SAMPLE_TOKEN)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('adds ?token=<value> when the URL has no query string', async () => {
@@ -188,6 +241,34 @@ describe('appendLaunchTokenQuery', () => {
     const { appendLaunchTokenQuery } = await loadFresh()
     const result = appendLaunchTokenQuery('ws://127.0.0.1:3001/api/ws')
     expect(result).toBe('ws://127.0.0.1:3001/api/ws')
+  })
+
+  it('refuses a cross-origin WS URL', async () => {
+    const { appendLaunchTokenQuery } = await loadFresh()
+    const result = appendLaunchTokenQuery('ws://attacker.example:3001/api/ws')
+    expect(result).toBe('ws://attacker.example:3001/api/ws')
+  })
+
+  it('refuses a non-/api/ws path even on the same host', async () => {
+    const { appendLaunchTokenQuery } = await loadFresh()
+    expect(appendLaunchTokenQuery('ws://127.0.0.1:3001/ws')).toBe(
+      'ws://127.0.0.1:3001/ws',
+    )
+    expect(appendLaunchTokenQuery('ws://127.0.0.1:3001/api/ws/extra')).toBe(
+      'ws://127.0.0.1:3001/api/ws/extra',
+    )
+  })
+
+  it('refuses a non-ws/wss scheme', async () => {
+    const { appendLaunchTokenQuery } = await loadFresh()
+    expect(appendLaunchTokenQuery('http://127.0.0.1:3001/api/ws')).toBe(
+      'http://127.0.0.1:3001/api/ws',
+    )
+  })
+
+  it('refuses a malformed URL', async () => {
+    const { appendLaunchTokenQuery } = await loadFresh()
+    expect(appendLaunchTokenQuery('::not-a-url::')).toBe('::not-a-url::')
   })
 })
 
