@@ -32,7 +32,13 @@ jobs:
     name: PR Language Check (Japanese characters)
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write  # required for posting fail comments
+      # The workflow posts and updates PR conversation comments through the
+      # issues-comments API (`repos/.../issues/.../comments` + `gh pr comment`,
+      # which gh routes through the same endpoint). That endpoint requires
+      # `issues: write` rather than `pull-requests: write`. PR metadata is
+      # read from the event payload, so a `pull-requests` permission is not
+      # required at all.
+      issues: write
       contents: read
     steps:
       - name: Check for bypass label
@@ -262,8 +268,14 @@ jobs:
           gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" \
             -f body="$BODY" >/dev/null
 
-      - name: Fail the job
-        if: steps.detect.outputs.fail == 'true'
+      - name: Fail the job (non-fork PR — comment was posted)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
         run: |
-          echo "::error::PR title or body contains Japanese characters. See the language-check comment for details."
+          echo "::error::PR title or body contains Japanese characters. See the language-check comment on the PR for details and a fix guide."
+          exit 1
+
+      - name: Fail the job (fork PR — comment skipped, see log)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::error::PR title or body contains Japanese characters. Auto-comment is skipped on fork PRs (read-only token); see this workflow run's log for the affected line numbers and edit the PR title/body to remove Japanese characters."
           exit 1
