@@ -1,7 +1,12 @@
-name: PR Language Check
+name: PR Language Check (Japanese characters)
 
 # Detect Japanese characters (hiragana, katakana, CJK ideographs) in PR title
-# and body. The KovitoBoard OSS repository requires English-only PR metadata.
+# and body. This workflow is a Japanese-specific check, intentionally narrower
+# than a fully English-only enforcement: it targets the concrete recurrence
+# observed in past incidents (Japanese leaking into PR descriptions). Other
+# non-English scripts (Cyrillic, Hangul, full-width punctuation, etc.) are
+# not currently in scope and may be added by a future workflow if a similar
+# recurrence is observed for those scripts.
 #
 # This workflow is intentionally separate from `ci.yml` so that PR-metadata
 # events (`edited` / `labeled` / `unlabeled`) do not trigger the heavier hygiene
@@ -20,7 +25,7 @@ on:
 
 jobs:
   language-check:
-    name: PR Language Check
+    name: PR Language Check (Japanese characters)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write  # required for posting fail comments
@@ -128,9 +133,9 @@ jobs:
           # cheap and prevents subtle rendering regressions.
           template = textwrap.dedent("""\
               <!-- pr-language-check-fail -->
-              ## :warning: Language check failed
+              ## :warning: Language check failed (Japanese characters detected)
 
-              This PR's title or body contains Japanese characters (hiragana, katakana, or CJK ideographs). The KovitoBoard OSS repository requires all PR title, body, and comment text to be written in **English**, as defined in the contributor language policy.
+              This PR's title or body contains Japanese characters (hiragana, katakana, or CJK ideographs). The KovitoBoard OSS repository's contributor language policy requires PR title and body to be written in English; this workflow specifically detects Japanese characters as the most common recurrence pattern in past incidents.
 
               ### Detected locations
 
@@ -202,6 +207,42 @@ jobs:
           echo "::warning::Japanese characters detected, but this PR is from a fork."
           echo "::warning::Auto-comment skipped because secrets.GITHUB_TOKEN is read-only on fork PRs."
           echo "::warning::The check will fail; the contributor must edit the PR title/body to remove Japanese characters."
+
+      - name: Update marker comment on resolution
+        # When the check transitions from fail to pass, rewrite the existing
+        # marker comment to a "resolved" message so that reviewers do not see
+        # a stale failure comment after the issue has been fixed. Bypass and
+        # fork-PR paths are skipped intentionally — bypass leaves the failure
+        # record in place for transparency, and fork PRs cannot post comments.
+        if: steps.check-bypass.outputs.bypass != 'true' && steps.detect.outputs.fail == 'false' && github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          EXISTING=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id' \
+            | head -1)
+
+          if [ -z "$EXISTING" ]; then
+            echo "No prior language-check comment to update; nothing to do."
+            exit 0
+          fi
+
+          BODY=$(cat <<'EOF'
+          <!-- pr-language-check-fail -->
+          ## :white_check_mark: Language check passed
+
+          This PR's title and body no longer contain Japanese characters. The previous failure has been resolved; this comment is preserved as a historical record while the check is now green.
+
+          ---
+
+          :robot: Updated automatically by the `pr-language-check` workflow.
+          EOF
+          )
+          echo "Rewriting marker comment id=$EXISTING to resolved state"
+          gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" \
+            -f body="$BODY" >/dev/null
 
       - name: Fail the job
         if: steps.detect.outputs.fail == 'true'
