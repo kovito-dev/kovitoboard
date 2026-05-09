@@ -281,6 +281,65 @@ describe('resolveLaunchTokenOrThrow', () => {
       else process.env.KB_LAUNCH_TOKEN = before
     }
   })
+
+  it('throws when KB_LAUNCH_TOKEN is shorter than 32 hex chars', () => {
+    const before = process.env.KB_LAUNCH_TOKEN
+    process.env.KB_LAUNCH_TOKEN = 'abc123'
+    try {
+      expect(() => resolveLaunchTokenOrThrow()).toThrow(/32-character lowercase hex/)
+    } finally {
+      if (before === undefined) delete process.env.KB_LAUNCH_TOKEN
+      else process.env.KB_LAUNCH_TOKEN = before
+    }
+  })
+
+  it('throws when KB_LAUNCH_TOKEN is longer than 32 hex chars', () => {
+    const before = process.env.KB_LAUNCH_TOKEN
+    process.env.KB_LAUNCH_TOKEN = SAMPLE_TOKEN + '0'
+    try {
+      expect(() => resolveLaunchTokenOrThrow()).toThrow(/32-character lowercase hex/)
+    } finally {
+      if (before === undefined) delete process.env.KB_LAUNCH_TOKEN
+      else process.env.KB_LAUNCH_TOKEN = before
+    }
+  })
+
+  it('throws when KB_LAUNCH_TOKEN contains non-hex characters', () => {
+    const before = process.env.KB_LAUNCH_TOKEN
+    // 32 chars but with one non-hex character — would let HTML through
+    // the meta-tag substitution if accepted.
+    process.env.KB_LAUNCH_TOKEN = '0123456789abcdef0123456789abcdeg'
+    try {
+      expect(() => resolveLaunchTokenOrThrow()).toThrow(/32-character lowercase hex/)
+    } finally {
+      if (before === undefined) delete process.env.KB_LAUNCH_TOKEN
+      else process.env.KB_LAUNCH_TOKEN = before
+    }
+  })
+
+  it('throws when KB_LAUNCH_TOKEN contains uppercase hex (non-canonical)', () => {
+    const before = process.env.KB_LAUNCH_TOKEN
+    process.env.KB_LAUNCH_TOKEN = SAMPLE_TOKEN.toUpperCase()
+    try {
+      expect(() => resolveLaunchTokenOrThrow()).toThrow(/32-character lowercase hex/)
+    } finally {
+      if (before === undefined) delete process.env.KB_LAUNCH_TOKEN
+      else process.env.KB_LAUNCH_TOKEN = before
+    }
+  })
+
+  it('throws when KB_LAUNCH_TOKEN contains an HTML metacharacter', () => {
+    const before = process.env.KB_LAUNCH_TOKEN
+    // The whole point of the format check is to keep this kind of
+    // value out of the meta-tag substitution site.
+    process.env.KB_LAUNCH_TOKEN = '"><script>alert(1)</script><meta '
+    try {
+      expect(() => resolveLaunchTokenOrThrow()).toThrow(/32-character lowercase hex/)
+    } finally {
+      if (before === undefined) delete process.env.KB_LAUNCH_TOKEN
+      else process.env.KB_LAUNCH_TOKEN = before
+    }
+  })
 })
 
 describe('__testing exports', () => {

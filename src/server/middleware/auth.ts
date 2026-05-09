@@ -58,6 +58,18 @@ const TOKEN_HEADER = 'x-kovitoboard-token'
 const TOKEN_QUERY_KEY = 'token'
 
 /**
+ * Required token shape: 32 lowercase hex characters (128 bits of
+ * entropy, the format the supervisor's `randomBytes(16).toString('hex')`
+ * produces). Validating the format at boot lets us treat the token as
+ * a safe substring when it is later interpolated into the index.html
+ * meta tag, which is otherwise a HTML/JS injection vector if a
+ * misconfigured operator points `KB_LAUNCH_TOKEN` at attacker-controlled
+ * text. The regex does not need to be timing-safe — it runs once at
+ * startup, never against user input.
+ */
+const TOKEN_FORMAT_RE = /^[0-9a-f]{32}$/
+
+/**
  * Origin allowlist regex. Matches:
  *   http://localhost:<port>
  *   http://127.0.0.1:<port>
@@ -71,11 +83,19 @@ const ALLOWED_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/
 
 /**
  * Resolve the expected per-launch token from the environment, throwing
- * if it is missing. Called once at server boot — `kb-start.mjs` (the
- * supervisor) is the canonical injection point. If the server is
- * launched outside the supervisor (e.g. for an ad-hoc unit test) the
- * caller must set `KB_LAUNCH_TOKEN` explicitly; we refuse to start
- * with a generated fallback to avoid normalizing a degraded mode.
+ * if it is missing or malformed. Called once at server boot —
+ * `kb-start.mjs` (the supervisor) is the canonical injection point.
+ * If the server is launched outside the supervisor (e.g. for an
+ * ad-hoc unit test) the caller must set `KB_LAUNCH_TOKEN` explicitly;
+ * we refuse to start with a generated fallback to avoid normalizing
+ * a degraded mode.
+ *
+ * The format is enforced (32 lowercase hex chars) so the token can
+ * be safely interpolated into the index.html meta tag downstream.
+ * Anything else — empty, partial hex, longer string, characters
+ * outside `[0-9a-f]` — would either compromise the entropy assumption
+ * or open an HTML/JS injection vector at the meta-tag substitution
+ * site, so we fail closed.
  */
 export function resolveLaunchTokenOrThrow(): string {
   const token = process.env.KB_LAUNCH_TOKEN
@@ -84,6 +104,14 @@ export function resolveLaunchTokenOrThrow(): string {
       'KB_LAUNCH_TOKEN is missing. The supervisor (tools/kb-start.mjs) ' +
         'must set this env var before spawning the server. Direct ' +
         'launches must export it manually.',
+    )
+  }
+  if (!TOKEN_FORMAT_RE.test(token)) {
+    throw new Error(
+      'KB_LAUNCH_TOKEN must be a 32-character lowercase hex string ' +
+        '(the supervisor mints it via randomBytes(16).toString("hex")). ' +
+        'Ad-hoc launches that hand-set the value must follow the same ' +
+        'format to avoid HTML injection at the meta-tag substitution site.',
     )
   }
   return token
