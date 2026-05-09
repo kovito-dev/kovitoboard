@@ -3,7 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { tmuxLogger } from './logger'
+import { tmuxLogger, redactSensitiveTokens } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
@@ -18,6 +18,20 @@ interface ManagedProcess {
   stdout: string
   stderr: string
 }
+
+/**
+ * Maximum number of characters of a single Claude-CLI stderr chunk
+ * that the per-chunk debug log line carries verbatim. Anything past
+ * this is replaced with a `…[truncated N chars]` marker; the
+ * untruncated text continues to live on `managed.stderr` so
+ * post-mortem and the close-handler `stdout += stderr` path are
+ * unaffected.
+ *
+ * Picked to keep a per-chunk log line comfortably under one terminal
+ * page while still showing the leading error context every operator
+ * actually reads.
+ */
+const STDERR_LOG_PREVIEW_CHARS = 200
 
 /**
  * Manages spawning and lifecycle of Claude CLI processes.
@@ -100,10 +114,19 @@ export class ClaudeBridge extends EventEmitter {
   ): string {
     const processId = randomUUID()
 
-    // Do not log the message body (last argument)
+    // Do not log the message body (last argument). Emit `cwd` as a
+    // structured field on the same record instead of a second log
+    // line so it is searchable as `cwd` (and rides through the
+    // logger's home-path / token redaction once, not twice). The
+    // msg-string is built from `safeArgs` and goes through the
+    // call-site `redactSensitiveTokens` since pino's
+    // `formatters.log` only sees structured fields, not the raw
+    // message.
     const safeArgs = args.slice(0, -1).join(' ')
-    tmuxLogger.info(`[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`)
-    tmuxLogger.info(`[claude-bridge] cwd: ${cwd}`)
+    const startingMsg = redactSensitiveTokens(
+      `[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`,
+    )
+    tmuxLogger.info({ cwd }, startingMsg)
 
     // Remove Claude Code related env vars to avoid nested instance detection
     const env = { ...process.env }
@@ -146,7 +169,25 @@ export class ClaudeBridge extends EventEmitter {
       // subprocess can otherwise burn through the retention budget
       // and bury actionable events. Operators can still reach the
       // chunks by enabling KOVITOBOARD_DEBUG.
-      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${text.trim()}`)
+      //
+      // Truncate per-chunk stderr to STDERR_LOG_PREVIEW_CHARS so a
+      // single noisy chunk does not push a multi-KB blob into the
+      // log line. The full buffer remains on `managed.stderr` for
+      // post-mortem inspection (and for the close-handler that
+      // appends it to stdout on non-zero exit). Token-shaped values
+      // inside the surviving preview window are still redacted by
+      // the logger's redaction layer.
+      const trimmed = text.trim()
+      const preview = trimmed.length > STDERR_LOG_PREVIEW_CHARS
+        ? `${trimmed.slice(0, STDERR_LOG_PREVIEW_CHARS)}…[truncated ${trimmed.length - STDERR_LOG_PREVIEW_CHARS} chars]`
+        : trimmed
+      // Per the logger's call-site contract (see logger.ts /
+      // logging-baseline.md §5), msg-string arguments do not run
+      // through the structural redactor; redact here so an Anthropic
+      // key surfaced via Claude CLI stderr does not land in
+      // server.log.
+      const safePreview = redactSensitiveTokens(preview)
+      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${safePreview}`)
     })
 
     child.on('close', (code) => {

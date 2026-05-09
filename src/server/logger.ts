@@ -87,6 +87,82 @@ export function maskHomePath(input: string): string {
 }
 
 /**
+ * Patterns matched and redacted from log strings to keep
+ * authorization material out of `.kovitoboard/logs/server.log` and
+ * stdout. The applied list intentionally stays narrow: each pattern
+ * targets a value shape that is never a legitimate component name,
+ * file path, or human-readable message, so false positives stay rare
+ * and the redaction does not eat structured fields agents need to
+ * read.
+ *
+ * Coverage:
+ * - Anthropic API keys (`sk-ant-…`) the Claude CLI may print on stderr.
+ * - Generic JWTs (`<base64url>.<base64url>.<base64url>`), which is the
+ *   shape of every OAuth bearer / session token that could end up in a
+ *   `paneTail` capture or a CLI failure message.
+ *
+ * Each match is replaced with a length-preserving `<sk-ant redacted>`
+ * / `<jwt redacted>` placeholder so log readers can still tell *that*
+ * a credential appeared without exposing its value.
+ *
+ * Adding new patterns: prefer narrow shapes (a unique prefix or
+ * exact length range). Broad heuristics (e.g. "any 40-char hex
+ * string") will mask hashes / sha256 commit ids that handlers and
+ * tests legitimately log.
+ */
+const SENSITIVE_TOKEN_PATTERNS: ReadonlyArray<{ pattern: RegExp; placeholder: string }> = [
+  // Anthropic API key prefix; emitted in plaintext by `claude` CLI on
+  // some auth-failure paths and surfaces through claude-bridge stderr.
+  { pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, placeholder: '<sk-ant redacted>' },
+  // Generic JWT (OAuth bearer / session). 3 base64url segments
+  // separated by dots, with the `eyJ` (`{"…`) header prefix to keep
+  // the match narrow. 10+ chars per segment to skip short shape-only
+  // matches.
+  { pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, placeholder: '<jwt redacted>' },
+]
+
+/**
+ * Apply every credential-pattern redaction to a single string.
+ * Exported for the diagnose CLI and unit tests so the redaction can
+ * be verified the same way `maskHomePath` is.
+ */
+export function redactSensitiveTokens(input: string): string {
+  let out = input
+  for (const { pattern, placeholder } of SENSITIVE_TOKEN_PATTERNS) {
+    out = out.replace(pattern, placeholder)
+  }
+  return out
+}
+
+/**
+ * Build a structural redactor that walks a log record and replaces
+ * credential-shaped substrings inside every string-typed value.
+ *
+ * Composed onto `formatters.log` after `buildHomePathMasker` so that
+ * the home-path mask runs first (cheap path-prefix replace) and then
+ * narrow credential patterns get a second pass. The visit shape is
+ * identical to `buildHomePathMasker` so handler code does not need
+ * to know which redactions are active.
+ */
+function buildSensitiveTokenRedactor(): (obj: Record<string, unknown>) => Record<string, unknown> {
+  const visit = (value: unknown): unknown => {
+    if (typeof value === 'string') return redactSensitiveTokens(value)
+    if (value === null || value === undefined) return value
+    if (Array.isArray(value)) return value.map(visit)
+    if (typeof value === 'object') {
+      const next: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        next[k] = visit(v)
+      }
+      return next
+    }
+    return value
+  }
+
+  return (obj) => visit(obj) as Record<string, unknown>
+}
+
+/**
  * Initialize the root logger. Must be called once during server
  * startup, before any childLogger() / serverLogger() / etc. is used.
  *
@@ -123,7 +199,14 @@ export async function initLogger(
     { stream: fileStream, level: config.level },
   ]
 
-  const maskLog = buildHomePathMasker()
+  const maskHome = buildHomePathMasker()
+  const maskTokens = buildSensitiveTokenRedactor()
+  // Compose: first replace the user's home path with `~` (cheap
+  // prefix substitution), then run the credential-shape redactor
+  // over what remains. The two layers commute, but ordering home
+  // first keeps token regexes from scanning long absolute paths.
+  const maskLog = (obj: Record<string, unknown>): Record<string, unknown> =>
+    maskTokens(maskHome(obj))
 
   rootLogger = pino(
     {

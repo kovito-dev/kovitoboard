@@ -12,6 +12,7 @@ import {
   childLogger,
   initLogger,
   maskHomePath,
+  redactSensitiveTokens,
 } from '../../src/server/logger'
 import type { KovitoboardSetting } from '../../src/shared/setting-types'
 
@@ -50,6 +51,161 @@ describe('logger / maskHomePath', () => {
     // A path that does not contain the home dir is untouched
     expect(maskHomePath(fake.replace('/home/someone', '/opt/elsewhere')))
       .toBe(fake.replace('/home/someone', '/opt/elsewhere'))
+  })
+})
+
+describe('logger / redactSensitiveTokens', () => {
+  it('redacts an Anthropic API key prefix', () => {
+    const input = 'auth failed for sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    const out = redactSensitiveTokens(input)
+    expect(out).toContain('<sk-ant redacted>')
+    expect(out).not.toContain('sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789')
+    // Surrounding text should be intact
+    expect(out.startsWith('auth failed for ')).toBe(true)
+  })
+
+  it('redacts multiple Anthropic API keys in the same line', () => {
+    const input = 'sk-ant-aaaaaaaaaaaaaaaaaaaa and also sk-ant-bbbbbbbbbbbbbbbbbbbb'
+    const out = redactSensitiveTokens(input)
+    expect(out).toBe('<sk-ant redacted> and also <sk-ant redacted>')
+  })
+
+  it('redacts a generic JWT (3 base64url segments)', () => {
+    // header.payload.signature, each segment ≥ 10 chars and starting
+    // with `eyJ` for header / payload (the canonical `{"…` prefix).
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    const input = `Bearer ${jwt}`
+    const out = redactSensitiveTokens(input)
+    expect(out).toBe('Bearer <jwt redacted>')
+  })
+
+  it('leaves regular paths and identifiers untouched', () => {
+    // Project paths, git SHAs, UUIDs, plain words. None of these should
+    // match. (UUID is hyphen-segmented, not dot-segmented; git SHAs are
+    // 40 hex chars without the `eyJ` prefix.)
+    const sha = 'abcdef0123456789abcdef0123456789abcdef01'
+    const uuid = '12345678-1234-1234-1234-123456789abc'
+    const input = `commit ${sha} on branch fix/${uuid} touches src/server/index.ts`
+    expect(redactSensitiveTokens(input)).toBe(input)
+  })
+
+  it('leaves a short sk-ant- prefix that is not a real key untouched', () => {
+    // Documentation snippet: `sk-ant-` literally, no key body. The
+    // regex requires ≥20 chars after the prefix to avoid eating
+    // mention-only strings in docs / error messages.
+    const input = 'use the prefix sk-ant- when configuring keys'
+    expect(redactSensitiveTokens(input)).toBe(input)
+  })
+})
+
+describe('logger / sensitive-token redaction at write time', () => {
+  let projectRoot: string
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'kb-logger-redact-test-'))
+    mkdirSync(join(projectRoot, '.kovitoboard', 'logs'), { recursive: true })
+    _resetLoggerForTests()
+  })
+
+  afterEach(async () => {
+    _resetLoggerForTests()
+    await new Promise((r) => setTimeout(r, 100))
+    try {
+      rmSync(projectRoot, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  })
+
+  it('redacts an API key in a structured field on the persisted log line', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-test')
+    log.info(
+      { apiKey: 'sk-ant-api03-RedactMeIfYouSeeThisInLogs1234567890' },
+      'auth failed',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-RedactMeIfYouSeeThisInLogs1234567890')
+  })
+
+  it('does NOT redact a string-only msg argument (call-site responsibility)', async () => {
+    // pino's `formatters.log` only runs against the merging object,
+    // not against a string-only first argument. The redaction layer
+    // therefore documents itself as "automatic for structured fields,
+    // manual for raw msg strings"; risky call sites (claude-bridge
+    // stderr, trust-prompt fallback log) wrap the value with
+    // `redactSensitiveTokens` themselves before handing it to the
+    // logger. This test pins that contract so a future change that
+    // accidentally widens the redactor would surface here as a fail.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-msg')
+    log.info(
+      'claude exited with sk-ant-api03-MsgKeyShouldGoTooLongEnough123 in the error',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // Demonstrates the gap that call sites must close.
+    expect(raw).toContain('sk-ant-api03-MsgKeyShouldGoTooLongEnough123')
+    // The same key threaded through a structured field IS redacted.
+    log.info(
+      { detail: 'claude exited with sk-ant-api03-StructuredFieldVariant1234' },
+      'auth failed',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw2 = readActiveLogFile(projectRoot)
+    expect(raw2).toContain('<sk-ant redacted>')
+    expect(raw2).not.toContain('sk-ant-api03-StructuredFieldVariant1234')
+  })
+
+  it('exported redactSensitiveTokens lets call sites redact a msg before logging', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-callsite')
+    const raw_msg = 'claude exited with sk-ant-api03-CallSiteShouldRedact1234567 in the error'
+    log.info(redactSensitiveTokens(raw_msg))
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CallSiteShouldRedact1234567')
+  })
+
+  it('redacts API keys nested inside arrays (e.g. paneTail)', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-array')
+    log.info(
+      {
+        windowName: 'test-window',
+        paneTail: [
+          'last visible row',
+          'token=sk-ant-api03-NestedInsideArrayShouldGoToo123',
+          'another row',
+        ],
+      },
+      'Fallback fired (no known pattern matched)',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-NestedInsideArrayShouldGoToo123')
+    // Sibling rows survive.
+    expect(raw).toContain('last visible row')
+    expect(raw).toContain('another row')
+  })
+
+  it('does not mutate the in-memory record handed to the logger', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-immut')
+    const record = {
+      apiKey: 'sk-ant-api03-MustNotBeMutatedInMemory12345',
+    }
+    log.info(record, 'should be redacted on disk only')
+    await new Promise((r) => setTimeout(r, 200))
+    // Caller's object is untouched (formatters.log runs at write time
+    // on a clone).
+    expect(record.apiKey).toBe('sk-ant-api03-MustNotBeMutatedInMemory12345')
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
   })
 })
 
