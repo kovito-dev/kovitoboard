@@ -12,6 +12,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createLogger } from '../lib/logger'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('useAdminStatus')
 
@@ -48,7 +49,7 @@ export function useAdminStatus(wsConnected: boolean): AdminStatusResult {
 
   const poll = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/admin/status`)
+      const res = await kbFetch(`${API_BASE}/admin/status`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json: AdminStatusData = await res.json()
       setData(json)

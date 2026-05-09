@@ -32,6 +32,11 @@ import { getInitialPrompt } from './services/initial-prompts'
 import { readSetting, writeSetting } from './setting-manager'
 import type { KovitoboardSetting } from '../shared/setting-types'
 import { createOnboardingRedirect } from './middleware/onboarding-redirect'
+import {
+  createTokenAndOriginGuard,
+  createWsClientVerifier,
+  resolveLaunchTokenOrThrow,
+} from './middleware/auth'
 import { createConfigRouter } from './routes/config-routes'
 import { createVersionRouter } from './routes/version-routes'
 import {
@@ -92,6 +97,15 @@ import { getKovitoboardDir } from './paths'
 const PORT = Number(process.env.PORT) || 3001
 const serverStartTime = Date.now()
 
+// Per-launch authentication token. Resolved once at boot from the env
+// var the supervisor (kb-start.mjs) injected. A missing token is fatal:
+// the server refuses to start rather than fall through to a degraded
+// "no auth" mode, which would silently re-introduce the same-host
+// attack surface the token was added to close.
+const LAUNCH_TOKEN = resolveLaunchTokenOrThrow()
+const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
+const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
+
 const app = express()
 app.use(express.json())
 
@@ -111,8 +125,16 @@ app.use((_req, res, next) => {
   next()
 })
 
+// Per-launch token + Origin allowlist. Scoped to `/api/*` so the
+// renderer can still fetch index.html and static assets without the
+// token (otherwise it could never bootstrap and read the meta tag
+// the token is delivered through). The renderer's kbFetch helper
+// adds `X-Kovitoboard-Token` to every API request, and the WebSocket
+// upgrade is gated separately by `verifyWsClient` below.
+app.use('/api', verifyTokenAndOrigin)
+
 const server = createServer(app)
-const wss = new WebSocketServer({ server, path: '/api/ws' })
+const wss = new WebSocketServer({ server, path: '/api/ws', verifyClient: verifyWsClient })
 
 // --- File access abstraction layer ---
 // v0.1.0 only provides DirectFsLayer (direct Node.js fs / chokidar calls).
@@ -1964,6 +1986,31 @@ app.use(express.static(join(__dirname, '../../dist')))
 // Onboarding redirect: redirect to /onboarding if not completed
 app.use(createOnboardingRedirect(fs))
 
+// In prod mode, the SPA fallback hands the renderer a copy of
+// `dist/index.html` whose `<!-- KB:LAUNCH_TOKEN_META -->` placeholder
+// has been replaced with the real token meta tag. The Vite dev server
+// performs the same substitution through its `kb-launch-token-injector`
+// plugin (`vite.config.ts`); this branch is only reachable for `npm
+// run prod` / packaged distributions where Vite is not in the loop.
+// We read and substitute once at boot so the per-request hot path is
+// just `res.send(string)`.
+const distIndexPath = join(__dirname, '../../dist/index.html')
+const distIndexCache: string | null = (() => {
+  if (process.env.KOVITOBOARD_MODE !== 'prod') return null
+  try {
+    const raw = fs.readFileSync(distIndexPath, 'utf-8')
+    return raw.replace(
+      '<!-- KB:LAUNCH_TOKEN_META -->',
+      `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
+    )
+  } catch {
+    // Missing dist is already diagnosed by the explicit check at
+    // startup (search for KOVITOBOARD_MODE === 'prod' below); fall
+    // through to res.sendFile so any later error is surfaced normally.
+    return null
+  }
+})()
+
 // SPA fallback: serve index.html for all non-API, non-WS routes
 // Express 5 requires named wildcard parameters (path-to-regexp v8)
 app.get('{*path}', (req, res) => {
@@ -1971,7 +2018,11 @@ app.get('{*path}', (req, res) => {
     res.status(404).json({ error: 'Not found' })
     return
   }
-  res.sendFile(join(__dirname, '../../dist/index.html'))
+  if (distIndexCache !== null) {
+    res.type('html').send(distIndexCache)
+    return
+  }
+  res.sendFile(distIndexPath)
 })
 
 // --- WebSocket: real-time event broadcasting ---

@@ -3,10 +3,37 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+const KB_LAUNCH_TOKEN_PLACEHOLDER = '<!-- KB:LAUNCH_TOKEN_META -->'
+
+/**
+ * Inject the per-launch auth token into `index.html` as a `<meta>`
+ * tag. The token arrives via env (`KB_LAUNCH_TOKEN`) from the
+ * supervisor (`tools/kb-start.mjs`); this plugin only runs during
+ * `vite serve` so production builds keep the placeholder intact and
+ * the Express prod fallback in `src/server/index.ts` can perform the
+ * same substitution at runtime. The token is hex-only so no further
+ * HTML escaping is needed; an empty token (the supervisor was not
+ * involved) renders an empty content attribute and the renderer
+ * fails closed when it later tries to authenticate.
+ */
+function kbLaunchTokenInjectorPlugin(): Plugin {
+  return {
+    name: 'kb-launch-token-injector',
+    apply: 'serve',
+    transformIndexHtml(html) {
+      const token = process.env.KB_LAUNCH_TOKEN ?? ''
+      return html.replace(
+        KB_LAUNCH_TOKEN_PLACEHOLDER,
+        `<meta name="kb-launch-token" content="${token}">`,
+      )
+    },
+  }
+}
 
 // KovitoBoard:
 // - Serve static assets from public/ (avatars, docs, etc.)
@@ -15,7 +42,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   root: 'src/renderer',
   publicDir: resolve(__dirname, 'public'),
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), kbLaunchTokenInjectorPlugin()],
   resolve: {
     alias: {
       '@app': resolve(__dirname, 'app'),

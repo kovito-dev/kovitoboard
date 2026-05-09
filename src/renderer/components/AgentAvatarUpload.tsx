@@ -5,6 +5,7 @@
  */
 import { useState, useRef, useCallback } from 'react'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 interface AgentAvatarUploadProps {
   agentId: string
@@ -38,7 +39,7 @@ export function AgentAvatarUpload({ agentId, onUploadComplete }: AgentAvatarUplo
     setIsUploading(true)
     try {
       const buffer = await file.arrayBuffer()
-      const res = await fetch(`/api/agents/${agentId}/avatar`, {
+      const res = await kbFetch(`/api/agents/${agentId}/avatar`, {
         method: 'POST',
         headers: { 'Content-Type': file.type },
         body: buffer,
@@ -62,7 +63,7 @@ export function AgentAvatarUpload({ agentId, onUploadComplete }: AgentAvatarUplo
   const handleDeleteAvatar = useCallback(async () => {
     setError(null)
     try {
-      const res = await fetch(`/api/agents/${agentId}/avatar`, { method: 'DELETE' })
+      const res = await kbFetch(`/api/agents/${agentId}/avatar`, { method: 'DELETE' })
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string }
         throw new Error(data.error || `Delete failed (${res.status})`)

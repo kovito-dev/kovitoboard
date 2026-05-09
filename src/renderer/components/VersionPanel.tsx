@@ -10,6 +10,7 @@ import { ConfirmModal } from './ConfirmModal'
 import { createLogger } from '../lib/logger'
 import type { AgentInfo } from '../types'
 import type { UseVersionInfoResult } from '../hooks/useVersionInfo'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('VersionPanel')
 
@@ -53,7 +54,7 @@ export function VersionPanel({ versionInfo }: VersionPanelProps) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/agents')
+    kbFetch('/api/agents')
       .then((r) => (r.ok ? r.json() : []))
       .then((list: AgentInfo[]) => {
         if (cancelled) return

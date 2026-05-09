@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
+import { kbFetch } from '../lib/kbFetch'
 
 /** Template summary (same structure as server-side AgentTemplateSummary) */
 export interface TemplateSummary {
@@ -33,7 +34,7 @@ export function useTemplates(): UseTemplatesResult {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/templates/agents')
+      const res = await kbFetch('/api/templates/agents')
       if (!res.ok) {
         throw new Error(`Failed to fetch templates (${res.status})`)
       }

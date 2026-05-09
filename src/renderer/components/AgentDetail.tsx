@@ -14,6 +14,7 @@ import { useToast } from './Toast'
 import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../utils/format'
 import { getAgentDescription, getAgentDisplayName, getAgentRole } from '../utils/agent-display'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 interface AgentDetailProps {
   agent: AgentInfo
@@ -681,7 +682,7 @@ function DefinitionTab({ agentId }: { agentId: string }) {
   useEffect(() => {
     setLoading(true)
     setError(false)
-    fetch(`/api/agents/${agentId}/definition`)
+    kbFetch(`/api/agents/${agentId}/definition`)
       .then((res) => {
         if (!res.ok) throw new Error('Not found')
         return res.json()

@@ -15,6 +15,7 @@
  */
 
 import { createLogger } from './logger'
+import { appendLaunchTokenQuery } from './kbFetch'
 
 const log = createLogger('kbBridge')
 
@@ -111,7 +112,10 @@ function getWebSocket(): WebSocket {
   // swallows kb-call frames and produces a 30s client-side timeout.
   // The server-side migration to `/api/ws` was done in 35b6677 along
   // with useIPC, but this bridge was missed at the time.
-  const url = `${protocol}//${location.host}/api/ws`
+  // The query string carries the per-launch auth token so the server's
+  // verifyWsClient hook accepts the upgrade (browsers cannot attach
+  // custom headers to a WS handshake).
+  const url = appendLaunchTokenQuery(`${protocol}//${location.host}/api/ws`)
   const fresh = new WebSocket(url)
   ws = fresh
 

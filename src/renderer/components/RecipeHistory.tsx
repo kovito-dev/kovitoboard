@@ -9,6 +9,7 @@
 import { useState, useEffect } from 'react'
 import type { RecipeHistoryEntry } from '../../shared/recipe-types'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 export function RecipeHistory() {
   const [history, setHistory] = useState<RecipeHistoryEntry[]>([])
@@ -16,7 +17,7 @@ export function RecipeHistory() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch('/api/recipes/history')
+    kbFetch('/api/recipes/history')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()

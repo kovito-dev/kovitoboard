@@ -113,6 +113,14 @@ process.env.KB_E2E_PROJECT_ROOT_DEFAULT = PROJECT_ROOT_DEFAULT
 process.env.KB_E2E_PROJECT_ROOT_PREONBOARDING = PROJECT_ROOT_PREONBOARDING
 process.env.KB_E2E_PROJECT_ROOT_RICH = PROJECT_ROOT_RICH
 
+// Per-launch auth token (KB_LAUNCH_TOKEN) — production code mints a
+// fresh value per supervisor launch; in L1 we hard-code a deterministic
+// test token so every webServer process and every Playwright worker
+// agree on the same value. The Vite plugin embeds it into index.html
+// so the renderer's kbFetch helper picks it up like in real life.
+const E2E_LAUNCH_TOKEN = '0123456789abcdef0123456789abcdef'
+process.env.KB_LAUNCH_TOKEN = E2E_LAUNCH_TOKEN
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
@@ -146,6 +154,14 @@ export default defineConfig({
     // playwright-trace-l1 artifact uploaded on CI actually contains a
     // trace.zip per failed test (DEC-018 design §4.3).
     trace: 'retain-on-failure',
+    // Attach the per-launch auth token to every Playwright-issued
+    // request so spec files using `request.get(...)` etc. don't have
+    // to thread the header through manually. The renderer already
+    // gets the same value through the meta tag injected into
+    // index.html by the Vite dev plugin.
+    extraHTTPHeaders: {
+      'X-Kovitoboard-Token': E2E_LAUNCH_TOKEN,
+    },
   },
 
   projects: [
@@ -197,7 +213,11 @@ export default defineConfig({
   webServer: [
     {
       command: 'npm run dev',
-      url: 'http://127.0.0.1:3001/api/config',
+      // Probe via the Vite-served HTML (token-free) instead of an API
+      // route — every `/api/*` path now requires the launch token, so
+      // the readiness check would otherwise see a 401 before the test
+      // even starts.
+      url: 'http://127.0.0.1:5174/',
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
       env: {
@@ -211,11 +231,12 @@ export default defineConfig({
         // (v0.1.0-version-display.md §3.3) — keeps L1 deterministic and
         // free of outbound network calls.
         KOVITO_NO_VERSION_CHECK: '1',
+        KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
     {
       command: 'npm run dev',
-      url: 'http://127.0.0.1:3002/api/config',
+      url: 'http://127.0.0.1:5175/',
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
       env: {
@@ -224,11 +245,12 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-preonboarding',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_PREONBOARDING,
         KB_E2E_MODE: '1',
+        KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
     {
       command: 'npm run dev',
-      url: 'http://127.0.0.1:3003/api/config',
+      url: 'http://127.0.0.1:5176/',
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
       env: {
@@ -237,6 +259,7 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-rich',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_RICH,
         KB_E2E_MODE: '1',
+        KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
   ],

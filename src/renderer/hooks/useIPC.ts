@@ -13,6 +13,7 @@ import type {
   ClientToServerEvent,
 } from '../../shared/ws-events'
 import { attachLogWebSocket, createLogger } from '../lib/logger'
+import { kbFetch, appendLaunchTokenQuery } from '../lib/kbFetch'
 
 const log = createLogger('useIPC')
 const trustPromptLog = createLogger('trust-prompt')
@@ -54,7 +55,7 @@ function normalizeForComparison(text: string): string {
 const TMUX_POLL_INTERVAL = 60_000
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+  const res = await kbFetch(url)
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   return res.json()
 }
@@ -369,7 +370,7 @@ export function useIPC() {
       if (disposed) return
 
       const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${wsProtocol}//${location.host}/api/ws`
+      const wsUrl = appendLaunchTokenQuery(`${wsProtocol}//${location.host}/api/ws`)
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -471,7 +472,7 @@ export function useIPC() {
     // Optimistic UI: display temporary message immediately
     addOptimisticMessage(sessionId, message)
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/send`, {
+    const res = await kbFetch(`${API_BASE}/sessions/${sessionId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
@@ -491,7 +492,7 @@ export function useIPC() {
   ): Promise<NewSessionResponse> => {
     const body: Record<string, unknown> = { agentId, message }
     if (options?.origin) body.origin = options.origin
-    const res = await fetch(`${API_BASE}/sessions/new`, {
+    const res = await kbFetch(`${API_BASE}/sessions/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -510,7 +511,7 @@ export function useIPC() {
       addOptimisticMessage(sessionId, message)
     }
 
-    const res = await fetch(`${API_BASE}/tmux/send`, {
+    const res = await kbFetch(`${API_BASE}/tmux/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ windowName, message }),
@@ -537,7 +538,7 @@ export function useIPC() {
       const body: Record<string, unknown> = { windowName, message }
       if (options?.agentId) body.agentId = options.agentId
       if (options?.origin) body.origin = options.origin
-      const res = await fetch(`${API_BASE}/tmux/clear-and-send`, {
+      const res = await kbFetch(`${API_BASE}/tmux/clear-and-send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -554,7 +555,7 @@ export function useIPC() {
   // to the agent's tmux window. Best-effort — failures are logged via
   // the throw so the caller can decide whether to surface an error.
   const tmuxInterrupt = useCallback(async (windowName: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/tmux/interrupt`, {
+    const res = await kbFetch(`${API_BASE}/tmux/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ windowName }),
@@ -571,7 +572,7 @@ export function useIPC() {
     setSessionAgentMap((prev) => ({ ...prev, [sessionId]: agentId }))
     // Also persist to the server
     try {
-      await fetch(`${API_BASE}/sessions/${sessionId}/set-agent`, {
+      await kbFetch(`${API_BASE}/sessions/${sessionId}/set-agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentId }),

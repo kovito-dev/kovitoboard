@@ -21,7 +21,11 @@
 import { test, expect } from './helpers/l1-per-test-setup'
 
 const API_BASE = 'http://127.0.0.1:3001'
-const WS_URL = 'ws://127.0.0.1:3001/api/ws'
+// Per-launch token comes from playwright.config.l1.ts. The browser
+// context inside `page.evaluate` cannot read process.env, so the test
+// passes the token through the evaluate args as part of the WS URL.
+const LAUNCH_TOKEN = process.env.KB_LAUNCH_TOKEN ?? ''
+const WS_URL = `ws://127.0.0.1:3001/api/ws?token=${encodeURIComponent(LAUNCH_TOKEN)}`
 
 const TEST_RECIPE_NAME = 'E2E Test Viewer'
 const TEST_RECIPE_ID = 'e2e-test-viewer'

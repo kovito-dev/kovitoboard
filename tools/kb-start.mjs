@@ -65,6 +65,7 @@ import { spawn } from 'child_process'
 import { createServer as createNetServer } from 'net'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { randomBytes } from 'crypto'
 import {
   existsSync,
   lstatSync,
@@ -545,6 +546,16 @@ async function launch() {
     process.exit(1)
   }
 
+  // Per-launch authentication token (32 hex chars = 128 bits of entropy).
+  // The supervisor mints a fresh token for every launch — including each
+  // SIGUSR2-driven restart — so any token captured before the restart is
+  // immediately invalidated when the server reboots. The token gates
+  // privileged HTTP routes and the WebSocket upgrade (see middleware in
+  // src/server/index.ts and the renderer kbFetch helper). Logging the
+  // token is intentionally avoided: it only travels through the env vars
+  // of the two children, never through stdout.
+  const launchToken = randomBytes(16).toString('hex')
+
   const env = {
     ...process.env,
     NODE_ENV: 'development',
@@ -555,6 +566,11 @@ async function launch() {
     // signal us directly (SIGUSR2). `process.ppid` is not usable here
     // because the direct parent of the server is `tsx watch`, not us.
     KOVITOBOARD_SUPERVISOR_PID: String(process.pid),
+    // Per-launch token: the backend reads this and rejects any request
+    // whose `X-Kovitoboard-Token` header (HTTP) or `?token=` query (WS
+    // upgrade) does not match. Vite picks it up too so the index.html
+    // transform can embed the token in a meta tag for the renderer.
+    KB_LAUNCH_TOKEN: launchToken,
   }
 
   // --- Server (tsx watch — auto-reloads server source changes; the

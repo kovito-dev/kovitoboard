@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AmbientSidebarSetting, KovitoboardSetting } from '../../shared/setting-types'
 import { createLogger } from '../lib/logger'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('useSidebarSettings')
 
@@ -47,14 +48,14 @@ export interface UseSidebarSettingsResult {
 }
 
 async function fetchSetting(): Promise<KovitoboardSetting | null> {
-  const res = await fetch('/api/config/setting')
+  const res = await kbFetch('/api/config/setting')
   if (!res.ok) return null
   const data = (await res.json()) as KovitoboardSetting | null
   return data
 }
 
 async function putSetting(setting: KovitoboardSetting): Promise<void> {
-  const res = await fetch('/api/config/setting', {
+  const res = await kbFetch('/api/config/setting', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(setting),

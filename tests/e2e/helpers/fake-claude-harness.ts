@@ -233,8 +233,11 @@ export async function waitForFullDispose(
   //    only used when the helper is invoked without apiBaseUrl
   //    (e.g. legacy callers or tests that don't go through kbFixture).
   if (opts.apiBaseUrl) {
+    const launchToken = process.env.KB_LAUNCH_TOKEN ?? ''
     await page.request
-      .post(`${opts.apiBaseUrl}/api/admin/test-reset-state`)
+      .post(`${opts.apiBaseUrl}/api/admin/test-reset-state`, {
+        headers: { 'X-Kovitoboard-Token': launchToken },
+      })
       .catch(() => {
         /* Endpoint may be 404 if KB_E2E_MODE is not set — tolerate it. */
       })

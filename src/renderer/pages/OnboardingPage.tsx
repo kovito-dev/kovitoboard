@@ -12,6 +12,7 @@ import { StepUser } from './onboarding/StepUser'
 import { StepProject } from './onboarding/StepProject'
 import { StepConcierge } from './onboarding/StepConcierge'
 import { StepComplete } from './onboarding/StepComplete'
+import { kbFetch } from '../lib/kbFetch'
 
 const TOTAL_STEPS = 5
 
@@ -61,7 +62,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   // Initialize locale on mount and fetch projectRoot
   useEffect(() => {
     setLocale(locale)
-    fetch('/api/config/project-root')
+    kbFetch('/api/config/project-root')
       .then(r => r.json())
       .then(d => {
         const root: string = d.projectRoot || ''
@@ -109,7 +110,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     }
 
     try {
-      await fetch('/api/config/setting', {
+      await kbFetch('/api/config/setting', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(setting),
@@ -126,7 +127,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       if (userAvatar) {
         try {
           const buffer = await userAvatar.arrayBuffer()
-          await fetch('/api/settings/user/avatar', {
+          await kbFetch('/api/settings/user/avatar', {
             method: 'POST',
             headers: { 'Content-Type': userAvatar.type },
             body: buffer,
@@ -141,7 +142,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       // launch may take several seconds; the spinner in <StepComplete>
       // keeps the user informed while we wait.
       if (conciergeAdded) {
-        await fetch('/api/sessions/new', {
+        await kbFetch('/api/sessions/new', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

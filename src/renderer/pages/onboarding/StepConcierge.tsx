@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { t } from '../../i18n'
 import type { Locale } from '../../i18n'
+import { kbFetch } from '../../lib/kbFetch'
 
 interface StepConciergeProps {
   locale: Locale
@@ -23,7 +24,7 @@ export function StepConcierge({ locale, onNext, onBack }: StepConciergeProps) {
 
     try {
       // Step 1: Create concierge agent
-      const createRes = await fetch('/api/agents/create', {
+      const createRes = await kbFetch('/api/agents/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -37,7 +38,7 @@ export function StepConcierge({ locale, onNext, onBack }: StepConciergeProps) {
       }
 
       // Step 2: Setup agent-ref symlink
-      const symlinkRes = await fetch('/api/config/setup-agent-ref', {
+      const symlinkRes = await kbFetch('/api/config/setup-agent-ref', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })

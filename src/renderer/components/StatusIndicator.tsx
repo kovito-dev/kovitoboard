@@ -19,6 +19,7 @@ import { useToast } from './Toast'
 import { VersionPanel } from './VersionPanel'
 import type { IndicatorState, AdminStatusData } from '../hooks/useAdminStatus'
 import type { UseVersionInfoResult } from '../hooks/useVersionInfo'
+import { kbFetch } from '../lib/kbFetch'
 
 interface StatusIndicatorProps {
   indicatorState: IndicatorState
@@ -117,7 +118,7 @@ export function StatusIndicator({
       return
     }
     let cancelled = false
-    fetch('/api/admin/git-status')
+    kbFetch('/api/admin/git-status')
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (!cancelled && j) setGitStatus(j)
@@ -197,7 +198,7 @@ export function StatusIndicator({
     waitingForRestart.current = true
 
     try {
-      await fetch('/api/admin/restart', { method: 'POST' })
+      await kbFetch('/api/admin/restart', { method: 'POST' })
     } catch {
       // Expected — server is shutting down
     }
@@ -216,7 +217,7 @@ export function StatusIndicator({
     setPopoverOpen(false)
 
     try {
-      await fetch('/api/admin/stop', { method: 'POST' })
+      await kbFetch('/api/admin/stop', { method: 'POST' })
     } catch {
       // Expected
     }
@@ -232,7 +233,7 @@ export function StatusIndicator({
       addToast(t('admin.agent.restart.progress', { agentName }), 'info')
 
       try {
-        const res = await fetch(`/api/agents/${agentId}/restart`, {
+        const res = await kbFetch(`/api/agents/${agentId}/restart`, {
           method: 'POST',
         })
         if (res.ok) {

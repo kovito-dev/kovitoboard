@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { createLogger } from '../lib/logger'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('useVersionInfo')
 
@@ -77,7 +78,7 @@ export interface UseVersionInfoResult {
 }
 
 async function fetchVersionInfo(): Promise<VersionInfoResponse> {
-  const res = await fetch('/api/version')
+  const res = await kbFetch('/api/version')
   if (!res.ok) throw new Error(`GET /api/version failed: ${res.status}`)
   return (await res.json()) as VersionInfoResponse
 }
@@ -113,7 +114,7 @@ export function useVersionInfo(): UseVersionInfoResult {
   const recheck = useCallback(async (): Promise<void> => {
     setRechecking(true)
     try {
-      const res = await fetch('/api/version/recheck', { method: 'POST' })
+      const res = await kbFetch('/api/version/recheck', { method: 'POST' })
       if (!res.ok) {
         throw new Error(`POST /api/version/recheck failed: ${res.status}`)
       }
@@ -132,7 +133,7 @@ export function useVersionInfo(): UseVersionInfoResult {
   }, [])
 
   const startUpgrade = useCallback(async (agentId: string): Promise<StartUpgradeResult> => {
-    const res = await fetch('/api/version/start-upgrade', {
+    const res = await kbFetch('/api/version/start-upgrade', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agentId }),
