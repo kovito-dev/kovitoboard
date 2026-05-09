@@ -130,15 +130,13 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).not.toContain('sk-ant-api03-RedactMeIfYouSeeThisInLogs1234567890')
   })
 
-  it('does NOT redact a string-only msg argument (call-site responsibility)', async () => {
-    // pino's `formatters.log` only runs against the merging object,
-    // not against a string-only first argument. The redaction layer
-    // therefore documents itself as "automatic for structured fields,
-    // manual for raw msg strings"; risky call sites (claude-bridge
-    // stderr, trust-prompt fallback log) wrap the value with
-    // `redactSensitiveTokens` themselves before handing it to the
-    // logger. This test pins that contract so a future change that
-    // accidentally widens the redactor would surface here as a fail.
+  it('redacts a string-only msg argument via the logMethod hook', async () => {
+    // pino's `formatters.log` only sees the merging object, but the
+    // `hooks.logMethod` wrapper installed in initLogger walks every
+    // string positional argument and runs `redactSensitiveTokens`
+    // before forwarding to the real method. Call sites no longer
+    // need to remember the manual redaction in the common case;
+    // structured-field paths still work via `formatters.log`.
     await initLogger(projectRoot, baseSetting())
     const log = childLogger('redact-msg')
     log.info(
@@ -146,20 +144,31 @@ describe('logger / sensitive-token redaction at write time', () => {
     )
     await new Promise((r) => setTimeout(r, 200))
     const raw = readActiveLogFile(projectRoot)
-    // Demonstrates the gap that call sites must close.
-    expect(raw).toContain('sk-ant-api03-MsgKeyShouldGoTooLongEnough123')
-    // The same key threaded through a structured field IS redacted.
-    log.info(
-      { detail: 'claude exited with sk-ant-api03-StructuredFieldVariant1234' },
-      'auth failed',
-    )
-    await new Promise((r) => setTimeout(r, 200))
-    const raw2 = readActiveLogFile(projectRoot)
-    expect(raw2).toContain('<sk-ant redacted>')
-    expect(raw2).not.toContain('sk-ant-api03-StructuredFieldVariant1234')
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-MsgKeyShouldGoTooLongEnough123')
   })
 
-  it('exported redactSensitiveTokens lets call sites redact a msg before logging', async () => {
+  it('redacts a msg passed alongside structured fields (object + msg signature)', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-msg-with-obj')
+    log.info(
+      { kind: 'auth' },
+      'claude exited with sk-ant-api03-WithObjArgVariant1234567890 in the error',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-WithObjArgVariant1234567890')
+    // The structured field is preserved verbatim.
+    expect(raw).toContain('"kind":"auth"')
+  })
+
+  it('redactSensitiveTokens remains exported for call-site safety nets and printf-style msg', async () => {
+    // The hook handles the common `logger.info(msgString)` shape.
+    // Call sites that build the msg via printf-style interpolation
+    // (`{ msg: \`error: \${err.message}\` }`) or pass it through some
+    // upstream formatting may still want to apply the redaction
+    // explicitly; the function is exported and idempotent.
     await initLogger(projectRoot, baseSetting())
     const log = childLogger('redact-callsite')
     const raw_msg = 'claude exited with sk-ant-api03-CallSiteShouldRedact1234567 in the error'
@@ -168,6 +177,15 @@ describe('logger / sensitive-token redaction at write time', () => {
     const raw = readActiveLogFile(projectRoot)
     expect(raw).toContain('<sk-ant redacted>')
     expect(raw).not.toContain('sk-ant-api03-CallSiteShouldRedact1234567')
+  })
+
+  it('redacts a compact JWT (short payload after BL feedback CodeX attempt 1)', async () => {
+    // Compact JWT whose payload is `{"exp":1}` → `eyJleHAiOjF9`
+    // (12 chars, but the inner content shrinks once we drop the
+    // 10-char minimum. Pin the regression now that the matcher
+    // accepts segments ≥4 chars.)
+    const compactJwt = 'eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.abcd1234'
+    expect(redactSensitiveTokens(`Bearer ${compactJwt}`)).toBe('Bearer <jwt redacted>')
   })
 
   it('redacts API keys nested inside arrays (e.g. paneTail)', async () => {

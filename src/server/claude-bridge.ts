@@ -3,7 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { tmuxLogger, redactSensitiveTokens } from './logger'
+import { tmuxLogger } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
@@ -117,16 +117,15 @@ export class ClaudeBridge extends EventEmitter {
     // Do not log the message body (last argument). Emit `cwd` as a
     // structured field on the same record instead of a second log
     // line so it is searchable as `cwd` (and rides through the
-    // logger's home-path / token redaction once, not twice). The
-    // msg-string is built from `safeArgs` and goes through the
-    // call-site `redactSensitiveTokens` since pino's
-    // `formatters.log` only sees structured fields, not the raw
-    // message.
+    // logger's redaction layer once, not twice). The msg-string is
+    // also redacted by the logger's `hooks.logMethod` wrapper, so
+    // an Anthropic key inside `safeArgs` does not leak even if the
+    // CLI starts to echo one in the future.
     const safeArgs = args.slice(0, -1).join(' ')
-    const startingMsg = redactSensitiveTokens(
+    tmuxLogger.info(
+      { cwd },
       `[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`,
     )
-    tmuxLogger.info({ cwd }, startingMsg)
 
     // Remove Claude Code related env vars to avoid nested instance detection
     const env = { ...process.env }
@@ -181,13 +180,10 @@ export class ClaudeBridge extends EventEmitter {
       const preview = trimmed.length > STDERR_LOG_PREVIEW_CHARS
         ? `${trimmed.slice(0, STDERR_LOG_PREVIEW_CHARS)}…[truncated ${trimmed.length - STDERR_LOG_PREVIEW_CHARS} chars]`
         : trimmed
-      // Per the logger's call-site contract (see logger.ts /
-      // logging-baseline.md §5), msg-string arguments do not run
-      // through the structural redactor; redact here so an Anthropic
-      // key surfaced via Claude CLI stderr does not land in
-      // server.log.
-      const safePreview = redactSensitiveTokens(preview)
-      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${safePreview}`)
+      // Token-shaped values inside the surviving preview window are
+      // redacted by the logger's `hooks.logMethod` wrapper before
+      // the line lands on disk.
+      tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${preview}`)
     })
 
     child.on('close', (code) => {

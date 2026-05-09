@@ -43,40 +43,6 @@ function escapeRegExp(str: string): string {
 }
 
 /**
- * Build a function that replaces the home directory path with `~`
- * in every string-typed value within a structured log record.
- *
- * Applied via pino's `formatters.log` so the redaction happens at
- * write-time only — in-memory objects passed to logger.* are not
- * mutated, and behavior of the rest of the program is unaffected.
- */
-function buildHomePathMasker(): (obj: Record<string, unknown>) => Record<string, unknown> {
-  const home = homedir()
-  if (!home || home.length < 2) {
-    // No usable home directory; identity transformation
-    return (obj) => obj
-  }
-  const pattern = new RegExp(escapeRegExp(home), 'g')
-  const replace = (s: string): string => s.replace(pattern, '~')
-
-  const visit = (value: unknown): unknown => {
-    if (typeof value === 'string') return replace(value)
-    if (value === null || value === undefined) return value
-    if (Array.isArray(value)) return value.map(visit)
-    if (typeof value === 'object') {
-      const next: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        next[k] = visit(v)
-      }
-      return next
-    }
-    return value
-  }
-
-  return (obj) => visit(obj) as Record<string, unknown>
-}
-
-/**
  * Mask the home directory path in any string. Exported for the diagnose
  * CLI and unit tests.
  */
@@ -115,10 +81,12 @@ const SENSITIVE_TOKEN_PATTERNS: ReadonlyArray<{ pattern: RegExp; placeholder: st
   // some auth-failure paths and surfaces through claude-bridge stderr.
   { pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, placeholder: '<sk-ant redacted>' },
   // Generic JWT (OAuth bearer / session). 3 base64url segments
-  // separated by dots, with the `eyJ` (`{"…`) header prefix to keep
-  // the match narrow. 10+ chars per segment to skip short shape-only
-  // matches.
-  { pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, placeholder: '<jwt redacted>' },
+  // separated by dots, with the `eyJ` (`{"…`) header prefix on the
+  // first two segments. 4+ chars per segment so compact JWTs whose
+  // payload is small (e.g. `{"exp":1}` → `eyJleHAiOjF9`) are still
+  // matched while `a.b.c`-shape false positives are still excluded
+  // by the `eyJ` prefix gate.
+  { pattern: /eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g, placeholder: '<jwt redacted>' },
 ]
 
 /**
@@ -135,18 +103,35 @@ export function redactSensitiveTokens(input: string): string {
 }
 
 /**
- * Build a structural redactor that walks a log record and replaces
- * credential-shaped substrings inside every string-typed value.
+ * Single-pass walker that applies every active redaction (home-path
+ * mask + credential token redaction) to every string-typed value
+ * inside a log record. Visiting the record once and applying both
+ * substitutions per-string avoids the double-walk + double-clone
+ * cost of composing two independent visitors, which matters on
+ * hot paths that log large arrays such as the trust-prompt
+ * fallback `paneTail` (50 raw capture lines per fire).
  *
- * Composed onto `formatters.log` after `buildHomePathMasker` so that
- * the home-path mask runs first (cheap path-prefix replace) and then
- * narrow credential patterns get a second pass. The visit shape is
- * identical to `buildHomePathMasker` so handler code does not need
- * to know which redactions are active.
+ * Applied via pino's `formatters.log` so the redaction happens at
+ * write-time only — in-memory objects passed to logger.* are not
+ * mutated, and behavior of the rest of the program is unaffected.
  */
-function buildSensitiveTokenRedactor(): (obj: Record<string, unknown>) => Record<string, unknown> {
+function buildLogRedactor(): (obj: Record<string, unknown>) => Record<string, unknown> {
+  const home = homedir()
+  // Honour the safety check used by maskHomePath: no usable home
+  // directory means we skip the home-path layer (CI env with
+  // `HOME=/`).
+  const homeUsable = !!home && home.length >= 2
+  const homePattern = homeUsable ? new RegExp(escapeRegExp(home), 'g') : null
+
+  const replaceString = (s: string): string => {
+    let out = s
+    if (homePattern) out = out.replace(homePattern, '~')
+    out = redactSensitiveTokens(out)
+    return out
+  }
+
   const visit = (value: unknown): unknown => {
-    if (typeof value === 'string') return redactSensitiveTokens(value)
+    if (typeof value === 'string') return replaceString(value)
     if (value === null || value === undefined) return value
     if (Array.isArray(value)) return value.map(visit)
     if (typeof value === 'object') {
@@ -199,14 +184,7 @@ export async function initLogger(
     { stream: fileStream, level: config.level },
   ]
 
-  const maskHome = buildHomePathMasker()
-  const maskTokens = buildSensitiveTokenRedactor()
-  // Compose: first replace the user's home path with `~` (cheap
-  // prefix substitution), then run the credential-shape redactor
-  // over what remains. The two layers commute, but ordering home
-  // first keeps token regexes from scanning long absolute paths.
-  const maskLog = (obj: Record<string, unknown>): Record<string, unknown> =>
-    maskTokens(maskHome(obj))
+  const maskLog = buildLogRedactor()
 
   rootLogger = pino(
     {
@@ -220,6 +198,26 @@ export async function initLogger(
       formatters: {
         level: (label) => ({ level: label }),
         log: maskLog,
+      },
+      hooks: {
+        // pino's `formatters.log` only sees the merging object, not
+        // the trailing string-only msg argument. Without this hook,
+        // `logger.info('text with sk-ant-... inline')` persists the
+        // token verbatim. Intercept every level method, redact each
+        // string positional arg in place, and forward to the real
+        // method so structured-arg paths and child-binding behavior
+        // stay identical.
+        logMethod(args, method) {
+          for (let i = 0; i < args.length; i++) {
+            const arg = args[i]
+            if (typeof arg === 'string') {
+              args[i] = redactSensitiveTokens(arg)
+            }
+          }
+          // pino's typing for the hook expects the rest-spread call.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return method.apply(this, args as any)
+        },
       },
       messageKey: 'msg',
     },
