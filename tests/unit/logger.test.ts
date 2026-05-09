@@ -269,6 +269,32 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).toContain('[Circular]')
   })
 
+  it('serializers.err leaves a non-Error `err` field alone (structured payload survives)', async () => {
+    // Existing call sites sometimes log structured error data on
+    // the `err` field, e.g. `{ err: { code, detail } }`. The
+    // custom serializer must guard with `instanceof Error`,
+    // otherwise the payload would silently collapse to
+    // `{ type: 'Object' }` and the operator's diagnostic fields
+    // would be dropped. `formatters.log` still walks the
+    // structured payload and redacts strings inside it.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('non-error-err')
+    log.warn(
+      { err: { code: 'AUTH_FAIL', detail: 'sk-ant-api03-NonErrPayloadFieldVariant1234567' } },
+      'failed',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // Original structured fields survived (no `{ type: 'Object' }`
+    // collapse).
+    expect(raw).toContain('"code":"AUTH_FAIL"')
+    expect(raw).toContain('"detail":')
+    // The token inside the structured field still got redacted by
+    // formatters.log.
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-NonErrPayloadFieldVariant1234567')
+  })
+
   it('replaces deep subtrees with a sentinel at the depth cap', async () => {
     // A pathological deeply-nested record used to bypass redaction
     // beyond REDACT_MAX_DEPTH because the walker returned the raw

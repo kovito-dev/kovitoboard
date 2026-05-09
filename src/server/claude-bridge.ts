@@ -3,7 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { tmuxLogger } from './logger'
+import { tmuxLogger, redactSensitiveTokens } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
@@ -176,13 +176,17 @@ export class ClaudeBridge extends EventEmitter {
       // appends it to stdout on non-zero exit). Token-shaped values
       // inside the surviving preview window are still redacted by
       // the logger's redaction layer.
+      // Redact BEFORE truncating so a token landing across the
+      // 200-char preview boundary cannot leak as a non-matching
+      // fragment (e.g. `sk-ant-abc...`). Truncation is computed
+      // on the redacted form, and the size marker reports the
+      // original chunk size so operators still see how much was
+      // dropped.
       const trimmed = text.trim()
-      const preview = trimmed.length > STDERR_LOG_PREVIEW_CHARS
-        ? `${trimmed.slice(0, STDERR_LOG_PREVIEW_CHARS)}…[truncated ${trimmed.length - STDERR_LOG_PREVIEW_CHARS} chars]`
-        : trimmed
-      // Token-shaped values inside the surviving preview window are
-      // redacted by the logger's `hooks.logMethod` wrapper before
-      // the line lands on disk.
+      const redacted = redactSensitiveTokens(trimmed)
+      const preview = redacted.length > STDERR_LOG_PREVIEW_CHARS
+        ? `${redacted.slice(0, STDERR_LOG_PREVIEW_CHARS)}…[truncated ${trimmed.length - STDERR_LOG_PREVIEW_CHARS} chars of original]`
+        : redacted
       tmuxLogger.debug(`[claude-bridge] stderr(${processId.slice(0, 8)}): ${preview}`)
     })
 

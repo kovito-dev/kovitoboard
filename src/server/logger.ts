@@ -262,11 +262,25 @@ export async function initLogger(
   // that need to log such errors should pass them as
   // `{ errMessage: err.message }` so the structural redactor sees
   // a plain object instead.
-  const errSerializer = (err: Error): Record<string, unknown> => ({
-    type: err?.constructor?.name ?? 'Error',
-    message: typeof err?.message === 'string' ? maskString(err.message) : undefined,
-    stack: typeof err?.stack === 'string' ? maskString(err.stack) : undefined,
-  })
+  //
+  // Guard with `instanceof Error` so existing call sites that put
+  // structured error data on the `err` field (e.g.
+  // `logger.warn({ err: { code, detail } }, 'failed')`) keep
+  // their original payload — `formatters.log` will still walk
+  // them and redact strings inside. Without the guard, the
+  // serializer would collapse the payload to
+  // `{ type: 'Object' }` and silently drop the operator's
+  // diagnostic fields.
+  const errSerializer = (err: unknown): unknown => {
+    if (!(err instanceof Error)) {
+      return err
+    }
+    return {
+      type: err.constructor?.name ?? 'Error',
+      message: typeof err.message === 'string' ? maskString(err.message) : undefined,
+      stack: typeof err.stack === 'string' ? maskString(err.stack) : undefined,
+    }
+  }
 
   rootLogger = pino(
     {
