@@ -20,7 +20,11 @@ name: PR Language Check (Japanese characters)
 
 on:
   pull_request:
-    types: [opened, edited, reopened, labeled, unlabeled]
+    # synchronize: required so the check is reported on every new head SHA;
+    # otherwise a required status can become Expected/missing after a push.
+    # opened / reopened / edited / labeled / unlabeled cover PR-creation,
+    # title/body edits, and bypass-label transitions respectively.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [main, staging]
 
 jobs:
@@ -64,22 +68,24 @@ jobs:
           pattern = re.compile(r'[぀-ゟ゠-ヿ一-鿿]')
 
           title_has_jp = bool(pattern.search(title))
-          body_lines = []
+          body_line_numbers = []
           for i, line in enumerate(body.split('\n'), 1):
               if pattern.search(line):
-                  snippet = line[:80] + ('...' if len(line) > 80 else '')
-                  body_lines.append(f'L{i}: {snippet}')
+                  body_line_numbers.append(i)
 
-          fail = title_has_jp or bool(body_lines)
+          fail = title_has_jp or bool(body_line_numbers)
+          # NOTE: the report intentionally records only flags / line numbers,
+          # never raw snippets. If a contributor accidentally puts secrets or
+          # other sensitive content in the PR body, this workflow must not
+          # republish that content into bot comments or Actions logs (where
+          # it would persist even after the PR text is corrected).
           report = {
               'fail': fail,
-              'title_snippet': (
-                  (title[:80] + '...') if title_has_jp and len(title) > 80
-                  else (title if title_has_jp else '')
-              ),
-              # Cap body lines at 10 to bound comment size and noise.
-              'body_lines': body_lines[:10],
-              'body_lines_truncated': len(body_lines) > 10,
+              'title_has_jp': title_has_jp,
+              # Cap body line numbers at 10 to bound comment size; the truncated
+              # flag tells the reader to keep scrolling for more.
+              'body_line_numbers': body_line_numbers[:10],
+              'body_line_numbers_truncated': len(body_line_numbers) > 10,
           }
 
           out_path = os.environ['GITHUB_OUTPUT']
@@ -89,9 +95,16 @@ jobs:
               f.write(json.dumps(report))
               f.write('\nREPORT_EOF\n')
 
+          # Log only flag / line numbers. Do NOT echo raw snippets to the
+          # Actions log, even on FAIL — this is a hardening measure for the
+          # case where a contributor accidentally includes sensitive content.
           if fail:
-              print('FAIL: Japanese characters detected in PR title or body')
-              print(json.dumps(report, indent=2))
+              loc_summary = []
+              if title_has_jp:
+                  loc_summary.append('title')
+              if body_line_numbers:
+                  loc_summary.append(f"body lines {body_line_numbers[:10]}")
+              print(f"FAIL: Japanese characters detected in {', '.join(loc_summary)}")
           else:
               print('OK: title and body are English-only')
           PY
@@ -103,28 +116,26 @@ jobs:
           REPORT: ${{ steps.detect.outputs.report }}
         run: |
           BODY=$(python3 <<'PY'
-          import os, json, html, textwrap
+          import os, json, textwrap
 
           r = json.loads(os.environ['REPORT'])
 
-          # HTML-escape user-supplied snippets and wrap them in <code> elements
-          # so that crafted PR title / body cannot inject Markdown, mentions,
-          # or HTML into this bot-authored comment.
-          if r['title_snippet']:
-              title_line = '<code>' + html.escape(r['title_snippet']) + '</code>'
+          # We intentionally never include raw PR title/body snippets here.
+          # Reporting only flags / line numbers protects against the case
+          # where a contributor puts sensitive content in the PR text by
+          # mistake — bot comments persist even after the PR is corrected.
+          if r['title_has_jp']:
+              title_line = ':warning: Japanese characters detected in title.'
           else:
-              title_line = '<em>no Japanese in title</em>'
+              title_line = '_no Japanese in title_'
 
-          if r['body_lines']:
-              items = ''.join(
-                  f'<li><code>{html.escape(line)}</code></li>'
-                  for line in r['body_lines']
-              )
-              if r['body_lines_truncated']:
-                  items += '<li><em>... additional body lines truncated</em></li>'
-              body_block = '<ul>' + items + '</ul>'
+          if r['body_line_numbers']:
+              line_str = ', '.join(str(n) for n in r['body_line_numbers'])
+              if r['body_line_numbers_truncated']:
+                  line_str += ' (... additional lines truncated)'
+              body_block = f':warning: Japanese characters detected on body line(s): {line_str}.'
           else:
-              body_block = '<em>no Japanese in body</em>'
+              body_block = '_no Japanese in body_'
 
           # Use textwrap.dedent so any future indentation accidents inside the
           # template do not turn the rendered comment into an indented code
@@ -139,13 +150,10 @@ jobs:
 
               ### Detected locations
 
-              <details>
-              <summary>Click to expand</summary>
-
               - **Title:** {title_line}
               - **Body:** {body_block}
 
-              </details>
+              For privacy reasons this comment intentionally does not echo back the matched text; please review the PR title and the listed body lines directly.
 
               ### How to fix
 
@@ -188,7 +196,12 @@ jobs:
           # comment in place rather than appending a fresh comment each time.
           # `head -1` defends against multiple legacy comments sharing the
           # marker — any extra ones are left untouched as historical record.
-          EXISTING=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+          # Use --paginate so that PRs with many comments (>30, the default
+          # per_page on the issues/comments endpoint) still find a prior
+          # marker comment. Without --paginate we would silently miss it on
+          # long-running PRs and post a duplicate failure comment instead of
+          # updating in place.
+          EXISTING=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id' \
             | head -1)
 
@@ -220,7 +233,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          EXISTING=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+          # Use --paginate so that PRs with many comments (>30, the default
+          # per_page on the issues/comments endpoint) still find a prior
+          # marker comment. Without --paginate we would silently miss it on
+          # long-running PRs and post a duplicate failure comment instead of
+          # updating in place.
+          EXISTING=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id' \
             | head -1)
 
