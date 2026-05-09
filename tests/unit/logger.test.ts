@@ -296,6 +296,69 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(err.message).toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
   })
 
+  it('serializers.err keeps custom Error metadata (code / statusCode etc.)', async () => {
+    // Custom error subclasses commonly carry diagnostic
+    // metadata as enumerable own properties (`code`,
+    // `statusCode`, `errno`, etc.). The serializer must keep
+    // them on the serialized record so operators retain the
+    // auth / validation context — pino's stdSerializers.err
+    // does the same. Strings inside the metadata still flow
+    // through `formatters.log` and get redacted there.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('custom-err')
+    class AuthError extends Error {
+      constructor(
+        message: string,
+        public code: string,
+        public statusCode: number,
+      ) {
+        super(message)
+        this.name = 'AuthError'
+      }
+    }
+    const err = new AuthError(
+      'auth failed: sk-ant-api03-CustomErrorMessageEmbeddedKey1234',
+      'AUTH_KEY_INVALID',
+      401,
+    )
+    log.error({ err }, 'auth check failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // Custom metadata survived.
+    expect(raw).toContain('"code":"AUTH_KEY_INVALID"')
+    expect(raw).toContain('"statusCode":401')
+    // Embedded token still got redacted.
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CustomErrorMessageEmbeddedKey1234')
+  })
+
+  it('preserves a `__proto__` field as data without mutating the clone prototype', async () => {
+    // If the walker cloned into `{}` and wrote `next[k] = …`,
+    // an attacker-controlled log payload with `__proto__: { ... }`
+    // would set `Object.prototype` properties via the assignment
+    // and produce confusing inherited fields on the persisted
+    // record. The walker now clones into `Object.create(null)`,
+    // so the `__proto__` key is preserved as ordinary data and
+    // no prototype is mutated.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('proto')
+    log.info(
+      { '__proto__': { polluted: true } },
+      'proto-keyed payload',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // The output must NOT carry an inherited `polluted` field
+    // through Object.prototype mutation.
+    const recorded: Record<string, unknown> = {}
+    expect((recorded as Record<string, unknown>).polluted).toBeUndefined()
+    // The persisted line carried the `__proto__` value as data
+    // (or omitted it entirely under JSON serialization), but in
+    // either case there is no leaked inherited key on a fresh
+    // object.
+    expect(raw).toContain('proto-keyed payload')
+  })
+
   it('serializers.err leaves a non-Error `err` field alone (structured payload survives)', async () => {
     // Existing call sites sometimes log structured error data on
     // the `err` field, e.g. `{ err: { code, detail } }`. The

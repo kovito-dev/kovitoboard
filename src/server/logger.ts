@@ -199,7 +199,13 @@ function buildLogRedactor(
     }
 
     seen.add(value as object)
-    const next: Record<string, unknown> = {}
+    // `Object.create(null)` clones into a prototype-less record so a
+    // `__proto__` key on the input value is preserved as data
+    // instead of mutating the clone's prototype chain. Pino's
+    // JSON serializer treats null-prototype objects identically to
+    // plain objects on output, so the persisted record shape is
+    // unchanged.
+    const next: Record<string, unknown> = Object.create(null)
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       next[k] = visit(v, seen, depth + 1)
     }
@@ -275,11 +281,26 @@ export async function initLogger(
     if (!(err instanceof Error)) {
       return err
     }
-    return {
+    // Start from the redacted standard fields, then layer in any
+    // enumerable own properties from the original Error (e.g.
+    // `.code`, `.statusCode`, `.errno`, `.cause`). Skipping this
+    // step would silently drop custom-error diagnostic metadata
+    // that operators rely on for auth/validation context. The
+    // copied values flow through `formatters.log` afterward, so
+    // any string-typed metadata still gets home-path / token
+    // redaction.
+    const out: Record<string, unknown> = {
       type: err.constructor?.name ?? 'Error',
       message: typeof err.message === 'string' ? maskString(err.message) : undefined,
       stack: typeof err.stack === 'string' ? maskString(err.stack) : undefined,
     }
+    const errAsRecord = err as unknown as Record<string, unknown>
+    for (const key of Object.keys(err as object)) {
+      if (!(key in out)) {
+        out[key] = errAsRecord[key]
+      }
+    }
+    return out
   }
 
   rootLogger = pino(
