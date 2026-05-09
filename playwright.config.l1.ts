@@ -155,10 +155,21 @@ export default defineConfig({
     // trace.zip per failed test (DEC-018 design §4.3).
     trace: 'retain-on-failure',
     // Attach the per-launch auth token to every Playwright-issued
-    // request so spec files using `request.get(...)` etc. don't have
-    // to thread the header through manually. The renderer already
+    // request so spec files can use both the test-level `request`
+    // fixture and `page.request` for `/api/*` calls without
+    // threading the header through manually. The renderer itself
     // gets the same value through the meta tag injected into
-    // index.html by the Vite dev plugin.
+    // `index.html` by the Vite dev plugin.
+    //
+    // Cross-origin leak considered and accepted: this configuration
+    // would also attach the header to a `page.goto('https://...')`
+    // navigation, but the L1 suite is structurally local-only —
+    // every webServer is `http://127.0.0.1:<port>`, every spec
+    // reaches the renderer via the project `baseURL`, and there is
+    // no third-party asset / external navigation in any test. A
+    // future spec that introduces an external navigation must
+    // either drop `use.extraHTTPHeaders` for that scenario or scope
+    // the header to a per-request fixture.
     extraHTTPHeaders: {
       'X-Kovitoboard-Token': E2E_LAUNCH_TOKEN,
     },

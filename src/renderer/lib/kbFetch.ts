@@ -304,8 +304,16 @@ export function appendLaunchTokenQuery(wsUrl: string): string {
   if (httpOrigin !== location.origin) return wsUrl
   if (parsed.pathname !== '/api/ws') return wsUrl
 
-  const separator = wsUrl.includes('?') ? '&' : '?'
-  return `${wsUrl}${separator}token=${encodeURIComponent(token)}`
+  // Use URLSearchParams.set rather than naive `?token=...` /
+  // `&token=...` concatenation so that a caller passing a URL that
+  // already carries a `token=...` segment (a stale token from an
+  // earlier reload, a copy-paste from a debug session, etc.) ends up
+  // with exactly one `token` parameter — the freshest one we own —
+  // instead of two. With concatenation the server's
+  // `URLSearchParams.get('token')` would read the older value first
+  // and reject the upgrade even though we attached the right token.
+  parsed.searchParams.set('token', token)
+  return parsed.toString()
 }
 
 /**
