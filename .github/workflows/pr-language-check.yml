@@ -67,11 +67,22 @@ jobs:
           title = os.environ.get('PR_TITLE', '') or ''
           body = os.environ.get('PR_BODY', '') or ''
 
-          # Hiragana (U+3040-U+309F) + Katakana (U+30A0-U+30FF) + CJK Unified
-          # Ideographs (U+4E00-U+9FFF). Same range as
-          # tools/check-release-hygiene.mjs JAPANESE_RE and
-          # .claude/rules/pr-operations.md v1.3 §3.4 self-check.
-          pattern = re.compile(r'[぀-ゟ゠-ヿ一-鿿]')
+          # Japanese / CJK character ranges:
+          #   - Hiragana                       U+3040-U+309F
+          #   - Katakana (full-width)          U+30A0-U+30FF
+          #   - CJK Unified Ideographs (BMP)   U+4E00-U+9FFF
+          #   - Halfwidth Katakana             U+FF66-U+FF9F
+          #   - CJK Unified Ideographs Ext B   U+20000-U+2FFFF (supplementary
+          #     plane; covers rare/historical characters that occasionally
+          #     appear via translation-tool copy-paste)
+          # The BMP ranges use literal characters to mirror the existing
+          # tools/check-release-hygiene.mjs JAPANESE_RE; the supplementary
+          # plane is expressed via \U escapes because literal supplementary-
+          # plane characters cannot be embedded in this YAML file portably.
+          pattern = re.compile(
+              r'[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ'
+              r'\U00020000-\U0002FFFF]'
+          )
 
           title_has_jp = bool(pattern.search(title))
           body_line_numbers = []
