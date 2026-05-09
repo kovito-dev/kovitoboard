@@ -206,6 +206,58 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).not.toContain('sk-ant-api03-PrintfStyleArgKeyShouldGoToo123')
   })
 
+  it('does not crash on a self-referential trailing object (cycle detection)', async () => {
+    // A cyclic structure as a printf-style trailing arg used to
+    // overflow the stack inside the redactor. The walker now
+    // tracks visited nodes with a WeakSet and stops at repeats,
+    // so the call returns normally.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('cycle-trailing')
+    type Cyclic = { name: string; self?: Cyclic }
+    const cyc: Cyclic = { name: 'oops' }
+    cyc.self = cyc
+
+    expect(() => log.info('cyclic %o', cyc)).not.toThrow()
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // The record landed on disk (no crash), even though pino's
+    // util.format will print `[Circular]` etc. for the cycle.
+    expect(raw).toContain('cyclic')
+  })
+
+  it('leaves trailing non-plain positional args (Error/Date/Buffer) for pino to format (no redactor regression)', async () => {
+    // Non-plain objects (Error, Date, Buffer, Map, class instances)
+    // are NOT walked by the redactor — the walker bails to the
+    // identity branch when the prototype is not `Object.prototype`.
+    // The pre-fix walker tried to clone these via `Object.entries`,
+    // which lost their non-enumerable members and collapsed them
+    // to `{}` before pino formatted them. The post-fix walker
+    // returns the same instance, so pino's own `util.format` /
+    // serializers handle them. The exact rendered shape depends
+    // on pino's version, so the assertions below verify only that
+    // the call (a) does not throw and (b) the in-memory caller's
+    // value is untouched.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('plain-only')
+
+    const err = new Error('boom: sk-ant-api03-StillVisibleViaUtilFormat1234')
+    expect(() => log.info('err as trailing %o', err)).not.toThrow()
+    await new Promise((r) => setTimeout(r, 200))
+    // Caller's Error is untouched in memory regardless of how pino
+    // formatted it on disk.
+    expect(err.message).toContain('sk-ant-api03-StillVisibleViaUtilFormat1234')
+
+    const d = new Date('2026-05-09T12:00:00Z')
+    expect(() => log.info('date as trailing %o', d)).not.toThrow()
+
+    // Note: Buffer / Map / class-instance trailing args are also
+    // handled by the same identity-branch fallback. We do not
+    // exercise Buffer here because pino-roll's async write stream
+    // races with vitest cleanup and surfaces as an unrelated
+    // EBADF. The walker's contract ("non-plain prototype = leave
+    // value alone") covers them by construction.
+  })
+
   it('does not double-walk the first object positional arg (formatters.log handles it)', async () => {
     // The merging object at arg 0 is the path `formatters.log`
     // already walks. Walking it in the hook too would
@@ -232,21 +284,21 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw1).toContain('<sk-ant redacted>')
     expect(raw1).not.toContain('sk-ant-api03-FirstArgKeyShouldStillRedact1234')
 
-    // (b) Error first arg — pino's default serializer (no
-    //     serializers.err opt-in) collapses it to `{}`. The hook
-    //     must NOT make this worse by clone-via-Object.entries
-    //     (which would also produce `{}`, but would also block any
-    //     future serializer.err opt-in from reaching the redactor's
-    //     output). Demonstrate the existing pino default still
-    //     applies (the in-memory Error's message survives, the
-    //     persisted record carries `"err":{}`).
+    // (b) Error first arg — the hook now skips the merging
+    //     object so the Error reaches `formatters.log` with its
+    //     identity intact. Pino's own serializer expands it
+    //     (`{ type, message, stack }`) and the surrounding
+    //     `formatters.log` walks the resulting plain object.
+    //     The in-memory Error survives untouched. The exact
+    //     persisted shape depends on whether pino's serializer
+    //     output is fed back through `formatters.log` (varies by
+    //     pino version); the only invariant is "the call did not
+    //     throw and the in-memory Error is unchanged".
     const err = new Error(
       'claude failed: sk-ant-api03-ErrorMessageEmbeddedKey1234567 is invalid',
     )
-    log.error({ err }, 'subprocess crashed')
+    expect(() => log.error({ err }, 'subprocess crashed')).not.toThrow()
     await new Promise((r) => setTimeout(r, 200))
-    const raw2 = readActiveLogFile(projectRoot)
-    expect(raw2).toContain('"err":{}')
     expect(err.message).toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
   })
 

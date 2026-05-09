@@ -114,7 +114,24 @@ export function redactSensitiveTokens(input: string): string {
  * Applied via pino's `formatters.log` so the redaction happens at
  * write-time only — in-memory objects passed to logger.* are not
  * mutated, and behavior of the rest of the program is unaffected.
+ *
+ * Walking rules:
+ * - Plain objects and arrays are recursed into.
+ * - Non-plain objects (`Error`, `Date`, `Buffer`, `Map`, class
+ *   instances, etc.) are left as-is so pino's own serialization
+ *   contract still applies. Walking them via `Object.entries`
+ *   would clone away their non-enumerable shape (Error.message /
+ *   Error.stack would silently degrade to `{}`).
+ * - Cycles are tracked with a per-walk `WeakSet`; a value already
+ *   on the path is returned untouched instead of recursing again
+ *   (a self-referential `paneTail` would otherwise overflow the
+ *   stack and crash the log path).
+ * - A hard depth cap (`MAX_DEPTH`) bounds pathological deep
+ *   structures so the redactor cannot become a request-time DoS
+ *   vector even if a future caller passes something unusual.
  */
+const REDACT_MAX_DEPTH = 32
+
 function buildLogRedactor(): (obj: Record<string, unknown>) => Record<string, unknown> {
   const home = homedir()
   // Honour the safety check used by maskHomePath: no usable home
@@ -130,21 +147,45 @@ function buildLogRedactor(): (obj: Record<string, unknown>) => Record<string, un
     return out
   }
 
-  const visit = (value: unknown): unknown => {
+  const visit = (
+    value: unknown,
+    seen: WeakSet<object>,
+    depth: number,
+  ): unknown => {
     if (typeof value === 'string') return replaceString(value)
     if (value === null || value === undefined) return value
-    if (Array.isArray(value)) return value.map(visit)
-    if (typeof value === 'object') {
-      const next: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        next[k] = visit(v)
-      }
-      return next
+    if (typeof value !== 'object') return value
+    if (depth >= REDACT_MAX_DEPTH) return value
+    if (seen.has(value as object)) return value
+
+    if (Array.isArray(value)) {
+      seen.add(value)
+      const arr = value.map((v) => visit(v, seen, depth + 1))
+      seen.delete(value)
+      return arr
     }
-    return value
+
+    // Walk only plain objects. `Error`, `Date`, `Buffer`, `Map`,
+    // and other class instances keep their original identity so
+    // pino's own serializer (or a future `serializers.err` opt-in)
+    // can format them; cloning them via `Object.entries` would
+    // strip non-enumerable members (Error.message / Error.stack)
+    // and silently break log fidelity.
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) {
+      return value
+    }
+
+    seen.add(value as object)
+    const next: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      next[k] = visit(v, seen, depth + 1)
+    }
+    seen.delete(value as object)
+    return next
   }
 
-  return (obj) => visit(obj) as Record<string, unknown>
+  return (obj) => visit(obj, new WeakSet(), 0) as Record<string, unknown>
 }
 
 /**
