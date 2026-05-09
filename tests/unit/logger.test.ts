@@ -296,6 +296,60 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(err.message).toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
   })
 
+  it('serializers.err redacts string-typed custom Error metadata (e.g. .detail)', async () => {
+    // Pino runs `serializers.err` AFTER `formatters.log`, so any
+    // raw string we hand back from the serializer reaches disk
+    // verbatim. The serializer must redact strings inside copied
+    // own properties in place — relying on a later
+    // `formatters.log` walk would leak the value.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('err-detail')
+    class DetailedError extends Error {
+      constructor(
+        message: string,
+        public detail: string,
+      ) {
+        super(message)
+        this.name = 'DetailedError'
+      }
+    }
+    const err = new DetailedError(
+      'auth failed',
+      'sk-ant-api03-DetailFieldShouldStillBeRedacted1234',
+    )
+    log.error({ err }, 'auth check failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-DetailFieldShouldStillBeRedacted1234')
+    // The custom property is preserved in shape.
+    expect(raw).toContain('"detail":')
+  })
+
+  it('serializers.err preserves and redacts the non-enumerable Error.cause chain', async () => {
+    // ES2022 Error.cause is non-enumerable, so Object.keys
+    // misses it. Pull it via the property descriptor and recurse
+    // through `errSerializer` so nested Errors keep their
+    // structural shape while every level redacts message /
+    // stack / metadata.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('err-cause')
+    const root = new Error(
+      'root cause: sk-ant-api03-RootCauseSecretShouldRedact1234',
+    )
+    const wrapper = new Error('wrapper failed', { cause: root })
+    log.error({ err: wrapper }, 'failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('"cause":')
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-RootCauseSecretShouldRedact1234')
+    // In-memory error chain is untouched.
+    expect((wrapper.cause as Error).message).toContain(
+      'sk-ant-api03-RootCauseSecretShouldRedact1234',
+    )
+  })
+
   it('serializers.err keeps custom Error metadata (code / statusCode etc.)', async () => {
     // Custom error subclasses commonly carry diagnostic
     // metadata as enumerable own properties (`code`,

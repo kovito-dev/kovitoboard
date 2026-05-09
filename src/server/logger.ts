@@ -277,27 +277,62 @@ export async function initLogger(
   // serializer would collapse the payload to
   // `{ type: 'Object' }` and silently drop the operator's
   // diagnostic fields.
-  const errSerializer = (err: unknown): unknown => {
-    if (!(err instanceof Error)) {
+  // Maximum recursion depth for `cause`-chain expansion in
+  // `errSerializer`. Plenty for `new Error('x', { cause: new
+  // Error('y', { cause: ... }) })` chains while still bounding
+  // the worst case if a future caller builds a self-referential
+  // cause graph.
+  const ERR_SERIALIZER_MAX_DEPTH = 4
+
+  // Redact a single own-property of an Error before placing it
+  // on the serialized record. Pino runs `serializers.err` AFTER
+  // `formatters.log`, so any value we hand back here lands on
+  // disk verbatim — strings must be passed through `maskString`
+  // and nested plain objects through `maskLog` BEFORE the
+  // serializer returns. Nested Errors (e.g. `cause`) recurse
+  // through `errSerializer` itself.
+  const redactErrField = (value: unknown, depth: number): unknown => {
+    if (typeof value === 'string') return maskString(value)
+    if (value === null || value === undefined) return value
+    if (value instanceof Error) return errSerializer(value, depth + 1)
+    if (typeof value === 'object') {
+      return maskLog(value as Record<string, unknown>)
+    }
+    return value
+  }
+
+  const errSerializer = (err: unknown, depth = 0): unknown => {
+    if (!(err instanceof Error) || depth > ERR_SERIALIZER_MAX_DEPTH) {
       return err
     }
-    // Start from the redacted standard fields, then layer in any
-    // enumerable own properties from the original Error (e.g.
-    // `.code`, `.statusCode`, `.errno`, `.cause`). Skipping this
-    // step would silently drop custom-error diagnostic metadata
-    // that operators rely on for auth/validation context. The
-    // copied values flow through `formatters.log` afterward, so
-    // any string-typed metadata still gets home-path / token
-    // redaction.
+    // Start from the redacted standard fields, then layer in
+    // diagnostic metadata. Pino runs `serializers.err` after
+    // `formatters.log`, so anything we put on `out` reaches disk
+    // verbatim and must be redacted in-place here.
     const out: Record<string, unknown> = {
       type: err.constructor?.name ?? 'Error',
       message: typeof err.message === 'string' ? maskString(err.message) : undefined,
       stack: typeof err.stack === 'string' ? maskString(err.stack) : undefined,
     }
+    // Custom subclasses commonly attach diagnostic data as
+    // enumerable own properties (`.code`, `.statusCode`,
+    // `.errno`, etc.). Walk every value through `redactErrField`
+    // so a string credential on `.detail` or a nested object on
+    // `.context` cannot smuggle past the redactor.
     const errAsRecord = err as unknown as Record<string, unknown>
     for (const key of Object.keys(err as object)) {
-      if (!(key in out)) {
-        out[key] = errAsRecord[key]
+      if (key in out) continue
+      out[key] = redactErrField(errAsRecord[key], depth)
+    }
+    // Standard `Error.cause` (ES2022) is non-enumerable, so
+    // `Object.keys` skips it. Pull it via the property
+    // descriptor and serialize recursively — nested Errors keep
+    // their structural shape while message / stack get redacted
+    // at every level.
+    if (!('cause' in out)) {
+      const causeDescriptor = Object.getOwnPropertyDescriptor(err, 'cause')
+      if (causeDescriptor && 'value' in causeDescriptor && causeDescriptor.value !== undefined) {
+        out.cause = redactErrField(causeDescriptor.value, depth)
       }
     }
     return out
