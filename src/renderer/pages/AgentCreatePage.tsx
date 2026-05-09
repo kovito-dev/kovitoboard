@@ -26,6 +26,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTemplates, type TemplateSummary } from '../hooks/useTemplates'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { getLocale, t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 type Step = 'select-template' | 'configure'
 
@@ -79,7 +80,7 @@ export function AgentCreatePage() {
   const [existingAgentIds, setExistingAgentIds] = useState<Set<string>>(new Set())
   useEffect(() => {
     let cancelled = false
-    fetch('/api/agents')
+    kbFetch('/api/agents')
       .then((r) => (r.ok ? r.json() : []))
       .then((agents: Array<{ id: string }>) => {
         if (!cancelled && Array.isArray(agents)) {
@@ -149,7 +150,7 @@ export function AgentCreatePage() {
       let res: Response
       if (mode === 'template') {
         if (!selectedTemplate) return
-        res = await fetch('/api/agents/create', {
+        res = await kbFetch('/api/agents/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -173,7 +174,7 @@ export function AgentCreatePage() {
         ) {
           throw new Error(t('agent.create.scratch.error.fieldsRequired'))
         }
-        res = await fetch('/api/agents/create-scratch', {
+        res = await kbFetch('/api/agents/create-scratch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

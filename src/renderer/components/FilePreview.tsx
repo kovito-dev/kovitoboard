@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { t } from '../i18n'
 import { MarkdownPreview } from './MarkdownPreview'
+import { kbFetch } from '../lib/kbFetch'
 
 interface FilePreviewProps {
   /** File path to preview */
@@ -107,7 +108,7 @@ export function FilePreview({ filePath, onClose }: FilePreviewProps) {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/artifact?path=${encodeURIComponent(filePath)}`)
+      const res = await kbFetch(`/api/artifact?path=${encodeURIComponent(filePath)}`)
       if (!res.ok) {
         setError(t('file.preview.error.read'))
         return

@@ -20,6 +20,12 @@ import { test, expect } from './helpers/l1-per-test-setup'
 import { WebSocket } from 'ws'
 
 const API_BASE = 'http://127.0.0.1:3001'
+// Per-launch token comes from playwright.config.l1.ts. Tests that open
+// raw WebSockets need to attach it to the URL query because browsers
+// (and the `ws` library) cannot send custom headers during the upgrade
+// handshake. See src/server/middleware/auth.ts.
+const LAUNCH_TOKEN = process.env.KB_LAUNCH_TOKEN ?? ''
+const WS_URL = `ws://127.0.0.1:3001/api/ws?token=${encodeURIComponent(LAUNCH_TOKEN)}`
 
 test.describe('trust-prompt-relay', () => {
   test('tmux ステータス API が正常に応答する', async ({ request }) => {
@@ -32,7 +38,7 @@ test.describe('trust-prompt-relay', () => {
   })
 
   test('WebSocket 接続が確立できる', async () => {
-    const ws = new WebSocket('ws://127.0.0.1:3001/api/ws')
+    const ws = new WebSocket(WS_URL)
 
     const connected = await new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
@@ -56,7 +62,7 @@ test.describe('trust-prompt-relay', () => {
   })
 
   test('WebSocket で trust_prompt_respond を送信してクラッシュしない', async () => {
-    const ws = new WebSocket('ws://127.0.0.1:3001/api/ws')
+    const ws = new WebSocket(WS_URL)
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('connection timeout')), 5000)
@@ -88,7 +94,7 @@ test.describe('trust-prompt-relay', () => {
     await new Promise(r => setTimeout(r, 1000))
 
     // Verify the server is alive (a new connection can be established)
-    const ws2 = new WebSocket('ws://127.0.0.1:3001/api/ws')
+    const ws2 = new WebSocket(WS_URL)
     const reconnected = await new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
         ws2.close()

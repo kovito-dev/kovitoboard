@@ -177,8 +177,15 @@ export const test = base.extend<{ kbFixture: KbFixture }>({
     // ignored.
     const apiPort0 = SESSION_TO_PORT[sessionName] ?? 3001
     const resetUrl = `http://127.0.0.1:${apiPort0}/api/admin/test-reset-state`
+    // Per-launch auth token — the playwright config exports the same
+    // value into every webServer process, so reuse it from the test
+    // worker's env. A missing token (the production code refused to
+    // start without one) would already have failed the webServer probe.
+    const launchToken = process.env.KB_LAUNCH_TOKEN ?? ''
     try {
-      const r = await request.post(resetUrl)
+      const r = await request.post(resetUrl, {
+        headers: { 'X-Kovitoboard-Token': launchToken },
+      })
       if (r.status() >= 500) {
         const body = await r.text().catch(() => '<unavailable>')
         throw new Error(
