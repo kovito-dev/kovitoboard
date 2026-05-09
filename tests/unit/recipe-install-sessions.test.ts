@@ -54,13 +54,16 @@ describe('issueInstallSession', () => {
 
   it('does not mutate the caller-supplied scopes array', () => {
     const scopes = ['project-read', 'own-data'] as Scope[]
-    issueInstallSession({ ...SAMPLE_INPUT, approvedScopes: scopes })
-    scopes.push('write-fs' as Scope)
-    // The mutated outer array should not surface through consume.
-    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    // Capture the very session whose scopes ride on the mutated
+    // outer array; consuming a different session would let a
+    // shared-reference bug slip through silently.
+    const issueResult = issueInstallSession({ ...SAMPLE_INPUT, approvedScopes: scopes })
     if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
     const nonce = issueResult.nonce
+    scopes.push('write-fs' as Scope)
     const session = consumeInstallSession(nonce)
+    // The session must still report exactly what KB inspected at
+    // install time, not the caller's mutated copy.
     expect(session?.approvedScopes).toEqual(['project-read', 'own-data'])
   })
 
