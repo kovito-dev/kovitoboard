@@ -269,6 +269,33 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).toContain('[Circular]')
   })
 
+  it('redacts a bare-Error first positional arg by wrapping into `{ err }`', async () => {
+    // `logger.error(err)` and `logger.error(err, 'msg')` are
+    // common shapes that send the Error directly as arg 0.
+    // Without wrapping, pino routes it through its bare-Error
+    // path and the message lands on disk unredacted because
+    // `serializers.err` is only consulted when the field is
+    // present on a merging object. The hook now wraps it into
+    // `{ err: arg }` before forwarding so the existing
+    // serializer path runs.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('bare-error')
+    const err = new Error(
+      'claude crashed: sk-ant-api03-BareErrorFirstArgVariant1234567 inside',
+    )
+    log.error(err)
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
+    // Structural shape is preserved (operator still sees the
+    // expanded Error fields).
+    expect(raw).toContain('"type":"Error"')
+    expect(raw).toContain('"message":')
+    // Caller's Error is untouched in memory.
+    expect(err.message).toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
+  })
+
   it('serializers.err leaves a non-Error `err` field alone (structured payload survives)', async () => {
     // Existing call sites sometimes log structured error data on
     // the `err` field, e.g. `{ err: { code, detail } }`. The

@@ -338,6 +338,32 @@ export async function initLogger(
               // while the same string nested in a structured
               // field would be `~`-masked.
               args[i] = maskString(arg)
+            } else if (i === 0 && arg instanceof Error) {
+              // `logger.error(err)` / `logger.error(err, 'msg')`
+              // — pino renders this as the bare Error and skips
+              // the merging-object path that `serializers.err`
+              // hooks into. Wrap the Error into `{ err }` so the
+              // existing `serializers.err` path runs and
+              // `message` / `stack` are redacted via
+              // `maskString` before they reach disk.
+              //
+              // Also pre-populate `msg` on the wrap with the
+              // redacted Error.message: pino's default behaviour
+              // for a bare-Error first arg is to copy
+              // `err.message` into the `msg` field, but that
+              // copy happens AFTER this hook returns, so without
+              // an explicit redacted `msg` the raw message would
+              // still land on disk via the `msg` slot. A
+              // following positional msg-string (e.g.
+              // `logger.error(err, 'custom msg')`) goes through
+              // the string-arg branch above and pino prefers the
+              // explicit msg, so this default is only used when
+              // no msg was supplied.
+              const wrap: Record<string, unknown> = { err: arg }
+              if (typeof arg.message === 'string' && arg.message.length > 0) {
+                wrap.msg = maskString(arg.message)
+              }
+              args[i] = wrap
             } else if (i > 0 && arg !== null && typeof arg === 'object') {
               args[i] = maskLog(arg as Record<string, unknown>)
             }
