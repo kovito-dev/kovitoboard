@@ -1545,6 +1545,40 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       return
     }
 
+    // Partial-success recovery: the manifest at `appId` already
+    // describes this exact install (same recipeId + hash) but no
+    // history row was written. That can happen when a previous
+    // attempt persisted the manifest, then crashed before
+    // `appendRecipeHistory` had a chance to run — the nonce was
+    // already consumed, so a naive retry would 403 a half-finished
+    // install with no obvious recovery. Repair the missing history
+    // entry and acknowledge the install. We do NOT consume the
+    // nonce here because it is already gone; the manifest binding
+    // is what proves the previous attempt got far enough to be
+    // considered authoritative.
+    if (stateConsistentWithHistory) {
+      const historyId = generateHistoryId(fs)
+      appendRecipeHistory(fs, {
+        id: historyId,
+        action: 'install',
+        name: recipeIdParam,
+        version: recipeVersion,
+        source: recipeSource,
+        hash: recipeHash,
+        appliedAt: existingManifestForRetry!.installedAt,
+        artifacts: [],
+        menu: [],
+        recipeId: recipeIdParam,
+        ...({ appId } as Record<string, unknown>),
+      })
+      apiLogger.info(
+        { recipeId: recipeIdParam, appId, recipeVersion, recipeSource },
+        'mark-installed: partial-success recovery — repaired missing history entry',
+      )
+      res.json({ ok: true })
+      return
+    }
+
     // -- Cross-app overwrite check --
     //
     // The install nonce binds recipeId / recipeHash / approvedScopes /
