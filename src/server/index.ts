@@ -107,7 +107,6 @@ const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
 const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
 
 const app = express()
-app.use(express.json())
 
 // Security headers
 app.use((_req, res, next) => {
@@ -131,7 +130,14 @@ app.use((_req, res, next) => {
 // the token is delivered through). The renderer's kbFetch helper
 // adds `X-Kovitoboard-Token` to every API request, and the WebSocket
 // upgrade is gated separately by `verifyWsClient` below.
+//
+// The auth guard is mounted BEFORE `express.json()` so an unauthorized
+// request short-circuits with 401 / 403 before we spend cycles on
+// JSON body parsing. Without this ordering an attacker could keep the
+// server busy parsing megabyte-sized JSON bodies even though the
+// request would ultimately be rejected.
 app.use('/api', verifyTokenAndOrigin)
+app.use(express.json())
 
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/api/ws', verifyClient: verifyWsClient })

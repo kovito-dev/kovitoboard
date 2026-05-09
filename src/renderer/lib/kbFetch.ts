@@ -30,7 +30,13 @@
 
 const META_TAG_NAME = 'kb-launch-token'
 const RELOAD_MARKER_KEY = 'kb:launch-token-reload-attempted'
-const API_PREFIX = '/api'
+// Use a strict path-segment match so that future routes such as
+// `/apiary` or `/api-v2` would NOT receive the launch token if a
+// renderer ever fetched them. `pathname.startsWith('/api')` alone is
+// too lax for that; we either match `/api` exactly or require the
+// next character to be a path separator.
+const API_PATH = '/api'
+const API_PATH_PREFIX = '/api/'
 
 let cachedToken: string | null = null
 
@@ -88,7 +94,8 @@ function shouldAttachToken(input: RequestInfo | URL): boolean {
   } catch {
     return false
   }
-  return target.origin === location.origin && target.pathname.startsWith(API_PREFIX)
+  if (target.origin !== location.origin) return false
+  return target.pathname === API_PATH || target.pathname.startsWith(API_PATH_PREFIX)
 }
 
 function readReloadMarker(): boolean {

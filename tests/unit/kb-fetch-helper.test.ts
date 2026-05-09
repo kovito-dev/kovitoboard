@@ -221,4 +221,18 @@ describe('shouldAttachToken (filter)', () => {
     const { __testing } = await loadFresh()
     expect(__testing.shouldAttachToken('::not-a-url::' as unknown as RequestInfo)).toBe(false)
   })
+
+  it('rejects look-alike paths such as /apiary or /api-v2', async () => {
+    const { __testing } = await loadFresh()
+    expect(__testing.shouldAttachToken('/apiary')).toBe(false)
+    expect(__testing.shouldAttachToken('/api-v2/foo')).toBe(false)
+    expect(__testing.shouldAttachToken('/apiv2')).toBe(false)
+  })
+
+  it('accepts the /api root exactly and any /api/<sub> path', async () => {
+    const { __testing } = await loadFresh()
+    expect(__testing.shouldAttachToken('/api')).toBe(true)
+    expect(__testing.shouldAttachToken('/api/')).toBe(true)
+    expect(__testing.shouldAttachToken('/api/admin/restart')).toBe(true)
+  })
 })
