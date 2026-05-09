@@ -116,6 +116,13 @@ async function installTestRecipe(
   ]
   const recipeHash = `e2e-test-hash-${Date.now()}`
   const apiSection = { scopes, calls }
+  // Drop any previous-test manifest for this appId. The mark-installed
+  // handler refuses to overwrite an existing manifest whose recipeHash
+  // does not match (cross-app overwrite check), and successive L1
+  // tests reuse TEST_RECIPE_ID with a fresh recipeHash each time.
+  await request.post(`${API_BASE}/api/recipes/_test/clear-manifest`, {
+    data: { appId: TEST_RECIPE_ID },
+  })
   // The fake-claude harness cannot run the install handover prompt,
   // so we mint a nonce through the KB_E2E_MODE-only test endpoint
   // instead of the real `/api/recipes/install` flow. The nonce is

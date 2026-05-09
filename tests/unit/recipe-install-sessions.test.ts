@@ -39,14 +39,17 @@ afterEach(() => {
 
 describe('issueInstallSession', () => {
   it('returns a 32-character lowercase hex nonce', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     expect(nonce).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it('returns a different nonce on every call', () => {
-    const a = issueInstallSession(SAMPLE_INPUT)!
-    const b = issueInstallSession(SAMPLE_INPUT)!
-    expect(a).not.toBe(b)
+    const a = issueInstallSession(SAMPLE_INPUT)
+    const b = issueInstallSession(SAMPLE_INPUT)
+    if (!a.ok || !b.ok) throw new Error('unexpected non-ok issue result')
+    expect(a.nonce).not.toBe(b.nonce)
   })
 
   it('does not mutate the caller-supplied scopes array', () => {
@@ -54,13 +57,17 @@ describe('issueInstallSession', () => {
     issueInstallSession({ ...SAMPLE_INPUT, approvedScopes: scopes })
     scopes.push('write-fs' as Scope)
     // The mutated outer array should not surface through consume.
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     const session = consumeInstallSession(nonce)
     expect(session?.approvedScopes).toEqual(['project-read', 'own-data'])
   })
 
   it('stores the api section in canonical form on the session', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     const session = consumeInstallSession(nonce)
     // Same shape, different key order should produce the same canonical
     // string the handler will compute on the body side.
@@ -68,24 +75,46 @@ describe('issueInstallSession', () => {
       canonicalizeJson({
         scopes: ['project-read', 'own-data'],
         calls: [{ args: { path: 'todo/' }, handler: 'list-files', id: 'list-todos' }],
-      }),
+      })!,
     )
   })
 
-  it('returns null when the store is at capacity', () => {
+  it('returns at_capacity when the store is full', () => {
     // Fill the store right up to the cap.
     for (let i = 0; i < __MAX_SESSIONS_FOR_TESTS; i++) {
-      const out = issueInstallSession(SAMPLE_INPUT)!
-      expect(out).not.toBeNull()
+      const out = issueInstallSession(SAMPLE_INPUT)
+      expect(out.ok).toBe(true)
     }
     // The next call should refuse instead of growing past the cap.
-    expect(issueInstallSession(SAMPLE_INPUT)).toBeNull()
+    const refused = issueInstallSession(SAMPLE_INPUT)
+    expect(refused).toEqual({ ok: false, reason: 'at_capacity' })
+  })
+
+  it('returns invalid_api when the api section exceeds the depth limit', () => {
+    // Build a 50-deep nested object — well past MAX_CANONICAL_DEPTH (32).
+    let nested: Record<string, unknown> = {}
+    let cursor: Record<string, unknown> = nested
+    for (let i = 0; i < 50; i++) {
+      cursor.next = {}
+      cursor = cursor.next as Record<string, unknown>
+    }
+    const result = issueInstallSession({ ...SAMPLE_INPUT, api: nested })
+    expect(result).toEqual({ ok: false, reason: 'invalid_api' })
+  })
+
+  it('returns invalid_api when the api section contains a cycle', () => {
+    const root: Record<string, unknown> = { scopes: [] }
+    root.self = root
+    const result = issueInstallSession({ ...SAMPLE_INPUT, api: root })
+    expect(result).toEqual({ ok: false, reason: 'invalid_api' })
   })
 })
 
 describe('consumeInstallSession', () => {
   it('returns the saved session for a valid, fresh nonce', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     const session = consumeInstallSession(nonce)
     expect(session).not.toBeNull()
     expect(session?.recipeId).toBe(SAMPLE_INPUT.recipeId)
@@ -94,7 +123,9 @@ describe('consumeInstallSession', () => {
   })
 
   it('is one-shot — a second consume of the same nonce returns null', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     expect(consumeInstallSession(nonce)).not.toBeNull()
     expect(consumeInstallSession(nonce)).toBeNull()
   })
@@ -117,7 +148,9 @@ describe('consumeInstallSession', () => {
   it('returns null for an expired nonce (past the 5-minute TTL)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     // Advance 6 minutes — well past the 5-minute window.
     vi.setSystemTime(new Date('2026-05-09T00:06:00Z'))
     expect(consumeInstallSession(nonce)).toBeNull()
@@ -126,7 +159,9 @@ describe('consumeInstallSession', () => {
   it('still returns the session at the boundary of the TTL window', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     // Advance 4 minutes 59 seconds — inside the window.
     vi.setSystemTime(new Date('2026-05-09T00:04:59Z'))
     expect(consumeInstallSession(nonce)).not.toBeNull()
@@ -135,7 +170,9 @@ describe('consumeInstallSession', () => {
   it('removes the entry from the store on every lookup, even when expired', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const issueResult = issueInstallSession(SAMPLE_INPUT)
+    if (!issueResult.ok) throw new Error(`unexpected non-ok: ${issueResult.reason}`)
+    const nonce = issueResult.nonce
     expect(__sizeForTests()).toBe(1)
     vi.setSystemTime(new Date('2026-05-09T00:06:00Z'))
     expect(consumeInstallSession(nonce)).toBeNull()
@@ -229,7 +266,7 @@ describe('apiSectionMatches', () => {
     scopes: ['project-read', 'own-data'],
     calls: [{ id: 'list-todos', handler: 'list-files', args: { path: 'todo/' } }],
   }
-  const canonical = canonicalizeJson(sample)
+  const canonical = canonicalizeJson(sample)!
 
   it('accepts a body whose api section matches the stored canonical form', () => {
     expect(apiSectionMatches(canonical, sample)).toBe(true)
@@ -268,7 +305,7 @@ describe('apiSectionMatches', () => {
   })
 
   it('treats null body and a session canonicalised from null as a match', () => {
-    expect(apiSectionMatches(canonicalizeJson(null), null)).toBe(true)
-    expect(apiSectionMatches(canonicalizeJson(null), undefined)).toBe(true)
+    expect(apiSectionMatches(canonicalizeJson(null)!, null)).toBe(true)
+    expect(apiSectionMatches(canonicalizeJson(null)!, undefined)).toBe(true)
   })
 })

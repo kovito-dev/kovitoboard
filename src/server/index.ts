@@ -1360,23 +1360,38 @@ app.post('/api/recipes/install', async (req, res) => {
     const declaredScopes = (
       (parsed.api as { scopes?: unknown } | undefined)?.scopes ?? []
     ) as Scope[]
-    const installNonce = issueInstallSession({
+    const issueResult = issueInstallSession({
       recipeId: recipeIdForSession,
       recipeHash: recipeHashForSession,
       approvedScopes: declaredScopes,
       api: parsed.api ?? null,
     })
-    if (installNonce === null) {
-      // The in-memory session store is bounded; refuse new installs
-      // when it is full instead of growing without limit. The user-
-      // facing remedy is either to wait for in-flight installs to
-      // expire (5 min TTL) or to restart KovitoBoard, both of which
-      // free the slots. SessionManager has no public release API for
-      // a queued reservation today, so the reservation lingers until
-      // the next ensureSession call shifts it off — the leak is
-      // bounded by however many capacity-rejections happen before
-      // the next legitimate install for this agentId, which is
-      // small in practice and self-resolving.
+    if (!issueResult.ok) {
+      if (issueResult.reason === 'invalid_api') {
+        // The recipe parser already validates `api`'s shape, but
+        // canonicalisation imposes its own depth / cycle bounds so
+        // a deeply nested or self-referential api section cannot
+        // overflow the stack on this path. Reject the install with
+        // 400; the recipe author has to flatten the api section
+        // before retrying.
+        apiLogger.warn(
+          { agentId, recipeId: recipeIdForSession },
+          'Recipe install rejected: api section too deep or cyclic',
+        )
+        res.status(400).json({
+          error:
+            'Recipe api section is too deep or contains a cycle. ' +
+            'Simplify the api block in the recipe before retrying install.',
+        })
+        return
+      }
+      // 'at_capacity' — bounded store, refuse new sessions.
+      // SessionManager has no public release API for a queued
+      // reservation today, so the reservation lingers until the
+      // next ensureSession call shifts it off — the leak is bounded
+      // by however many capacity-rejections happen before the next
+      // legitimate install for this agentId, which is small in
+      // practice and self-resolving.
       apiLogger.warn(
         { agentId, recipeId: recipeIdForSession },
         'Recipe install rejected: install-session store at capacity',
@@ -1388,6 +1403,7 @@ app.post('/api/recipes/install', async (req, res) => {
       })
       return
     }
+    const installNonce = issueResult.nonce
 
     // -- Build the v2.0 install prompt --
     //
@@ -1507,6 +1523,43 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     )
     if (alreadyRecorded) {
       res.json({ ok: true })
+      return
+    }
+
+    // -- Cross-app overwrite check --
+    //
+    // The install nonce binds recipeId / recipeHash / approvedScopes /
+    // api but the agent picks `appId` only after the install handover
+    // has run (Step 2 of the playbook resolves collisions through
+    // /api/apps/check-id-availability). A stolen nonce reused with a
+    // different `appId` would otherwise let the caller plant the
+    // session's manifest into an unrelated app namespace. Refuse the
+    // call when an existing manifest at this `appId` does not already
+    // belong to the same recipe install — the legitimate retry path
+    // is covered by the history-record dedup above, which would have
+    // already short-circuited if this `appId` was the original
+    // destination.
+    const existingManifest = manifestStore.get(appId)
+    if (
+      existingManifest &&
+      (existingManifest.recipeId !== recipeIdParam ||
+        existingManifest.hash !== recipeHash)
+    ) {
+      apiLogger.warn(
+        {
+          recipeId: recipeIdParam,
+          appId,
+          existingRecipeId: existingManifest.recipeId,
+          existingHash: existingManifest.hash,
+        },
+        'mark-installed rejected: appId already bound to a different recipe install',
+      )
+      res.status(403).json({
+        error:
+          `App "${appId}" is already bound to a different recipe install. ` +
+          'Pick a different appId or uninstall the existing app via ' +
+          '/api/apps/:appId/request-removal before retrying.',
+      })
       return
     }
 
@@ -2303,17 +2356,38 @@ if (process.env.KB_E2E_MODE === '1') {
         .json({ error: 'approvedScopes must be an array of strings' })
       return
     }
-    const installNonce = issueInstallSession({
+    const issueResult = issueInstallSession({
       recipeId,
       recipeHash,
       approvedScopes: approvedScopes as Scope[],
       api: apiSection ?? null,
     })
-    if (installNonce === null) {
+    if (!issueResult.ok) {
+      if (issueResult.reason === 'invalid_api') {
+        res.status(400).json({ error: 'api section too deep or cyclic' })
+        return
+      }
       res.status(503).json({ error: 'Install-session store at capacity' })
       return
     }
-    res.json({ ok: true, installNonce })
+    res.json({ ok: true, installNonce: issueResult.nonce })
+  })
+
+  // Companion to `_test/issue-nonce`: lets the L1 helper drop a
+  // pre-existing manifest for a given `appId` before issuing a new
+  // install nonce. Without this, the cross-app overwrite check on
+  // mark-installed (which legitimately rejects the second install
+  // of a different recipe into the same `appId`) would block the
+  // suite's repeated installs of TEST_RECIPE_ID across tests.
+  app.post('/api/recipes/_test/clear-manifest', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { appId } = body
+    if (typeof appId !== 'string' || appId.length === 0) {
+      res.status(400).json({ error: 'appId must be a non-empty string' })
+      return
+    }
+    manifestStore.delete(appId)
+    res.json({ ok: true })
   })
 }
 

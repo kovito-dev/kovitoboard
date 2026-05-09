@@ -68,6 +68,17 @@ const NONCE_PATTERN = /^[0-9a-f]{32}$/
  * that spams `/api/recipes/install` to grow the map.
  */
 const MAX_SESSIONS = 256
+/**
+ * Recursion depth ceiling for `canonicalizeJson`. The recipe parser
+ * already validates the api section's shape, but `parsed.api` is
+ * still attacker-controlled JSON until that check runs end-to-end,
+ * and a deeply-nested or cyclic structure would otherwise be able
+ * to overflow the stack on `/api/recipes/install`. 32 is well above
+ * the depth a real recipe schema produces (`api -> calls[] -> args
+ * -> ...`) while staying far below Node's default stack-size
+ * threshold.
+ */
+const MAX_CANONICAL_DEPTH = 32
 
 interface InstallSession {
   recipeId: string
@@ -103,20 +114,51 @@ const sessions = new Map<string, InstallSession>()
  * `calls` order), object keys are sorted, primitives stringify via
  * `JSON.stringify`. `undefined` and `null` collapse to `"null"` so
  * "missing api section" produces the same fingerprint on both ends.
+ *
+ * Returns `null` when the value exceeds `MAX_CANONICAL_DEPTH` or
+ * contains a cycle. The caller surfaces that as a 4xx so a
+ * malformed recipe never trips the install path with arbitrary CPU
+ * / stack consumption.
  */
-export function canonicalizeJson(value: unknown): string {
+export function canonicalizeJson(value: unknown): string | null {
+  try {
+    return canonicalizeInner(value, 0, new WeakSet())
+  } catch (err) {
+    if (err instanceof CanonicalizeOverflow) return null
+    throw err
+  }
+}
+
+class CanonicalizeOverflow extends Error {
+  constructor(reason: 'depth' | 'cycle') {
+    super(`canonicalizeJson refused: ${reason}`)
+    this.name = 'CanonicalizeOverflow'
+  }
+}
+
+function canonicalizeInner(value: unknown, depth: number, seen: WeakSet<object>): string {
+  if (depth > MAX_CANONICAL_DEPTH) throw new CanonicalizeOverflow('depth')
   if (value === null || value === undefined) return 'null'
   if (typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) {
-    return '[' + value.map(canonicalizeJson).join(',') + ']'
+  const objValue = value as object
+  if (seen.has(objValue)) throw new CanonicalizeOverflow('cycle')
+  seen.add(objValue)
+  try {
+    if (Array.isArray(value)) {
+      return '[' + value.map((v) => canonicalizeInner(v, depth + 1, seen)).join(',') + ']'
+    }
+    const obj = value as Record<string, unknown>
+    const keys = Object.keys(obj).sort()
+    return (
+      '{' +
+      keys
+        .map((k) => JSON.stringify(k) + ':' + canonicalizeInner(obj[k], depth + 1, seen))
+        .join(',') +
+      '}'
+    )
+  } finally {
+    seen.delete(objValue)
   }
-  const obj = value as Record<string, unknown>
-  const keys = Object.keys(obj).sort()
-  return (
-    '{' +
-    keys.map((k) => JSON.stringify(k) + ':' + canonicalizeJson(obj[k])).join(',') +
-    '}'
-  )
 }
 
 function pruneExpired(now: number): void {
@@ -127,21 +169,31 @@ function pruneExpired(now: number): void {
   }
 }
 
+export type IssueInstallSessionResult =
+  | { ok: true; nonce: string }
+  | { ok: false; reason: 'at_capacity' | 'invalid_api' }
+
 /**
  * Mint a fresh nonce, bind it to the install session metadata KB
  * just inspected, and return the hex-encoded value to the caller.
  * The same string is later embedded into the install handover prompt
  * so the agent can echo it back on `mark-installed`.
  *
- * Returns `null` when the store is at capacity. The install handler
- * surfaces that as a 503 so the user gets actionable feedback
- * instead of a buried 500.
+ * Returns `{ ok: false, reason: 'at_capacity' }` when the store is
+ * full (a 503 from the handler), or `{ ok: false, reason:
+ * 'invalid_api' }` when canonicalising the api section overflowed
+ * the depth limit / hit a cycle (a 400 — the recipe itself is
+ * malformed and no nonce is issued).
  */
-export function issueInstallSession(input: InstallSessionInput): string | null {
+export function issueInstallSession(input: InstallSessionInput): IssueInstallSessionResult {
+  const apiCanonical = canonicalizeJson(input.api ?? null)
+  if (apiCanonical === null) {
+    return { ok: false, reason: 'invalid_api' }
+  }
   const now = Date.now()
   pruneExpired(now)
   if (sessions.size >= MAX_SESSIONS) {
-    return null
+    return { ok: false, reason: 'at_capacity' }
   }
   // 16 bytes = 128 bits of entropy, hex-encoded into 32 lowercase
   // characters. Same shape as the launch token so the renderer-side
@@ -151,10 +203,10 @@ export function issueInstallSession(input: InstallSessionInput): string | null {
     recipeId: input.recipeId,
     recipeHash: input.recipeHash,
     approvedScopes: [...input.approvedScopes],
-    apiCanonical: canonicalizeJson(input.api ?? null),
+    apiCanonical,
     expiresAt: now + SESSION_TTL_MS,
   })
-  return nonce
+  return { ok: true, nonce }
 }
 
 /**
@@ -219,7 +271,13 @@ export function approvedScopesMatch(a: Scope[], b: Scope[]): boolean {
  * canonicalisation directly.
  */
 export function apiSectionMatches(sessionCanonical: string, body: unknown): boolean {
-  return sessionCanonical === canonicalizeJson(body ?? null)
+  const bodyCanonical = canonicalizeJson(body ?? null)
+  // A null bodyCanonical means the body ran into the same depth /
+  // cycle guard as the install path. Treat that as a non-match
+  // rather than potentially comparing two `null` markers and
+  // accidentally accepting two malformed payloads as equal.
+  if (bodyCanonical === null) return false
+  return sessionCanonical === bodyCanonical
 }
 
 /**
