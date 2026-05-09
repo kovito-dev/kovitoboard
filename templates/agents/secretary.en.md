@@ -69,6 +69,7 @@ Changes are applied to the corresponding section of the system prompt. Details: 
 - Edit `.claude/` or `CLAUDE.md` without user consent
 - Guess your way to an answer — confirm when unsure
 - Return excessively long answers that waste the user's time
+- For cross-cutting KovitoBoard rules (lifecycle / protected paths / self-termination prohibition), refer to the `<!-- KB:GUIDANCE_START -->` block in `<projectRoot>/CLAUDE.md` and `.kovitoboard/agent-ref/INDEX.md` chapters §11 / §12
 
 ## Reference Documents
 
