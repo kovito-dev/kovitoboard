@@ -16,6 +16,7 @@ import type {
   RecipeUploadFile,
 } from '../../shared/recipe-types'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 /**
  * Mirror the server-side caps in `recipe-upload-routes.ts` so the
@@ -67,7 +68,7 @@ export function RecipeImport() {
     setError(null)
 
     try {
-      const res = await fetch('/api/recipes/parse', {
+      const res = await kbFetch('/api/recipes/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: source.trim() }),
@@ -158,7 +159,7 @@ export function RecipeImport() {
         throw new Error(t('recipe.import.upload.noSupportedFiles'))
       }
 
-      const res = await fetch('/api/recipes/parse-upload', {
+      const res = await kbFetch('/api/recipes/parse-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ files }),
@@ -204,7 +205,7 @@ export function RecipeImport() {
     setError(null)
 
     try {
-      const res = await fetch('/api/recipes/apply', {
+      const res = await kbFetch('/api/recipes/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipe, inspection }),

@@ -33,6 +33,7 @@ import { RecipeInstallWarningDialog } from './RecipeInstallWarningDialog'
 import { RecipeInstallAgentPickerModal } from './RecipeInstallAgentPickerModal'
 import { getRecipeDescription, getRecipeName } from '../utils/recipe-display'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 /** Sample recipe info from the server. */
 interface SampleRecipeInfo {
@@ -99,7 +100,7 @@ export function RecipeSample({ agents, theme = 'dark' }: RecipeSampleProps) {
 
   const fetchRecipes = useCallback(async () => {
     try {
-      const res = await fetch('/api/recipes/sample')
+      const res = await kbFetch('/api/recipes/sample')
       if (!res.ok) {
         throw new Error(`Failed to fetch sample recipes: ${res.status}`)
       }
@@ -131,7 +132,7 @@ export function RecipeSample({ agents, theme = 'dark' }: RecipeSampleProps) {
         setInstallingId(recipe.id)
       }
       try {
-        const parseRes = await fetch('/api/recipes/parse', {
+        const parseRes = await kbFetch('/api/recipes/parse', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ source: recipe.sourcePath }),
@@ -204,7 +205,7 @@ export function RecipeSample({ agents, theme = 'dark' }: RecipeSampleProps) {
         setInstallingId(recipe.id)
       }
       try {
-        const res = await fetch('/api/recipes/install', {
+        const res = await kbFetch('/api/recipes/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

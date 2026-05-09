@@ -3,10 +3,56 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+const KB_LAUNCH_TOKEN_PLACEHOLDER = '<!-- KB:LAUNCH_TOKEN_META -->'
+// Mirror of the format the server enforces in
+// `src/server/middleware/auth.ts`: 32 lowercase hex characters,
+// which is the shape `randomBytes(16).toString('hex')` produces.
+// Validating the token here as well keeps dev mode from injecting
+// arbitrary HTML / JS into `index.html` if the operator points
+// `KB_LAUNCH_TOKEN` at attacker-controlled text — the server would
+// refuse such a value at boot, so the renderer must too.
+const KB_LAUNCH_TOKEN_FORMAT_RE = /^[0-9a-f]{32}$/
+
+/**
+ * Inject the per-launch auth token into `index.html` as a `<meta>`
+ * tag. The token arrives via env (`KB_LAUNCH_TOKEN`) from the
+ * supervisor (`tools/kb-start.mjs`); this plugin only runs during
+ * `vite serve` so production builds keep the placeholder intact and
+ * the Express prod fallback in `src/server/index.ts` can perform the
+ * same substitution at runtime. The token is hex-only so no further
+ * HTML escaping is needed; an empty token (the supervisor was not
+ * involved) renders an empty content attribute and the renderer
+ * fails closed when it later tries to authenticate. A non-empty
+ * value that does not match the 32-hex format is rejected outright
+ * to keep the dev path on the same security contract as the server.
+ */
+function kbLaunchTokenInjectorPlugin(): Plugin {
+  return {
+    name: 'kb-launch-token-injector',
+    apply: 'serve',
+    transformIndexHtml(html) {
+      const token = process.env.KB_LAUNCH_TOKEN ?? ''
+      if (token.length > 0 && !KB_LAUNCH_TOKEN_FORMAT_RE.test(token)) {
+        throw new Error(
+          'KB_LAUNCH_TOKEN must be 32 lowercase hex characters ' +
+            '(the supervisor mints it via randomBytes(16).toString("hex")). ' +
+            'Refusing to inject a non-conforming value into index.html ' +
+            'so dev mode keeps the same HTML-injection guarantee the ' +
+            'server enforces in resolveLaunchTokenOrThrow().',
+        )
+      }
+      return html.replace(
+        KB_LAUNCH_TOKEN_PLACEHOLDER,
+        `<meta name="kb-launch-token" content="${token}">`,
+      )
+    },
+  }
+}
 
 // KovitoBoard:
 // - Serve static assets from public/ (avatars, docs, etc.)
@@ -15,7 +61,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   root: 'src/renderer',
   publicDir: resolve(__dirname, 'public'),
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), kbLaunchTokenInjectorPlugin()],
   resolve: {
     alias: {
       '@app': resolve(__dirname, 'app'),

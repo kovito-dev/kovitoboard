@@ -30,6 +30,7 @@ import { RecipePageHost } from './app-host/RecipePageHost'
 import type { AppMenuEntry } from './types/app-types'
 import { t } from './i18n'
 import { createLogger } from './lib/logger'
+import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('App')
 
@@ -78,7 +79,7 @@ export function App() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null)
 
   useEffect(() => {
-    fetch('/api/config/setting')
+    kbFetch('/api/config/setting')
       .then((res) => {
         if (!res.ok) {
           // Setting file not found = onboarding not completed
@@ -535,7 +536,7 @@ export function App() {
             setAppRemovalError(null)
             setAppRemovalSubmitting(true)
             try {
-              const res = await fetch(
+              const res = await kbFetch(
                 `/api/apps/${appRemovalState.appId}/request-removal`,
                 {
                   method: 'POST',

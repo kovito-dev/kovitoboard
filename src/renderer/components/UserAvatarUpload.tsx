@@ -5,6 +5,7 @@
  */
 import { useState, useRef, useCallback } from 'react'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 interface UserAvatarUploadProps {
   /**
@@ -52,7 +53,7 @@ export function UserAvatarUpload({ onChanged }: UserAvatarUploadProps) {
       setIsUploading(true)
       try {
         const buffer = await file.arrayBuffer()
-        const res = await fetch('/api/settings/user/avatar', {
+        const res = await kbFetch('/api/settings/user/avatar', {
           method: 'POST',
           headers: { 'Content-Type': file.type },
           body: buffer,
@@ -77,7 +78,7 @@ export function UserAvatarUpload({ onChanged }: UserAvatarUploadProps) {
   const handleDelete = useCallback(async () => {
     setError(null)
     try {
-      const res = await fetch('/api/settings/user/avatar', { method: 'DELETE' })
+      const res = await kbFetch('/api/settings/user/avatar', { method: 'DELETE' })
       // 404 means "no upload yet" — already in the desired state, so
       // surface success for the user. The PUT/DELETE pair returns
       // 200 only when something was on disk.

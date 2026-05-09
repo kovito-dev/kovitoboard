@@ -7,6 +7,7 @@ import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate, useLocation, Navigate } from 'react-router-dom'
 import type { AgentInfo, SessionSummary, AgentConfig, TmuxStatus, SessionOrigin } from '../types'
 import { AgentDetail } from '../components/AgentDetail'
+import { kbFetch } from '../lib/kbFetch'
 
 interface AgentDetailPageProps {
   agents: AgentInfo[]
@@ -205,7 +206,7 @@ export function AgentDetailPage({
   const handleStartNewSession = useCallback(async (agentId: string, message: string) => {
     // Deactivate existing active sessions
     try {
-      await fetch(`/api/agents/${agentId}/deactivate-sessions`, { method: 'POST' })
+      await kbFetch(`/api/agents/${agentId}/deactivate-sessions`, { method: 'POST' })
     } catch {
       // Continue even if deactivation fails
     }
@@ -250,7 +251,7 @@ export function AgentDetailPage({
   }, [navigate])
 
   const handleRestartAgent = useCallback(async (agentId: string) => {
-    const res = await fetch(`/api/agents/${agentId}/restart`, { method: 'POST' })
+    const res = await kbFetch(`/api/agents/${agentId}/restart`, { method: 'POST' })
     if (!res.ok) {
       throw new Error(`Agent restart failed: ${res.status}`)
     }

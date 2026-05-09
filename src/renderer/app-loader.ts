@@ -37,6 +37,7 @@
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 import type { AppMenuEntryMeta } from '../shared/app-types'
 import { createLogger } from './lib/logger'
+import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('app-loader')
 
@@ -63,7 +64,7 @@ interface MenuEntryWire extends AppMenuEntryMeta {
 export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
   // 1) Preferred path: API.
   try {
-    const res = await fetch('/api/app/menu-entries')
+    const res = await kbFetch('/api/app/menu-entries')
     if (res.ok) {
       const wire = (await res.json()) as MenuEntryWire[]
       if (Array.isArray(wire)) {

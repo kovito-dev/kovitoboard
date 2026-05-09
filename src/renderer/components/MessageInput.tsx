@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 import { createLogger } from '../lib/logger'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('MessageInput')
 
@@ -285,7 +286,7 @@ export function MessageInput({
     setUploadError(null)
     try {
       const buffer = await file.arrayBuffer()
-      const res = await fetch('/api/upload', {
+      const res = await kbFetch('/api/upload', {
         method: 'POST',
         headers: {
           'Content-Type': file.type || 'application/octet-stream',

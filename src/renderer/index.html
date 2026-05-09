@@ -11,6 +11,15 @@
       `main.tsx` after the locale bootstrap fetch resolves
       (`document.documentElement.lang = getLocale()`).
     -->
+    <!--
+      Per-launch authentication token marker. The Vite dev-server
+      plugin (`vite.config.ts`) replaces this comment with a real
+      `<meta name="kb-launch-token">` tag at request time; the
+      production Express fallback in `src/server/index.ts` performs
+      the same substitution against `dist/index.html`. The renderer
+      reads the token via the kbFetch helper to gate every API call.
+    -->
+    <!-- KB:LAUNCH_TOKEN_META -->
   </head>
   <body class="bg-[var(--bg-base)] text-[var(--text-primary)] overflow-hidden">
     <div id="root"></div>

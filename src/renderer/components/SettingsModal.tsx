@@ -10,6 +10,7 @@ import { useSidebarSettings } from '../hooks/useSidebarSettings'
 import type { AgentInfo } from '../types'
 import { AgentAvatar } from './AgentAvatar'
 import { UserAvatarUpload } from './UserAvatarUpload'
+import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('SettingsModal')
 
@@ -224,7 +225,7 @@ function SettingsBasic() {
   // surfaced through the same read endpoint so the modal only
   // needs one round-trip to populate the preview on open).
   const reloadAvatar = () => {
-    fetch('/api/settings/basic')
+    kbFetch('/api/settings/basic')
       .then((r) => r.json())
       .then((settings: BasicSettings) => {
         setUserAvatar(settings.userAvatar ?? '')
@@ -236,7 +237,7 @@ function SettingsBasic() {
   }
 
   useEffect(() => {
-    fetch('/api/settings/basic')
+    kbFetch('/api/settings/basic')
       .then((r) => r.json())
       .then((settings: BasicSettings) => {
         setData(settings)
@@ -288,7 +289,7 @@ function SettingsBasic() {
     setFieldErrors({})
     setGlobalError(null)
     try {
-      const res = await fetch('/api/settings/basic', {
+      const res = await kbFetch('/api/settings/basic', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(draft),
@@ -544,7 +545,7 @@ function SettingsSkills() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/settings/skills')
+    kbFetch('/api/settings/skills')
       .then((r) => r.json())
       .then((res) => setData(res.skills || []))
       .catch((err) => {
@@ -599,7 +600,7 @@ function SettingsAutomations() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/settings/automations')
+    kbFetch('/api/settings/automations')
       .then((r) => r.json())
       .then((res) => setHooks(res.hooks || []))
       .catch((err) => {
@@ -652,7 +653,7 @@ function SettingsIntegrations() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/settings/integrations')
+    kbFetch('/api/settings/integrations')
       .then((r) => r.json())
       .then((res) => setData(res.integrations || []))
       .catch((err) => {
@@ -701,7 +702,7 @@ function SettingsRules() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/settings/rules')
+    kbFetch('/api/settings/rules')
       .then((r) => r.json())
       .then((res) => setData(res.rules || res || []))
       .catch((err) => {
@@ -780,7 +781,7 @@ function SettingsAmbientSidebar() {
   const [agentsLoaded, setAgentsLoaded] = useState(false)
 
   useEffect(() => {
-    fetch('/api/agents')
+    kbFetch('/api/agents')
       .then((r) => (r.ok ? r.json() : []))
       .then((data: AgentInfo[]) => setAgents(data))
       .catch((err) => log.warn({ err }, 'Failed to load agents for ambient sidebar tab'))
