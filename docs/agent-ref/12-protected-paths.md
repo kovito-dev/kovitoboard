@@ -68,7 +68,7 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 
 | Path / Target | Owner | Why direct edits are forbidden | Alternative route |
 |---|---|---|---|
-| `<projectRoot>/.claude/agents/<id>.md` | User / Claude Code | Frontmatter (`name` / `description` / `model`) is read by KB; convention breaks the agent list and ID resolution (B-1) | Edit only following Claude Code's official frontmatter convention |
+| `<projectRoot>/.claude/agents/<id>.md` | User / Claude Code | Frontmatter (`name` / `description` / `model`) is read by KB; convention breaks the agent list and ID resolution (B-1) | These files are user-owned. Agents must not modify them without explicit user approval. When the user does ask for an edit, preserve Claude Code's official frontmatter convention. |
 | `<projectRoot>/CLAUDE.md` `<!-- KB:GUIDANCE_START --> ... <!-- KB:GUIDANCE_END -->` block | KB (CLAUDE.md guidance injection) | Hand-edits inside the block are overwritten on next boot (idempotent re-injection); see `claudeMdGuidance.disabled` opt-out (B-2) | Toggle `.kovitoboard/setting.json` `claudeMdGuidance.disabled = true` if you must opt out |
 | Claude Code binary (`~/.claude-versions/<ver>/bin/claude`) | User + KB version detection | Switching to `@latest` / `@beta` may break trust-prompt detection patterns (B-3) | Follow the version-compatibility warnings shown by KB |
 | `<projectRoot>/.gitignore` `kovitoboard/` entry | User | Missing entry leaks the embedded KB installation into the user's repository, bloating history (B-4) | Initial setup guide and onboarding check (a hardened check is on the v0.3.x roadmap) |
