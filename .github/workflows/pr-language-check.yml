@@ -27,6 +27,15 @@ on:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [main, staging]
 
+# Serialize per-PR runs so that overlapping `edited` / `labeled` /
+# `synchronize` events cannot race the read-then-write dedup logic and
+# produce duplicate marker comments. `cancel-in-progress: false` keeps the
+# in-flight comment update from being interrupted mid-write; subsequent
+# events queue up and execute in order.
+concurrency:
+  group: pr-language-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   language-check:
     name: PR Language Check (Japanese characters)
@@ -120,7 +129,15 @@ jobs:
               if title_has_jp:
                   loc_summary.append('title')
               if body_line_numbers:
-                  loc_summary.append(f"body lines {body_line_numbers[:10]}")
+                  shown = body_line_numbers[:10]
+                  total = len(body_line_numbers)
+                  if total > 10:
+                      loc_summary.append(
+                          f"body lines {shown} (showing first 10 of {total} matched lines; "
+                          f"more lines beyond line {shown[-1]} also match)"
+                      )
+                  else:
+                      loc_summary.append(f"body lines {shown}")
               print(f"FAIL: Japanese characters detected in {', '.join(loc_summary)}")
           else:
               print('OK: title and body are English-only')
@@ -218,9 +235,15 @@ jobs:
           # marker comment. Without --paginate we would silently miss it on
           # long-running PRs and post a duplicate failure comment instead of
           # updating in place.
-          EXISTING=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id' \
-            | head -1)
+          #
+          # Capture the full ID list into a variable BEFORE selecting the
+          # first one. Piping `gh api --paginate ... | head -1` would close
+          # the pipe early, sending SIGPIPE to gh; under bash's default
+          # `pipefail`, SIGPIPE turns into a non-zero exit and fails the
+          # step. Materializing the list first avoids that fragility.
+          ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id')
+          EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
 
           if [ -n "$EXISTING" ]; then
             echo "Updating existing language-check comment id=$EXISTING"
@@ -255,9 +278,12 @@ jobs:
           # marker comment. Without --paginate we would silently miss it on
           # long-running PRs and post a duplicate failure comment instead of
           # updating in place.
-          EXISTING=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id' \
-            | head -1)
+          # Same SIGPIPE-safe pattern as the post step: materialize the full
+          # ID list before selecting the first one with awk (which buffers
+          # the pipeline output rather than closing the pipe early).
+          ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id')
+          EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
 
           if [ -z "$EXISTING" ]; then
             echo "No prior language-check comment to update; nothing to do."
