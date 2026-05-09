@@ -83,6 +83,17 @@ const MAX_CANONICAL_DEPTH = 32
 interface InstallSession {
   recipeId: string
   recipeHash: string
+  /**
+   * Free-form metadata KB inspected at install time. The
+   * mark-installed handler compares each of these against the body
+   * to keep an attacker who is holding a valid nonce from
+   * persisting falsified provenance (e.g. claiming the recipe
+   * came from `sample` when it actually arrived through `import`,
+   * or recording an arbitrary `recipeVersion` for the upgrade
+   * UI / audit log).
+   */
+  recipeVersion: string
+  recipeSource: string
   approvedScopes: Scope[]
   /**
    * Canonicalised form of the recipe's `api` section as it was at
@@ -99,6 +110,8 @@ interface InstallSession {
 export interface InstallSessionInput {
   recipeId: string
   recipeHash: string
+  recipeVersion: string
+  recipeSource: string
   approvedScopes: Scope[]
   api: unknown
 }
@@ -202,6 +215,8 @@ export function issueInstallSession(input: InstallSessionInput): IssueInstallSes
   sessions.set(nonce, {
     recipeId: input.recipeId,
     recipeHash: input.recipeHash,
+    recipeVersion: input.recipeVersion,
+    recipeSource: input.recipeSource,
     approvedScopes: [...input.approvedScopes],
     apiCanonical,
     expiresAt: now + SESSION_TTL_MS,

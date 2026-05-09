@@ -133,6 +133,8 @@ async function installTestRecipe(
     data: {
       recipeId: TEST_RECIPE_ID,
       recipeHash,
+      recipeVersion: '1.0.0',
+      recipeSource: 'sample',
       approvedScopes: scopes,
       api: apiSection,
     },
@@ -179,7 +181,14 @@ test.describe('Recipe handler E2E', () => {
       ],
     }
     const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
-      data: { recipeId: TEST_RECIPE_ID, recipeHash, approvedScopes: scopes, api: apiSection },
+      data: {
+        recipeId: TEST_RECIPE_ID,
+        recipeHash,
+        recipeVersion: '1.0.0',
+        recipeSource: 'sample',
+        approvedScopes: scopes,
+        api: apiSection,
+      },
     })
     expect(nonceRes.ok()).toBeTruthy()
     const { installNonce } = (await nonceRes.json()) as { installNonce: string }

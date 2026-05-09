@@ -25,6 +25,8 @@ import type { Scope } from '../../src/server/handlers/types'
 const SAMPLE_INPUT = {
   recipeId: 'document-viewer',
   recipeHash: 'sha256:abc',
+  recipeVersion: '1.1.0',
+  recipeSource: 'sample',
   approvedScopes: ['project-read', 'own-data'] as Scope[],
   api: {
     scopes: ['project-read', 'own-data'],

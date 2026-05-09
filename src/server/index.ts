@@ -1363,6 +1363,8 @@ app.post('/api/recipes/install', async (req, res) => {
     const issueResult = issueInstallSession({
       recipeId: recipeIdForSession,
       recipeHash: recipeHashForSession,
+      recipeVersion: String(metadata.version ?? ''),
+      recipeSource: recipeSource as string,
       approvedScopes: declaredScopes,
       api: parsed.api ?? null,
     })
@@ -1580,6 +1582,8 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       session === null ||
       session.recipeId !== recipeIdParam ||
       session.recipeHash !== recipeHash ||
+      session.recipeVersion !== recipeVersion ||
+      session.recipeSource !== recipeSource ||
       !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
       !apiSectionMatches(session.apiCanonical, api)
     ) {
@@ -2339,7 +2343,7 @@ if (process.env.KB_E2E_MODE === '1') {
   // confined to test runs.
   app.post('/api/recipes/_test/issue-nonce', (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>
-    const { recipeId, recipeHash } = body
+    const { recipeId, recipeHash, recipeVersion, recipeSource } = body
     const approvedScopes = body.approvedScopes
     const apiSection = body.api
     if (typeof recipeId !== 'string' || recipeId.length === 0) {
@@ -2359,6 +2363,8 @@ if (process.env.KB_E2E_MODE === '1') {
     const issueResult = issueInstallSession({
       recipeId,
       recipeHash,
+      recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
+      recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
       approvedScopes: approvedScopes as Scope[],
       api: apiSection ?? null,
     })
