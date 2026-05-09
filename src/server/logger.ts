@@ -385,6 +385,19 @@ export async function initLogger(
                 wrap.msg = maskString(arg.message)
               }
               args[i] = wrap
+            } else if (i > 0 && arg instanceof Error) {
+              // Trailing Error (`logger.info('failed %o', err)`):
+              // pino's util.format would print the Error verbatim,
+              // re-exposing `err.message` / `err.stack` even
+              // though `serializers.err` covers the merging-object
+              // path. Replace the Error with the same redacted
+              // plain object that `serializers.err` would produce
+              // so util.format prints a redacted shape (the
+              // standard `{ type, message, stack }` plus any
+              // enumerable own properties). The in-memory Error
+              // is untouched because the serializer builds a
+              // fresh record.
+              args[i] = errSerializer(arg)
             } else if (i > 0 && arg !== null && typeof arg === 'object') {
               args[i] = maskLog(arg as Record<string, unknown>)
             }

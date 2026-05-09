@@ -407,37 +407,41 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).toContain('[Truncated: depth limit]')
   })
 
-  it('leaves trailing non-plain positional args (Error/Date/Buffer) for pino to format (no redactor regression)', async () => {
-    // Non-plain objects (Error, Date, Buffer, Map, class instances)
-    // are NOT walked by the redactor — the walker bails to the
-    // identity branch when the prototype is not `Object.prototype`.
-    // The pre-fix walker tried to clone these via `Object.entries`,
-    // which lost their non-enumerable members and collapsed them
-    // to `{}` before pino formatted them. The post-fix walker
-    // returns the same instance, so pino's own `util.format` /
-    // serializers handle them. The exact rendered shape depends
-    // on pino's version, so the assertions below verify only that
-    // the call (a) does not throw and (b) the in-memory caller's
-    // value is untouched.
+  it('redacts a trailing Error positional arg via the err serializer path', async () => {
+    // `logger.info('failed %o', err)` used to leak err.message
+    // and err.stack through pino's `util.format` step because
+    // the structural walker leaves non-plain objects alone.
+    // The hook now routes a trailing Error through the same
+    // `errSerializer` that the merging-object path uses, so
+    // `util.format` sees a redacted plain object instead of
+    // the bare Error.
     await initLogger(projectRoot, baseSetting())
-    const log = childLogger('plain-only')
-
-    const err = new Error('boom: sk-ant-api03-StillVisibleViaUtilFormat1234')
-    expect(() => log.info('err as trailing %o', err)).not.toThrow()
+    const log = childLogger('trailing-err')
+    const err = new Error('boom: sk-ant-api03-TrailingErrorStillRedacted1234567')
+    log.info('err as trailing %o', err)
     await new Promise((r) => setTimeout(r, 200))
-    // Caller's Error is untouched in memory regardless of how pino
-    // formatted it on disk.
-    expect(err.message).toContain('sk-ant-api03-StillVisibleViaUtilFormat1234')
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-TrailingErrorStillRedacted1234567')
+    // Caller's Error is untouched in memory.
+    expect(err.message).toContain('sk-ant-api03-TrailingErrorStillRedacted1234567')
+  })
 
+  it('leaves trailing Date positional args alone for pino to format (non-Error non-plain branch)', async () => {
+    // Trailing non-Error / non-plain objects (Date, Buffer, Map,
+    // class instances) keep flowing through pino's own serializer
+    // / util.format. The walker's identity branch covers them by
+    // construction; only the Error-specific branch was added in
+    // the previous round.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('trailing-other')
     const d = new Date('2026-05-09T12:00:00Z')
     expect(() => log.info('date as trailing %o', d)).not.toThrow()
-
     // Note: Buffer / Map / class-instance trailing args are also
     // handled by the same identity-branch fallback. We do not
     // exercise Buffer here because pino-roll's async write stream
     // races with vitest cleanup and surfaces as an unrelated
-    // EBADF. The walker's contract ("non-plain prototype = leave
-    // value alone") covers them by construction.
+    // EBADF.
   })
 
   it('does not double-walk the first object positional arg (formatters.log handles it)', async () => {
