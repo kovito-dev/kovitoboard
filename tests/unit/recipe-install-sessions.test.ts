@@ -14,8 +14,11 @@ import {
   issueInstallSession,
   consumeInstallSession,
   approvedScopesMatch,
+  apiSectionMatches,
+  canonicalizeJson,
   __resetForTests,
   __sizeForTests,
+  __MAX_SESSIONS_FOR_TESTS,
 } from '../../src/server/recipe-install-sessions'
 import type { Scope } from '../../src/server/handlers/types'
 
@@ -23,6 +26,10 @@ const SAMPLE_INPUT = {
   recipeId: 'document-viewer',
   recipeHash: 'sha256:abc',
   approvedScopes: ['project-read', 'own-data'] as Scope[],
+  api: {
+    scopes: ['project-read', 'own-data'],
+    calls: [{ id: 'list-todos', handler: 'list-files', args: { path: 'todo/' } }],
+  },
 }
 
 afterEach(() => {
@@ -32,13 +39,13 @@ afterEach(() => {
 
 describe('issueInstallSession', () => {
   it('returns a 32-character lowercase hex nonce', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     expect(nonce).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it('returns a different nonce on every call', () => {
-    const a = issueInstallSession(SAMPLE_INPUT)
-    const b = issueInstallSession(SAMPLE_INPUT)
+    const a = issueInstallSession(SAMPLE_INPUT)!
+    const b = issueInstallSession(SAMPLE_INPUT)!
     expect(a).not.toBe(b)
   })
 
@@ -47,15 +54,38 @@ describe('issueInstallSession', () => {
     issueInstallSession({ ...SAMPLE_INPUT, approvedScopes: scopes })
     scopes.push('write-fs' as Scope)
     // The mutated outer array should not surface through consume.
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     const session = consumeInstallSession(nonce)
     expect(session?.approvedScopes).toEqual(['project-read', 'own-data'])
+  })
+
+  it('stores the api section in canonical form on the session', () => {
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
+    const session = consumeInstallSession(nonce)
+    // Same shape, different key order should produce the same canonical
+    // string the handler will compute on the body side.
+    expect(session?.apiCanonical).toBe(
+      canonicalizeJson({
+        scopes: ['project-read', 'own-data'],
+        calls: [{ args: { path: 'todo/' }, handler: 'list-files', id: 'list-todos' }],
+      }),
+    )
+  })
+
+  it('returns null when the store is at capacity', () => {
+    // Fill the store right up to the cap.
+    for (let i = 0; i < __MAX_SESSIONS_FOR_TESTS; i++) {
+      const out = issueInstallSession(SAMPLE_INPUT)!
+      expect(out).not.toBeNull()
+    }
+    // The next call should refuse instead of growing past the cap.
+    expect(issueInstallSession(SAMPLE_INPUT)).toBeNull()
   })
 })
 
 describe('consumeInstallSession', () => {
   it('returns the saved session for a valid, fresh nonce', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     const session = consumeInstallSession(nonce)
     expect(session).not.toBeNull()
     expect(session?.recipeId).toBe(SAMPLE_INPUT.recipeId)
@@ -64,7 +94,7 @@ describe('consumeInstallSession', () => {
   })
 
   it('is one-shot — a second consume of the same nonce returns null', () => {
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     expect(consumeInstallSession(nonce)).not.toBeNull()
     expect(consumeInstallSession(nonce)).toBeNull()
   })
@@ -87,7 +117,7 @@ describe('consumeInstallSession', () => {
   it('returns null for an expired nonce (past the 5-minute TTL)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     // Advance 6 minutes — well past the 5-minute window.
     vi.setSystemTime(new Date('2026-05-09T00:06:00Z'))
     expect(consumeInstallSession(nonce)).toBeNull()
@@ -96,7 +126,7 @@ describe('consumeInstallSession', () => {
   it('still returns the session at the boundary of the TTL window', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     // Advance 4 minutes 59 seconds — inside the window.
     vi.setSystemTime(new Date('2026-05-09T00:04:59Z'))
     expect(consumeInstallSession(nonce)).not.toBeNull()
@@ -105,7 +135,7 @@ describe('consumeInstallSession', () => {
   it('removes the entry from the store on every lookup, even when expired', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-09T00:00:00Z'))
-    const nonce = issueInstallSession(SAMPLE_INPUT)
+    const nonce = issueInstallSession(SAMPLE_INPUT)!
     expect(__sizeForTests()).toBe(1)
     vi.setSystemTime(new Date('2026-05-09T00:06:00Z'))
     expect(consumeInstallSession(nonce)).toBeNull()
@@ -149,11 +179,96 @@ describe('approvedScopesMatch', () => {
 
   it('treats duplicate-laden arrays correctly (set-equality, length-aware)', () => {
     // Caller should never produce duplicates, but be explicit about
-    // the contract: both arrays must contain the same multiset, and
-    // since we compare with a Set the duplicate is collapsed only on
-    // one side, so the lengths diverge and the result is false.
+    // the contract: a duplicate on one side and a unique on the other
+    // must NOT match, even when length and member intersection
+    // coincidentally line up.
     expect(
       approvedScopesMatch(['project-read', 'project-read'] as Scope[], ['project-read'] as Scope[]),
     ).toBe(false)
+  })
+
+  it('rejects when duplicates collide with different unique members on the other side', () => {
+    // Pre-fix bug: a=['x','y'] and b=['x','x'] both have length 2 and
+    // every element of b is in a, but the multisets are different.
+    // The fix compares set sizes too, so this case must be false.
+    expect(
+      approvedScopesMatch(['project-read', 'own-data'] as Scope[], ['project-read', 'project-read'] as Scope[]),
+    ).toBe(false)
+  })
+})
+
+describe('canonicalizeJson', () => {
+  it('produces identical strings for objects whose keys differ only in order', () => {
+    expect(canonicalizeJson({ a: 1, b: 2 })).toBe(canonicalizeJson({ b: 2, a: 1 }))
+  })
+
+  it('preserves array order (the dispatcher relies on calls order)', () => {
+    expect(canonicalizeJson([1, 2, 3])).not.toBe(canonicalizeJson([3, 2, 1]))
+  })
+
+  it('collapses null and undefined to the same fingerprint', () => {
+    expect(canonicalizeJson(null)).toBe('null')
+    expect(canonicalizeJson(undefined)).toBe('null')
+  })
+
+  it('walks nested objects deeply', () => {
+    expect(
+      canonicalizeJson({ outer: { b: 1, a: 2 } }),
+    ).toBe(canonicalizeJson({ outer: { a: 2, b: 1 } }))
+  })
+
+  it('disagrees when nested values differ', () => {
+    expect(
+      canonicalizeJson({ outer: { a: 1 } }),
+    ).not.toBe(canonicalizeJson({ outer: { a: 2 } }))
+  })
+})
+
+describe('apiSectionMatches', () => {
+  const sample = {
+    scopes: ['project-read', 'own-data'],
+    calls: [{ id: 'list-todos', handler: 'list-files', args: { path: 'todo/' } }],
+  }
+  const canonical = canonicalizeJson(sample)
+
+  it('accepts a body whose api section matches the stored canonical form', () => {
+    expect(apiSectionMatches(canonical, sample)).toBe(true)
+  })
+
+  it('accepts a body whose api section keys are reordered', () => {
+    expect(
+      apiSectionMatches(canonical, {
+        calls: [{ args: { path: 'todo/' }, handler: 'list-files', id: 'list-todos' }],
+        scopes: ['project-read', 'own-data'],
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects a body whose api section adds an unauthorised call', () => {
+    expect(
+      apiSectionMatches(canonical, {
+        scopes: ['project-read', 'own-data'],
+        calls: [
+          { id: 'list-todos', handler: 'list-files', args: { path: 'todo/' } },
+          // Attacker-injected call: same scopes, different handler
+          // binding. The fingerprint must catch this.
+          { id: 'exfiltrate', handler: 'read-file', args: { path: '${input.path}' } },
+        ],
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects a body that swaps the scopes member', () => {
+    expect(
+      apiSectionMatches(canonical, {
+        scopes: ['project-read', 'project-write'],
+        calls: sample.calls,
+      }),
+    ).toBe(false)
+  })
+
+  it('treats null body and a session canonicalised from null as a match', () => {
+    expect(apiSectionMatches(canonicalizeJson(null), null)).toBe(true)
+    expect(apiSectionMatches(canonicalizeJson(null), undefined)).toBe(true)
   })
 })

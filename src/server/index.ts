@@ -73,6 +73,7 @@ import {
   issueInstallSession,
   consumeInstallSession,
   approvedScopesMatch,
+  apiSectionMatches,
 } from './recipe-install-sessions'
 import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
 import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
@@ -1346,13 +1347,14 @@ app.post('/api/recipes/install', async (req, res) => {
     // -- Issue an install-session nonce --
     //
     // Bind the metadata KB just inspected (recipeId, recipeHash, the
-    // declared scopes from `recipe.api.scopes`) to a one-shot nonce.
-    // The nonce is woven into the install prompt below so the agent
-    // echoes it on `mark-installed`, where the handler verifies the
-    // body's approvedScopes / recipeHash match what KB stored here.
-    // Without this binding, any caller that can reach the API can
-    // mint a manifest with arbitrary scopes — see codex-review-
-    // response-2026-05-05.md §6.1.
+    // declared scopes, and the canonicalised api section) to a one-
+    // shot nonce. The nonce is woven into the install prompt below
+    // so the agent echoes it on `mark-installed`, where the handler
+    // verifies that the body's approvedScopes / recipeHash / api all
+    // match what KB stored here. Without this binding, any caller
+    // that can reach the API can mint a manifest with arbitrary
+    // scopes or handler bindings — see codex-review-response-
+    // 2026-05-05.md §6.1.
     const recipeIdForSession = String(metadata.recipeId)
     const recipeHashForSession = String((parsed as { hash?: unknown }).hash ?? '')
     const declaredScopes = (
@@ -1362,7 +1364,30 @@ app.post('/api/recipes/install', async (req, res) => {
       recipeId: recipeIdForSession,
       recipeHash: recipeHashForSession,
       approvedScopes: declaredScopes,
+      api: parsed.api ?? null,
     })
+    if (installNonce === null) {
+      // The in-memory session store is bounded; refuse new installs
+      // when it is full instead of growing without limit. The user-
+      // facing remedy is either to wait for in-flight installs to
+      // expire (5 min TTL) or to restart KovitoBoard, both of which
+      // free the slots. SessionManager has no public release API for
+      // a queued reservation today, so the reservation lingers until
+      // the next ensureSession call shifts it off — the leak is
+      // bounded by however many capacity-rejections happen before
+      // the next legitimate install for this agentId, which is
+      // small in practice and self-resolving.
+      apiLogger.warn(
+        { agentId, recipeId: recipeIdForSession },
+        'Recipe install rejected: install-session store at capacity',
+      )
+      res.status(503).json({
+        error:
+          'KovitoBoard has too many install sessions in flight. ' +
+          'Wait a few minutes for them to expire or restart the app, then try again.',
+      })
+      return
+    }
 
     // -- Build the v2.0 install prompt --
     //
@@ -1460,44 +1485,15 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } =
       validation.value
 
-    // -- Install-session check --
-    //
-    // The nonce is one-shot: lookup deletes the entry whether or not
-    // it is still valid, so a repeated call cannot replay the
-    // install. Idempotency for genuine retries is handled by the
-    // history-record dedup below — that path runs only after we
-    // rewrite the persisted manifest, so a legitimate retry of a
-    // never-completed install still has to pay the nonce check.
-    //
-    // We deliberately do not differentiate between "no such nonce",
-    // "expired nonce", and "approvedScopes / recipeHash mismatch"
-    // in the response message: the handler answers 403 in every
-    // case, and revealing which dimension failed would leak shape
-    // information about the nonce store.
-    const session = consumeInstallSession(installNonce)
-    if (
-      session === null ||
-      session.recipeId !== recipeIdParam ||
-      session.recipeHash !== recipeHash ||
-      !approvedScopesMatch(session.approvedScopes, approvedScopes)
-    ) {
-      apiLogger.warn(
-        { recipeId: recipeIdParam, appId, hasSession: session !== null },
-        'mark-installed rejected: install-session mismatch',
-      )
-      res.status(403).json({
-        error:
-          'Install session check failed. The nonce is unknown, expired, ' +
-          'or the body does not match what KB inspected at install time. ' +
-          'Restart the install via /api/recipes/install to obtain a fresh nonce.',
-      })
-      return
-    }
-
-    // Idempotency: if a history record with the same (recipeId,
+    // Idempotency first: if a history record with the same (recipeId,
     // appId, hash, action='install') already exists, return ok
-    // without rewriting state. The agent retried `mark-installed` —
-    // a perfectly normal recovery path.
+    // without consuming the nonce or rewriting state. The agent
+    // retried `mark-installed` — a perfectly normal recovery path.
+    // Doing the history check before nonce consumption is critical
+    // because the nonce is one-shot; the legitimate retry would
+    // otherwise hit `consumeInstallSession()` and get back null on
+    // the second call, and the handler would 403 a successful
+    // install that just happened to be acknowledged twice.
     const existingHistory = readRecipeHistory(fs)
     const alreadyRecorded = existingHistory.some(
       (h) =>
@@ -1511,6 +1507,39 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     )
     if (alreadyRecorded) {
       res.json({ ok: true })
+      return
+    }
+
+    // -- Install-session check --
+    //
+    // The nonce is one-shot: lookup deletes the entry whether or not
+    // it is still valid, so a repeated call cannot replay the
+    // install. The history-record dedup above already short-circuits
+    // legitimate retries before this point.
+    //
+    // We deliberately do not differentiate between "no such nonce",
+    // "expired nonce", and "approvedScopes / recipeHash / api
+    // mismatch" in the response message: the handler answers 403 in
+    // every case, and revealing which dimension failed would leak
+    // shape information about the nonce store.
+    const session = consumeInstallSession(installNonce)
+    if (
+      session === null ||
+      session.recipeId !== recipeIdParam ||
+      session.recipeHash !== recipeHash ||
+      !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !apiSectionMatches(session.apiCanonical, api)
+    ) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId, hasSession: session !== null },
+        'mark-installed rejected: install-session mismatch',
+      )
+      res.status(403).json({
+        error:
+          'Install session check failed. The nonce is unknown, expired, ' +
+          'or the body does not match what KB inspected at install time. ' +
+          'Restart the install via /api/recipes/install to obtain a fresh nonce.',
+      })
       return
     }
 
@@ -2259,6 +2288,7 @@ if (process.env.KB_E2E_MODE === '1') {
     const body = (req.body ?? {}) as Record<string, unknown>
     const { recipeId, recipeHash } = body
     const approvedScopes = body.approvedScopes
+    const apiSection = body.api
     if (typeof recipeId !== 'string' || recipeId.length === 0) {
       res.status(400).json({ error: 'recipeId must be a non-empty string' })
       return
@@ -2277,7 +2307,12 @@ if (process.env.KB_E2E_MODE === '1') {
       recipeId,
       recipeHash,
       approvedScopes: approvedScopes as Scope[],
+      api: apiSection ?? null,
     })
+    if (installNonce === null) {
+      res.status(503).json({ error: 'Install-session store at capacity' })
+      return
+    }
     res.json({ ok: true, installNonce })
   })
 }

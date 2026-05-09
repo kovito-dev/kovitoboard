@@ -115,17 +115,19 @@ async function installTestRecipe(
     { id: 'read-project-file', handler: 'read-file', args: { path: '${input.path}' } },
   ]
   const recipeHash = `e2e-test-hash-${Date.now()}`
+  const apiSection = { scopes, calls }
   // The fake-claude harness cannot run the install handover prompt,
   // so we mint a nonce through the KB_E2E_MODE-only test endpoint
   // instead of the real `/api/recipes/install` flow. The nonce is
-  // bound to the same recipeId / hash / scopes the production code
-  // would have stored, so the production mark-installed handler
+  // bound to the same recipeId / hash / scopes / api the production
+  // code would have stored, so the production mark-installed handler
   // accepts the call without any test-mode bypass at the auth check.
   const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
     data: {
       recipeId: TEST_RECIPE_ID,
       recipeHash,
       approvedScopes: scopes,
+      api: apiSection,
     },
   })
   expect(nonceRes.ok()).toBeTruthy()
@@ -162,8 +164,15 @@ test.describe('Recipe handler E2E', () => {
     // through the KB_E2E_MODE test seam.
     const scopes = ['project-read', 'own-data']
     const recipeHash = 'e2e-test-hash-001'
+    const apiSection = {
+      scopes,
+      calls: [
+        { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
+        { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },
+      ],
+    }
     const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
-      data: { recipeId: TEST_RECIPE_ID, recipeHash, approvedScopes: scopes },
+      data: { recipeId: TEST_RECIPE_ID, recipeHash, approvedScopes: scopes, api: apiSection },
     })
     expect(nonceRes.ok()).toBeTruthy()
     const { installNonce } = (await nonceRes.json()) as { installNonce: string }
@@ -178,13 +187,7 @@ test.describe('Recipe handler E2E', () => {
           recipeSource: 'sample',
           recipeHash,
           installNonce,
-          api: {
-            scopes,
-            calls: [
-              { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
-              { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },
-            ],
-          },
+          api: apiSection,
         },
       },
     )
