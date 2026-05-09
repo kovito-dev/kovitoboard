@@ -162,8 +162,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMENT_BODY: ${{ steps.compose.outputs.comment_body }}
+          # GITHUB_REPOSITORY is "owner/repo" — pass it via --repo so gh CLI
+          # does not need a local git context (we skip actions/checkout to
+          # keep this workflow lightweight).
+          REPO: ${{ github.repository }}
         run: |
-          gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$COMMENT_BODY"
 
       - name: Note skipped comment for fork PR
         if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == true
