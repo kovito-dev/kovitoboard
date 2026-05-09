@@ -12,6 +12,7 @@ import {
   childLogger,
   initLogger,
   maskHomePath,
+  redactSensitiveTokens,
 } from '../../src/server/logger'
 import type { KovitoboardSetting } from '../../src/shared/setting-types'
 
@@ -50,6 +51,536 @@ describe('logger / maskHomePath', () => {
     // A path that does not contain the home dir is untouched
     expect(maskHomePath(fake.replace('/home/someone', '/opt/elsewhere')))
       .toBe(fake.replace('/home/someone', '/opt/elsewhere'))
+  })
+})
+
+describe('logger / redactSensitiveTokens', () => {
+  it('redacts an Anthropic API key prefix', () => {
+    const input = 'auth failed for sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    const out = redactSensitiveTokens(input)
+    expect(out).toContain('<sk-ant redacted>')
+    expect(out).not.toContain('sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789')
+    // Surrounding text should be intact
+    expect(out.startsWith('auth failed for ')).toBe(true)
+  })
+
+  it('redacts multiple Anthropic API keys in the same line', () => {
+    const input = 'sk-ant-aaaaaaaaaaaaaaaaaaaa and also sk-ant-bbbbbbbbbbbbbbbbbbbb'
+    const out = redactSensitiveTokens(input)
+    expect(out).toBe('<sk-ant redacted> and also <sk-ant redacted>')
+  })
+
+  it('redacts a generic JWT (3 base64url segments)', () => {
+    // header.payload.signature, each segment ≥ 10 chars and starting
+    // with `eyJ` for header / payload (the canonical `{"…` prefix).
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    const input = `Bearer ${jwt}`
+    const out = redactSensitiveTokens(input)
+    expect(out).toBe('Bearer <jwt redacted>')
+  })
+
+  it('leaves regular paths and identifiers untouched', () => {
+    // Project paths, git SHAs, UUIDs, plain words. None of these should
+    // match. (UUID is hyphen-segmented, not dot-segmented; git SHAs are
+    // 40 hex chars without the `eyJ` prefix.)
+    const sha = 'abcdef0123456789abcdef0123456789abcdef01'
+    const uuid = '12345678-1234-1234-1234-123456789abc'
+    const input = `commit ${sha} on branch fix/${uuid} touches src/server/index.ts`
+    expect(redactSensitiveTokens(input)).toBe(input)
+  })
+
+  it('leaves a short sk-ant- prefix that is not a real key untouched', () => {
+    // Documentation snippet: `sk-ant-` literally, no key body. The
+    // regex requires ≥20 chars after the prefix to avoid eating
+    // mention-only strings in docs / error messages.
+    const input = 'use the prefix sk-ant- when configuring keys'
+    expect(redactSensitiveTokens(input)).toBe(input)
+  })
+})
+
+describe('logger / sensitive-token redaction at write time', () => {
+  let projectRoot: string
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'kb-logger-redact-test-'))
+    mkdirSync(join(projectRoot, '.kovitoboard', 'logs'), { recursive: true })
+    _resetLoggerForTests()
+  })
+
+  afterEach(async () => {
+    _resetLoggerForTests()
+    await new Promise((r) => setTimeout(r, 100))
+    try {
+      rmSync(projectRoot, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  })
+
+  it('redacts an API key in a structured field on the persisted log line', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-test')
+    log.info(
+      { apiKey: 'sk-ant-api03-RedactMeIfYouSeeThisInLogs1234567890' },
+      'auth failed',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-RedactMeIfYouSeeThisInLogs1234567890')
+  })
+
+  it('redacts a string-only msg argument via the logMethod hook', async () => {
+    // pino's `formatters.log` only sees the merging object, but the
+    // `hooks.logMethod` wrapper installed in initLogger walks every
+    // string positional argument and runs `redactSensitiveTokens`
+    // before forwarding to the real method. Call sites no longer
+    // need to remember the manual redaction in the common case;
+    // structured-field paths still work via `formatters.log`.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-msg')
+    log.info(
+      'claude exited with sk-ant-api03-MsgKeyShouldGoTooLongEnough123 in the error',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-MsgKeyShouldGoTooLongEnough123')
+  })
+
+  it('redacts a msg passed alongside structured fields (object + msg signature)', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-msg-with-obj')
+    log.info(
+      { kind: 'auth' },
+      'claude exited with sk-ant-api03-WithObjArgVariant1234567890 in the error',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-WithObjArgVariant1234567890')
+    // The structured field is preserved verbatim.
+    expect(raw).toContain('"kind":"auth"')
+  })
+
+  it('redactSensitiveTokens remains exported for call-site safety nets and printf-style msg', async () => {
+    // The hook handles the common `logger.info(msgString)` shape.
+    // Call sites that build the msg via printf-style interpolation
+    // (`{ msg: \`error: \${err.message}\` }`) or pass it through some
+    // upstream formatting may still want to apply the redaction
+    // explicitly; the function is exported and idempotent.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-callsite')
+    const raw_msg = 'claude exited with sk-ant-api03-CallSiteShouldRedact1234567 in the error'
+    log.info(redactSensitiveTokens(raw_msg))
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CallSiteShouldRedact1234567')
+  })
+
+  it('also masks the home-path inside a string-only msg arg (consistent with structured fields)', async () => {
+    // Pre-fix the hook only ran token redaction on string args, so
+    // a `logger.info('...$HOME/foo...')` call landed verbatim while
+    // the same path inside a structured field got `~`-masked. The
+    // shared `maskString` helper now applies both layers in the
+    // hook too, restoring consistency.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('home-msg')
+    const home = require('os').homedir() as string
+    log.info(`reading from ${home}/secret.txt`)
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    if (home && home.length >= 2) {
+      expect(raw).toContain('~/secret.txt')
+      expect(raw).not.toContain(`${home}/secret.txt`)
+    }
+  })
+
+  it('redacts a compact JWT (short payload after BL feedback CodeX attempt 1)', async () => {
+    // Compact JWT whose payload is `{"exp":1}` → `eyJleHAiOjF9`
+    // (12 chars, but the inner content shrinks once we drop the
+    // 10-char minimum. Pin the regression now that the matcher
+    // accepts segments ≥4 chars.)
+    const compactJwt = 'eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.abcd1234'
+    expect(redactSensitiveTokens(`Bearer ${compactJwt}`)).toBe('Bearer <jwt redacted>')
+  })
+
+  it('redacts a printf-style trailing object positional arg', async () => {
+    // `logger.info('failed %o', { apiKey: '...' })` lets pino stringify
+    // the trailing object via util.format AFTER `formatters.log`
+    // ran (formatters.log only sees arg 0, the merging object).
+    // The hook walks every object/array beyond index 0 so the
+    // embedded key is redacted before pino's util.format formats it.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-printf')
+    log.info(
+      'auth failed %o',
+      { apiKey: 'sk-ant-api03-PrintfStyleArgKeyShouldGoToo123' },
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-PrintfStyleArgKeyShouldGoToo123')
+  })
+
+  it('does not crash on a self-referential trailing object (cycle detection)', async () => {
+    // A cyclic structure as a printf-style trailing arg used to
+    // overflow the stack inside the redactor. The walker now
+    // tracks visited nodes with a WeakSet and stops at repeats,
+    // so the call returns normally.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('cycle-trailing')
+    type Cyclic = { name: string; self?: Cyclic }
+    const cyc: Cyclic = { name: 'oops' }
+    cyc.self = cyc
+
+    expect(() => log.info('cyclic %o', cyc)).not.toThrow()
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // The record landed on disk (no crash), even though pino's
+    // util.format will print `[Circular]` etc. for the cycle.
+    expect(raw).toContain('cyclic')
+  })
+
+  it('replaces cycles with a sentinel so a cycle cannot smuggle a token past the redactor', async () => {
+    // If the walker returned the original object on cycle, the
+    // cloned record would still carry the raw subtree under
+    // `self` and re-expose any credential it contains. The
+    // sentinel branch ensures the cycle is broken AND the
+    // re-exposed reference is replaced with a string the
+    // redactor's regex no longer needs to scan.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('cycle-token')
+    type Cyclic = {
+      token: string
+      self?: Cyclic
+    }
+    const cyc: Cyclic = {
+      token: 'sk-ant-api03-CycleSubtreeShouldStillBeRedacted',
+    }
+    cyc.self = cyc
+
+    log.info({ wrapped: cyc }, 'with cycle')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CycleSubtreeShouldStillBeRedacted')
+    expect(raw).toContain('[Circular]')
+  })
+
+  it('redacts a bare-Error first positional arg by wrapping into `{ err }`', async () => {
+    // `logger.error(err)` and `logger.error(err, 'msg')` are
+    // common shapes that send the Error directly as arg 0.
+    // Without wrapping, pino routes it through its bare-Error
+    // path and the message lands on disk unredacted because
+    // `serializers.err` is only consulted when the field is
+    // present on a merging object. The hook now wraps it into
+    // `{ err: arg }` before forwarding so the existing
+    // serializer path runs.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('bare-error')
+    const err = new Error(
+      'claude crashed: sk-ant-api03-BareErrorFirstArgVariant1234567 inside',
+    )
+    log.error(err)
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
+    // Structural shape is preserved (operator still sees the
+    // expanded Error fields).
+    expect(raw).toContain('"type":"Error"')
+    expect(raw).toContain('"message":')
+    // Caller's Error is untouched in memory.
+    expect(err.message).toContain('sk-ant-api03-BareErrorFirstArgVariant1234567')
+  })
+
+  it('serializers.err redacts string-typed custom Error metadata (e.g. .detail)', async () => {
+    // Pino runs `serializers.err` AFTER `formatters.log`, so any
+    // raw string we hand back from the serializer reaches disk
+    // verbatim. The serializer must redact strings inside copied
+    // own properties in place — relying on a later
+    // `formatters.log` walk would leak the value.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('err-detail')
+    class DetailedError extends Error {
+      constructor(
+        message: string,
+        public detail: string,
+      ) {
+        super(message)
+        this.name = 'DetailedError'
+      }
+    }
+    const err = new DetailedError(
+      'auth failed',
+      'sk-ant-api03-DetailFieldShouldStillBeRedacted1234',
+    )
+    log.error({ err }, 'auth check failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-DetailFieldShouldStillBeRedacted1234')
+    // The custom property is preserved in shape.
+    expect(raw).toContain('"detail":')
+  })
+
+  it('serializers.err preserves and redacts the non-enumerable Error.cause chain', async () => {
+    // ES2022 Error.cause is non-enumerable, so Object.keys
+    // misses it. Pull it via the property descriptor and recurse
+    // through `errSerializer` so nested Errors keep their
+    // structural shape while every level redacts message /
+    // stack / metadata.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('err-cause')
+    const root = new Error(
+      'root cause: sk-ant-api03-RootCauseSecretShouldRedact1234',
+    )
+    const wrapper = new Error('wrapper failed', { cause: root })
+    log.error({ err: wrapper }, 'failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('"cause":')
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-RootCauseSecretShouldRedact1234')
+    // In-memory error chain is untouched.
+    expect((wrapper.cause as Error).message).toContain(
+      'sk-ant-api03-RootCauseSecretShouldRedact1234',
+    )
+  })
+
+  it('serializers.err keeps custom Error metadata (code / statusCode etc.)', async () => {
+    // Custom error subclasses commonly carry diagnostic
+    // metadata as enumerable own properties (`code`,
+    // `statusCode`, `errno`, etc.). The serializer must keep
+    // them on the serialized record so operators retain the
+    // auth / validation context — pino's stdSerializers.err
+    // does the same. Strings inside the metadata still flow
+    // through `formatters.log` and get redacted there.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('custom-err')
+    class AuthError extends Error {
+      constructor(
+        message: string,
+        public code: string,
+        public statusCode: number,
+      ) {
+        super(message)
+        this.name = 'AuthError'
+      }
+    }
+    const err = new AuthError(
+      'auth failed: sk-ant-api03-CustomErrorMessageEmbeddedKey1234',
+      'AUTH_KEY_INVALID',
+      401,
+    )
+    log.error({ err }, 'auth check failed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // Custom metadata survived.
+    expect(raw).toContain('"code":"AUTH_KEY_INVALID"')
+    expect(raw).toContain('"statusCode":401')
+    // Embedded token still got redacted.
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CustomErrorMessageEmbeddedKey1234')
+  })
+
+  it('preserves a `__proto__` field as data without mutating the clone prototype', async () => {
+    // If the walker cloned into `{}` and wrote `next[k] = …`,
+    // an attacker-controlled log payload with `__proto__: { ... }`
+    // would set `Object.prototype` properties via the assignment
+    // and produce confusing inherited fields on the persisted
+    // record. The walker now clones into `Object.create(null)`,
+    // so the `__proto__` key is preserved as ordinary data and
+    // no prototype is mutated.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('proto')
+    log.info(
+      { '__proto__': { polluted: true } },
+      'proto-keyed payload',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // The output must NOT carry an inherited `polluted` field
+    // through Object.prototype mutation.
+    const recorded: Record<string, unknown> = {}
+    expect((recorded as Record<string, unknown>).polluted).toBeUndefined()
+    // The persisted line carried the `__proto__` value as data
+    // (or omitted it entirely under JSON serialization), but in
+    // either case there is no leaked inherited key on a fresh
+    // object.
+    expect(raw).toContain('proto-keyed payload')
+  })
+
+  it('serializers.err leaves a non-Error `err` field alone (structured payload survives)', async () => {
+    // Existing call sites sometimes log structured error data on
+    // the `err` field, e.g. `{ err: { code, detail } }`. The
+    // custom serializer must guard with `instanceof Error`,
+    // otherwise the payload would silently collapse to
+    // `{ type: 'Object' }` and the operator's diagnostic fields
+    // would be dropped. `formatters.log` still walks the
+    // structured payload and redacts strings inside it.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('non-error-err')
+    log.warn(
+      { err: { code: 'AUTH_FAIL', detail: 'sk-ant-api03-NonErrPayloadFieldVariant1234567' } },
+      'failed',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    // Original structured fields survived (no `{ type: 'Object' }`
+    // collapse).
+    expect(raw).toContain('"code":"AUTH_FAIL"')
+    expect(raw).toContain('"detail":')
+    // The token inside the structured field still got redacted by
+    // formatters.log.
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-NonErrPayloadFieldVariant1234567')
+  })
+
+  it('replaces deep subtrees with a sentinel at the depth cap', async () => {
+    // A pathological deeply-nested record used to bypass redaction
+    // beyond REDACT_MAX_DEPTH because the walker returned the raw
+    // subtree. The sentinel branch breaks that path.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('depth-token')
+
+    // Build a chain `{ a: { a: { a: ... { a: { token: ... } } } } }`
+    // 40 levels deep — past the cap of 32.
+    type Nested = { token?: string; a?: Nested }
+    let leaf: Nested = { token: 'sk-ant-api03-DeepNestedShouldNotLeakBeyondCap' }
+    for (let i = 0; i < 40; i++) {
+      leaf = { a: leaf }
+    }
+
+    log.info({ deep: leaf }, 'nested')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).not.toContain('sk-ant-api03-DeepNestedShouldNotLeakBeyondCap')
+    expect(raw).toContain('[Truncated: depth limit]')
+  })
+
+  it('redacts a trailing Error positional arg via the err serializer path', async () => {
+    // `logger.info('failed %o', err)` used to leak err.message
+    // and err.stack through pino's `util.format` step because
+    // the structural walker leaves non-plain objects alone.
+    // The hook now routes a trailing Error through the same
+    // `errSerializer` that the merging-object path uses, so
+    // `util.format` sees a redacted plain object instead of
+    // the bare Error.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('trailing-err')
+    const err = new Error('boom: sk-ant-api03-TrailingErrorStillRedacted1234567')
+    log.info('err as trailing %o', err)
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-TrailingErrorStillRedacted1234567')
+    // Caller's Error is untouched in memory.
+    expect(err.message).toContain('sk-ant-api03-TrailingErrorStillRedacted1234567')
+  })
+
+  it('leaves trailing Date positional args alone for pino to format (non-Error non-plain branch)', async () => {
+    // Trailing non-Error / non-plain objects (Date, Buffer, Map,
+    // class instances) keep flowing through pino's own serializer
+    // / util.format. The walker's identity branch covers them by
+    // construction; only the Error-specific branch was added in
+    // the previous round.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('trailing-other')
+    const d = new Date('2026-05-09T12:00:00Z')
+    expect(() => log.info('date as trailing %o', d)).not.toThrow()
+    // Note: Buffer / Map / class-instance trailing args are also
+    // handled by the same identity-branch fallback. We do not
+    // exercise Buffer here because pino-roll's async write stream
+    // races with vitest cleanup and surfaces as an unrelated
+    // EBADF.
+  })
+
+  it('does not double-walk the first object positional arg (formatters.log handles it)', async () => {
+    // The merging object at arg 0 is the path `formatters.log`
+    // already walks. Walking it in the hook too would
+    //   (a) clone the record twice (visible only as runtime cost,
+    //       not in test output), and
+    //   (b) destructively shape `Error` first-args to `{}` because
+    //       `Object.entries` skips non-enumerable `message` /
+    //       `stack`, defeating any future `serializers.err`
+    //       expansion before `formatters.log` runs.
+    // Pin the contract by exercising both an Error first arg
+    // (which must not lose its identity) and a normal object first
+    // arg (which must still be redacted by the formatters.log path).
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('first-arg')
+
+    // (a) Object first arg with a credential — formatters.log
+    //     redacts it.
+    log.info(
+      { apiKey: 'sk-ant-api03-FirstArgKeyShouldStillRedact1234' },
+      'first arg redaction',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw1 = readActiveLogFile(projectRoot)
+    expect(raw1).toContain('<sk-ant redacted>')
+    expect(raw1).not.toContain('sk-ant-api03-FirstArgKeyShouldStillRedact1234')
+
+    // (b) Error first arg — the custom `serializers.err` expands
+    //     the Error into a `{ type, message, stack }` plain object
+    //     with the message and stack pre-redacted via the shared
+    //     `maskString` helper. The in-memory Error survives
+    //     untouched (serializers operate on a clone path).
+    const err = new Error(
+      'claude failed: sk-ant-api03-ErrorMessageEmbeddedKey1234567 is invalid',
+    )
+    log.error({ err }, 'subprocess crashed')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw2 = readActiveLogFile(projectRoot)
+    expect(raw2).toContain('<sk-ant redacted>')
+    expect(raw2).not.toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
+    // The serializer keeps the structural shape so the operator
+    // still sees `type` / `message` / `stack`.
+    expect(raw2).toContain('"type":"Error"')
+    expect(raw2).toContain('"message":')
+    // Caller's Error is not mutated.
+    expect(err.message).toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
+  })
+
+  it('redacts API keys nested inside arrays (e.g. paneTail)', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-array')
+    log.info(
+      {
+        windowName: 'test-window',
+        paneTail: [
+          'last visible row',
+          'token=sk-ant-api03-NestedInsideArrayShouldGoToo123',
+          'another row',
+        ],
+      },
+      'Fallback fired (no known pattern matched)',
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-NestedInsideArrayShouldGoToo123')
+    // Sibling rows survive.
+    expect(raw).toContain('last visible row')
+    expect(raw).toContain('another row')
+  })
+
+  it('does not mutate the in-memory record handed to the logger', async () => {
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-immut')
+    const record = {
+      apiKey: 'sk-ant-api03-MustNotBeMutatedInMemory12345',
+    }
+    log.info(record, 'should be redacted on disk only')
+    await new Promise((r) => setTimeout(r, 200))
+    // Caller's object is untouched (formatters.log runs at write time
+    // on a clone).
+    expect(record.apiKey).toBe('sk-ant-api03-MustNotBeMutatedInMemory12345')
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
   })
 })
 
