@@ -241,8 +241,13 @@ jobs:
           # the pipe early, sending SIGPIPE to gh; under bash's default
           # `pipefail`, SIGPIPE turns into a non-zero exit and fails the
           # step. Materializing the list first avoids that fragility.
+          #
+          # Restrict the candidate set to comments authored by the Actions
+          # bot so a different PR participant cannot impersonate the
+          # marker by copying the HTML comment into their own message and
+          # have this step overwrite their comment with bot content.
           ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id')
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body // "" | startswith("<!-- pr-language-check-fail -->"))) | .id')
           EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
 
           if [ -n "$EXISTING" ]; then
@@ -281,8 +286,12 @@ jobs:
           # Same SIGPIPE-safe pattern as the post step: materialize the full
           # ID list before selecting the first one with awk (which buffers
           # the pipeline output rather than closing the pipe early).
+          # Restrict the candidate set to comments authored by the Actions
+          # bot so a different PR participant cannot impersonate the
+          # marker by copying the HTML comment into their own message and
+          # have this step overwrite it.
           ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.body // "" | startswith("<!-- pr-language-check-fail -->")) | .id')
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body // "" | startswith("<!-- pr-language-check-fail -->"))) | .id')
           EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
 
           if [ -z "$EXISTING" ]; then
