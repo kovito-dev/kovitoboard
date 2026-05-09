@@ -98,6 +98,20 @@ function shouldAttachToken(input: RequestInfo | URL): boolean {
   return target.pathname === API_PATH || target.pathname.startsWith(API_PATH_PREFIX)
 }
 
+/**
+ * Detect the launch-token challenge in a 401 response. The server
+ * emits `WWW-Authenticate: KbLaunchToken` exclusively from the auth
+ * middleware's token-mismatch path; no other code path sends that
+ * scheme, so its presence is sufficient evidence that the failure
+ * was about a stale launch token (versus some hypothetical future
+ * per-route permission check that would simply omit the header).
+ */
+function isLaunchTokenChallenge(res: Response): boolean {
+  const value = res.headers.get('WWW-Authenticate')
+  if (!value) return false
+  return value.split(',').some((scheme) => scheme.trim().split(/\s+/)[0] === 'KbLaunchToken')
+}
+
 function readReloadMarker(): boolean {
   try {
     return sessionStorage.getItem(RELOAD_MARKER_KEY) === '1'
@@ -225,7 +239,13 @@ export function kbFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
     headers.set('X-Kovitoboard-Token', getLaunchToken())
   }
   return fetch(input, { ...init, headers }).then((res) => {
-    if (res.status === 401) {
+    // Reload only on a launch-token 401 (server signals it via the
+    // `WWW-Authenticate: KbLaunchToken` header). A 401 without that
+    // marker is treated as a regular auth failure — for example, a
+    // future per-route permission check — and surfaced to the
+    // caller so the UI can show a meaningful error instead of
+    // bouncing the whole page.
+    if (res.status === 401 && isLaunchTokenChallenge(res)) {
       handleStaleTokenResponse()
     } else if (res.ok) {
       // A normal request succeeded after a reload — clear the marker

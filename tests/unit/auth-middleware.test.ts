@@ -41,6 +41,12 @@ function makeRes(): ResponseRecorder {
     res: {} as Response,
   }
   recorder.res = {
+    setHeader(_name: string, _value: string) {
+      // No-op for the simple guard tests; the dedicated header
+      // assertion test below builds its own res with a recording
+      // setHeader.
+      return recorder.res
+    },
     status(code: number) {
       recorder.statusCode = code
       return recorder.res
@@ -182,6 +188,43 @@ describe('createTokenAndOriginGuard', () => {
     )
     expect(next.called).toBe(false)
     expect(recorder.statusCode).toBe(403)
+  })
+
+  it('accepts http://[::1]:<port> (IPv6 loopback)', () => {
+    const recorder = makeRes()
+    const next = makeNext()
+    guard(
+      makeReq({
+        'x-kovitoboard-token': SAMPLE_TOKEN,
+        origin: 'http://[::1]:5173',
+      }),
+      recorder.res,
+      next.fn,
+    )
+    expect(next.called).toBe(true)
+  })
+
+  it('emits the WWW-Authenticate: KbLaunchToken header on a 401', () => {
+    const setHeaderCalls: Array<[string, string]> = []
+    const recorder = makeRes()
+    recorder.res = {
+      ...recorder.res,
+      setHeader(name: string, value: string) {
+        setHeaderCalls.push([name, value])
+      },
+      status(code: number) {
+        recorder.statusCode = code
+        return recorder.res
+      },
+      json(body: unknown) {
+        recorder.jsonBody = body
+        return recorder.res
+      },
+    } as unknown as Response
+    const next = makeNext()
+    guard(makeReq({ origin: 'http://127.0.0.1:5173' }), recorder.res, next.fn)
+    expect(recorder.statusCode).toBe(401)
+    expect(setHeaderCalls).toContainEqual(['WWW-Authenticate', 'KbLaunchToken'])
   })
 })
 

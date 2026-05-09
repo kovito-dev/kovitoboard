@@ -56,6 +56,16 @@ import { timingSafeEqual } from 'crypto'
 
 const TOKEN_HEADER = 'x-kovitoboard-token'
 const TOKEN_QUERY_KEY = 'token'
+/**
+ * Token-stale marker emitted as a `WWW-Authenticate` response header
+ * whenever the launch token check fails. The renderer's kbFetch
+ * helper reloads the page only when this exact value is present, so
+ * a future application-level 401 (e.g. an in-app permission check)
+ * can return 401 without accidentally triggering the launch-token
+ * reload flow. Format: a bespoke scheme name (`KbLaunchToken`)
+ * because launch-token authentication is not RFC 7235 Bearer.
+ */
+const TOKEN_AUTH_SCHEME = 'KbLaunchToken'
 
 /**
  * Required token shape: 32 lowercase hex characters (128 bits of
@@ -73,13 +83,17 @@ const TOKEN_FORMAT_RE = /^[0-9a-f]{32}$/
  * Origin allowlist regex. Matches:
  *   http://localhost:<port>
  *   http://127.0.0.1:<port>
+ *   http://[::1]:<port>
  *
  * Port is required because both supervisor children always bind to a
- * concrete port. https / IPv6 [::1] are intentionally excluded — the
- * supervisor does not serve over them today and adding them would
- * widen the trust set without a corresponding need.
+ * concrete port. The supervisor binds to IPv4 loopback (`127.0.0.1`),
+ * but a browser running on an IPv6-first host can resolve `localhost`
+ * to `::1` and produce an `Origin: http://[::1]:<port>` header for
+ * its proxied API calls; rejecting that origin would break perfectly
+ * legitimate same-machine usage. https is intentionally excluded —
+ * the supervisor does not serve TLS today.
  */
-const ALLOWED_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/
+const ALLOWED_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):\d+$/
 
 /**
  * Resolve the expected per-launch token from the environment, throwing
@@ -158,6 +172,11 @@ export function createTokenAndOriginGuard(expectedToken: string) {
     const headerValue = req.headers[TOKEN_HEADER]
     const headerToken = Array.isArray(headerValue) ? headerValue[0] : headerValue
     if (!tokensMatch(headerToken, expectedToken)) {
+      // The renderer keys its stale-token reload off the
+      // `WWW-Authenticate` scheme so that an unrelated 401 from a
+      // future per-route permission check can coexist without
+      // bouncing the page back to a full reload.
+      res.setHeader('WWW-Authenticate', TOKEN_AUTH_SCHEME)
       res.status(401).json({ error: 'Authentication required' })
       return
     }
@@ -212,4 +231,5 @@ export const __testing = {
   TOKEN_HEADER,
   TOKEN_QUERY_KEY,
   ALLOWED_ORIGIN_RE,
+  TOKEN_AUTH_SCHEME,
 }

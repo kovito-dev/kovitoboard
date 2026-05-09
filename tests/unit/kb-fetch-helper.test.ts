@@ -111,7 +111,9 @@ describe('kbFetch', () => {
 
   it('triggers exactly one reload on the first 401 and sets the marker', async () => {
     const { kbFetch } = await loadFresh()
-    const fetchMock = makeFetchMock(async () => new Response('', { status: 401 }))
+    const fetchMock = makeFetchMock(async () =>
+      new Response('', { status: 401, headers: { 'WWW-Authenticate': 'KbLaunchToken' } }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     // Three concurrent in-flight 401s should still produce only one reload.
@@ -130,7 +132,9 @@ describe('kbFetch', () => {
   it('shows a fatal-error overlay on the second 401 instead of looping', async () => {
     const { kbFetch } = await loadFresh()
     sessionStorage.setItem(RELOAD_MARKER_KEY, '1')
-    const fetchMock = makeFetchMock(async () => new Response('', { status: 401 }))
+    const fetchMock = makeFetchMock(async () =>
+      new Response('', { status: 401, headers: { 'WWW-Authenticate': 'KbLaunchToken' } }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     await kbFetch('/api/version')
@@ -195,6 +199,37 @@ describe('kbFetch', () => {
 
     expect(reloadMock).not.toHaveBeenCalled()
     expect(sessionStorage.getItem(RELOAD_MARKER_KEY)).toBeNull()
+  })
+
+  it('does NOT reload on a 401 without WWW-Authenticate: KbLaunchToken', async () => {
+    const { kbFetch } = await loadFresh()
+    // Simulate a future per-route permission check that returns 401
+    // without the launch-token marker. The renderer should pass the
+    // 401 through to the caller instead of reloading.
+    const fetchMock = makeFetchMock(async () => new Response('', { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await kbFetch('/api/version')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    expect(reloadMock).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(RELOAD_MARKER_KEY)).toBeNull()
+  })
+
+  it('reloads on 401 with WWW-Authenticate: KbLaunchToken', async () => {
+    const { kbFetch } = await loadFresh()
+    const fetchMock = makeFetchMock(async () =>
+      new Response('', {
+        status: 401,
+        headers: { 'WWW-Authenticate': 'KbLaunchToken' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await kbFetch('/api/version')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    expect(reloadMock).toHaveBeenCalledTimes(1)
   })
 })
 
