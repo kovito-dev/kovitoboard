@@ -179,6 +179,24 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).not.toContain('sk-ant-api03-CallSiteShouldRedact1234567')
   })
 
+  it('also masks the home-path inside a string-only msg arg (consistent with structured fields)', async () => {
+    // Pre-fix the hook only ran token redaction on string args, so
+    // a `logger.info('...$HOME/foo...')` call landed verbatim while
+    // the same path inside a structured field got `~`-masked. The
+    // shared `maskString` helper now applies both layers in the
+    // hook too, restoring consistency.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('home-msg')
+    const home = require('os').homedir() as string
+    log.info(`reading from ${home}/secret.txt`)
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    if (home && home.length >= 2) {
+      expect(raw).toContain('~/secret.txt')
+      expect(raw).not.toContain(`${home}/secret.txt`)
+    }
+  })
+
   it('redacts a compact JWT (short payload after BL feedback CodeX attempt 1)', async () => {
     // Compact JWT whose payload is `{"exp":1}` → `eyJleHAiOjF9`
     // (12 chars, but the inner content shrinks once we drop the

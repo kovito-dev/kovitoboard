@@ -103,6 +103,31 @@ export function redactSensitiveTokens(input: string): string {
 }
 
 /**
+ * Build a string redactor that applies both home-path masking and
+ * credential token redaction in a single substitution pass. Used
+ * both by the structural walker (`buildLogRedactor`) and by the
+ * `hooks.logMethod` wrapper for string positional args, so the
+ * two redaction code paths can never diverge — every string that
+ * lands on disk gets the same two substitutions in the same
+ * order.
+ */
+function buildStringRedactor(): (s: string) => string {
+  const home = homedir()
+  // Honour the safety check used by maskHomePath: no usable home
+  // directory means we skip the home-path layer (CI env with
+  // `HOME=/`).
+  const homeUsable = !!home && home.length >= 2
+  const homePattern = homeUsable ? new RegExp(escapeRegExp(home), 'g') : null
+
+  return (s: string): string => {
+    let out = s
+    if (homePattern) out = out.replace(homePattern, '~')
+    out = redactSensitiveTokens(out)
+    return out
+  }
+}
+
+/**
  * Single-pass walker that applies every active redaction (home-path
  * mask + credential token redaction) to every string-typed value
  * inside a log record. Visiting the record once and applying both
@@ -132,21 +157,9 @@ export function redactSensitiveTokens(input: string): string {
  */
 const REDACT_MAX_DEPTH = 32
 
-function buildLogRedactor(): (obj: Record<string, unknown>) => Record<string, unknown> {
-  const home = homedir()
-  // Honour the safety check used by maskHomePath: no usable home
-  // directory means we skip the home-path layer (CI env with
-  // `HOME=/`).
-  const homeUsable = !!home && home.length >= 2
-  const homePattern = homeUsable ? new RegExp(escapeRegExp(home), 'g') : null
-
-  const replaceString = (s: string): string => {
-    let out = s
-    if (homePattern) out = out.replace(homePattern, '~')
-    out = redactSensitiveTokens(out)
-    return out
-  }
-
+function buildLogRedactor(
+  replaceString: (s: string) => string,
+): (obj: Record<string, unknown>) => Record<string, unknown> {
   const visit = (
     value: unknown,
     seen: WeakSet<object>,
@@ -234,7 +247,8 @@ export async function initLogger(
     { stream: fileStream, level: config.level },
   ]
 
-  const maskLog = buildLogRedactor()
+  const maskString = buildStringRedactor()
+  const maskLog = buildLogRedactor(maskString)
 
   rootLogger = pino(
     {
@@ -281,7 +295,14 @@ export async function initLogger(
           for (let i = 0; i < args.length; i++) {
             const arg = args[i]
             if (typeof arg === 'string') {
-              args[i] = redactSensitiveTokens(arg)
+              // Use the shared string redactor so msg-string args
+              // get the same home-path mask + token redaction as
+              // every string inside `formatters.log`. Without this
+              // alignment, an absolute home path inside a plain
+              // `logger.info('...')` call would land verbatim
+              // while the same string nested in a structured
+              // field would be `~`-masked.
+              args[i] = maskString(arg)
             } else if (i > 0 && arg !== null && typeof arg === 'object') {
               args[i] = maskLog(arg as Record<string, unknown>)
             }
