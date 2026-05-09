@@ -108,11 +108,30 @@ export function filterExcludedEntries<T extends { path: string }>(
 export interface ScopeValidationResult {
   ok: boolean
   failedCode?: HandlerErrorCode
+  /**
+   * Fully resolved absolute path of the validated argument, computed
+   * once inside the dispatcher so handlers do not have to (and must
+   * not) re-derive it from `projectRoot + input.path`. Set only when
+   * `ok === true`. The dispatcher threads this onto `HandlerContext`
+   * so path-bound handlers consume the same physical path that
+   * passed scope/exclusion checks. Closes the scope-escape gap that
+   * arose when a handler re-resolved a relative argument against
+   * `projectRoot` regardless of which scope had matched, and
+   * narrows the symlink-swap race window between validation and
+   * the subsequent fs operation.
+   */
+  resolvedPath?: string
 }
 
 /**
  * Validate that a path argument is within an approved scope's region
  * and does not match the exclusion list.
+ *
+ * On success returns `{ ok: true, resolvedPath }` so the dispatcher
+ * can hand the physical path to the handler verbatim. Path-bound
+ * handlers (`list-files`, `read-file`, `write-file`) must consume
+ * `HandlerContext.resolvedPath` and never re-join the raw `input.path`
+ * onto `context.projectRoot`.
  *
  * @param rawPath - Path argument received by the handler (relative or absolute)
  * @param approvedScopes - Scopes approved by the user at install time
@@ -182,7 +201,7 @@ export function validatePathForScope(
         if (isForbidden(physical, projectRootResolved)) {
           continue // Try next scope
         }
-        return { ok: true }
+        return { ok: true, resolvedPath: physical }
       }
       continue // Not CLAUDE.md, try next scope
     }
@@ -197,7 +216,7 @@ export function validatePathForScope(
       return { ok: false, failedCode: 'PathForbidden' }
     }
 
-    return { ok: true }
+    return { ok: true, resolvedPath: physical }
   }
 
   // No scope passed the region check

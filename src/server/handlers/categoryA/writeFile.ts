@@ -65,7 +65,15 @@ export const writeFileHandler: HandlerDef<WriteFileInput, WriteFileOutput> = {
     input: WriteFileInput,
     context: HandlerContext,
   ): Promise<HandlerResponse<WriteFileOutput>> => {
-    const absPath = path.join(context.projectRoot, input.path)
+    // Use the physical path the dispatcher resolved during scope
+    // validation. Re-joining `context.projectRoot + input.path`
+    // here would bypass the per-scope root (e.g. `own-data` lives
+    // under `app/data/<appId>/`, not the project root) and re-open
+    // the symlink-swap window between validate and write.
+    if (!context.resolvedPath) {
+      return handlerError('Internal', 'write-file requires a dispatcher-resolved path')
+    }
+    const absPath = context.resolvedPath
     const encoding = input.encoding ?? 'utf-8'
     const createDirs = input.createDirs ?? false
 
