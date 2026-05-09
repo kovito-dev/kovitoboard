@@ -201,17 +201,24 @@ export async function initLogger(
       },
       hooks: {
         // pino's `formatters.log` only sees the merging object, not
-        // the trailing string-only msg argument. Without this hook,
+        // the trailing positional arguments. Without this hook,
         // `logger.info('text with sk-ant-... inline')` persists the
-        // token verbatim. Intercept every level method, redact each
-        // string positional arg in place, and forward to the real
-        // method so structured-arg paths and child-binding behavior
-        // stay identical.
+        // token verbatim, and printf-style interpolation such as
+        // `logger.info('failed %o', { apiKey: '…' })` also leaks
+        // through pino's internal `util.format` step. Intercept
+        // every level method, redact each string positional arg in
+        // place, and walk every object/array/Error positional arg
+        // through the same record redactor used by
+        // `formatters.log`. The redactor returns a fresh structure
+        // (the caller's object is not mutated, matching the
+        // formatters.log contract).
         logMethod(args, method) {
           for (let i = 0; i < args.length; i++) {
             const arg = args[i]
             if (typeof arg === 'string') {
               args[i] = redactSensitiveTokens(arg)
+            } else if (arg !== null && typeof arg === 'object') {
+              args[i] = maskLog(arg as Record<string, unknown>)
             }
           }
           // pino's typing for the hook expects the rest-spread call.

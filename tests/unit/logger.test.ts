@@ -188,6 +188,35 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(redactSensitiveTokens(`Bearer ${compactJwt}`)).toBe('Bearer <jwt redacted>')
   })
 
+  it('redacts an object positional arg (e.g. printf-style %o interpolation)', async () => {
+    // `logger.info('failed %o', { apiKey: '...' })` lets pino stringify
+    // the trailing object via util.format. Without the hook walking
+    // object positional args, the embedded key would land on disk
+    // even though it was never inside the merging object that
+    // `formatters.log` saw.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('redact-printf')
+    log.info(
+      'auth failed %o',
+      { apiKey: 'sk-ant-api03-PrintfStyleArgKeyShouldGoToo123' },
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-PrintfStyleArgKeyShouldGoToo123')
+  })
+
+  // Note on Error positional args: Pino's default serializer
+  // collapses Error instances to `{}` because `message` / `stack`
+  // are non-enumerable. To redact credentials inside Error
+  // messages, KovitoBoard would need to opt into pino's
+  // `serializers.err` (or equivalent) so the Error is first
+  // expanded into `{ type, message, stack }` strings that the
+  // redactor can walk. That is a separate logging-shape decision;
+  // for now, callers that want Error details on disk pass them as
+  // structured fields (e.g. `{ errMessage: err.message }`), which
+  // does run through the redactor.
+
   it('redacts API keys nested inside arrays (e.g. paneTail)', async () => {
     await initLogger(projectRoot, baseSetting())
     const log = childLogger('redact-array')
