@@ -1980,20 +1980,20 @@ app.get('/api/artifact/raw', (req, res) => {
 // Mount user-defined API routes from app/api/
 await mountAppApiRoutes(app, fs)
 
-// Production: serve built static files
-app.use(express.static(join(__dirname, '../../dist')))
-
-// Onboarding redirect: redirect to /onboarding if not completed
-app.use(createOnboardingRedirect(fs))
-
-// In prod mode, the SPA fallback hands the renderer a copy of
-// `dist/index.html` whose `<!-- KB:LAUNCH_TOKEN_META -->` placeholder
-// has been replaced with the real token meta tag. The Vite dev server
-// performs the same substitution through its `kb-launch-token-injector`
-// plugin (`vite.config.ts`); this branch is only reachable for `npm
-// run prod` / packaged distributions where Vite is not in the loop.
-// We read and substitute once at boot so the per-request hot path is
-// just `res.send(string)`.
+// Production: serve built static files. `index: false` is critical
+// here — without it Express short-circuits `GET /` (and `GET
+// /index.html`) by sending the on-disk `dist/index.html` directly,
+// which still contains the `<!-- KB:LAUNCH_TOKEN_META -->` placeholder
+// that the SPA fallback below replaces with the real token meta tag.
+// Letting the static middleware win would boot the renderer without a
+// token, and every `/api/*` call would fail with 401 until the user
+// manually reloaded.
+//
+// `index: false` only suppresses directory-default `index.html`
+// resolution (e.g. `GET /` falling through to `dist/index.html`); it
+// does NOT block an explicit `GET /index.html`. The dedicated route
+// below catches that case so a bookmark or curl that targets the file
+// by name still receives the substituted HTML.
 const distIndexPath = join(__dirname, '../../dist/index.html')
 const distIndexCache: string | null = (() => {
   if (process.env.KOVITOBOARD_MODE !== 'prod') return null
@@ -2011,7 +2011,27 @@ const distIndexCache: string | null = (() => {
   }
 })()
 
-// SPA fallback: serve index.html for all non-API, non-WS routes
+app.get('/index.html', (_req, res) => {
+  if (distIndexCache !== null) {
+    res.type('html').send(distIndexCache)
+    return
+  }
+  res.sendFile(distIndexPath)
+})
+
+app.use(express.static(join(__dirname, '../../dist'), { index: false }))
+
+// Onboarding redirect: redirect to /onboarding if not completed
+app.use(createOnboardingRedirect(fs))
+
+// SPA fallback: serve index.html for all non-API, non-WS routes.
+// In prod mode the renderer receives a copy of `dist/index.html`
+// whose `<!-- KB:LAUNCH_TOKEN_META -->` placeholder has been replaced
+// with the real token meta tag (see distIndexCache above). The Vite
+// dev server performs the same substitution through its
+// `kb-launch-token-injector` plugin (`vite.config.ts`); this branch
+// is only reachable for `npm run prod` / packaged distributions
+// where Vite is not in the loop.
 // Express 5 requires named wildcard parameters (path-to-regexp v8)
 app.get('{*path}', (req, res) => {
   if (req.path.startsWith('/api')) {

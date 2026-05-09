@@ -6,36 +6,48 @@
 /**
  * Per-launch token authentication for HTTP and WebSocket entry points.
  *
- * Threat model
- * ------------
+ * Threat model (narrow)
+ * ---------------------
  * KovitoBoard is a local-first tool that runs without an authentication
  * layer in front of its privileged HTTP API, WebSocket bridge, and
  * admin restart/stop endpoints. Pinning the listeners to 127.0.0.1
- * (PR #14 / supervisor-startup §5.9.3) closes the LAN exposure but
- * leaves a same-host attack surface: any other process on the machine,
- * and any browser tab pointed at a malicious origin, can still reach
- * the loopback ports. This middleware adds a per-launch token so:
+ * (PR #14 / supervisor-startup §5.9.3) closes the LAN exposure, but
+ * any browser tab pointed at a different origin on the same machine
+ * (`http://attacker.example`, a stale tab from another local app, etc.)
+ * can still issue cross-origin fetches and WebSocket upgrades against
+ * the loopback ports. This middleware closes that specific gap by
+ * requiring:
  *
- *   - Cross-origin requests from a malicious page are rejected because
- *     they cannot synthesize the `X-Kovitoboard-Token` header (CORS
- *     forbids custom headers without a successful preflight against
- *     our Origin allowlist).
- *   - Direct fetches that bypass the browser (curl from a co-resident
- *     process) are rejected because they cannot read the token, which
- *     only travels through the env var of the supervisor's children
- *     and the meta tag of the Vite-served HTML.
- *   - The token rotates on every supervisor (re)launch — including
- *     SIGUSR2 restarts — so a stolen token is invalidated by a reboot.
+ *   - A loopback `Origin` (or no Origin) on every privileged HTTP
+ *     request and every WebSocket upgrade. Browsers cannot lie about
+ *     `Origin`, so a tab loaded from `http://attacker.example` is
+ *     rejected at the boundary.
+ *   - A per-launch token on every privileged HTTP request and every
+ *     WebSocket upgrade. Because browsers also enforce CORS on custom
+ *     headers, a malicious origin cannot ride an existing user
+ *     session by attaching `X-Kovitoboard-Token` from script.
  *
- * Policy
- * ------
- * The token is mandatory for every HTTP route mounted under
- * `verifyTokenAndOrigin` and for the WebSocket upgrade. The Origin
- * header, when present, must match the loopback allowlist; absent
- * Origin (curl, server-to-server) is allowed only when the token
- * itself is supplied — a captured token has no value to an attacker
- * without also breaching the same-host trust boundary that the
- * loopback bind already enforces.
+ * Out of scope (what this middleware does NOT defend against)
+ * ----------------------------------------------------------
+ * The launch token is delivered to the renderer through a `<meta>` tag
+ * embedded into `index.html`, and the HTML itself is served without
+ * authentication so the renderer can bootstrap. A malicious process
+ * already running on the same machine (or a recipe app misbehaving
+ * inside its sandbox) can therefore read the token by issuing
+ * `GET /` and parsing the meta tag, then forge any privileged call.
+ * Defending against co-resident hostile processes requires a different
+ * transport (Unix-domain socket, Electron-style IPC, OS-level user
+ * scoping) and is intentionally deferred. The current goal is to shrink
+ * the attack surface to "another local user's process explicitly
+ * loaded our HTML", not to provide capability-style isolation.
+ *
+ * Token rotation
+ * --------------
+ * The supervisor mints a fresh token on every launch — including each
+ * SIGUSR2-driven restart — so any token captured before a reboot is
+ * invalidated when the server reboots. Already-open browsers fall back
+ * to a stale token; the renderer detects the resulting 401 and forces
+ * a full reload to pick up the new HTML / new meta tag.
  */
 
 import type { Request, Response, NextFunction } from 'express'

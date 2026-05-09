@@ -30,6 +30,18 @@ const META_TAG_NAME = 'kb-launch-token'
 let cachedToken: string | null = null
 
 /**
+ * One-shot guard for the post-restart full-page reload triggered by a
+ * stale-token 401. Multiple in-flight fetches that all fail with 401
+ * must not all schedule a reload, otherwise the page bounces several
+ * times in quick succession before the new HTML can finish loading.
+ * Set to `true` the first time we react to a 401 and never reset for
+ * the remainder of this document's lifetime — the reload itself
+ * replaces the document, which gives us a fresh module instance with
+ * `false` again.
+ */
+let reloadScheduled = false
+
+/**
  * Read the per-launch token from the DOM. The `<meta>` tag is set by
  * the Vite plugin in dev and by the Express prod fallback in
  * production; both insert exactly the same hex string. Cached after
@@ -55,11 +67,37 @@ export function getLaunchToken(): string {
  * supplies a `headers` object that already sets the token (e.g. for a
  * unit test), our value takes precedence — the production token is
  * the one the server expects.
+ *
+ * A 401 response is treated as a stale-token signal: the supervisor
+ * rotates the launch token on every restart, so an already-open
+ * renderer keeps using the previous value after a SIGUSR2-driven
+ * restart and every API call lands as 401 until the document is
+ * reloaded. We schedule a single full-page reload the first time we
+ * see 401 — the new HTML carries the new meta tag, and subsequent
+ * fetches resume normally. The guard `reloadScheduled` avoids
+ * stacking multiple reloads when many in-flight requests all fail at
+ * once. We do not reload on 403 (Origin-allowlist failures are
+ * configuration bugs, not stale-token symptoms).
  */
 export function kbFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers ?? undefined)
   headers.set('X-Kovitoboard-Token', getLaunchToken())
-  return fetch(input, { ...init, headers })
+  return fetch(input, { ...init, headers }).then((res) => {
+    if (res.status === 401 && !reloadScheduled && typeof location !== 'undefined') {
+      reloadScheduled = true
+      // Defer the reload so the awaiting `.then` chain can observe the
+      // 401 (some callers branch on status code before the reload
+      // navigation actually replaces the document).
+      setTimeout(() => {
+        try {
+          location.reload()
+        } catch {
+          /* noop — running in a test environment without a real document */
+        }
+      }, 0)
+    }
+    return res
+  })
 }
 
 /**
