@@ -69,6 +69,12 @@ import {
 import { readAppManifest } from './services/app-manifest'
 import { buildAppRemovalPrompt } from '../shared/app-removal-prompt'
 import { readRecipeHistory, appendRecipeHistory, generateHistoryId } from './recipe-history'
+import {
+  issueInstallSession,
+  consumeInstallSession,
+  approvedScopesMatch,
+  apiSectionMatches,
+} from './recipe-install-sessions'
 import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
 import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
@@ -83,6 +89,7 @@ import { validateApiSection } from './recipe/apiTypes'
 import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
+import type { Scope } from './handlers/types'
 import { listFilesHandler } from './handlers/categoryA/listFiles'
 import { readFileHandler } from './handlers/categoryA/readFile'
 import { writeFileHandler } from './handlers/categoryA/writeFile'
@@ -1337,16 +1344,81 @@ app.post('/api/recipes/install', async (req, res) => {
       inspection = await inspectRecipe(parsed as unknown as Parameters<typeof inspectRecipe>[0])
     }
 
+    // -- Issue an install-session nonce --
+    //
+    // Bind the metadata KB just inspected (recipeId, recipeHash, the
+    // declared scopes, and the canonicalised api section) to a one-
+    // shot nonce. The nonce is woven into the install prompt below
+    // so the agent echoes it on `mark-installed`, where the handler
+    // verifies that the body's approvedScopes / recipeHash / api all
+    // match what KB stored here. Without this binding, any caller
+    // that can reach the API can mint a manifest with arbitrary
+    // scopes or handler bindings — see codex-review-response-
+    // 2026-05-05.md §6.1.
+    const recipeIdForSession = String(metadata.recipeId)
+    const recipeHashForSession = String((parsed as { hash?: unknown }).hash ?? '')
+    const declaredScopes = (
+      (parsed.api as { scopes?: unknown } | undefined)?.scopes ?? []
+    ) as Scope[]
+    const issueResult = issueInstallSession({
+      recipeId: recipeIdForSession,
+      recipeHash: recipeHashForSession,
+      recipeVersion: String(metadata.version ?? ''),
+      recipeSource: recipeSource as string,
+      approvedScopes: declaredScopes,
+      api: parsed.api ?? null,
+    })
+    if (!issueResult.ok) {
+      if (issueResult.reason === 'invalid_api') {
+        // The recipe parser already validates `api`'s shape, but
+        // canonicalisation imposes its own depth / cycle bounds so
+        // a deeply nested or self-referential api section cannot
+        // overflow the stack on this path. Reject the install with
+        // 400; the recipe author has to flatten the api section
+        // before retrying.
+        apiLogger.warn(
+          { agentId, recipeId: recipeIdForSession },
+          'Recipe install rejected: api section too deep or cyclic',
+        )
+        res.status(400).json({
+          error:
+            'Recipe api section is too deep or contains a cycle. ' +
+            'Simplify the api block in the recipe before retrying install.',
+        })
+        return
+      }
+      // 'at_capacity' — bounded store, refuse new sessions.
+      // SessionManager has no public release API for a queued
+      // reservation today, so the reservation lingers until the
+      // next ensureSession call shifts it off — the leak is bounded
+      // by however many capacity-rejections happen before the next
+      // legitimate install for this agentId, which is small in
+      // practice and self-resolving.
+      apiLogger.warn(
+        { agentId, recipeId: recipeIdForSession },
+        'Recipe install rejected: install-session store at capacity',
+      )
+      res.status(503).json({
+        error:
+          'KovitoBoard has too many install sessions in flight. ' +
+          'Wait a few minutes for them to expire or restart the app, then try again.',
+      })
+      return
+    }
+    const installNonce = issueResult.nonce
+
     // -- Build the v2.0 install prompt --
     //
     // Pass the `{ fs, projectRoot }` context so the prompt builder
     // can scan `app/<appId>/manifest.json` and surface a "reinstall
     // detection" section listing every app that already shares this
-    // recipeId (DEC-024 #4 / spec §3.5).
+    // recipeId (DEC-024 #4 / spec §3.5). The `installNonce` is
+    // included in the Step 7 curl snippet so the agent echoes it on
+    // mark-installed.
     const prompt = buildRecipePrompt(
       parsed as unknown as Parameters<typeof buildRecipePrompt>[0],
       inspection,
-      { fs, projectRoot },
+      { fs, projectRoot, installNonce },
     )
 
     // -- Reserve origin so the resulting session is tagged --
@@ -1428,26 +1500,153 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       res.status(validation.status).json({ error: validation.error })
       return
     }
-    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, api } =
+    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } =
       validation.value
 
-    // Idempotency: if a history record with the same (recipeId,
-    // appId, hash, action='install') already exists, return ok
-    // without rewriting state. The agent retried `mark-installed` —
-    // a perfectly normal recovery path.
+    // Idempotency first: if a history record with the same (recipeId,
+    // appId, hash, action='install') already exists AND the current
+    // manifest at that `appId` still describes the same install,
+    // return ok without consuming the nonce or rewriting state. The
+    // agent retried `mark-installed` — a perfectly normal recovery
+    // path. Doing the history check before nonce consumption is
+    // critical because the nonce is one-shot; the legitimate retry
+    // would otherwise hit `consumeInstallSession()` and get back
+    // null on the second call, and the handler would 403 a
+    // successful install that just happened to be acknowledged
+    // twice.
+    //
+    // Crucially we cross-check the manifest store: a stale history
+    // entry left over from a previous install (uninstalled, or
+    // re-installed with a different hash) must NOT short-circuit
+    // here. Without that guard a forged or replayed mark-installed
+    // call could be acknowledged as success even though no manifest
+    // was actually written for the current install — see
+    // codex-review attempt-5 finding #1.
     const existingHistory = readRecipeHistory(fs)
-    const alreadyRecorded = existingHistory.some(
-      (h) =>
-        h.action !== 'uninstall' &&
-        h.recipeId === recipeIdParam &&
-        h.hash === recipeHash &&
-        // We stored the appId on the history entry under the
-        // legacy key; once Phase F splits the field, this reads from
-        // a dedicated `appId` field instead.
-        (h as { appId?: string }).appId === appId,
-    )
+    const existingManifestForRetry = manifestStore.get(appId)
+    const stateConsistentWithHistory =
+      existingManifestForRetry !== null &&
+      existingManifestForRetry.recipeId === recipeIdParam &&
+      existingManifestForRetry.hash === recipeHash
+    const alreadyRecorded =
+      stateConsistentWithHistory &&
+      existingHistory.some(
+        (h) =>
+          h.action !== 'uninstall' &&
+          h.recipeId === recipeIdParam &&
+          h.hash === recipeHash &&
+          // We stored the appId on the history entry under the
+          // legacy key; once Phase F splits the field, this reads from
+          // a dedicated `appId` field instead.
+          (h as { appId?: string }).appId === appId,
+      )
     if (alreadyRecorded) {
       res.json({ ok: true })
+      return
+    }
+
+    // Partial-success recovery: the manifest at `appId` already
+    // describes this exact install (same recipeId + hash) but no
+    // history row was written. That can happen when a previous
+    // attempt persisted the manifest, then crashed before
+    // `appendRecipeHistory` had a chance to run — the nonce was
+    // already consumed, so a naive retry would 403 a half-finished
+    // install with no obvious recovery.
+    //
+    // We acknowledge the call so the agent can move on, but we
+    // deliberately do NOT replay the body into the audit history.
+    // The body is unauthenticated on this branch (the nonce is
+    // already gone, and the manifest existence — which is
+    // server-owned trusted state — is what authorises the success
+    // response). Letting the body's `recipeVersion` / `recipeSource`
+    // ride into recipe-history.jsonl on the strength of "the
+    // manifest happens to match" would let any caller who knows
+    // `(recipeId, appId, recipeHash)` rewrite the install audit
+    // line for that app, which is itself a tampering vector. The
+    // resulting audit gap is rare (it only manifests when the
+    // original install crashed mid-write) and operators can
+    // diagnose it through the warn log emitted here.
+    if (stateConsistentWithHistory) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId },
+        'mark-installed: partial-success recovery — manifest already persisted from a prior attempt without a history entry. Acknowledging without rewriting history; an operator can fill the audit gap manually if needed.',
+      )
+      res.json({ ok: true })
+      return
+    }
+
+    // -- Cross-app overwrite check --
+    //
+    // The install nonce binds recipeId / recipeHash / approvedScopes /
+    // api but the agent picks `appId` only after the install handover
+    // has run (Step 2 of the playbook resolves collisions through
+    // /api/apps/check-id-availability). A stolen nonce reused with a
+    // different `appId` would otherwise let the caller plant the
+    // session's manifest into an unrelated app namespace. Refuse the
+    // call when an existing manifest at this `appId` does not already
+    // belong to the same recipe install — the legitimate retry path
+    // is covered by the history-record dedup above, which would have
+    // already short-circuited if this `appId` was the original
+    // destination.
+    //
+    // Reuse the manifest read above so the path stays a single store
+    // hit per request.
+    const existingManifest = existingManifestForRetry
+    if (
+      existingManifest &&
+      (existingManifest.recipeId !== recipeIdParam ||
+        existingManifest.hash !== recipeHash)
+    ) {
+      apiLogger.warn(
+        {
+          recipeId: recipeIdParam,
+          appId,
+          existingRecipeId: existingManifest.recipeId,
+          existingHash: existingManifest.hash,
+        },
+        'mark-installed rejected: appId already bound to a different recipe install',
+      )
+      res.status(403).json({
+        error:
+          `App "${appId}" is already bound to a different recipe install. ` +
+          'Pick a different appId or uninstall the existing app via ' +
+          '/api/apps/:appId/request-removal before retrying.',
+      })
+      return
+    }
+
+    // -- Install-session check --
+    //
+    // The nonce is one-shot: lookup deletes the entry whether or not
+    // it is still valid, so a repeated call cannot replay the
+    // install. The history-record dedup above already short-circuits
+    // legitimate retries before this point.
+    //
+    // We deliberately do not differentiate between "no such nonce",
+    // "expired nonce", and "approvedScopes / recipeHash / api
+    // mismatch" in the response message: the handler answers 403 in
+    // every case, and revealing which dimension failed would leak
+    // shape information about the nonce store.
+    const session = consumeInstallSession(installNonce)
+    if (
+      session === null ||
+      session.recipeId !== recipeIdParam ||
+      session.recipeHash !== recipeHash ||
+      session.recipeVersion !== recipeVersion ||
+      session.recipeSource !== recipeSource ||
+      !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !apiSectionMatches(session.apiCanonical, api)
+    ) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId, hasSession: session !== null },
+        'mark-installed rejected: install-session mismatch',
+      )
+      res.status(403).json({
+        error:
+          'Install session check failed. The nonce is unknown, expired, ' +
+          'or the body does not match what KB inspected at install time. ' +
+          'Restart the install via /api/recipes/install to obtain a fresh nonce.',
+      })
       return
     }
 
@@ -2179,6 +2378,78 @@ fs.watch(
 if (process.env.KB_E2E_MODE === '1') {
   app.post('/api/admin/test-reset-state', (_req, res) => {
     trustPromptDetector.resetState()
+    res.json({ ok: true })
+  })
+
+  // L1 fake-claude harness cannot execute the install handover prompt
+  // (the fake agent does not parse markdown), so the helper that
+  // exercises the dispatcher cannot wait for the agent to call
+  // mark-installed and never sees the install nonce. This shortcut
+  // hands the harness a freshly-issued nonce bound to the same
+  // recipeId / hash / scopes the real install endpoint would have
+  // saved, so subsequent calls to `mark-installed` succeed under the
+  // production code path. The endpoint is unreachable in any build
+  // that does not export `KB_E2E_MODE=1`, so the attack surface is
+  // confined to test runs.
+  app.post('/api/recipes/_test/issue-nonce', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { recipeId, recipeHash, recipeVersion, recipeSource } = body
+    const approvedScopes = body.approvedScopes
+    const apiSection = body.api
+    if (typeof recipeId !== 'string' || recipeId.length === 0) {
+      res.status(400).json({ error: 'recipeId must be a non-empty string' })
+      return
+    }
+    if (typeof recipeHash !== 'string' || recipeHash.length === 0) {
+      res.status(400).json({ error: 'recipeHash must be a non-empty string' })
+      return
+    }
+    if (!Array.isArray(approvedScopes) || !approvedScopes.every((s) => typeof s === 'string')) {
+      res
+        .status(400)
+        .json({ error: 'approvedScopes must be an array of strings' })
+      return
+    }
+    const issueResult = issueInstallSession({
+      recipeId,
+      recipeHash,
+      recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
+      recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
+      approvedScopes: approvedScopes as Scope[],
+      api: apiSection ?? null,
+    })
+    if (!issueResult.ok) {
+      if (issueResult.reason === 'invalid_api') {
+        res.status(400).json({ error: 'api section too deep or cyclic' })
+        return
+      }
+      res.status(503).json({ error: 'Install-session store at capacity' })
+      return
+    }
+    res.json({ ok: true, installNonce: issueResult.nonce })
+  })
+
+  // Companion to `_test/issue-nonce`: lets the L1 helper drop a
+  // pre-existing manifest for a given `appId` before issuing a new
+  // install nonce. Without this, the cross-app overwrite check on
+  // mark-installed (which legitimately rejects the second install
+  // of a different recipe into the same `appId`) would block the
+  // suite's repeated installs of TEST_RECIPE_ID across tests.
+  app.post('/api/recipes/_test/clear-manifest', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { appId } = body
+    // Reuse the same `appId` validator the production mark-installed
+    // path uses. Without this guard a literal `../something` could
+    // escape the manifest namespace under `manifestStore.delete()`,
+    // which derives a filesystem path from `appId`.
+    const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+    if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
+      res
+        .status(400)
+        .json({ error: 'appId must match /^[a-z][a-z0-9-]{0,63}$/' })
+      return
+    }
+    manifestStore.delete(appId)
     res.json({ ok: true })
   })
 }

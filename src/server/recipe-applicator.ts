@@ -44,6 +44,18 @@ import type { AppManifest } from '../shared/app-manifest-types'
 export interface BuildRecipePromptContext {
   fs: FileAccessLayer
   projectRoot: string
+  /**
+   * One-shot nonce minted by `issueInstallSession()` at the
+   * `/api/recipes/install` boundary. Embedded into the Step 7 curl
+   * snippet so the agent echoes it back on `mark-installed`, where
+   * the server checks it against the saved approvedScopes /
+   * recipeHash before persisting the manifest. Optional because
+   * legacy direct callers (the deprecated `apply` test-paths and a
+   * handful of unit tests) still build prompts without going
+   * through the install handover; those paths simply omit the
+   * `installNonce` field and `mark-installed` will reject them.
+   */
+  installNonce?: string
 }
 
 /**
@@ -324,6 +336,15 @@ export function buildRecipePrompt(
   sections.push('')
   sections.push('1. **`POST /api/recipes/{recipeId}/mark-installed`** を Bash + curl で叩く:')
   sections.push('')
+  // Embed the per-install nonce inline only when the install endpoint
+  // actually issued one (the canonical path). Legacy callers that
+  // build the prompt without the install handover get the literal
+  // placeholder; the server-side handler then rejects with 403 and
+  // the agent surfaces the failure to the user.
+  const installNonce = context?.installNonce ?? '<installNonce-from-KB>'
+  sections.push('   `installNonce` は KB が install 時に発行した one-shot トークンで、サーバ側で session を照合する。')
+  sections.push('   そのまま `installNonce` フィールドに渡すこと（編集・再利用不可）。')
+  sections.push('')
   sections.push('   ```bash')
   sections.push('   curl -s -X POST http://localhost:$KB_PORT/api/recipes/' + metadata.recipeId + '/mark-installed \\')
   sections.push('     -H "Content-Type: application/json" \\')
@@ -333,6 +354,7 @@ export function buildRecipePrompt(
   sections.push(`       "recipeVersion": "${metadata.version}",`)
   sections.push('       "recipeSource": "{recipeSource}",')
   sections.push(`       "recipeHash": "${recipe.hash}",`)
+  sections.push(`       "installNonce": "${installNonce}",`)
   sections.push('       "api": { ...recipe.api section verbatim... }')
   sections.push('     }\'')
   sections.push('   ```')
