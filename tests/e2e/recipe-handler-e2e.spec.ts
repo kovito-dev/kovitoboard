@@ -114,6 +114,23 @@ async function installTestRecipe(
     { id: 'write-own-file', handler: 'write-file', args: { path: '${input.path}', content: '${input.content}', createDirs: true } },
     { id: 'read-project-file', handler: 'read-file', args: { path: '${input.path}' } },
   ]
+  const recipeHash = `e2e-test-hash-${Date.now()}`
+  // The fake-claude harness cannot run the install handover prompt,
+  // so we mint a nonce through the KB_E2E_MODE-only test endpoint
+  // instead of the real `/api/recipes/install` flow. The nonce is
+  // bound to the same recipeId / hash / scopes the production code
+  // would have stored, so the production mark-installed handler
+  // accepts the call without any test-mode bypass at the auth check.
+  const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
+    data: {
+      recipeId: TEST_RECIPE_ID,
+      recipeHash,
+      approvedScopes: scopes,
+    },
+  })
+  expect(nonceRes.ok()).toBeTruthy()
+  const { installNonce } = (await nonceRes.json()) as { installNonce: string }
+
   const res = await request.post(
     `${API_BASE}/api/recipes/${TEST_RECIPE_ID}/mark-installed`,
     {
@@ -122,7 +139,8 @@ async function installTestRecipe(
         approvedScopes: scopes,
         recipeVersion: '1.0.0',
         recipeSource: 'sample',
-        recipeHash: `e2e-test-hash-${Date.now()}`,
+        recipeHash,
+        installNonce,
         api: { scopes, calls },
       },
     },
@@ -140,18 +158,28 @@ test.describe('Recipe handler E2E', () => {
     // legacy install API path that wrote the manifest synchronously
     // was retired in DEC-024 #2 (spec §3.2) — install now hands the
     // recipe to an agent. Tests that exercise the dispatcher use
-    // mark-installed directly.
+    // mark-installed directly, after fetching an install nonce
+    // through the KB_E2E_MODE test seam.
+    const scopes = ['project-read', 'own-data']
+    const recipeHash = 'e2e-test-hash-001'
+    const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
+      data: { recipeId: TEST_RECIPE_ID, recipeHash, approvedScopes: scopes },
+    })
+    expect(nonceRes.ok()).toBeTruthy()
+    const { installNonce } = (await nonceRes.json()) as { installNonce: string }
+
     const res = await request.post(
       `${API_BASE}/api/recipes/${TEST_RECIPE_ID}/mark-installed`,
       {
         data: {
           appId: TEST_RECIPE_ID,
-          approvedScopes: ['project-read', 'own-data'],
+          approvedScopes: scopes,
           recipeVersion: '1.0.0',
           recipeSource: 'sample',
-          recipeHash: 'e2e-test-hash-001',
+          recipeHash,
+          installNonce,
           api: {
-            scopes: ['project-read', 'own-data'],
+            scopes,
             calls: [
               { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
               { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },

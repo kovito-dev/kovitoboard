@@ -15,6 +15,9 @@
 import { describe, expect, it } from 'vitest'
 import { validateMarkInstalledRequest } from '../../src/server/recipe/markInstalledValidator'
 
+// Same hex shape as KB_LAUNCH_TOKEN — 32 lowercase hex characters.
+const VALID_NONCE = '0123456789abcdef0123456789abcdef'
+
 function baseBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     appId: 'document-viewer',
@@ -22,6 +25,7 @@ function baseBody(overrides: Record<string, unknown> = {}): Record<string, unkno
     recipeVersion: '1.1.0',
     recipeSource: 'sample',
     recipeHash: 'sha256:abc',
+    installNonce: VALID_NONCE,
     ...overrides,
   }
 }
@@ -155,6 +159,50 @@ describe('validateMarkInstalledRequest', () => {
     )
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain('Invalid api section')
+  })
+
+  it('rejects when installNonce is missing', () => {
+    const body = baseBody()
+    delete body.installNonce
+    const result = validateMarkInstalledRequest('document-viewer', body)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+      expect(result.error).toMatch(/installNonce/)
+    }
+  })
+
+  it('rejects when installNonce is shorter than 32 hex chars', () => {
+    const result = validateMarkInstalledRequest(
+      'document-viewer',
+      baseBody({ installNonce: 'abc123' }),
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+    }
+  })
+
+  it('rejects when installNonce contains uppercase hex (non-canonical)', () => {
+    const result = validateMarkInstalledRequest(
+      'document-viewer',
+      baseBody({ installNonce: VALID_NONCE.toUpperCase() }),
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+    }
+  })
+
+  it('rejects when installNonce contains non-hex characters', () => {
+    const result = validateMarkInstalledRequest(
+      'document-viewer',
+      baseBody({ installNonce: '0123456789abcdef0123456789abcdez' }),
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+    }
   })
 
   it('treats null api as "no api section"', () => {

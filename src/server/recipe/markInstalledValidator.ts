@@ -24,8 +24,20 @@ export interface MarkInstalledBody {
   recipeVersion: string
   recipeSource: 'sample' | 'import' | 'url'
   recipeHash: string
+  /**
+   * One-shot nonce the server minted at `/api/recipes/install`. The
+   * agent echoes it back here so the handler can match the
+   * mark-installed call to its corresponding install session and
+   * verify the approvedScopes / recipeHash were not tampered with.
+   * Format mirrors `KB_LAUNCH_TOKEN`: 32 lowercase hex characters
+   * (16 bytes from `crypto.randomBytes`).
+   */
+  installNonce: string
   api?: ApiSection
 }
+
+/** Same hex shape as `KB_LAUNCH_TOKEN` — 16 bytes encoded as hex. */
+const INSTALL_NONCE_PATTERN = /^[0-9a-f]{32}$/
 
 export type MarkInstalledValidation =
   | { ok: true; value: MarkInstalledBody }
@@ -71,7 +83,7 @@ export function validateMarkInstalledRequest(
   }
   const obj = body as Record<string, unknown>
 
-  const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, api } = obj
+  const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } = obj
 
   if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
     return {
@@ -109,6 +121,16 @@ export function validateMarkInstalledRequest(
     return { ok: false, status: 400, error: 'recipeHash must be a non-empty string' }
   }
 
+  if (typeof installNonce !== 'string' || !INSTALL_NONCE_PATTERN.test(installNonce)) {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        'installNonce must be a 32-character lowercase hex string ' +
+        '(supplied by /api/recipes/install at handover time)',
+    }
+  }
+
   let apiSection: ApiSection | undefined
   if (api !== undefined && api !== null) {
     const apiError = validateApiSection(api)
@@ -126,6 +148,7 @@ export function validateMarkInstalledRequest(
       recipeVersion,
       recipeSource,
       recipeHash,
+      installNonce,
       api: apiSection,
     },
   }

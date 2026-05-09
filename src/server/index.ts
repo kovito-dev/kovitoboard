@@ -69,6 +69,11 @@ import {
 import { readAppManifest } from './services/app-manifest'
 import { buildAppRemovalPrompt } from '../shared/app-removal-prompt'
 import { readRecipeHistory, appendRecipeHistory, generateHistoryId } from './recipe-history'
+import {
+  issueInstallSession,
+  consumeInstallSession,
+  approvedScopesMatch,
+} from './recipe-install-sessions'
 import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
 import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
@@ -83,6 +88,7 @@ import { validateApiSection } from './recipe/apiTypes'
 import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
+import type { Scope } from './handlers/types'
 import { listFilesHandler } from './handlers/categoryA/listFiles'
 import { readFileHandler } from './handlers/categoryA/readFile'
 import { writeFileHandler } from './handlers/categoryA/writeFile'
@@ -1337,16 +1343,39 @@ app.post('/api/recipes/install', async (req, res) => {
       inspection = await inspectRecipe(parsed as unknown as Parameters<typeof inspectRecipe>[0])
     }
 
+    // -- Issue an install-session nonce --
+    //
+    // Bind the metadata KB just inspected (recipeId, recipeHash, the
+    // declared scopes from `recipe.api.scopes`) to a one-shot nonce.
+    // The nonce is woven into the install prompt below so the agent
+    // echoes it on `mark-installed`, where the handler verifies the
+    // body's approvedScopes / recipeHash match what KB stored here.
+    // Without this binding, any caller that can reach the API can
+    // mint a manifest with arbitrary scopes — see codex-review-
+    // response-2026-05-05.md §6.1.
+    const recipeIdForSession = String(metadata.recipeId)
+    const recipeHashForSession = String((parsed as { hash?: unknown }).hash ?? '')
+    const declaredScopes = (
+      (parsed.api as { scopes?: unknown } | undefined)?.scopes ?? []
+    ) as Scope[]
+    const installNonce = issueInstallSession({
+      recipeId: recipeIdForSession,
+      recipeHash: recipeHashForSession,
+      approvedScopes: declaredScopes,
+    })
+
     // -- Build the v2.0 install prompt --
     //
     // Pass the `{ fs, projectRoot }` context so the prompt builder
     // can scan `app/<appId>/manifest.json` and surface a "reinstall
     // detection" section listing every app that already shares this
-    // recipeId (DEC-024 #4 / spec §3.5).
+    // recipeId (DEC-024 #4 / spec §3.5). The `installNonce` is
+    // included in the Step 7 curl snippet so the agent echoes it on
+    // mark-installed.
     const prompt = buildRecipePrompt(
       parsed as unknown as Parameters<typeof buildRecipePrompt>[0],
       inspection,
-      { fs, projectRoot },
+      { fs, projectRoot, installNonce },
     )
 
     // -- Reserve origin so the resulting session is tagged --
@@ -1428,8 +1457,42 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       res.status(validation.status).json({ error: validation.error })
       return
     }
-    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, api } =
+    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } =
       validation.value
+
+    // -- Install-session check --
+    //
+    // The nonce is one-shot: lookup deletes the entry whether or not
+    // it is still valid, so a repeated call cannot replay the
+    // install. Idempotency for genuine retries is handled by the
+    // history-record dedup below — that path runs only after we
+    // rewrite the persisted manifest, so a legitimate retry of a
+    // never-completed install still has to pay the nonce check.
+    //
+    // We deliberately do not differentiate between "no such nonce",
+    // "expired nonce", and "approvedScopes / recipeHash mismatch"
+    // in the response message: the handler answers 403 in every
+    // case, and revealing which dimension failed would leak shape
+    // information about the nonce store.
+    const session = consumeInstallSession(installNonce)
+    if (
+      session === null ||
+      session.recipeId !== recipeIdParam ||
+      session.recipeHash !== recipeHash ||
+      !approvedScopesMatch(session.approvedScopes, approvedScopes)
+    ) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId, hasSession: session !== null },
+        'mark-installed rejected: install-session mismatch',
+      )
+      res.status(403).json({
+        error:
+          'Install session check failed. The nonce is unknown, expired, ' +
+          'or the body does not match what KB inspected at install time. ' +
+          'Restart the install via /api/recipes/install to obtain a fresh nonce.',
+      })
+      return
+    }
 
     // Idempotency: if a history record with the same (recipeId,
     // appId, hash, action='install') already exists, return ok
@@ -2180,6 +2243,42 @@ if (process.env.KB_E2E_MODE === '1') {
   app.post('/api/admin/test-reset-state', (_req, res) => {
     trustPromptDetector.resetState()
     res.json({ ok: true })
+  })
+
+  // L1 fake-claude harness cannot execute the install handover prompt
+  // (the fake agent does not parse markdown), so the helper that
+  // exercises the dispatcher cannot wait for the agent to call
+  // mark-installed and never sees the install nonce. This shortcut
+  // hands the harness a freshly-issued nonce bound to the same
+  // recipeId / hash / scopes the real install endpoint would have
+  // saved, so subsequent calls to `mark-installed` succeed under the
+  // production code path. The endpoint is unreachable in any build
+  // that does not export `KB_E2E_MODE=1`, so the attack surface is
+  // confined to test runs.
+  app.post('/api/recipes/_test/issue-nonce', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { recipeId, recipeHash } = body
+    const approvedScopes = body.approvedScopes
+    if (typeof recipeId !== 'string' || recipeId.length === 0) {
+      res.status(400).json({ error: 'recipeId must be a non-empty string' })
+      return
+    }
+    if (typeof recipeHash !== 'string' || recipeHash.length === 0) {
+      res.status(400).json({ error: 'recipeHash must be a non-empty string' })
+      return
+    }
+    if (!Array.isArray(approvedScopes) || !approvedScopes.every((s) => typeof s === 'string')) {
+      res
+        .status(400)
+        .json({ error: 'approvedScopes must be an array of strings' })
+      return
+    }
+    const installNonce = issueInstallSession({
+      recipeId,
+      recipeHash,
+      approvedScopes: approvedScopes as Scope[],
+    })
+    res.json({ ok: true, installNonce })
   })
 }
 
