@@ -1,0 +1,179 @@
+name: PR Language Check
+
+# Detect Japanese characters (hiragana, katakana, CJK ideographs) in PR title
+# and body. The KovitoBoard OSS repository requires English-only PR metadata.
+#
+# This workflow is intentionally separate from `ci.yml` so that PR-metadata
+# events (`edited` / `labeled` / `unlabeled`) do not trigger the heavier hygiene
+# / typecheck / build / test jobs in `ci.yml`. Those jobs only need to run on
+# code-changing events (`opened` / `synchronize` / `reopened`).
+#
+# Bypass: a maintainer (write-access or higher) may apply the
+# `lang-exception-approved` label to skip this check.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, labeled, unlabeled]
+    branches: [main, staging]
+
+jobs:
+  language-check:
+    name: PR Language Check
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write  # required for posting fail comments
+      contents: read
+    steps:
+      - name: Check for bypass label
+        id: check-bypass
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          LABELS=$(echo "$LABELS_JSON" | jq -r '.[].name')
+          if echo "$LABELS" | grep -qx 'lang-exception-approved'; then
+            echo "bypass=true" >> "$GITHUB_OUTPUT"
+            echo "Bypass: lang-exception-approved label present, skipping check"
+          else
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect Japanese in title/body
+        if: steps.check-bypass.outputs.bypass != 'true'
+        id: detect
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 <<'PY'
+          import os, re, json
+
+          title = os.environ.get('PR_TITLE', '') or ''
+          body = os.environ.get('PR_BODY', '') or ''
+
+          # Hiragana (U+3040-U+309F) + Katakana (U+30A0-U+30FF) + CJK Unified
+          # Ideographs (U+4E00-U+9FFF). Same range as
+          # tools/check-release-hygiene.mjs JAPANESE_RE and
+          # .claude/rules/pr-operations.md v1.3 §3.4 self-check.
+          pattern = re.compile(r'[぀-ゟ゠-ヿ一-鿿]')
+
+          title_has_jp = bool(pattern.search(title))
+          body_lines = []
+          for i, line in enumerate(body.split('\n'), 1):
+              if pattern.search(line):
+                  snippet = line[:80] + ('...' if len(line) > 80 else '')
+                  body_lines.append(f'L{i}: {snippet}')
+
+          fail = title_has_jp or bool(body_lines)
+          report = {
+              'fail': fail,
+              'title_snippet': (
+                  (title[:80] + '...') if title_has_jp and len(title) > 80
+                  else (title if title_has_jp else '')
+              ),
+              # Cap body lines at 10 to bound comment size and noise.
+              'body_lines': body_lines[:10],
+              'body_lines_truncated': len(body_lines) > 10,
+          }
+
+          out_path = os.environ['GITHUB_OUTPUT']
+          with open(out_path, 'a') as f:
+              f.write(f"fail={'true' if fail else 'false'}\n")
+              f.write('report<<REPORT_EOF\n')
+              f.write(json.dumps(report))
+              f.write('\nREPORT_EOF\n')
+
+          if fail:
+              print('FAIL: Japanese characters detected in PR title or body')
+              print(json.dumps(report, indent=2))
+          else:
+              print('OK: title and body are English-only')
+          PY
+
+      - name: Compose fail comment body
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
+        id: compose
+        env:
+          REPORT: ${{ steps.detect.outputs.report }}
+        run: |
+          # Note: YAML `run: |` already strips the common leading indentation
+          # before invoking the shell, so the python heredoc receives source
+          # without the YAML indentation. Do not add a dedent step inside
+          # python — the f-string body is rendered as-is into the comment.
+          BODY=$(python3 <<'PY'
+          import os, json
+
+          r = json.loads(os.environ['REPORT'])
+
+          if r['title_snippet']:
+              title_line = '`' + r['title_snippet'] + '`'
+          else:
+              title_line = '_no Japanese in title_'
+
+          if r['body_lines']:
+              body_md = '\n'.join('- ' + line for line in r['body_lines'])
+              if r['body_lines_truncated']:
+                  body_md += '\n- _(... additional body lines truncated)_'
+          else:
+              body_md = '_no Japanese in body_'
+
+          comment = f"""<!-- pr-language-check-fail -->
+          ## :warning: Language check failed
+
+          This PR's title or body contains Japanese characters (hiragana, katakana, or CJK ideographs). The KovitoBoard OSS repository requires all PR title, body, and comment text to be written in **English**, as defined in the contributor language policy.
+
+          ### Detected locations
+
+          <details>
+          <summary>Click to expand</summary>
+
+          - **Title:** {title_line}
+          - **Body:**
+          {body_md}
+
+          </details>
+
+          ### How to fix
+
+          1. Edit this PR's title and body via `gh pr edit <pr-number> --title "<english title>" --body "<english body>"` or via the GitHub UI.
+          2. The `pull_request: edited` event will retrigger this check automatically.
+          3. The check will turn green once all Japanese characters are removed.
+
+          ### Exception (maintainer only)
+
+          If the Japanese characters are intentional and approved by a repository maintainer, add the `lang-exception-approved` label to bypass this check. Self-applied labels are ignored — the label must be applied by a maintainer (write-access or higher).
+
+          ---
+
+          :robot: Posted automatically by the `pr-language-check` workflow.
+          """
+          print(comment)
+          PY
+          )
+          # Use a heredoc-style multiline GITHUB_OUTPUT to preserve newlines.
+          {
+            echo 'comment_body<<COMMENT_EOF'
+            echo "$BODY"
+            echo 'COMMENT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post fail comment (gh CLI)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_BODY: ${{ steps.compose.outputs.comment_body }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
+
+      - name: Note skipped comment for fork PR
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::warning::Japanese characters detected, but this PR is from a fork."
+          echo "::warning::Auto-comment skipped because secrets.GITHUB_TOKEN is read-only on fork PRs."
+          echo "::warning::The check will fail; the contributor must edit the PR title/body to remove Japanese characters."
+
+      - name: Fail the job
+        if: steps.detect.outputs.fail == 'true'
+        run: |
+          echo "::error::PR title or body contains Japanese characters. See the language-check comment for details."
+          exit 1
