@@ -38,13 +38,23 @@ export default defineConfig({
     // actual listener. With strictPort, Vite either binds to the port
     // we asked for or fails loudly so the supervisor can re-probe.
     strictPort: true,
-    host: true,
+    // Bind Vite's dev server to the loopback interface only.
+    // KovitoBoard is a local-first tool: serving the renderer to the
+    // wider LAN exposes the privileged Express API and WebSocket bridge
+    // (which proxy through this server) to anyone on the same network.
+    // Use 127.0.0.1 explicitly so we are not at the mercy of OS-level
+    // localhost resolution differences (e.g. IPv6-first hosts where
+    // `localhost` resolves to `::1` while clients dial `127.0.0.1`).
+    host: '127.0.0.1',
     proxy: {
       // Proxy both HTTP API and WebSocket to the Express backend.
       // WebSocket lives at /api/ws (not /ws) to avoid Vite's HMR server
       // intercepting the upgrade request (https://github.com/vitejs/vite/issues/864).
+      // Use 127.0.0.1 explicitly so the proxy does not depend on whether
+      // `localhost` resolves to IPv4 (matching the backend's bind host)
+      // or IPv6 on the runtime OS.
       '/api': {
-        target: `http://localhost:${process.env.PORT || 3001}`,
+        target: `http://127.0.0.1:${process.env.PORT || 3001}`,
         ws: true,
       },
     },

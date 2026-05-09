@@ -2415,10 +2415,17 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1)
 })
 
-server.listen(PORT, () => {
+// Bind to the loopback interface only. KovitoBoard is a local-first
+// tool with no authentication layer yet; serving the privileged HTTP
+// API and WebSocket bridge to the wider LAN would expose stop/restart,
+// recipe install, file read/write, and other admin operations to any
+// host that can reach this machine on the chosen port. Pin to
+// 127.0.0.1 explicitly so the bind does not depend on Node's
+// `dns.lookup` order resolving "localhost" inconsistently across OSes.
+server.listen(PORT, '127.0.0.1', () => {
   const { path: projectRoot, source: projectRootSource } = resolveProjectRootWithSource(fs)
-  serverLogger.info({ url: `http://localhost:${PORT}` }, 'Server started')
-  serverLogger.info({ url: `ws://localhost:${PORT}` }, 'WebSocket listening')
+  serverLogger.info({ url: `http://127.0.0.1:${PORT}` }, 'Server started')
+  serverLogger.info({ url: `ws://127.0.0.1:${PORT}` }, 'WebSocket listening')
   serverLogger.info({ projectRoot, projectRootSource }, 'Project root resolved')
   serverLogger.info({ claudeDir: `${config.claudeDir}/projects/` }, 'Watching Claude Code session directory')
 })
