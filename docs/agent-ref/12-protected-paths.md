@@ -69,7 +69,7 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 | Path / Target | Owner | Why direct edits are forbidden | Alternative route |
 |---|---|---|---|
 | `<projectRoot>/.claude/agents/<id>.md` | User / Claude Code | Frontmatter (`name` / `description` / `model`) is read by KB; convention breaks the agent list and ID resolution (B-1) | These files are user-owned. Agents must not modify them without explicit user approval. When the user does ask for an edit, preserve Claude Code's official frontmatter convention. |
-| `<projectRoot>/CLAUDE.md` `<!-- KB:GUIDANCE_START --> ... <!-- KB:GUIDANCE_END -->` block | KB (CLAUDE.md guidance injection) | Hand-edits inside the block are overwritten on next boot (idempotent re-injection); see `claudeMdGuidance.disabled` opt-out (B-2) | Toggle `.kovitoboard/setting.json` `claudeMdGuidance.disabled = true` if you must opt out |
+| `<projectRoot>/CLAUDE.md` `<!-- KB:GUIDANCE_START --> ... <!-- KB:GUIDANCE_END -->` block | KB (CLAUDE.md guidance injection) | Hand-edits inside the block are overwritten on next boot (idempotent re-injection); see `claudeMdGuidance.disabled` opt-out (B-2) | The opt-out is a user setting. Use KB's Settings UI to disable guidance injection — that flow updates `setting.json` through the supported writer. Agents must not edit `setting.json` directly to flip this flag. |
 | Claude Code binary (`~/.claude-versions/<ver>/bin/claude`) | User + KB version detection | Switching to `@latest` / `@beta` may break trust-prompt detection patterns (B-3) | Follow the version-compatibility warnings shown by KB |
 | `<projectRoot>/.gitignore` `kovitoboard/` entry | User | Missing entry leaks the embedded KB installation into the user's repository, bloating history (B-4) | Initial setup guide and onboarding check (a hardened check is on the v0.3.x roadmap) |
 | `<kbRepo>/templates/agents/<name>.md` | OSS-distributed (git-managed) | Edits conflict with KB updates, customizations are lost (B-5) | Customize by copying to `<projectRoot>/.claude/agents/<id>.md` first |
@@ -82,7 +82,7 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 |---|---|---|---|
 | tmux session `kovitoboard-<projectDir>` | `tmux-bridge.ts` | Window-naming convention breaks; `AgentActivityMonitor` state corrupts (C-1) | KB UI (start / stop agent) or `npm run kb:stop` |
 | Ports 3001 (backend) / 5173 (Vite) (defaults) | `kb-start.mjs` port resolution | `lsof -i :3001 → kill -9` may stop a different KB instance (C-2) | `npm run kb:stop` (uses the supervisor PID file) |
-| Internal API `/api/admin/*` (restart / stop) | `admin-routes.ts` | Restart loops accumulate Claude processes (C-3) | KB UI buttons; raw curl is for administrative operations only |
+| Internal API `/api/admin/*` (restart / stop) | `admin-routes.ts` | Restart loops accumulate Claude processes (C-3) | KB UI buttons only for agents. Raw HTTP calls to these endpoints are reserved for human-admin recovery procedures (with explicit safeguards) and are not appropriate for agent automation. |
 | WebSocket `/api/ws` trust-prompt-response path | `trust-prompt-relay.ts` | User-consent flow is bypassed; trust model collapses (C-4) | KB UI's trust-prompt approval flow only |
 | `KOVITOBOARD_PROJECT_ROOT` env at KB launch | User + `config.ts` priority chain | Shared-installation derivative path (C-5) | Embedded model: launch via `npm start -- --project-root ..` (M-1 refuses launches from inside the KB clone itself) |
 
@@ -126,7 +126,7 @@ A "what to do instead" cheat sheet covering the most common edits agents try.
 | Approve a trust prompt | KB UI's trust-prompt dialog | Post WebSocket frames to `/api/ws` directly |
 | Add a custom API handler | Place it under `app/<appId>/api/*.ts` following the handler conventions | Mount a free-form Express router into KB |
 | Inspect or rotate `_audit.log` | KB-managed rotation only | Truncate or hand-rotate the file |
-| Disable the CLAUDE.md guidance block | Set `.kovitoboard/setting.json` `claudeMdGuidance.disabled = true` | Hand-edit inside `<!-- KB:GUIDANCE_START -->` (it gets re-injected) |
+| Disable the CLAUDE.md guidance block | Disable guidance injection from KB's Settings UI (the supported writer updates `setting.json`) | Edit `.kovitoboard/setting.json` directly, or hand-edit inside `<!-- KB:GUIDANCE_START -->` (gets re-injected) |
 
 ---
 
