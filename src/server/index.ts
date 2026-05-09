@@ -1504,25 +1504,42 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       validation.value
 
     // Idempotency first: if a history record with the same (recipeId,
-    // appId, hash, action='install') already exists, return ok
-    // without consuming the nonce or rewriting state. The agent
-    // retried `mark-installed` — a perfectly normal recovery path.
-    // Doing the history check before nonce consumption is critical
-    // because the nonce is one-shot; the legitimate retry would
-    // otherwise hit `consumeInstallSession()` and get back null on
-    // the second call, and the handler would 403 a successful
-    // install that just happened to be acknowledged twice.
+    // appId, hash, action='install') already exists AND the current
+    // manifest at that `appId` still describes the same install,
+    // return ok without consuming the nonce or rewriting state. The
+    // agent retried `mark-installed` — a perfectly normal recovery
+    // path. Doing the history check before nonce consumption is
+    // critical because the nonce is one-shot; the legitimate retry
+    // would otherwise hit `consumeInstallSession()` and get back
+    // null on the second call, and the handler would 403 a
+    // successful install that just happened to be acknowledged
+    // twice.
+    //
+    // Crucially we cross-check the manifest store: a stale history
+    // entry left over from a previous install (uninstalled, or
+    // re-installed with a different hash) must NOT short-circuit
+    // here. Without that guard a forged or replayed mark-installed
+    // call could be acknowledged as success even though no manifest
+    // was actually written for the current install — see
+    // codex-review attempt-5 finding #1.
     const existingHistory = readRecipeHistory(fs)
-    const alreadyRecorded = existingHistory.some(
-      (h) =>
-        h.action !== 'uninstall' &&
-        h.recipeId === recipeIdParam &&
-        h.hash === recipeHash &&
-        // We stored the appId on the history entry under the
-        // legacy key; once Phase F splits the field, this reads from
-        // a dedicated `appId` field instead.
-        (h as { appId?: string }).appId === appId,
-    )
+    const existingManifestForRetry = manifestStore.get(appId)
+    const stateConsistentWithHistory =
+      existingManifestForRetry !== null &&
+      existingManifestForRetry.recipeId === recipeIdParam &&
+      existingManifestForRetry.hash === recipeHash
+    const alreadyRecorded =
+      stateConsistentWithHistory &&
+      existingHistory.some(
+        (h) =>
+          h.action !== 'uninstall' &&
+          h.recipeId === recipeIdParam &&
+          h.hash === recipeHash &&
+          // We stored the appId on the history entry under the
+          // legacy key; once Phase F splits the field, this reads from
+          // a dedicated `appId` field instead.
+          (h as { appId?: string }).appId === appId,
+      )
     if (alreadyRecorded) {
       res.json({ ok: true })
       return
@@ -1541,7 +1558,10 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     // is covered by the history-record dedup above, which would have
     // already short-circuited if this `appId` was the original
     // destination.
-    const existingManifest = manifestStore.get(appId)
+    //
+    // Reuse the manifest read above so the path stays a single store
+    // hit per request.
+    const existingManifest = existingManifestForRetry
     if (
       existingManifest &&
       (existingManifest.recipeId !== recipeIdParam ||
