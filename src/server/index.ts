@@ -1551,29 +1551,25 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     // attempt persisted the manifest, then crashed before
     // `appendRecipeHistory` had a chance to run — the nonce was
     // already consumed, so a naive retry would 403 a half-finished
-    // install with no obvious recovery. Repair the missing history
-    // entry and acknowledge the install. We do NOT consume the
-    // nonce here because it is already gone; the manifest binding
-    // is what proves the previous attempt got far enough to be
-    // considered authoritative.
+    // install with no obvious recovery.
+    //
+    // We acknowledge the call so the agent can move on, but we
+    // deliberately do NOT replay the body into the audit history.
+    // The body is unauthenticated on this branch (the nonce is
+    // already gone, and the manifest existence — which is
+    // server-owned trusted state — is what authorises the success
+    // response). Letting the body's `recipeVersion` / `recipeSource`
+    // ride into recipe-history.jsonl on the strength of "the
+    // manifest happens to match" would let any caller who knows
+    // `(recipeId, appId, recipeHash)` rewrite the install audit
+    // line for that app, which is itself a tampering vector. The
+    // resulting audit gap is rare (it only manifests when the
+    // original install crashed mid-write) and operators can
+    // diagnose it through the warn log emitted here.
     if (stateConsistentWithHistory) {
-      const historyId = generateHistoryId(fs)
-      appendRecipeHistory(fs, {
-        id: historyId,
-        action: 'install',
-        name: recipeIdParam,
-        version: recipeVersion,
-        source: recipeSource,
-        hash: recipeHash,
-        appliedAt: existingManifestForRetry!.installedAt,
-        artifacts: [],
-        menu: [],
-        recipeId: recipeIdParam,
-        ...({ appId } as Record<string, unknown>),
-      })
-      apiLogger.info(
-        { recipeId: recipeIdParam, appId, recipeVersion, recipeSource },
-        'mark-installed: partial-success recovery — repaired missing history entry',
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId },
+        'mark-installed: partial-success recovery — manifest already persisted from a prior attempt without a history entry. Acknowledging without rewriting history; an operator can fill the audit gap manually if needed.',
       )
       res.json({ ok: true })
       return
