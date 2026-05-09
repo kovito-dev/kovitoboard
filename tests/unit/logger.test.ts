@@ -350,21 +350,24 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw1).toContain('<sk-ant redacted>')
     expect(raw1).not.toContain('sk-ant-api03-FirstArgKeyShouldStillRedact1234')
 
-    // (b) Error first arg — the hook now skips the merging
-    //     object so the Error reaches `formatters.log` with its
-    //     identity intact. Pino's own serializer expands it
-    //     (`{ type, message, stack }`) and the surrounding
-    //     `formatters.log` walks the resulting plain object.
-    //     The in-memory Error survives untouched. The exact
-    //     persisted shape depends on whether pino's serializer
-    //     output is fed back through `formatters.log` (varies by
-    //     pino version); the only invariant is "the call did not
-    //     throw and the in-memory Error is unchanged".
+    // (b) Error first arg — the custom `serializers.err` expands
+    //     the Error into a `{ type, message, stack }` plain object
+    //     with the message and stack pre-redacted via the shared
+    //     `maskString` helper. The in-memory Error survives
+    //     untouched (serializers operate on a clone path).
     const err = new Error(
       'claude failed: sk-ant-api03-ErrorMessageEmbeddedKey1234567 is invalid',
     )
-    expect(() => log.error({ err }, 'subprocess crashed')).not.toThrow()
+    log.error({ err }, 'subprocess crashed')
     await new Promise((r) => setTimeout(r, 200))
+    const raw2 = readActiveLogFile(projectRoot)
+    expect(raw2).toContain('<sk-ant redacted>')
+    expect(raw2).not.toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
+    // The serializer keeps the structural shape so the operator
+    // still sees `type` / `message` / `stack`.
+    expect(raw2).toContain('"type":"Error"')
+    expect(raw2).toContain('"message":')
+    // Caller's Error is not mutated.
     expect(err.message).toContain('sk-ant-api03-ErrorMessageEmbeddedKey1234567')
   })
 

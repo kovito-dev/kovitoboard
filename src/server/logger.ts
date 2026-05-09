@@ -250,6 +250,24 @@ export async function initLogger(
   const maskString = buildStringRedactor()
   const maskLog = buildLogRedactor(maskString)
 
+  // Custom error serializer that pre-redacts `message` / `stack`
+  // so the most common Error-logging shape — `logger.error({ err
+  // }, 'msg')` — passes a redacted `{ type, message, stack }` plain
+  // object onto `formatters.log`. Pino's default serializer also
+  // expands an Error to `{ type, message, stack }`, but pino runs
+  // serializers AFTER `formatters.log`, so the resulting strings
+  // would otherwise reach disk untouched even though the rest of
+  // the redaction layer is in place. Trailing-positional `Error`
+  // args (printf-style `%o`) still bypass this path; call sites
+  // that need to log such errors should pass them as
+  // `{ errMessage: err.message }` so the structural redactor sees
+  // a plain object instead.
+  const errSerializer = (err: Error): Record<string, unknown> => ({
+    type: err?.constructor?.name ?? 'Error',
+    message: typeof err?.message === 'string' ? maskString(err.message) : undefined,
+    stack: typeof err?.stack === 'string' ? maskString(err.stack) : undefined,
+  })
+
   rootLogger = pino(
     {
       level: config.level,
@@ -262,6 +280,9 @@ export async function initLogger(
       formatters: {
         level: (label) => ({ level: label }),
         log: maskLog,
+      },
+      serializers: {
+        err: errSerializer,
       },
       hooks: {
         // pino's `formatters.log` only sees the merging object, not
