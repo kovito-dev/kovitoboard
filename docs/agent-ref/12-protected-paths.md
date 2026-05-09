@@ -24,6 +24,15 @@ This chapter lists every protected path with: (a) the management owner, (b) why 
 - §6 Security boundaries
 - §7 Alternative routes summary
 
+## Path placeholders
+
+These placeholders are used consistently throughout the tables below:
+
+- **`<projectRoot>`** — the user's project root (the directory KB was launched from, where `.kovitoboard/` and `.claude/` live).
+- **`<kbRepo>`** — the embedded KB installation directory (the OSS distribution checkout, typically `<projectRoot>/kovitoboard/` in the embedded layout).
+
+Trust-boundary note for agents: edits intended for KB internals belong in `<kbRepo>` (and almost always require a specification revision first), while edits intended for the user's data belong in `<projectRoot>` (and follow the alternative routes listed below).
+
 ---
 
 ## §1 Why KB has protected paths
@@ -47,11 +56,11 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 | `.kovitoboard/session-agents.jsonl` | `session-manager.ts` (append-only) | Append-only invariant breaks; history integrity lost (A-2) | Session APIs (`/api/session/*`) |
 | `.kovitoboard/recipe-history.jsonl` | `recipe-applicator.ts` (append-only) | Append-only invariant breaks; history integrity lost (A-2) | Recipe APIs (`/api/recipes/*`) |
 | `.kovitoboard/recipes-installed/<appId>/manifest.json` | `recipe-applicator.ts` | Drift between manifest and `recipe-history.jsonl` (A-3) | Recipe install / uninstall APIs |
-| `.kovitoboard/logs/` (including `current.log` symlink) | pino-roll (KB internal logger) | Rotation invariant breaks; logs become undiagnosable (A-4) | Read-only; deletion is permitted only while KB is stopped |
-| `.kovitoboard/debug/trust-prompt/<file>` | `trust-prompt-relay.ts` | Loss of captured evidence used to refine detection patterns (A-5) | Read-only; deletion is permitted only after a trust-prompt pattern is confirmed |
+| `.kovitoboard/logs/` (including `current.log` symlink) | pino-roll (KB internal logger) | Rotation invariant breaks; logs become undiagnosable (A-4) | Read-only for agents. Cleanup is a maintenance task performed by the user (with KB stopped); agents must not truncate, redirect, or delete these files. |
+| `.kovitoboard/debug/trust-prompt/<file>` | `trust-prompt-relay.ts` | Loss of captured evidence used to refine detection patterns (A-5) | Read-only for agents. Cleanup of confirmed-pattern captures is a maintenance task performed by the user; agents must not delete entries. |
 | `.kovitoboard/run/supervisor.pid` | `kb-start.mjs` | Stale-detection logic confused; multi-instance coordination breaks (C-1) | `npm run kb:stop` (writes / deletes are owned by supervisor / kb-stop) |
-| `<repo>/app` (symlink pointing to `<projectRoot>/app`) | `kb-start.mjs` (`ensureAppSymlink`) | Next-boot symlink-setup warning; user apps disappear (A-6) | KB-managed (restart the supervisor if the symlink must change) |
-| `<repo>/dist/` (production build output) | `npm run build` | Loader path confusion if the tree is hand-edited | Generated only via `npm run build` |
+| `<kbRepo>/app` (symlink pointing to `<projectRoot>/app`) | `kb-start.mjs` (`ensureAppSymlink`) | Next-boot symlink-setup warning; user apps disappear (A-6) | KB-managed (restart the supervisor if the symlink must change) |
+| `<kbRepo>/dist/` (production build output) | `npm run build` | Loader path confusion if the tree is hand-edited | Generated only via `npm run build` |
 
 ---
 
@@ -63,7 +72,7 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 | `<projectRoot>/CLAUDE.md` `<!-- KB:GUIDANCE_START --> ... <!-- KB:GUIDANCE_END -->` block | KB (CLAUDE.md guidance injection) | Hand-edits inside the block are overwritten on next boot (idempotent re-injection); see `claudeMdGuidance.disabled` opt-out (B-2) | Toggle `.kovitoboard/setting.json` `claudeMdGuidance.disabled = true` if you must opt out |
 | Claude Code binary (`~/.claude-versions/<ver>/bin/claude`) | User + KB version detection | Switching to `@latest` / `@beta` may break trust-prompt detection patterns (B-3) | Follow the version-compatibility warnings shown by KB |
 | `<projectRoot>/.gitignore` `kovitoboard/` entry | User | Missing entry leaks the embedded KB installation into the user's repository, bloating history (B-4) | Initial setup guide and onboarding check (a hardened check is on the v0.3.x roadmap) |
-| `<repo>/templates/agents/<name>.md` | OSS-distributed (git-managed) | Edits conflict with KB updates, customizations are lost (B-5) | Customize by copying to `<projectRoot>/.claude/agents/<id>.md` first |
+| `<kbRepo>/templates/agents/<name>.md` | OSS-distributed (git-managed) | Edits conflict with KB updates, customizations are lost (B-5) | Customize by copying to `<projectRoot>/.claude/agents/<id>.md` first |
 
 ---
 
@@ -85,7 +94,7 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 |---|---|---|---|
 | `app/<appId>/manifest.json` | KB (`recipe-applicator.ts`) | `appId` collision; recipe export integrity breaks (D-1) | Recipe APIs or KB UI's recipe-export feature |
 | `app/<appId>/api/*.ts` (declarative handler section) | User-authored + KB scanner | Free-form Express style fails the load-time scan; handler dispatch breaks (D-2) | Follow the handler conventions in KB's app-directory-extension specification |
-| `app/data/<appId>/_audit.log` (including rotation) | KB audit-logging subsystem | Rotation invariant breaks; audit trail is lost (D-3) | Read-only |
+| `app/data/<appId>/_audit.log` (including rotation) | KB audit-logging subsystem | Rotation invariant breaks; audit trail is lost (D-3) | Read-only for agents (rotation is owned by KB; agents must not truncate or hand-rotate the file). |
 | Recipe scope-approval state (`recipe-history.jsonl` `scope` field) | KB scope-validation pipeline | Distribution-time security premise collapses (D-4) | Recipe install UI / API only |
 
 ---
@@ -94,8 +103,8 @@ This chapter is the SSOT that KB-bundled agents (Concierge "Kobi" / KB Developer
 
 | Target | Owner | Why direct edits are forbidden | Alternative route |
 |---|---|---|---|
-| `<repo>/src/server/**` CSP / scope-validation code | OSS maintainers + existing specifications | Cross-scope risks reopen (E-1) | File a specification revision through KB's design-review process before editing |
-| `<repo>/src/server/trust-prompt-relay.ts` detection / response paths | OSS maintainers | Auto-response wrappers collapse the trust model (E-2) | Accept user consent through the UI only |
+| `<kbRepo>/src/server/**` CSP / scope-validation code | OSS maintainers + existing specifications | Cross-scope risks reopen (E-1) | File a specification revision through KB's design-review process before editing |
+| `<kbRepo>/src/server/trust-prompt-relay.ts` detection / response paths | OSS maintainers | Auto-response wrappers collapse the trust model (E-2) | Accept user consent through the UI only |
 | `setting.json` redacted-by-default fields (current and future) | `setting-manager.ts` | Adding debug code that logs raw values leaks secrets (E-3) | Follow the masking conventions in KB's logging specification (no redacted fields are defined yet at v1.0) |
 
 ---
@@ -110,8 +119,8 @@ A "what to do instead" cheat sheet covering the most common edits agents try.
 | Install / uninstall a recipe | KB UI Recipes page or `/api/recipes/*` | Modify `recipes-installed/<appId>/manifest.json` |
 | Stop KB cleanly | `npm run kb:stop` | `kill -9` the supervisor PID |
 | Inspect KB logs | Read `.kovitoboard/logs/current.log` | Truncate / redirect into the file |
-| Adjust the `<repo>/app` symlink | Restart the supervisor | `rm` the symlink and recreate it manually |
-| Edit a bundled agent template | Copy to `<projectRoot>/.claude/agents/<id>.md`, then edit there | Edit `<repo>/templates/agents/<name>.md` directly |
+| Adjust the `<kbRepo>/app` symlink | Restart the supervisor | `rm` the symlink and recreate it manually |
+| Edit a bundled agent template | Copy to `<projectRoot>/.claude/agents/<id>.md`, then edit there | Edit `<kbRepo>/templates/agents/<name>.md` directly |
 | Pin a Claude Code version | Use the version controls KB exposes (or at least respect KB's compatibility warnings) | Switch the binary to `@latest` / `@beta` without checking detection patterns |
 | Run multiple KB instances on the same project | One supervisor per project root (M-1 refuses shared-installation launches) | Start a second `npm start` in another shell against the same project |
 | Approve a trust prompt | KB UI's trust-prompt dialog | Post WebSocket frames to `/api/ws` directly |
