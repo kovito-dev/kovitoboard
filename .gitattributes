@@ -5,6 +5,16 @@
 *.sh text eol=lf
 *.mjs text eol=lf
 
+# Source / test files: force text + textual diff so Git does not fall
+# back to a binary diff when the file happens to contain a stretch of
+# control characters in a regex literal (Git's binary heuristic flips
+# to `Bin xxxx -> yyyy bytes` after seeing one NUL byte in the first
+# 8 kB, which makes security-sensitive PRs unreviewable on the GitHub
+# UI). Forcing `text diff` is purely diff-presentation; the bytes
+# committed and the runtime behaviour are unchanged.
+*.ts text diff eol=lf
+*.tsx text diff eol=lf
+
 # Binary assets (preventive declaration for future additions)
 *.png binary
 *.jpg binary
