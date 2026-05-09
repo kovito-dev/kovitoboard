@@ -1,12 +1,14 @@
 # KovitoBoard Reference (for Agents) — English
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-04-18
-**Role:** Navigation layer. Detailed content lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md).
+**Target KB version:** v0.1.0 (chapter 12 is at v0.2.0)
+**Last updated:** 2026-05-09
+**Role:** Navigation layer for chapters 01–10. Detailed content for those chapters lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md). **Chapter 12 is an exception** — it is authored in English at [`../12-protected-paths.md`](../12-protected-paths.md) and has no `en/` proxy. Read it directly.
 
-> ℹ️ **About this tree:** `docs/agent-ref/en/` is a **navigation layer**, not a translation. Each chapter here provides English section titles and pointers into the Japanese authoritative source (`docs/agent-ref/`). Agents reading this tree should follow the pointers and read the Japanese detailed content directly — Claude can read Japanese and respond in English without loss.
+> ℹ️ **About this tree:** `docs/agent-ref/en/` is primarily a **navigation layer**, not a translation. Most chapters here provide English section titles and pointers into the Japanese authoritative source (`docs/agent-ref/`). Agents reading this tree should follow the pointers and read the Japanese detailed content directly — Claude can read Japanese and respond in English without loss.
 >
-> This design keeps detailed information in one place (the Japanese source), avoiding spec drift between languages. English-locale-specific notes (UI labels, common English-speaker confusions) may be added to each chapter's "English-specific notes" section when needed.
+> Chapter 12 (Protected Paths, added in v0.2.0) breaks this pattern: it is authored in English and is itself the SSOT for OSS users and external contributors. There is no Japanese parallel chapter under `docs/agent-ref/`; the design-side internal SSOT is the project's specification document.
+>
+> This split keeps detailed information in one place per chapter, avoiding spec drift between languages. English-locale-specific notes (UI labels, common English-speaker confusions) may be added to each navigation chapter's "English-specific notes" section when needed.
 
 ---
 
@@ -82,6 +84,12 @@ This document is the entry point that Kovito's Concierge "Kobi" and other agents
 - Protocol for user-side agents → [`10-upgrade.md`](./10-upgrade.md) §7
 - Version-related warnings → [`06-troubleshooting.md`](./06-troubleshooting.md) §8
 
+### 🛡️ Files KB protects (do not edit directly)
+- KB-managed files list → [`../12-protected-paths.md`](../12-protected-paths.md) §2
+- External preconditions (`.claude/agents` etc.) → [`../12-protected-paths.md`](../12-protected-paths.md) §3
+- Runtime state (tmux / ports / internal APIs) → [`../12-protected-paths.md`](../12-protected-paths.md) §4
+- Alternative routes summary → [`../12-protected-paths.md`](../12-protected-paths.md) §7
+
 ---
 
 ## Chapter list (navigation layer)
@@ -97,6 +105,7 @@ This document is the entry point that Kovito's Concierge "Kobi" and other agents
 | [`07-advanced.md`](./07-advanced.md) | Skills, automation, advanced settings | [`../07-advanced.md`](../07-advanced.md) |
 | [`09-data-handling.md`](./09-data-handling.md) | Data handling and notes (KB→Claude Code data flow, masking recommendations) | [`../09-data-handling.md`](../09-data-handling.md) |
 | [`10-upgrade.md`](./10-upgrade.md) | Upgrading KB — procedure and agent protocol | [`../10-upgrade.md`](../10-upgrade.md) |
+| (chapter 12 has no `en/` proxy) | Protected paths (KB-managed files / runtime / boundaries) | [`../12-protected-paths.md`](../12-protected-paths.md) (authored in English) |
 
 ---
 

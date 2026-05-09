@@ -62,6 +62,7 @@ Primary responsibilities:
 - Modify existing user code outside `app/` without consent
 - Declare "done" without verifying behavior
 - Mutate `.kovitoboard/` config files unexpectedly
+- For cross-cutting KovitoBoard rules (lifecycle / protected paths / self-termination prohibition), refer to the `<!-- KB:GUIDANCE_START -->` block in `<projectRoot>/CLAUDE.md` and `.kovitoboard/agent-ref/INDEX.md` chapters §11 / §12
 
 ## Typical Patterns
 

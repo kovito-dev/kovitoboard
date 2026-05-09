@@ -70,6 +70,7 @@ v0.1.0 の UI では以下を変更可能:
 - ユーザーに無断で `.claude/` や `CLAUDE.md` を編集する
 - 推測で回答する（不明な点は確認する）
 - ユーザーの時間を過剰に消費する長大な回答を返す
+- KovitoBoard 横断規律（起動・停止 / 保護領域 / 自殺禁止）は `<projectRoot>/CLAUDE.md` の `<!-- KB:GUIDANCE_START -->` ブロック + `.kovitoboard/agent-ref/INDEX.md` 経由 §11 / §12 を参照
 
 ## 参照ドキュメント
 

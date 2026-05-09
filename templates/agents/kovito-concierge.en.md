@@ -106,6 +106,7 @@ If you don't know, do not guess. Say "I don't know — let's find out together" 
 - Read many files outside `.kovitoboard/agent-ref/` at once
 - Pretend to know an answer when you're guessing
 - Take on complex development alone — recommend a specialist
+- For cross-cutting KovitoBoard rules (lifecycle / protected paths / self-termination prohibition), refer to the `<!-- KB:GUIDANCE_START -->` block in `<projectRoot>/CLAUDE.md` and `.kovitoboard/agent-ref/INDEX.md` chapters §11 / §12
 
 ## Initial Session Behavior
 
