@@ -12,9 +12,19 @@
  * of `src/server/middleware/auth.ts` — we test the same shape of
  * input the real Express stack and `ws` library deliver.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { Request, Response, NextFunction } from 'express'
 import type { IncomingMessage } from 'http'
+
+// `auth.ts` builds its allowed-origin set at module import time from
+// `process.env.PORT` / `process.env.VITE_PORT`, so we must seed those
+// vars before the import is resolved. `vi.hoisted` runs before any
+// static `import` even though it appears below them in source order.
+vi.hoisted(() => {
+  process.env.PORT = '3001'
+  process.env.VITE_PORT = '5173'
+})
+
 import {
   createTokenAndOriginGuard,
   createWsClientVerifier,
@@ -204,6 +214,25 @@ describe('createTokenAndOriginGuard', () => {
     expect(next.called).toBe(true)
   })
 
+  it('rejects a loopback Origin on a port the supervisor did not launch', () => {
+    // `http://localhost:8080` is loopback but not the KB UI — a
+    // separate dev server on the same machine should not be able to
+    // ride the gate just because it happens to match a hostname
+    // pattern.
+    const recorder = makeRes()
+    const next = makeNext()
+    guard(
+      makeReq({
+        'x-kovitoboard-token': SAMPLE_TOKEN,
+        origin: 'http://localhost:8080',
+      }),
+      recorder.res,
+      next.fn,
+    )
+    expect(next.called).toBe(false)
+    expect(recorder.statusCode).toBe(403)
+  })
+
   it('emits the WWW-Authenticate: KbLaunchToken header on a 401', () => {
     const setHeaderCalls: Array<[string, string]> = []
     const recorder = makeRes()
@@ -389,7 +418,14 @@ describe('__testing exports', () => {
   it('exposes the constants used by the production middleware', () => {
     expect(__testing.TOKEN_HEADER).toBe('x-kovitoboard-token')
     expect(__testing.TOKEN_QUERY_KEY).toBe('token')
-    expect(__testing.ALLOWED_ORIGIN_RE.test('http://127.0.0.1:5173')).toBe(true)
-    expect(__testing.ALLOWED_ORIGIN_RE.test('http://attacker.example:80')).toBe(false)
+    expect(__testing.TOKEN_AUTH_SCHEME).toBe('KbLaunchToken')
+    // ALLOWED_ORIGINS is built at import time from PORT / VITE_PORT
+    // (vi.hoisted set them to 3001 / 5173), so the launch ports are
+    // present and a stranger port like 8080 is not.
+    expect(__testing.ALLOWED_ORIGINS.has('http://127.0.0.1:5173')).toBe(true)
+    expect(__testing.ALLOWED_ORIGINS.has('http://localhost:3001')).toBe(true)
+    expect(__testing.ALLOWED_ORIGINS.has('http://[::1]:5173')).toBe(true)
+    expect(__testing.ALLOWED_ORIGINS.has('http://localhost:8080')).toBe(false)
+    expect(__testing.ALLOWED_ORIGINS.has('http://attacker.example:80')).toBe(false)
   })
 })

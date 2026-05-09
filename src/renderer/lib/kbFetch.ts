@@ -237,6 +237,14 @@ export function kbFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
   }
   if (shouldAttachToken(input)) {
     headers.set('X-Kovitoboard-Token', getLaunchToken())
+  } else {
+    // Fail closed when forwarding to a non-`/api` or cross-origin
+    // destination: a Request the caller passed in (or an init.headers
+    // object copied from one) might already carry the launch token,
+    // and silently relaying it to a foreign endpoint would leak the
+    // bearer credential. Strip it explicitly so the only path that
+    // ever sends the header is the one shouldAttachToken approves.
+    headers.delete('X-Kovitoboard-Token')
   }
   return fetch(input, { ...init, headers }).then((res) => {
     // Reload only on a launch-token 401 (server signals it via the

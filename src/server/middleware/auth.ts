@@ -80,20 +80,52 @@ const TOKEN_AUTH_SCHEME = 'KbLaunchToken'
 const TOKEN_FORMAT_RE = /^[0-9a-f]{32}$/
 
 /**
- * Origin allowlist regex. Matches:
- *   http://localhost:<port>
- *   http://127.0.0.1:<port>
- *   http://[::1]:<port>
+ * Build the exact-origin allowlist for this launch from the env vars
+ * the supervisor (`tools/kb-start.mjs`) already feeds the server:
  *
- * Port is required because both supervisor children always bind to a
- * concrete port. The supervisor binds to IPv4 loopback (`127.0.0.1`),
- * but a browser running on an IPv6-first host can resolve `localhost`
- * to `::1` and produce an `Origin: http://[::1]:<port>` header for
- * its proxied API calls; rejecting that origin would break perfectly
- * legitimate same-machine usage. https is intentionally excluded —
- * the supervisor does not serve TLS today.
+ *   - `PORT`      — the Express backend port the renderer's HTTP /
+ *                   WebSocket calls land on directly.
+ *   - `VITE_PORT` — the dev-mode frontend port that proxies through
+ *                   Vite into the same backend.
+ *
+ * Direct launches (`npm run prod`) only set `PORT`; that is fine
+ * because there is no Vite dev server in that mode. Ad-hoc / test
+ * launches that set neither still get the historical default of
+ * `3001` (the value `src/server/index.ts` falls through to when
+ * `process.env.PORT` is missing) so a supervisor-less `tsx` run does
+ * not reject every request out of the gate.
+ *
+ * Each port is expanded to the three loopback hostnames a browser
+ * can plausibly produce — `localhost`, `127.0.0.1`, and the IPv6
+ * `[::1]` — because OS-level resolution of `localhost` varies. https
+ * is intentionally excluded; the supervisor does not serve TLS.
+ *
+ * Resolved once at boot. Adding a new port at runtime would require a
+ * server restart, which is consistent with how the rest of the
+ * launch contract behaves (token, PID, project root all baked at
+ * boot too).
  */
-const ALLOWED_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):\d+$/
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'] as const
+
+function buildAllowedOriginSet(): Set<string> {
+  const ports = new Set<string>()
+  const backendPort = (process.env.PORT ?? '').trim()
+  const vitePort = (process.env.VITE_PORT ?? '').trim()
+  if (backendPort) ports.add(backendPort)
+  if (vitePort) ports.add(vitePort)
+  if (ports.size === 0) {
+    ports.add('3001')
+  }
+  const origins = new Set<string>()
+  for (const port of ports) {
+    for (const host of LOOPBACK_HOSTS) {
+      origins.add(`http://${host}:${port}`)
+    }
+  }
+  return origins
+}
+
+const ALLOWED_ORIGINS = buildAllowedOriginSet()
 
 /**
  * Resolve the expected per-launch token from the environment, throwing
@@ -155,7 +187,7 @@ function tokensMatch(actual: string | undefined | null, expected: string): boole
  */
 function originAllowed(origin: string | undefined): boolean {
   if (typeof origin !== 'string' || origin.length === 0) return true
-  return ALLOWED_ORIGIN_RE.test(origin)
+  return ALLOWED_ORIGINS.has(origin)
 }
 
 /**
@@ -230,6 +262,6 @@ export function createWsClientVerifier(expectedToken: string) {
 export const __testing = {
   TOKEN_HEADER,
   TOKEN_QUERY_KEY,
-  ALLOWED_ORIGIN_RE,
+  ALLOWED_ORIGINS,
   TOKEN_AUTH_SCHEME,
 }

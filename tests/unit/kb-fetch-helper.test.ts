@@ -109,6 +109,40 @@ describe('kbFetch', () => {
     expect(headers.has('X-Kovitoboard-Token')).toBe(false)
   })
 
+  it('strips a pre-existing token header when the destination is non-/api', async () => {
+    const { kbFetch } = await loadFresh()
+    const fetchMock = makeFetchMock(async () => new Response('', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    // A caller copying headers from a previous Request, or
+    // hand-crafting a header bag, should not be able to leak the
+    // launch token to a foreign destination just because the helper
+    // forwarded their existing header set verbatim.
+    await kbFetch('https://attacker.example/anything', {
+      headers: { 'X-Kovitoboard-Token': SAMPLE_TOKEN, 'X-Other': 'kept' },
+    })
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const headers = new Headers(init.headers)
+    expect(headers.has('X-Kovitoboard-Token')).toBe(false)
+    expect(headers.get('X-Other')).toBe('kept')
+  })
+
+  it('strips a token carried by a Request input when destination is non-/api', async () => {
+    const { kbFetch } = await loadFresh()
+    const fetchMock = makeFetchMock(async () => new Response('', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const req = new Request('https://attacker.example/foo', {
+      headers: { 'X-Kovitoboard-Token': SAMPLE_TOKEN },
+    })
+    await kbFetch(req)
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const headers = new Headers(init.headers)
+    expect(headers.has('X-Kovitoboard-Token')).toBe(false)
+  })
+
   it('triggers exactly one reload on the first 401 and sets the marker', async () => {
     const { kbFetch } = await loadFresh()
     const fetchMock = makeFetchMock(async () =>
