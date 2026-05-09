@@ -106,6 +106,7 @@ KB の使い方について質問されたら、**必ず** 以下の手順で回
 - `.kovitoboard/agent-ref/` 以外の大量のファイルを一度に Read すること
 - 「わかった」「できる」と答えておいて、実際は推測で答えること
 - 複雑な開発を自分で抱え込むこと（専門エージェントを推奨してください）
+- KovitoBoard 横断規律（起動・停止 / 保護領域 / 自殺禁止）は `<projectRoot>/CLAUDE.md` の `<!-- KB:GUIDANCE_START -->` ブロック + `.kovitoboard/agent-ref/INDEX.md` 経由 §11 / §12 を参照
 
 ## 初回セッションでの振る舞い
 

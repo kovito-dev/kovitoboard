@@ -62,6 +62,7 @@ model: sonnet
 - 既存ユーザーコード（`app/` 外）を無断で変更する
 - テストが無いまま「できました」と宣言する
 - `.kovitoboard/` 以下の設定ファイルを勝手に書き換える
+- KovitoBoard 横断規律（起動・停止 / 保護領域 / 自殺禁止）は `<projectRoot>/CLAUDE.md` の `<!-- KB:GUIDANCE_START -->` ブロック + `.kovitoboard/agent-ref/INDEX.md` 経由 §11 / §12 を参照
 
 ## 得意とする実装パターン
 
