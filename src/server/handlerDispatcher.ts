@@ -237,6 +237,11 @@ export async function dispatch(
   // 5. Scope validation
   const requiredScopes = HANDLER_REQUIRED_SCOPES[handlerName]
   const approvedScopes = manifest.approvedScopes
+  // Captured from validatePathForScope on the path-bound branch so it
+  // can be threaded onto HandlerContext below. Stays undefined for
+  // scope-only handlers, matching HandlerContext.resolvedPath's
+  // optional contract.
+  let resolvedPath: string | undefined
 
   if (HANDLERS_WITH_PATH.has(handlerName)) {
     // Handler with path argument: cross-validate path x scope
@@ -258,6 +263,18 @@ export async function dispatch(
         `Path "${pathArg}" is not allowed: ${pathValidation.failedCode}`,
       )
     }
+    // The validator returns the physical path that passed scope and
+    // exclusion checks; missing here would mean the validator
+    // contract is broken, so refuse with Internal rather than fall
+    // back to projectRoot+input.path (which is exactly the
+    // re-resolution pattern this change removes).
+    if (!pathValidation.resolvedPath) {
+      return handlerError(
+        'Internal',
+        `Scope validator returned ok without a resolved path for "${pathArg}"`,
+      )
+    }
+    resolvedPath = pathValidation.resolvedPath
   } else {
     // Handler without path argument: validate scope only
     const scopeValidation = validateScopeOnly(approvedScopes, requiredScopes)
@@ -287,6 +304,9 @@ export async function dispatch(
   // the recipe author's lineage id captured on the manifest. The
   // audit log records both so an entry can be attributed to a
   // specific app instance (multiple apps may share a recipeId).
+  // `resolvedPath` is set above only on the path-bound branch so
+  // the handler can read/write the same physical path that scope
+  // validation cleared, without re-deriving it.
   const recipeId = manifest.recipeId
   const startTime = Date.now()
   try {
@@ -295,6 +315,7 @@ export async function dispatch(
       appId,
       recipeId,
       approvedScopes,
+      resolvedPath,
     })
     const durationMs = Date.now() - startTime
 

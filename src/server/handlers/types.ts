@@ -132,7 +132,7 @@ export interface HandlerContext {
    * KB-local app identifier — the dispatcher cache key, the
    * `app/<appId>/` directory key, and the `app/data/<appId>/` data
    * root. **All own-data path resolution uses this.**
-   * (DEC-024 D-1, recipe-system.md §13)
+   * (recipe-system.md §13)
    */
   appId: string
   /**
@@ -145,6 +145,18 @@ export interface HandlerContext {
   recipeId: string
   /** List of approved scopes for this recipe */
   approvedScopes: readonly Scope[]
+  /**
+   * Fully resolved absolute path computed by the dispatcher's scope
+   * validator from the handler's `input.path` argument. Set only for
+   * path-bound handlers (`list-files`, `read-file`, `write-file`)
+   * and undefined for scope-only handlers. Path-bound handlers
+   * **must** consume this value verbatim and **must not** re-derive
+   * a path from `projectRoot + input.path`; doing so re-opens the
+   * scope-escape gap that this field was added to close, and
+   * widens the symlink-swap race window between scope validation
+   * and the subsequent fs operation.
+   */
+  resolvedPath?: string
 }
 
 /**
