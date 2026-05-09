@@ -225,6 +225,54 @@ describe('logger / sensitive-token redaction at write time', () => {
     expect(raw).toContain('cyclic')
   })
 
+  it('replaces cycles with a sentinel so a cycle cannot smuggle a token past the redactor', async () => {
+    // If the walker returned the original object on cycle, the
+    // cloned record would still carry the raw subtree under
+    // `self` and re-expose any credential it contains. The
+    // sentinel branch ensures the cycle is broken AND the
+    // re-exposed reference is replaced with a string the
+    // redactor's regex no longer needs to scan.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('cycle-token')
+    type Cyclic = {
+      token: string
+      self?: Cyclic
+    }
+    const cyc: Cyclic = {
+      token: 'sk-ant-api03-CycleSubtreeShouldStillBeRedacted',
+    }
+    cyc.self = cyc
+
+    log.info({ wrapped: cyc }, 'with cycle')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).toContain('<sk-ant redacted>')
+    expect(raw).not.toContain('sk-ant-api03-CycleSubtreeShouldStillBeRedacted')
+    expect(raw).toContain('[Circular]')
+  })
+
+  it('replaces deep subtrees with a sentinel at the depth cap', async () => {
+    // A pathological deeply-nested record used to bypass redaction
+    // beyond REDACT_MAX_DEPTH because the walker returned the raw
+    // subtree. The sentinel branch breaks that path.
+    await initLogger(projectRoot, baseSetting())
+    const log = childLogger('depth-token')
+
+    // Build a chain `{ a: { a: { a: ... { a: { token: ... } } } } }`
+    // 40 levels deep — past the cap of 32.
+    type Nested = { token?: string; a?: Nested }
+    let leaf: Nested = { token: 'sk-ant-api03-DeepNestedShouldNotLeakBeyondCap' }
+    for (let i = 0; i < 40; i++) {
+      leaf = { a: leaf }
+    }
+
+    log.info({ deep: leaf }, 'nested')
+    await new Promise((r) => setTimeout(r, 200))
+    const raw = readActiveLogFile(projectRoot)
+    expect(raw).not.toContain('sk-ant-api03-DeepNestedShouldNotLeakBeyondCap')
+    expect(raw).toContain('[Truncated: depth limit]')
+  })
+
   it('leaves trailing non-plain positional args (Error/Date/Buffer) for pino to format (no redactor regression)', async () => {
     // Non-plain objects (Error, Date, Buffer, Map, class instances)
     // are NOT walked by the redactor — the walker bails to the

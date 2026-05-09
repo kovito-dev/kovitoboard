@@ -155,8 +155,17 @@ function buildLogRedactor(): (obj: Record<string, unknown>) => Record<string, un
     if (typeof value === 'string') return replaceString(value)
     if (value === null || value === undefined) return value
     if (typeof value !== 'object') return value
-    if (depth >= REDACT_MAX_DEPTH) return value
-    if (seen.has(value as object)) return value
+    // Replace anything past the depth cap with a sentinel rather
+    // than handing the raw subtree back: returning the original
+    // would re-expose every credential below the cap because
+    // pino's serializer still walks it on output.
+    if (depth >= REDACT_MAX_DEPTH) return '[Truncated: depth limit]'
+    // Replace cycles with a sentinel for the same reason; in
+    // particular, returning the original object would re-expose
+    // raw fields under `self`/parent references that the rest of
+    // the walk has not visited yet, and would also reintroduce
+    // the cycle into the cloned record.
+    if (seen.has(value as object)) return '[Circular]'
 
     if (Array.isArray(value)) {
       seen.add(value)
