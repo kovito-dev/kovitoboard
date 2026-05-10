@@ -145,15 +145,24 @@ Options:
                          contract). Required to bypass the per-
                          project PID-file scope.
 
-                         Platform note: relative entry-script paths
-                         (the embedded-layout default,
-                         "node tools/kb-start.mjs --project-root ..")
-                         are resolved through /proc/<pid>/cwd. On
-                         platforms without /proc (e.g. macOS) those
-                         candidates are skipped with a WARN so they
-                         do not alias to a different clone. Restart
-                         the supervisor with an absolute script
-                         path if --all coverage is required there.
+                         Platform note: argv comes from
+                         /proc/<pid>/cmdline (NUL-separated,
+                         lossless) when available. On platforms
+                         without /proc (e.g. macOS) the matcher
+                         falls back to a whitespace-split of the
+                         pgrep -a output, which loses argv
+                         boundaries — so two limitations apply:
+                          (a) relative entry-script paths cannot be
+                              resolved without /proc/<pid>/cwd and
+                              are skipped with a WARN;
+                          (b) absolute paths that contain
+                              whitespace cannot be reconstructed
+                              from the flat cmdline and may also
+                              be missed.
+                         Avoid clone paths with whitespace on
+                         /proc-less platforms, or stop the
+                         supervisor via the per-project PID-file
+                         path (no --all flag) instead.
   -h, --help             Print this usage.
 
 Exit codes:
@@ -418,6 +427,14 @@ const NODE_NO_SCRIPT_FLAGS = new Set([
   // the supervisor. Skip those candidates.
   '--check',
   '-c',
+  // `--test` / `--test-only` put node into the test runner mode. In
+  // that mode argv positionals are *test files*, not the entry
+  // script — `node --test /abs/tools/kb-start.mjs` runs the
+  // KovitoBoard supervisor file as a test target, not as the
+  // supervisor launch shape. Reject so kb-stop --all does not
+  // SIGTERM unrelated test runners.
+  '--test',
+  '--test-only',
 ])
 
 /**
@@ -511,11 +528,10 @@ const NODE_BOOLEAN_FLAGS = new Set([
   '--prof-process',
   '--secure-heap',
   '--build-snapshot',
-  // Test runner (the bare boolean toggles; --test-shard / --test-name-pattern
-  // / --test-reporter etc. take values and live in NODE_VALUE_FLAGS).
-  '--test',
-  '--test-only',
-  // Watch (the bare toggle; --watch-path takes a value)
+  // Watch (the bare toggle; --watch-path takes a value).
+  // `--test` / `--test-only` are intentionally NOT here — they put
+  // node into test-runner mode where argv positionals are test
+  // files, so they belong in NODE_NO_SCRIPT_FLAGS instead.
   '--watch',
   '--watch-preserve-output',
 ])
