@@ -287,9 +287,14 @@ function checkExistingSupervisor() {
       existing.ports && existing.ports.vite
         ? ` (Frontend: http://localhost:${existing.ports.vite})`
         : ''
-    const stopHint = projectRoot
-      ? `cd ${projectRoot} && npm run kb:stop`
-      : `npm run kb:stop`
+    // The `kb:stop` script lives in `package.json` inside the KB clone
+    // (`repoRoot`), NOT in the user project root. In the embedded
+    // layout — `<project>/kovitoboard/` is the clone, and `kb-start`
+    // launches with `--project-root ..` — pointing the operator at
+    // `projectRoot` would land them outside the clone where the npm
+    // script does not exist. Use `repoRoot` so the hint is always
+    // runnable.
+    const stopHint = `cd ${repoRoot} && npm run kb:stop`
     console.error(
       `[kb-start] ERROR: KovitoBoard supervisor is already running` +
         ` (pid=${existing.pid})${url}.\n` +

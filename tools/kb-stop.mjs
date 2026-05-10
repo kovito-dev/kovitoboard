@@ -227,6 +227,25 @@ async function waitForPidFileGone(timeoutMs) {
   return !existsSync(PID_FILE_PATH)
 }
 
+/**
+ * Block until the supervisor PID is no longer alive, or `timeoutMs`
+ * elapses. Used after `waitForPidFileGone` because `kb-start` removes
+ * the PID file at the BEGINNING of shutdown (to publish the
+ * "shutting down" state), then proceeds to terminate children and
+ * exit. Treating PID-file disappearance as proof of completion would
+ * report success while the supervisor is still draining and reopen a
+ * start/stop race where a new supervisor could slip in before the old
+ * one released its ports.
+ */
+async function waitForPidExit(pid, timeoutMs) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (!isPidAlive(pid)) return true
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return !isPidAlive(pid)
+}
+
 function pgrepSupervisorPids() {
   // `-f` matches the full command line (so the script path is visible
   // even when argv[0] is just `node`). `-x` is intentionally NOT used
@@ -279,29 +298,27 @@ function selfTmuxSessionName() {
   }
 }
 
-function reportResidue() {
-  // Best-effort: print pgrep summaries the operator can act on. We
-  // intentionally do NOT kill these without --force; the spec wants
-  // the operator to confirm before SIGKILLing what could be an
-  // orphaned but legitimate user process.
-  const targets = [
-    { label: 'tsx watch', pattern: 'tsx.*src/server/index\\.ts' },
-    { label: 'vite child', pattern: 'node_modules/.bin/vite' },
-    { label: 'claude (post-tmux orphan)', pattern: 'claude.*--agent' },
+function reportResidue(pidEntry) {
+  // Scope: only check artifacts that we can tie back to the supervisor
+  // we just stopped. The previous host-wide `pgrep -af tsx /
+  // node_modules/.bin/vite / claude.*--agent` sweep would catch
+  // unrelated processes from other workspaces (or from the operator's
+  // unrelated dev work) and falsely return exit 4 on a clean stop,
+  // echoing those unrelated command lines to stderr.
+  //
+  // Target-scoped check: did the tmux session recorded in the
+  // supervisor's PID file survive shutdown? That session is the only
+  // thing we have a direct anchor on after the supervisor PID is gone
+  // (children inherit the session, so a leaked claude/tmux pane shows
+  // up as the session not getting torn down).
+  if (!pidEntry?.tmux?.sessionName) return []
+  if (!listTmuxSessions().includes(pidEntry.tmux.sessionName)) return []
+  return [
+    {
+      label: 'tmux session not torn down',
+      line: `tmux session "${pidEntry.tmux.sessionName}" is still active after supervisor stop`,
+    },
   ]
-  let residue = []
-  for (const t of targets) {
-    const r = spawnSync('pgrep', ['-af', t.pattern], { encoding: 'utf-8' })
-    if (r.status === 0 && r.stdout) {
-      residue = residue.concat(
-        r.stdout
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => ({ label: t.label, line })),
-      )
-    }
-  }
-  return residue
 }
 
 function killByPid(pid, signal) {
@@ -425,8 +442,18 @@ async function main() {
   // disappear.
   let timedOut = false
   if (pidFromFile != null) {
+    // Two-phase wait: first the PID file disappears (kb-start
+    // publishes "shutting down" by removing it early), then the
+    // supervisor process actually exits. Treating PID-file removal
+    // alone as success would race against `kb-start`'s child-cleanup
+    // and port release, so we follow up with `kill(0)` polling.
     const cleared = await waitForPidFileGone(5000)
-    if (!cleared) timedOut = true
+    if (!cleared) {
+      timedOut = true
+    } else {
+      const exited = await waitForPidExit(pidFromFile, 5000)
+      if (!exited) timedOut = true
+    }
   } else {
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
@@ -466,29 +493,22 @@ async function main() {
     }
   }
 
-  // Residual diagnostic — informational only.
-  //
-  // We deliberately do NOT auto-SIGKILL residue, even with --force.
-  // The patterns we scan for (`tsx.*src/server/index.ts`,
-  // `node_modules/.bin/vite`, `claude.*--agent`) are host-wide and
-  // can match unrelated dev servers / agent processes the operator
-  // is running for other reasons; SIGKILLing them would turn
-  // `kb-stop --force` into a broad availability hazard. We surface
-  // the pids and command lines so the operator can decide
-  // case-by-case. `--force`'s scope is intentionally limited to
-  // SIGKILLing the supervisor pid (already done above when the
-  // graceful shutdown timed out).
-  const residue = reportResidue()
+  // Residual diagnostic — informational only, scoped to artifacts
+  // we can tie back to the supervisor we just stopped (currently the
+  // tmux session recorded in the PID file). The previous host-wide
+  // pgrep sweep would catch unrelated dev servers and report exit 4
+  // on a clean stop; the session-anchored check here only fires when
+  // the supervisor's own tmux session survived shutdown, which is a
+  // genuine "something inside our scope leaked" signal.
+  const residue = reportResidue(pidEntry)
   if (residue.length > 0) {
-    console.warn(`[kb-stop] WARN: residual KB-related processes detected:`)
+    console.warn(`[kb-stop] WARN: KB-scoped residual artifacts detected:`)
     for (const r of residue) {
       console.warn(`[kb-stop]   (${r.label}) ${r.line}`)
     }
     console.warn(
-      `[kb-stop] These were NOT killed automatically — the patterns are host-wide and could match\n` +
-        `[kb-stop] unrelated dev servers / agent sessions. Review and terminate manually if needed:\n` +
-        `[kb-stop]   kill <pid>                  # try SIGTERM first\n` +
-        `[kb-stop]   kill -9 <pid>               # SIGKILL only when SIGTERM does not work`,
+      `[kb-stop] Review and terminate manually if needed:\n` +
+        `[kb-stop]   tmux kill-session -t <name>`,
     )
     process.exit(4)
   }
