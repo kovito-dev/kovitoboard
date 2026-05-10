@@ -7,8 +7,9 @@
 /**
  * KovitoBoard kb-stop — graceful supervisor shutdown.
  *
- * Spec SSOT: `process-lifecycle.md` v1.2 §7 (in the kovitoboard-dev
- * workspace).
+ * Spec SSOT: `process-lifecycle.md` v1.3 §7 (in the kovitoboard-dev
+ * workspace). The Phase 2-A absolute-path discovery rule for `--all`
+ * lives at §3.6 / §7.4 of the same spec.
  *
  * Reads the PID file written by `kb-start.mjs`, sends SIGTERM, waits
  * for graceful shutdown (PID file deletion), optionally cleans up the
@@ -26,10 +27,16 @@
  *   --dry-run      Detect but do not kill anything; print the
  *                  planned actions and exit 0.
  *   --all          Bypass the PID file and discover supervisors via
- *                  `pgrep -f tools/kb-start.mjs`. Useful when the PID
- *                  file is missing or you want to clear out every KB
- *                  on the host. Required to opt into broad tmux
- *                  prefix matching as well (see KB_FORCE_TMUX_PREFIX_KILL).
+ *                  `pgrep -af tools/kb-start.mjs`, then narrow the
+ *                  candidates to processes whose argv[0] is `node`
+ *                  and whose argv[1] resolves to THIS clone's
+ *                  `tools/kb-start.mjs`. Useful when the PID file
+ *                  is missing. Required to opt into broad tmux
+ *                  prefix matching as well (see
+ *                  KB_FORCE_TMUX_PREFIX_KILL). Cross-clone host-wide
+ *                  kill is intentionally OUT of contract after the
+ *                  Phase 2-A hardening — set up a per-clone PID file
+ *                  flow instead of relying on substring sweeps.
  *   -h, --help     Print this usage and exit 0.
  *
  * Exit codes:
@@ -41,8 +48,14 @@
  */
 
 import { execFileSync, spawnSync } from 'child_process'
-import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { resolve, dirname, relative, isAbsolute } from 'path'
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  readlinkSync,
+  unlinkSync,
+} from 'fs'
+import { basename, dirname, isAbsolute, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -124,10 +137,32 @@ Options:
   --project-root <path>  Explicit project root (overrides env / cwd).
   --force                SIGKILL if SIGTERM does not finish within 5s.
   --dry-run              Print the planned actions, kill nothing.
-  --all                  Host-wide sweep via pgrep (kills KB
-                         supervisors across every project on the
-                         host). Required to bypass the per-project
-                         PID-file scope.
+  --all                  Sweep for supervisors via pgrep, narrowing
+                         the candidates to processes whose entry
+                         script resolves to THIS clone's
+                         tools/kb-start.mjs (Phase 2-A: previous
+                         host-wide substring sweep is out of
+                         contract). Required to bypass the per-
+                         project PID-file scope.
+
+                         Platform note: argv comes from
+                         /proc/<pid>/cmdline (NUL-separated,
+                         lossless) when available. On platforms
+                         without /proc (e.g. macOS) the matcher
+                         falls back to a whitespace-split of the
+                         pgrep -a output, which loses argv
+                         boundaries — so two limitations apply:
+                          (a) relative entry-script paths cannot be
+                              resolved without /proc/<pid>/cwd and
+                              are skipped with a WARN;
+                          (b) absolute paths that contain
+                              whitespace cannot be reconstructed
+                              from the flat cmdline and may also
+                              be missed.
+                         Avoid clone paths with whitespace on
+                         /proc-less platforms, or stop the
+                         supervisor via the per-project PID-file
+                         path (no --all flag) instead.
   -h, --help             Print this usage.
 
 Exit codes:
@@ -246,18 +281,520 @@ async function waitForPidExit(pid, timeoutMs) {
   return !isPidAlive(pid)
 }
 
+/**
+ * Read a process's argv from `/proc/<pid>/cmdline`. The kernel writes
+ * argv NUL-separated, which preserves argument boundaries exactly the
+ * way `exec()` saw them — unlike `pgrep -a` output, this survives
+ * argv tokens that contain whitespace.
+ *
+ * Returns `null` when /proc is not available (typically macOS or a
+ * restricted runtime), so callers can fall back to a lossy parser.
+ */
+function readArgvFromProc(pid) {
+  try {
+    const raw = readFileSync(`/proc/${pid}/cmdline`, 'utf-8')
+    const parts = raw.split('\0')
+    // The trailing NUL produces an empty final segment. A literally
+    // empty argv (no args at all) would also yield `['']`, which is
+    // already useless for our argv[0] check below — drop the trailing
+    // empty entry either way.
+    if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
+    return parts.length > 0 ? parts : null
+  } catch {
+    return null
+  }
+}
+
+/** Read a process's cwd from `/proc/<pid>/cwd`. Returns `null` when unavailable. */
+function readCwdFromProc(pid) {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Detect whether `argv[0]`'s basename names a Node-compatible
+ * runtime: `node`, `nodejs` (Debian/Ubuntu legacy alternative), and
+ * versioned variants like `node20`, `node22.1.0`.
+ *
+ * The match is intentionally narrow. Earlier permissive forms
+ * (`^node([\d_-].*)?$`) admitted unrelated binaries that happen to
+ * begin with `node`, including third-party watchers (`node-dev`),
+ * monitors (`node_exporter`), and supervisor wrappers (`nodemon`),
+ * any of which could carry kb-start.mjs in argv as data and trigger
+ * a false-positive kill if accepted as the runtime.
+ */
+function isNodeRuntime(argv0) {
+  const base = basename(argv0)
+  return /^node(js|\d+(\.\d+)*)?$/.test(base)
+}
+
+/**
+ * Node flags whose two-token form consumes the following argv as a
+ * value operand. We need this list so the entry-script walker can
+ * skip past `<flag> <value>` pairs without mis-treating the value as
+ * the script. The `=value` form (e.g. `--require=mod`) is handled
+ * separately by the leading-`-` check, since the entire token still
+ * starts with `-`.
+ *
+ * The list covers the value-taking Node flags that reasonably appear
+ * in a real KB / contributor invocation. New flags introduced by
+ * future Node versions and not listed here would cause a false
+ * negative (the value would be mistaken for the script and the
+ * supervisor missed). Add to this set when that happens.
+ */
+const NODE_VALUE_FLAGS = new Set([
+  // Module loading
+  '-r',
+  '--require',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  // Policy
+  '--experimental-policy',
+  '--policy',
+  '--policy-integrity',
+  // Env file
+  '--env-file',
+  '--env-file-if-exists',
+  // Profiling
+  '--cpu-prof-dir',
+  '--cpu-prof-name',
+  '--cpu-prof-interval',
+  '--heap-prof-dir',
+  '--heap-prof-name',
+  '--heap-prof-interval',
+  // Diagnostic / report
+  '--diagnostic-dir',
+  '--report-directory',
+  '--report-filename',
+  '--report-signal',
+  // Inspector
+  '--inspect-port',
+  '--inspect-host',
+  '--inspect-brk-node',
+  // V8 / sizes
+  '--max-http-header-size',
+  '--max-old-space-size',
+  '--max-semi-space-size',
+  '--v8-pool-size',
+  // TLS / security
+  '--unhandled-rejections',
+  '--tls-cipher-list',
+  '--openssl-config',
+  '--openssl-shared-config',
+  // Conditions / inputs
+  '--conditions',
+  '-C',
+  '--input-type',
+  // Snapshot
+  '--snapshot-blob',
+  '--build-snapshot-config',
+  // Process / runtime metadata
+  '--title',
+  '--redirect-warnings',
+  // Test runner
+  '--test-shard',
+  '--test-name-pattern',
+  '--test-skip-pattern',
+  '--test-reporter',
+  '--test-reporter-destination',
+  '--test-concurrency',
+  // Tracing
+  '--trace-event-categories',
+  '--trace-event-file-pattern',
+  // Watch
+  '--watch-path',
+])
+
+/**
+ * Node flags that put the runtime into "no entry script" mode: the
+ * code is supplied inline via `<flag> <code>`, and any subsequent
+ * positional becomes a data argument to that code, NOT the entry
+ * script. We must recognize these explicitly so a process invoked as
+ * `node -e "..." /abs/tools/kb-start.mjs` is not mistaken for a
+ * supervisor (the kb-start.mjs token is data, not the entry script).
+ */
+const NODE_NO_SCRIPT_FLAGS = new Set([
+  '-e',
+  '--eval',
+  '-p',
+  '--print',
+  // `--check` runs syntax check on a script and exits without running
+  // it. The supervisor must actually run, so a checker process is not
+  // the supervisor. Skip those candidates.
+  '--check',
+  '-c',
+  // `--test` / `--test-only` put node into the test runner mode. In
+  // that mode argv positionals are *test files*, not the entry
+  // script — `node --test /abs/tools/kb-start.mjs` runs the
+  // KovitoBoard supervisor file as a test target, not as the
+  // supervisor launch shape. Reject so kb-stop --all does not
+  // SIGTERM unrelated test runners.
+  '--test',
+  '--test-only',
+])
+
+/**
+ * Boolean Node flags that take no operand. The walker treats any
+ * leading-`-` token NOT in this set, NODE_VALUE_FLAGS, or
+ * NODE_NO_SCRIPT_FLAGS as an unknown flag and rejects the candidate
+ * (refuse-on-unknown). The conservative bias is intentional: a false
+ * negative (we miss a legitimate supervisor on a future Node flag)
+ * is recoverable (the operator can re-run with `--force` or a
+ * per-PID kill), but a false positive (we SIGTERM the wrong process)
+ * is destructive.
+ *
+ * `--name=value` form is recognized inline; we don't need each
+ * value-flag also listed here for the `=value` shape because the
+ * leading `-` plus the embedded `=` makes the token unambiguously
+ * a single flag-and-value.
+ *
+ * Source: Node.js v22 / v20 documented CLI options, narrowed to the
+ * boolean (no-operand) subset that has appeared in production usage.
+ */
+const NODE_BOOLEAN_FLAGS = new Set([
+  // Inspector (the bare forms; -port / -host / -brk-node are in VALUE_FLAGS)
+  '--inspect',
+  '--inspect-brk',
+  // Source maps and warnings
+  '--enable-source-maps',
+  '--no-warnings',
+  '--trace-warnings',
+  '--trace-deprecation',
+  '--throw-deprecation',
+  '--no-deprecation',
+  '--pending-deprecation',
+  '--trace-uncaught',
+  '--trace-exit',
+  '--trace-sigint',
+  '--trace-sync-io',
+  '--trace-tls',
+  // Memory / V8 (sizes are in VALUE_FLAGS)
+  '--expose-gc',
+  '--track-heap-objects',
+  '--zero-fill-buffers',
+  '--v8-options',
+  // Module modes / experimental (boolean toggles)
+  '--experimental-modules',
+  '--experimental-vm-modules',
+  '--experimental-wasi-unstable-preview1',
+  '--experimental-fetch',
+  '--experimental-global-customevent',
+  '--experimental-global-webcrypto',
+  '--experimental-network-imports',
+  '--experimental-permission',
+  '--experimental-shadow-realm',
+  '--experimental-test-coverage',
+  '--experimental-websocket',
+  '--no-experimental-fetch',
+  '--no-experimental-global-customevent',
+  '--no-experimental-global-webcrypto',
+  '--no-experimental-network-imports',
+  '--no-experimental-shadow-realm',
+  // TLS toggles (boolean, no operand). Values like cipher-list are VALUE_FLAGS.
+  '--tls-min-v1.0',
+  '--tls-min-v1.1',
+  '--tls-min-v1.2',
+  '--tls-min-v1.3',
+  '--tls-max-v1.2',
+  '--tls-max-v1.3',
+  '--use-bundled-ca',
+  '--use-openssl-ca',
+  '--use-system-ca',
+  // Reports (boolean toggles; directory / filename are VALUE_FLAGS)
+  '--report-on-fatalerror',
+  '--report-on-signal',
+  '--report-uncaught-exception',
+  '--report-compact',
+  // Misc
+  '--abort-on-uncaught-exception',
+  '--force-async-hooks-checks',
+  '--force-fips',
+  '--force-node-api-uncaught-exceptions-policy',
+  '--frozen-intrinsics',
+  '--insecure-http-parser',
+  '--interactive',
+  '-i',
+  '--no-addons',
+  '--no-force-async-hooks-checks',
+  '--node-memory-debug',
+  '--openssl-legacy-provider',
+  '--preserve-symlinks',
+  '--preserve-symlinks-main',
+  '--prof',
+  '--prof-process',
+  '--secure-heap',
+  '--build-snapshot',
+  // Watch (the bare toggle; --watch-path takes a value).
+  // `--test` / `--test-only` are intentionally NOT here — they put
+  // node into test-runner mode where argv positionals are test
+  // files, so they belong in NODE_NO_SCRIPT_FLAGS instead.
+  '--watch',
+  '--watch-preserve-output',
+])
+
+/**
+ * Locate the entry-script argument inside an argv array exec'd as
+ * `node [node-flags...] script [script-args...]`. Returns the index
+ * of the entry script in `argv`, or `-1` if none exists (e.g. eval
+ * mode, missing script, unknown leading-`-` token before the script).
+ *
+ * Walks past:
+ *   - boolean flags listed in NODE_BOOLEAN_FLAGS.
+ *   - `<flag> <value>` pairs for flags listed in NODE_VALUE_FLAGS.
+ *   - `--flag=value` tokens (any leading `-` token containing `=`).
+ *
+ * Rejects (returns -1) when:
+ *   - a no-script flag is encountered (`-e` / `--eval` / `-p` /
+ *     `--print` / `-c` / `--check`).
+ *   - a leading-`-` token is unrecognized. This is the
+ *     refuse-on-unknown bias — we'd rather miss a legitimate
+ *     supervisor on a future Node flag than treat the value of an
+ *     unknown value-taking flag as the entry script and SIGTERM
+ *     the wrong process.
+ *   - argv runs out before a non-flag positional appears.
+ */
+/**
+ * `--eval=...` / `--print=...` are the inline-`=` forms of the
+ * no-script flags. They put the runtime into eval mode just like
+ * the two-token `-e <code>` / `--eval <code>` forms, so subsequent
+ * positionals are eval-data, NOT the entry script. Matched as a
+ * prefix because the suffix (`<code>`) is the eval payload.
+ */
+const NODE_NO_SCRIPT_INLINE_PREFIXES = ['--eval=', '--print=']
+
+function isNoScriptInlineFlag(tok) {
+  for (const prefix of NODE_NO_SCRIPT_INLINE_PREFIXES) {
+    if (tok.startsWith(prefix)) return true
+  }
+  return false
+}
+
+function findEntryScriptIndex(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    const tok = argv[i]
+    if (NODE_NO_SCRIPT_FLAGS.has(tok)) {
+      return -1
+    }
+    if (isNoScriptInlineFlag(tok)) {
+      // `--eval=<code>` and `--print=<code>` look like `--flag=value`
+      // tokens, but they put node into a no-script mode, so the
+      // walker must reject the candidate before the generic
+      // `--flag=value` branch swallows them.
+      return -1
+    }
+    if (tok === '--') {
+      // Bare `--` is Node's documented end-of-options marker. The
+      // next argv (if any) is unconditionally the entry script,
+      // even when it would otherwise look like a flag. Without
+      // this branch the walker would fall into the unknown-flag
+      // rejection path and miss a supervisor launched as
+      // `node -- tools/kb-start.mjs ...`.
+      return i + 1 < argv.length ? i + 1 : -1
+    }
+    if (NODE_VALUE_FLAGS.has(tok)) {
+      if (i + 1 >= argv.length) return -1
+      i += 1
+      continue
+    }
+    if (tok.startsWith('-')) {
+      // `--flag=value` is one self-contained token.
+      if (tok.includes('=')) continue
+      // Single-letter combined boolean flags like `-rT` (uncommon)
+      // and the canonical short forms (`-i`).
+      if (NODE_BOOLEAN_FLAGS.has(tok)) continue
+      // Unknown flag: refuse the candidate. We do not silently
+      // continue past it because that would alias a future
+      // value-taking flag's operand into the entry-script slot.
+      return -1
+    }
+    // First non-flag positional is the entry script.
+    return i
+  }
+  return -1
+}
+
+/**
+ * Discover supervisor PIDs via pgrep, then narrow the candidates to
+ * the ones started from THIS clone of `tools/kb-start.mjs`.
+ *
+ * Phase 2-A hardening (spec `process-lifecycle.md` v1.3 §3.6 / §7.4):
+ * the older implementation called `pgrep -f "tools/kb-start.mjs"` and
+ * returned every PID whose cmdline contained that substring. That let
+ * unrelated processes through:
+ *
+ *   - editors viewing the script: `nvim tools/kb-start.mjs`
+ *   - shells reading it: `bash -c 'cat tools/kb-start.mjs'`
+ *   - greps: `grep -r 'tools/kb-start.mjs' .`
+ *
+ * On `--all` (host-wide sweep) those would all receive SIGTERM, killing
+ * unrelated processes. We now require both:
+ *
+ *   1. `argv[0]` basename is a Node-compatible runtime
+ *      (`node` / `nodejs` / `node20`-style versioned binaries).
+ *      Shebang-launched invocations (`#!/usr/bin/env node`) still
+ *      pass since the kernel re-execs through the runtime.
+ *   2. The Node entry script — located by walking past Node flags
+ *      and their operands per `findEntryScriptIndex` — resolves
+ *      (after `realpath`) to the absolute path of
+ *      `<repoRoot>/tools/kb-start.mjs`. We do NOT scan every argv
+ *      token, because that would let `node other-script.js
+ *      /abs/tools/kb-start.mjs` (where kb-start.mjs is data, not
+ *      the entry script) and `node -e "..." /abs/tools/kb-start.mjs`
+ *      (eval-mode, no entry script) match falsely. The walker
+ *      recognizes value-taking flags (`--require`, `--import`,
+ *      `--env-file`, etc.) and refuses eval-mode flags
+ *      (`-e`, `--eval`, `-p`, `--print`).
+ *
+ * Argv comes from `/proc/<pid>/cmdline` when available (NUL-separated,
+ * lossless). On platforms without /proc (e.g. macOS) we fall back to
+ * the flat `pgrep -a` output and a naive whitespace split — argv
+ * tokens that contain spaces are not recovered in that case, and the
+ * affected candidate is skipped.
+ *
+ * Relative script paths (the embedded-layout default, `node
+ * tools/kb-start.mjs --project-root ..`) are resolved against the
+ * supervisor's cwd read from `/proc/<pid>/cwd`. When that cwd cannot
+ * be obtained — same /proc-less platforms — we **refuse** to resolve
+ * the relative path against kb-stop's own cwd. Doing so would let a
+ * supervisor from a different clone match this clone's expected
+ * script path whenever both clones happen to lay out the file at
+ * `tools/kb-start.mjs` under their respective project roots; the
+ * fence is exactly the cross-clone collateral kill that Phase 2-A is
+ * designed to prevent. The candidate is skipped with a DEBUG note
+ * instead, and operators can re-run the supervisor with an absolute
+ * `node /abs/path/to/tools/kb-start.mjs` invocation if they need the
+ * `--all` sweep to reach it on macOS.
+ *
+ * Set `KB_DEBUG=1` to log skipped candidates with the reason; the
+ * default is silent because host-wide sweeps can list many unrelated
+ * processes and a noisy stderr would obscure the actual stop trace.
+ */
 function pgrepSupervisorPids() {
-  // `-f` matches the full command line (so the script path is visible
-  // even when argv[0] is just `node`). `-x` is intentionally NOT used
-  // because we need substring matching for the script path.
-  const result = spawnSync('pgrep', ['-f', 'tools/kb-start.mjs'], {
+  const result = spawnSync('pgrep', ['-af', 'tools/kb-start.mjs'], {
     encoding: 'utf-8',
   })
   if (result.status !== 0 || !result.stdout) return []
-  return result.stdout
-    .split('\n')
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
+
+  let expectedScriptPath
+  try {
+    expectedScriptPath = realpathSync(resolve(repoRoot, 'tools', 'kb-start.mjs'))
+  } catch {
+    // realpath fails if the script file no longer exists in this
+    // clone. Fall back to the un-resolved absolute path so the
+    // comparison still tightens substring match into prefix-equality
+    // — better than reverting to the legacy false-positive surface.
+    expectedScriptPath = resolve(repoRoot, 'tools', 'kb-start.mjs')
+  }
+
+  const debug = process.env.KB_DEBUG === '1'
+  const pids = []
+  for (const line of result.stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    // `pgrep -a` prepends each match with `<pid> ` followed by the
+    // joined cmdline. We extract the pid first; argv parsing
+    // immediately switches to /proc when available so the flat
+    // cmdline below is only used as a last resort.
+    const space = trimmed.indexOf(' ')
+    const pidPart = space >= 0 ? trimmed.slice(0, space) : trimmed
+    const flatCmdline = space >= 0 ? trimmed.slice(space + 1) : ''
+    const pid = Number.parseInt(pidPart, 10)
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
+
+    // Argv source priority: /proc (lossless) > pgrep flat output
+    // (lossy whitespace split). The lossy path keeps the macOS flow
+    // working when paths have no embedded whitespace.
+    let argv = readArgvFromProc(pid)
+    if (!argv) {
+      argv = flatCmdline.split(/\s+/).filter(Boolean)
+    }
+    if (argv.length < 2) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: argv has fewer than 2 tokens ` +
+            `(source=${readArgvFromProc(pid) ? 'proc' : 'pgrep-fallback'})`,
+        )
+      }
+      continue
+    }
+    const argv0 = argv[0]
+
+    if (!isNodeRuntime(argv0)) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: argv[0]=${argv0} is not a node-compatible runtime`,
+        )
+      }
+      continue
+    }
+
+    const scriptIdx = findEntryScriptIndex(argv)
+    if (scriptIdx === -1) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: no entry script (eval mode or missing positional)`,
+        )
+      }
+      continue
+    }
+    const scriptArg = argv[scriptIdx]
+
+    let scriptAbs
+    if (isAbsolute(scriptArg)) {
+      scriptAbs = scriptArg
+    } else {
+      // Resolve the relative entry script using the supervisor's own
+      // cwd, not kb-stop's cwd. Falling back to kb-stop's cwd would
+      // alias a different clone's relative `tools/kb-start.mjs` onto
+      // THIS clone's expected path whenever kb-stop is invoked from
+      // inside a clone — the cross-clone collateral kill Phase 2-A
+      // is meant to prevent.
+      const supCwd = readCwdFromProc(pid)
+      if (!supCwd) {
+        // WARN-level (not DEBUG) so operators on /proc-less
+        // platforms can see, in normal output, that `--all`
+        // intentionally skipped a candidate. The embedded-layout
+        // default starts the supervisor with `node tools/kb-start.mjs
+        // --project-root ..` (relative argv[1]); on macOS this
+        // skip path is the common case, and silently exiting 0
+        // would falsely suggest no supervisor was present.
+        console.warn(
+          `[kb-stop] WARN: --all skipped pid ${pid}: relative entry script ${scriptArg} ` +
+            `and the supervisor cwd is not available via /proc on this platform. ` +
+            `If this is a real KovitoBoard supervisor, restart it with an absolute ` +
+            `script path (e.g. "node /abs/path/tools/kb-start.mjs --project-root ..") ` +
+            `so --all can fence it without aliasing to a different clone.`,
+        )
+        continue
+      }
+      scriptAbs = resolve(supCwd, scriptArg)
+    }
+
+    let scriptResolved
+    try {
+      scriptResolved = realpathSync(scriptAbs)
+    } catch {
+      scriptResolved = scriptAbs
+    }
+
+    if (scriptResolved !== expectedScriptPath) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: entry script resolves to ${scriptResolved}, ` +
+            `expected ${expectedScriptPath}`,
+        )
+      }
+      continue
+    }
+
+    pids.push(pid)
+  }
+  return pids
 }
 
 function killTmuxSession(name) {
