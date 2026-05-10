@@ -106,6 +106,21 @@ export function createConfigRouter(
         }
       }
 
+      // SECURITY: overwrite the client-supplied `project.path` with
+      // the supervisor-trusted `projectRoot` before persisting.
+      // `validateSetting` only checks the type and non-emptiness,
+      // not the location, so a crafted PUT could otherwise persist
+      // an attacker-controlled path into `.kovitoboard/setting.json`
+      // and influence later code that reads `setting.project.path`
+      // (notably `config.ts` `resolveProjectRootWithSource`
+      // priority-3 when CLI / env are unset). Since the wizard
+      // reads its displayed value from `GET /api/config/project-root`
+      // (which already returns the supervisor-trusted root),
+      // legitimate clients send the same value we are about to
+      // overwrite — this normalization is a no-op for them and a
+      // defense-in-depth strip for everything else.
+      body.project = { ...body.project, path: projectRoot }
+
       // Persist the new setting first so the onboarding-completion
       // marker (`onboarding.completedAt`) is durable before any
       // user-facing file (CLAUDE.md) is touched. If injection runs

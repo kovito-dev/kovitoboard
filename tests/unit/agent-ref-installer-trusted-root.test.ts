@@ -36,7 +36,7 @@ import {
 import express from 'express'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -194,5 +194,29 @@ describe('PUT /api/config/setting — trusted projectRoot wiring (Phase 2-A)', (
     // attacker root.
     expect(existsSync(join(attackerRoot, 'attacker-marker.txt'))).toBe(true)
     expect(existsSync(join(attackerRoot, '.kovitoboard'))).toBe(false)
+  })
+
+  it('overwrites a client-supplied project.path with the trusted projectRoot before persisting', async () => {
+    // Defense-in-depth: the route normalizes `body.project.path =
+    // projectRoot` before `writeSetting` so that even later code
+    // that reads `setting.project.path` from disk (notably
+    // `config.ts` `resolveProjectRootWithSource` priority-3) cannot
+    // observe the attacker's value. Legitimate clients send the
+    // same trusted root they read from `GET /api/config/project-
+    // root`, so this normalization is a no-op for them.
+    const res = await fetch(`${baseUrl}/api/config/setting`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(makeSetting()),
+    })
+    expect(res.status).toBe(200)
+
+    const settingPath = join(trustedRoot, '.kovitoboard', 'setting.json')
+    expect(existsSync(settingPath)).toBe(true)
+    const persisted = JSON.parse(readFileSync(settingPath, 'utf-8'))
+    // The body claimed `project.path = attackerRoot`. After the
+    // route handler ran, the persisted value must be `trustedRoot`.
+    expect(persisted.project.path).toBe(trustedRoot)
+    expect(persisted.project.path).not.toBe(attackerRoot)
   })
 })

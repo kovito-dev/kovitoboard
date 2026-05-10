@@ -138,11 +138,22 @@ Options:
   --force                SIGKILL if SIGTERM does not finish within 5s.
   --dry-run              Print the planned actions, kill nothing.
   --all                  Sweep for supervisors via pgrep, narrowing
-                         the candidates to processes whose argv[1]
-                         resolves to THIS clone's tools/kb-start.mjs
-                         (Phase 2-A: previous host-wide substring
-                         sweep is out of contract). Required to
-                         bypass the per-project PID-file scope.
+                         the candidates to processes whose entry
+                         script resolves to THIS clone's
+                         tools/kb-start.mjs (Phase 2-A: previous
+                         host-wide substring sweep is out of
+                         contract). Required to bypass the per-
+                         project PID-file scope.
+
+                         Platform note: relative entry-script paths
+                         (the embedded-layout default,
+                         "node tools/kb-start.mjs --project-root ..")
+                         are resolved through /proc/<pid>/cwd. On
+                         platforms without /proc (e.g. macOS) those
+                         candidates are skipped with a WARN so they
+                         do not alias to a different clone. Restart
+                         the supervisor with an absolute script
+                         path if --all coverage is required there.
   -h, --help             Print this usage.
 
 Exit codes:
@@ -729,13 +740,20 @@ function pgrepSupervisorPids() {
       // is meant to prevent.
       const supCwd = readCwdFromProc(pid)
       if (!supCwd) {
-        if (debug) {
-          console.error(
-            `[kb-stop] DEBUG: skipping pid ${pid}: relative entry script ${scriptArg} ` +
-              `and supervisor cwd is not available via /proc; refusing to resolve ` +
-              `against kb-stop's cwd to avoid cross-clone collateral kill`,
-          )
-        }
+        // WARN-level (not DEBUG) so operators on /proc-less
+        // platforms can see, in normal output, that `--all`
+        // intentionally skipped a candidate. The embedded-layout
+        // default starts the supervisor with `node tools/kb-start.mjs
+        // --project-root ..` (relative argv[1]); on macOS this
+        // skip path is the common case, and silently exiting 0
+        // would falsely suggest no supervisor was present.
+        console.warn(
+          `[kb-stop] WARN: --all skipped pid ${pid}: relative entry script ${scriptArg} ` +
+            `and the supervisor cwd is not available via /proc on this platform. ` +
+            `If this is a real KovitoBoard supervisor, restart it with an absolute ` +
+            `script path (e.g. "node /abs/path/tools/kb-start.mjs --project-root ..") ` +
+            `so --all can fence it without aliasing to a different clone.`,
+        )
         continue
       }
       scriptAbs = resolve(supCwd, scriptArg)

@@ -21,6 +21,16 @@
  * under the new absolute-path match. We assert that no kill action
  * is planned for those PIDs in `--dry-run` output.
  *
+ * Positive-path coverage note: this suite is intentionally
+ * negative-only because spawning a real `node tools/kb-start.mjs`
+ * to verify the matcher includes it would also start the KB
+ * supervisor (port binding, tmux session, etc.) and contaminate
+ * the test runner. The production positive path — kb-start runs,
+ * kb-stop matches it, supervisor stops — is exercised end-to-end
+ * by the L1 E2E suite (`tests/e2e/`), which boots the supervisor
+ * via the fake-claude harness and tears it down via the same
+ * `kb-stop` code path.
+ *
  * Bash's exec optimization replaces the shell process with the final
  * single command in a `bash -c "cmd"` script, which would erase the
  * decoy substring from argv. We avoid that by using a comment
