@@ -9,9 +9,24 @@ interface StepCompleteProps {
   conciergeAdded: boolean
   isCompleting: boolean
   onComplete: () => void
+  /**
+   * When true, the wizard records `claudeMdGuidance.disabled = true`
+   * in `setting.json` and the server skips the CLAUDE.md guidance
+   * injection on onboarding completion. Spec
+   * `claude-md-guidance-injection.md` v1.2 §7.2.
+   */
+  skipClaudeMdGuidance: boolean
+  /** Toggle handler for the opt-out checkbox. */
+  onSkipClaudeMdGuidanceChange: (next: boolean) => void
 }
 
-export function StepComplete({ conciergeAdded, isCompleting, onComplete }: StepCompleteProps) {
+export function StepComplete({
+  conciergeAdded,
+  isCompleting,
+  onComplete,
+  skipClaudeMdGuidance,
+  onSkipClaudeMdGuidanceChange,
+}: StepCompleteProps) {
   const label = isCompleting
     ? t('onboarding.complete.preparing')
     : conciergeAdded
@@ -36,6 +51,33 @@ export function StepComplete({ conciergeAdded, isCompleting, onComplete }: StepC
           {t('onboarding.complete.description')}
         </p>
       </div>
+
+      {/* CLAUDE.md guidance opt-out (spec
+          claude-md-guidance-injection.md v1.2 §7.2). Default OFF: KB
+          injects a minimal `KovitoBoard (KB)` block into
+          `<projectRoot>/CLAUDE.md` so every Claude Code agent picks
+          up the agent-ref entry point. Users who manage CLAUDE.md
+          themselves can opt out here, and the choice is recorded in
+          `setting.json` as `claudeMdGuidance.disabled = true`. */}
+      <label
+        data-testid="onboarding-skip-claude-md-guidance"
+        className="flex items-start gap-3 text-sm text-[var(--text-dim)] cursor-pointer select-none"
+      >
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={skipClaudeMdGuidance}
+          onChange={(e) => onSkipClaudeMdGuidanceChange(e.target.checked)}
+          disabled={isCompleting}
+        />
+        <span className="text-left">
+          {t('onboarding.complete.skipClaudeMdGuidance')}
+          <br />
+          <span className="text-xs opacity-80">
+            {t('onboarding.complete.skipClaudeMdGuidanceHint')}
+          </span>
+        </span>
+      </label>
 
       {/* Action button */}
       <button

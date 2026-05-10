@@ -39,6 +39,8 @@ const en: Record<MessageKey, string> = {
   'onboarding.complete.talkToKobi': 'Talk to Kobi',
   'onboarding.complete.goToAgents': 'Go to agents',
   'onboarding.complete.preparing': 'Preparing...',
+  'onboarding.complete.skipClaudeMdGuidance': 'Skip CLAUDE.md guidance injection',
+  'onboarding.complete.skipClaudeMdGuidanceHint': "When checked, KovitoBoard will not write a guidance block into your project's CLAUDE.md. Choose this if you manage CLAUDE.md yourself.",
   'onboarding.welcome.start': 'Get Started',
   'onboarding.user.avatarHint': 'Avatar image (optional, max 1MB)',
   'onboarding.user.avatarSizeError': 'File size exceeds 1MB',

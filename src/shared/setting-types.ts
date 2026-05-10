@@ -51,6 +51,34 @@ export interface VersionCheckSetting {
   ttlHours: number
 }
 
+/**
+ * Optional CLAUDE.md guidance-injection settings
+ * (spec `claude-md-guidance-injection.md` v1.2 §7.1 SSOT).
+ *
+ * KovitoBoard injects a minimal guidance block into
+ * `<projectRoot>/CLAUDE.md` exactly once when onboarding completes
+ * (state transition `onboarding.completedAt: null → string`). The block
+ * is wrapped between `<!-- KB:GUIDANCE_START -->` and
+ * `<!-- KB:GUIDANCE_END -->` markers and points all agents at
+ * `kovitoboard/docs/agent-ref/INDEX.md`.
+ *
+ * - `disabled`: when true, the injection is skipped entirely. The
+ *   onboarding wizard exposes an opt-out checkbox that flips this flag
+ *   before the settings PUT (spec §7.2).
+ * - `lastInjectedAt`: timestamp recorded when the block was actually
+ *   written (created or appended). Absent when the file already had
+ *   the marker (no-op) or when injection failed.
+ *
+ * Both fields are optional and the whole struct may be omitted; the
+ * server treats missing values as `disabled = false` / never injected.
+ */
+export interface ClaudeMdGuidanceSetting {
+  /** When true, the onboarding-completion injection is skipped. */
+  disabled?: boolean
+  /** ISO 8601 UTC timestamp of the last successful injection. */
+  lastInjectedAt?: string
+}
+
 /** Type definition for the KovitoBoard settings file (.kovitoboard/setting.json) */
 export interface KovitoboardSetting {
   version: '1.1'
@@ -86,4 +114,10 @@ export interface KovitoboardSetting {
    * omitted, version checking is enabled with a 24-hour cache TTL.
    */
   versionCheck?: VersionCheckSetting
+  /**
+   * Optional CLAUDE.md guidance-injection settings
+   * (`claude-md-guidance-injection.md` v1.2 §7.1). When omitted, the
+   * server applies defaults (`disabled = false`, no `lastInjectedAt`).
+   */
+  claudeMdGuidance?: ClaudeMdGuidanceSetting
 }

@@ -49,6 +49,11 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   // Tracks whether handleComplete is in flight so the final button can
   // show a spinner and stay disabled until the full-page reload fires.
   const [isCompleting, setIsCompleting] = useState(false)
+  // Opt-out for the CLAUDE.md guidance-block injection
+  // (spec `claude-md-guidance-injection.md` v1.2 §7.2). Default OFF
+  // — the wizard still injects on completion. Users who hand-roll
+  // their CLAUDE.md can flip this on to skip the write.
+  const [skipClaudeMdGuidance, setSkipClaudeMdGuidance] = useState(false)
 
   // Mirror the trust-prompt-pending flag into a ref so the async
   // handleComplete callback can poll the latest value without being
@@ -107,6 +112,13 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,
       onboarding: { completedAt: new Date().toISOString(), wizardVersion: '0.1.0' },
+      // Persist the opt-out choice as `claudeMdGuidance.disabled`
+      // when set; otherwise omit the struct entirely so older
+      // tooling that does not know about the field is not surprised
+      // by an unexpected `false`. Spec §7.2.
+      ...(skipClaudeMdGuidance
+        ? { claudeMdGuidance: { disabled: true } }
+        : {}),
     }
 
     try {
@@ -203,7 +215,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       ? '/agents/kovito-concierge?openLatestSession=1'
       : '/'
     window.location.assign(target)
-  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar])
+  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance])
 
   const renderStep = () => {
     switch (step) {
@@ -252,6 +264,8 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
             conciergeAdded={conciergeAdded}
             isCompleting={isCompleting}
             onComplete={handleComplete}
+            skipClaudeMdGuidance={skipClaudeMdGuidance}
+            onSkipClaudeMdGuidanceChange={setSkipClaudeMdGuidance}
           />
         )
       default:
