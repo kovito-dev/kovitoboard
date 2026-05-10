@@ -42,7 +42,7 @@
 
 import { execFileSync, spawnSync } from 'child_process'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { resolve, dirname } from 'path'
+import { resolve, dirname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -55,8 +55,17 @@ const repoRoot = resolve(__dirname, '..')
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { force: false, dryRun: false, all: false, help: false, unknown: [] }
-  for (const a of argv.slice(2)) {
+  const out = {
+    force: false,
+    dryRun: false,
+    all: false,
+    help: false,
+    projectRoot: null,
+    unknown: [],
+  }
+  const argList = argv.slice(2)
+  for (let i = 0; i < argList.length; i++) {
+    const a = argList[i]
     switch (a) {
       case '--force':
         out.force = true
@@ -71,8 +80,24 @@ function parseArgs(argv) {
       case '--help':
         out.help = true
         break
+      case '--project-root': {
+        // Allow either `--project-root <path>` (two args) or
+        // `--project-root=<path>` (single arg with equals).
+        const next = argList[i + 1]
+        if (next && !next.startsWith('-')) {
+          out.projectRoot = next
+          i += 1
+        } else {
+          out.unknown.push(a)
+        }
+        break
+      }
       default:
-        out.unknown.push(a)
+        if (a.startsWith('--project-root=')) {
+          out.projectRoot = a.slice('--project-root='.length)
+        } else {
+          out.unknown.push(a)
+        }
     }
   }
   return out
@@ -84,17 +109,30 @@ if (args.help) {
   console.log(`Usage: node tools/kb-stop.mjs [OPTIONS]
 
 Stops the KovitoBoard supervisor identified by the PID file at
-<projectRoot>/.kovitoboard/run/supervisor.pid (and a fallback pgrep
-sweep when the file is absent or --all is used).
+<projectRoot>/.kovitoboard/run/supervisor.pid.
+
+Project root resolution (highest to lowest priority):
+  1. --project-root <path>           CLI flag
+  2. KOVITOBOARD_PROJECT_ROOT        env var
+  3. Embedded layout: when invoked from inside the KB clone (e.g.
+     'cd <project>/kovitoboard && npm run kb:stop'), the parent of
+     the clone is used so the PID file written by kb-start is
+     discovered automatically.
+  4. process.cwd()                   final fallback
 
 Options:
-  --force        SIGKILL if SIGTERM does not finish within 5s.
-  --dry-run      Print the planned actions, kill nothing.
-  --all          Skip the PID file; discover supervisors via pgrep.
-  -h, --help     Print this usage.
+  --project-root <path>  Explicit project root (overrides env / cwd).
+  --force                SIGKILL if SIGTERM does not finish within 5s.
+  --dry-run              Print the planned actions, kill nothing.
+  --all                  Host-wide sweep via pgrep (kills KB
+                         supervisors across every project on the
+                         host). Required to bypass the per-project
+                         PID-file scope.
+  -h, --help             Print this usage.
 
 Exit codes:
-  0 success | 1 bad args | 2 EPERM | 3 graceful timeout | 4 residue
+  0 success | 1 bad args / corrupt PID | 2 EPERM | 3 graceful timeout
+  4 residue diagnostics (informational; processes were NOT killed)
 `)
   process.exit(0)
 }
@@ -104,10 +142,32 @@ if (args.unknown.length > 0) {
   process.exit(1)
 }
 
-const projectRoot =
-  process.env.KOVITOBOARD_PROJECT_ROOT && process.env.KOVITOBOARD_PROJECT_ROOT.length > 0
-    ? resolve(process.env.KOVITOBOARD_PROJECT_ROOT)
-    : process.cwd()
+/**
+ * Resolve the project root using the same priority chain as
+ * `kb-start` (CLI > env > embedded-layout > cwd). The
+ * embedded-layout step is the one that lets
+ * `cd <project>/kovitoboard && npm run kb:stop` work without an
+ * explicit flag — when the cwd lives inside the KB clone we walk
+ * up one level so the PID file written by `kb-start --project-root ..`
+ * is discovered.
+ */
+function resolveProjectRoot() {
+  if (args.projectRoot) return resolve(args.projectRoot)
+  const env = process.env.KOVITOBOARD_PROJECT_ROOT
+  if (env && env.length > 0) return resolve(env)
+  const cwd = process.cwd()
+  const rel = relative(repoRoot, cwd)
+  const cwdInsideClone = rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  if (cwdInsideClone) {
+    // Embedded layout: assume the supervisor was started with
+    // `--project-root ..` and the operator now ran us from the same
+    // clone. The parent of the clone is the project root.
+    return resolve(repoRoot, '..')
+  }
+  return cwd
+}
+
+const projectRoot = resolveProjectRoot()
 const PID_FILE_PATH = resolve(projectRoot, '.kovitoboard', 'run', 'supervisor.pid')
 
 // ---------------------------------------------------------------------------
@@ -277,8 +337,22 @@ async function main() {
       plannedTmuxSessions.add(pidEntry.tmux.sessionName)
     }
   } else if (pidEntry && pidEntry.broken) {
-    console.warn(`[kb-stop] WARN: PID file unreadable (${pidEntry.broken}); falling back to pgrep`)
-    supervisors = pgrepSupervisorPids()
+    if (args.all) {
+      console.warn(
+        `[kb-stop] WARN: PID file unreadable (${pidEntry.broken}); --all is set so falling back to pgrep`,
+      )
+      supervisors = pgrepSupervisorPids()
+    } else {
+      console.error(
+        `[kb-stop] ERROR: PID file at ${PID_FILE_PATH} is unreadable (${pidEntry.broken}).\n` +
+          `[kb-stop]        Refusing to fall back to a host-wide pgrep sweep because that would risk\n` +
+          `[kb-stop]        signaling supervisors that belong to other projects.\n` +
+          `[kb-stop]        Options:\n` +
+          `[kb-stop]          - inspect / repair / remove ${PID_FILE_PATH} and retry, or\n` +
+          `[kb-stop]          - re-run with --all to opt into the host-wide pgrep sweep.`,
+      )
+      process.exit(1)
+    }
   } else if (args.all) {
     // No PID file but the operator explicitly asked for the
     // host-wide sweep — fall back to pgrep.
@@ -392,27 +466,31 @@ async function main() {
     }
   }
 
-  // Residual diagnostic (and optional --force kill).
+  // Residual diagnostic — informational only.
+  //
+  // We deliberately do NOT auto-SIGKILL residue, even with --force.
+  // The patterns we scan for (`tsx.*src/server/index.ts`,
+  // `node_modules/.bin/vite`, `claude.*--agent`) are host-wide and
+  // can match unrelated dev servers / agent processes the operator
+  // is running for other reasons; SIGKILLing them would turn
+  // `kb-stop --force` into a broad availability hazard. We surface
+  // the pids and command lines so the operator can decide
+  // case-by-case. `--force`'s scope is intentionally limited to
+  // SIGKILLing the supervisor pid (already done above when the
+  // graceful shutdown timed out).
   const residue = reportResidue()
   if (residue.length > 0) {
     console.warn(`[kb-stop] WARN: residual KB-related processes detected:`)
     for (const r of residue) {
       console.warn(`[kb-stop]   (${r.label}) ${r.line}`)
     }
-    if (args.force) {
-      // Kill the pids parsed from `pgrep -af` lines.
-      for (const r of residue) {
-        const pid = Number.parseInt(r.line.split(/\s+/)[0], 10)
-        if (Number.isInteger(pid) && pid > 0) killByPid(pid, 'SIGKILL')
-      }
-      console.log(`[kb-stop] residual processes SIGKILL'd (--force).`)
-    } else {
-      console.warn(
-        `[kb-stop] To terminate, re-run with --force. ` +
-          `Some processes may legitimately belong to another KB or to you; review before forcing.`,
-      )
-      process.exit(4)
-    }
+    console.warn(
+      `[kb-stop] These were NOT killed automatically — the patterns are host-wide and could match\n` +
+        `[kb-stop] unrelated dev servers / agent sessions. Review and terminate manually if needed:\n` +
+        `[kb-stop]   kill <pid>                  # try SIGTERM first\n` +
+        `[kb-stop]   kill -9 <pid>               # SIGKILL only when SIGTERM does not work`,
+    )
+    process.exit(4)
   }
 
   console.log(

@@ -116,12 +116,56 @@ describe('tools/kb-stop.mjs — stale PID file', () => {
     expect(r.stdout).toContain('already dead')
   })
 
-  it('reports a corrupt PID file and falls back to pgrep in --dry-run', () => {
+  it('refuses to operate on a corrupt PID file without --all', () => {
+    // Spec hardening (CodeX review on PR #20, finding "scope
+    // violation on corrupt state"): a single broken PID file in one
+    // workspace must not cause a host-wide pgrep sweep that could
+    // signal supervisors belonging to other projects. The operator
+    // has to opt in via --all.
     const runDir = join(workDir, '.kovitoboard', 'run')
     mkdirSync(runDir, { recursive: true })
     writeFileSync(join(runDir, 'supervisor.pid'), '{ this is not json')
     const r = runKbStop(['--dry-run'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('PID file at')
+    expect(r.stderr).toContain('unreadable')
+    expect(r.stderr).toContain('--all to opt into the host-wide pgrep sweep')
+  })
+
+  it('skips the corrupt-PID error and uses pgrep when --all is set', () => {
+    // Implementation note: with `--all` the script intentionally does
+    // not even read the PID file (`pidEntry = null` short-circuits
+    // the broken-file branch); it goes straight to pgrep. So we do
+    // not see the "PID file unreadable" WARN — what we want to
+    // assert is the absence of the "Refusing to fall back" hard
+    // error and a clean exit 0.
+    const runDir = join(workDir, '.kovitoboard', 'run')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'supervisor.pid'), '{ this is not json')
+    const r = runKbStop(['--dry-run', '--all'])
     expect(r.status).toBe(0)
-    expect(r.stderr).toContain('PID file unreadable')
+    expect(r.stderr).not.toContain('Refusing to fall back')
+  })
+})
+
+describe('tools/kb-stop.mjs — embedded layout project root', () => {
+  it('walks up to the parent project when run from inside the KB clone', () => {
+    // Spec hardening (CodeX review on PR #20, finding "project
+    // root resolution mismatch"): `cd <project>/kovitoboard && npm
+    // run kb:stop` must resolve the same project root that
+    // `kb-start --project-root ..` wrote the PID file under
+    // (`<project>/`), not the cwd (`<project>/kovitoboard/`).
+    const r = spawnSync(process.execPath, [KB_STOP, '--help'], {
+      encoding: 'utf-8',
+      cwd: resolve(__dirname, '..', '..'),
+      env: { ...process.env, KOVITOBOARD_PROJECT_ROOT: '', TMUX: '' },
+    })
+    // --help short-circuits before path resolution affects exit
+    // code, but the help banner exposes the resolution priority so
+    // a regression that dropped the embedded-layout walk-up would
+    // surface in the doc fallback as well.
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('--project-root')
+    expect(r.stdout).toContain('Embedded layout')
   })
 })
