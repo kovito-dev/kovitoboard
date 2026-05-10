@@ -398,18 +398,31 @@ async function main() {
     process.exit(0)
   }
 
-  // Self-suicide guard: if we are running inside one of the tmux
-  // sessions we are about to kill, drop that session from the kill
-  // list so we do not yank the carpet from under the calling agent.
-  // Spec §7.6.
+  // Self-suicide guard (revision 4 strengthening of spec §7.6).
+  //
+  // Earlier revisions only removed the self tmux session from the
+  // explicit `plannedTmuxSessions` kill list, but they still sent
+  // SIGTERM (and SIGKILL on `--force`) to the supervisor PID. Because
+  // the supervisor owns the tmux pane processes inside its own
+  // session as descendants, signaling the supervisor cascades through
+  // SIGHUP / SIGTERM to those panes and tears down the session that
+  // hosts the calling agent — exactly the failure mode §7.6 wants to
+  // prevent. So we now refuse the run BEFORE any signal goes out
+  // when the target supervisor is hosted in our own tmux session.
+  //
+  // The agent-side rule in `agent-ref/11-lifecycle.md` §5 remains
+  // the primary defense (agents are told never to call `kb:stop`
+  // from inside KB); this branch is the depth-in-defense layer.
   const selfSession = selfTmuxSessionName()
-  const skippedSelf = selfSession && plannedTmuxSessions.has(selfSession)
-  if (skippedSelf) {
-    plannedTmuxSessions.delete(selfSession)
-    console.warn(
-      `[kb-stop] WARN: skipping self-kill of tmux session "${selfSession}". ` +
-        `Run kb-stop from a terminal outside that tmux session if you really want to kill it.`,
+  if (selfSession && plannedTmuxSessions.has(selfSession)) {
+    console.error(
+      `[kb-stop] ERROR: refusing to stop a supervisor whose tmux session\n` +
+        `[kb-stop]        ("${selfSession}") hosts the current shell. Signaling the\n` +
+        `[kb-stop]        supervisor would cascade SIGHUP/SIGTERM through its tmux\n` +
+        `[kb-stop]        descendants and kill the calling agent.\n` +
+        `[kb-stop]        Run kb-stop from a terminal outside this tmux session.`,
     )
+    process.exit(1)
   }
 
   for (const pid of supervisors) {
@@ -513,9 +526,7 @@ async function main() {
     process.exit(4)
   }
 
-  console.log(
-    `[kb-stop] Done.${skippedSelf ? ` (skipped self tmux session "${selfSession}")` : ''}`,
-  )
+  console.log('[kb-stop] Done.')
   process.exit(0)
 }
 
