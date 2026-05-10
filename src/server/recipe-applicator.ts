@@ -59,14 +59,6 @@ export interface BuildRecipePromptContext {
 }
 
 /**
- * Stable header line that marks a recipe-install prompt. The
- * renderer's `kb-authored-message` parser keys off this exact string
- * to render the message as a collapsible chip rather than dumping
- * the full prompt in chat.
- */
-export const RECIPE_INSTALL_HEADER = 'KovitoBoard Recipe Installation Request'
-
-/**
  * Build the v2.0 install handover prompt.
  *
  * The output is structured so the agent can rely on stable section
@@ -97,10 +89,6 @@ export function buildRecipePrompt(
     : []
 
   const sections: string[] = []
-
-  // -- Header --
-  sections.push(RECIPE_INSTALL_HEADER)
-  sections.push('')
 
   // -- Recipe Information --
   sections.push('## Recipe Information')
@@ -395,19 +383,13 @@ export function buildRecipePrompt(
     sections.push('> （補足なし）')
   }
 
-  // SS-3 / Q4 dual-write: keep the legacy header anchor as the
-  // first line so older renderers (and JSONLs replayed from
-  // before sentinel rollout) continue to chip-collapse this
-  // message, while newer ones see the wrapping sentinel and
-  // pick up the recipe name from the `label` attr without
-  // having to scrape `### name`.
-  //
-  // Intentionally no `version` attr: nothing reads it today and
-  // adding it just gives the model an extra token to interpret as
-  // a directive ("am I supposed to use v2 of something?"). The
-  // attribute remains in `KbSentinelAttrs` for forward use — when
-  // we ship a backward-incompatible template v3 later, we add
-  // `version: '3'` here and treat its absence as v2.
+  // Wrap the prompt body in the rule-line sentinel so the renderer
+  // chips it under the recipe name. Intentionally no `version` attr:
+  // nothing reads it today and adding it just gives the model an
+  // extra token to interpret as a directive ("am I supposed to use
+  // v2 of something?"). The attribute remains in `KbSentinelAttrs`
+  // for forward use — when we ship a backward-incompatible template
+  // v3 later, we add `version: '3'` here and treat its absence as v2.
   return wrapWithSentinel('recipe-install', sections.join('\n'), {
     label: metadata.name,
   })

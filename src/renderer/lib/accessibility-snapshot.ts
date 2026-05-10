@@ -18,8 +18,12 @@
  *   - `Element.computedRole` is Chromium-only and unimplemented in
  *     jsdom, so unit testing the walker would degrade.
  *   - A 150-line walker keeps the spec §2.4 contract honest (viewport
- *     filter, 50 KB cap, fenced ```a11y output) and reads cleanly when
- *     we extend to Selected / ExposedContext blocks in Phase 5.
+ *     filter, 50 KB cap, plain text output) and reads cleanly when
+ *     we extend to Selected / ExposedContext blocks in Phase 5. The
+ *     ` ```a11y ` fence was removed in v0.2.0 — the rule-line
+ *     sentinel applied by `AmbientSidebar.composePayload` carries
+ *     the kind identifier instead (spec
+ *     `kb-authored-sentinel.md` v1.3 §11.3).
  */
 
 /** Hard size cap per spec §2.4. The serialized block is truncated at
@@ -86,7 +90,12 @@ interface SnapshotOptions {
 }
 
 interface SnapshotResult {
-  /** Full Markdown block ready to embed in a prompt. */
+  /**
+   * Plain-text snapshot body ready to drop into a sentinel-wrapped
+   * `a11y` section. The caller is responsible for the surrounding
+   * sentinel envelope (`AmbientSidebar.composePayload`); this
+   * function returns only the indented role lines.
+   */
   block: string
   /** Number of nodes actually emitted (for diagnostics). */
   nodeCount: number
@@ -221,13 +230,11 @@ export function captureAccessibilitySnapshot(options: SnapshotOptions = {}): Sna
 
     const start = (typeof performance !== 'undefined' ? performance.now() : Date.now())
     const lines: string[] = []
-    // Reserve a few bytes for the fence wrapper.
-    const fenceOverhead = '```a11y\n```\n'.length
-    const remaining = { bytes: Math.max(0, opts.maxBytes - fenceOverhead) }
+    const remaining = { bytes: Math.max(0, opts.maxBytes) }
 
     const { nodeCount, truncated } = walk(opts.root, opts, lines, remaining)
 
-    const block = ['```a11y', ...lines, '```'].join('\n')
+    const block = lines.join('\n')
     const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - start
 
     return { block, nodeCount, truncated, elapsedMs }

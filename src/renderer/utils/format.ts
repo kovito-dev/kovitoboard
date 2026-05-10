@@ -141,18 +141,17 @@ export function buildContinueSessionMessage(
     (e) => (e.type === 'user' || e.type === 'assistant') && e.content.text?.trim()
   )
 
-  // SS-3 / Q4 dual-write: the legacy `Please continue working from
-  // the previous session (xxxxxxxx).` opening line stays intact for
-  // older renderers / replayed JSONL while the whole body is
-  // wrapped in a sentinel block carrying the short session id as
-  // `label`. The sentinel-aware parser uses the label directly for
-  // the chip header, bypassing the regex on the opening sentence.
+  // The short session id rides on the sentinel header as the chip
+  // label (`KovitoBoard:continue-session:<shortId>`); the renderer
+  // pulls it out for the chip title without having to scan the body.
   const shortId = sessionId.slice(0, 8)
 
   if (conversations.length === 0) {
+    // No prior transcript to embed — issue a bare instruction so the
+    // sentinel envelope still carries a directive Claude can act on.
     return wrapWithSentinel(
       'continue-session',
-      `Please continue working from the previous session (${shortId}).`,
+      'Please continue with the prior session.',
       { label: shortId },
     )
   }
@@ -180,8 +179,6 @@ export function buildContinueSessionMessage(
     : ''
 
   const body = [
-    `Please continue working from the previous session (${shortId}).`,
-    '',
     '<previous-session>',
     omitNote,
     ...parts,

@@ -177,16 +177,17 @@ describe('buildAppCreationPrompt', () => {
   })
 
   describe('overall structure', () => {
-    it('keeps the legacy anchor banner and the references section in dual-write', () => {
-      // SS-3 / Q4 dual-write (v2.0): the prompt is now wrapped in a
-      // `━━━━━ KovitoBoard:app-create ━━━━━` rule-line sentinel.
-      // Both the sentinel envelope and the legacy banner must be
-      // present so older renderers (chip-collapsing on the banner)
-      // and newer ones (chip-collapsing on the sentinel) both work.
+    it('wraps the prompt in a rule-line app-create sentinel envelope', () => {
+      // The prompt is wrapped in a `━━━━━ KovitoBoard:app-create ━━━━━`
+      // rule-line sentinel so the renderer chip-collapses it. The
+      // legacy `KovitoBoard App Creation Request` first-line anchor
+      // was removed in the K-15 cutover (spec
+      // `kb-authored-sentinel.md` §11.3); only the sentinel envelope
+      // identifies the kind now.
       const prompt = buildAppCreationPrompt({ purpose: 'p' })
       expect(prompt.startsWith('━━━━━ KovitoBoard:app-create')).toBe(true)
       expect(prompt.endsWith('━━━━━ KovitoBoard:end ━━━━━')).toBe(true)
-      expect(prompt).toContain('KovitoBoard App Creation Request')
+      expect(prompt).not.toContain('KovitoBoard App Creation Request')
       expect(prompt).toContain('## 参考ドキュメント')
       expect(prompt).toContain('docs/agent-ref/05-apps.md')
     })
