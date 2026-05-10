@@ -48,16 +48,19 @@ export type PreflightResult =
 
 /**
  * Dependencies injected for tests. The defaults wire up the real
- * runtime values (`process.version`, `process.env`, real `spawnSync`).
+ * runtime values (`process.version`, real `spawnSync`).
  *
  * `spawn` returns the raw spawnSync result so tests can simulate
  * spawn errors (`error` set), non-zero exits (`status !== 0`), and
  * malformed stdout in one place.
+ *
+ * Note: `enforcePreflight` takes its own `env` argument so it can
+ * read `KOVITOBOARD_SKIP_PREFLIGHT`. The check phase has no env
+ * dependencies of its own.
  */
 export interface PreflightDeps {
   spawn: (command: string, args: string[]) => SpawnSyncReturns<string>
   nodeVersion: string
-  env: NodeJS.ProcessEnv
 }
 
 const HINTS: Record<PreflightCheckId, string> = {
@@ -87,7 +90,6 @@ function defaultSpawn(
 const defaultDeps: PreflightDeps = {
   spawn: defaultSpawn,
   nodeVersion: process.version,
-  env: process.env,
 }
 
 function fail(

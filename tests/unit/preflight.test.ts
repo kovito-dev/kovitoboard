@@ -73,7 +73,6 @@ function buildDeps(
   return {
     spawn: overrides.spawn ?? spawn,
     nodeVersion: overrides.nodeVersion ?? 'v20.10.0',
-    env: overrides.env ?? { PATH: '/usr/bin' },
   }
 }
 
