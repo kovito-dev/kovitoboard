@@ -25,6 +25,7 @@ import {
   existsSync as fsExistsSync,
   readdirSync as fsReaddirSync,
   statSync as fsStatSync,
+  lstatSync as fsLstatSync,
   mkdirSync as fsMkdirSync,
   unlinkSync as fsUnlinkSync,
   rmSync as fsRmSync,
@@ -47,6 +48,24 @@ export interface FileStat {
   size: number
   mtime: Date
   mtimeMs: number
+}
+
+/**
+ * Abstracted lstat info — superset of `FileStat` with the type
+ * predicates needed to defend against symlinks and non-regular files
+ * in security-sensitive write paths (e.g. CLAUDE.md guidance
+ * injection where a planted symlink could otherwise redirect a read /
+ * write outside the trusted project root).
+ *
+ * `lstat` does NOT follow symlinks, so `isSymbolicLink: true` reflects
+ * the link itself rather than its target. Callers that want to allow
+ * existing files at a security-sensitive path should reject the
+ * non-regular cases (`!isFile || isSymbolicLink`) before any
+ * follow-up `readFileSync` / `writeFileAtomic` runs.
+ */
+export interface FileLstat extends FileStat {
+  isSymbolicLink: boolean
+  isFile: boolean
 }
 
 /** Abstracted watch event (subset of chokidar) */
@@ -170,6 +189,15 @@ export interface FileAccessLayer {
   // --- Metadata ---
   existsSync(path: string): boolean
   statSync(path: string): FileStat
+  /**
+   * `lstat`-based metadata. Unlike `statSync`, this does NOT follow
+   * symlinks, so the result reports the link itself (`isSymbolicLink:
+   * true`) rather than the link target. Use this in security-sensitive
+   * write paths to reject planted symlinks / FIFOs / device files
+   * before any follow-up `readFileSync` / `writeFileAtomic` chain
+   * inadvertently leaves the trusted project root.
+   */
+  lstatSync(path: string): FileLstat
   readdirSync(path: string): string[]
   mkdirSync(path: string, options?: { recursive?: boolean }): void
   /** Symbolic link creation (for agent-ref setup etc.) */
@@ -421,6 +449,20 @@ export class DirectFsLayer implements FileAccessLayer {
   statSync(path: string): FileStat {
     const s = fsStatSync(path)
     return { size: s.size, mtime: s.mtime, mtimeMs: s.mtimeMs }
+  }
+
+  lstatSync(path: string): FileLstat {
+    const s = fsLstatSync(path)
+    return {
+      size: s.size,
+      mtime: s.mtime,
+      mtimeMs: s.mtimeMs,
+      // Capture the booleans verbatim — Node's Stats.isFile() /
+      // isSymbolicLink() are mutually exclusive on lstat (a symlink
+      // is never reported as a regular file).
+      isSymbolicLink: s.isSymbolicLink(),
+      isFile: s.isFile(),
+    }
   }
 
   readdirSync(path: string): string[] {

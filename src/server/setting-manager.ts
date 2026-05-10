@@ -129,5 +129,20 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
     if (!Number.isFinite(vc.ttlHours) || vc.ttlHours < 1 || vc.ttlHours > 168) return false
   }
 
+  // claudeMdGuidance (optional, claude-md-guidance-injection.md §7.1).
+  // Both inner fields are optional; we accept the struct as long as the
+  // present fields have the right type. Missing struct == defaults
+  // (`disabled = false`, no `lastInjectedAt`).
+  if (obj.claudeMdGuidance !== undefined) {
+    if (obj.claudeMdGuidance === null || typeof obj.claudeMdGuidance !== 'object') {
+      return false
+    }
+    const cmg = obj.claudeMdGuidance as Record<string, unknown>
+    if (cmg.disabled !== undefined && typeof cmg.disabled !== 'boolean') return false
+    if (cmg.lastInjectedAt !== undefined && typeof cmg.lastInjectedAt !== 'string') {
+      return false
+    }
+  }
+
   return true
 }
