@@ -212,4 +212,44 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
     // host-wide sweep can see why a hit was dropped.
     expect(r.stderr).toMatch(/\[kb-stop\] DEBUG: skipping pid \d+/)
   })
+
+  it('walks past node flags so `node --inspect tools/kb-start.mjs` still matches', async () => {
+    // Real KB supervisors are sometimes started under a debug
+    // inspector. We need to find the script argument by skipping
+    // node's own flags rather than hard-coding argv[1]. The decoy
+    // here is launched as `node --enable-source-maps <fakeScript>`
+    // pointing at a different clone, so it MUST still be skipped
+    // by the realpath equality check (proving the parser found
+    // argv[2] correctly — argv[1] would have been the node flag).
+    const cloneDir = mkdtempSync(join(tmpdir(), 'kb-stop-decoy-flag-'))
+    const decoyTools = join(cloneDir, 'tools')
+    mkdirSync(decoyTools, { recursive: true })
+    const decoyScript = join(decoyTools, 'kb-start.mjs')
+    writeFileSync(
+      decoyScript,
+      "// decoy with leading node flag\nsetInterval(() => {}, 1000)\n",
+    )
+    const child = spawn('node', ['--enable-source-maps', decoyScript], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    decoys.push(child)
+    try {
+      expect(child.pid).toBeGreaterThan(0)
+      await settle()
+
+      const r = runKbStop(['--all', '--dry-run'], { KB_DEBUG: '1' })
+      expect(r.status).toBe(0)
+      // Decoy must not appear in the planned actions...
+      expect(r.stdout).not.toContain(`pid ${child.pid}`)
+      // ...and the DEBUG note must be the realpath-mismatch one,
+      // not "no positional script argument" (which would mean the
+      // parser failed to walk past --enable-source-maps).
+      expect(r.stderr).toMatch(
+        new RegExp(`skipping pid ${child.pid}: script arg resolves to`),
+      )
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true })
+    }
+  })
 })
