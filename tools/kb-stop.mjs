@@ -7,8 +7,9 @@
 /**
  * KovitoBoard kb-stop — graceful supervisor shutdown.
  *
- * Spec SSOT: `process-lifecycle.md` v1.2 §7 (in the kovitoboard-dev
- * workspace).
+ * Spec SSOT: `process-lifecycle.md` v1.3 §7 (in the kovitoboard-dev
+ * workspace). The Phase 2-A absolute-path discovery rule for `--all`
+ * lives at §3.6 / §7.4 of the same spec.
  *
  * Reads the PID file written by `kb-start.mjs`, sends SIGTERM, waits
  * for graceful shutdown (PID file deletion), optionally cleans up the
@@ -26,10 +27,16 @@
  *   --dry-run      Detect but do not kill anything; print the
  *                  planned actions and exit 0.
  *   --all          Bypass the PID file and discover supervisors via
- *                  `pgrep -f tools/kb-start.mjs`. Useful when the PID
- *                  file is missing or you want to clear out every KB
- *                  on the host. Required to opt into broad tmux
- *                  prefix matching as well (see KB_FORCE_TMUX_PREFIX_KILL).
+ *                  `pgrep -af tools/kb-start.mjs`, then narrow the
+ *                  candidates to processes whose argv[0] is `node`
+ *                  and whose argv[1] resolves to THIS clone's
+ *                  `tools/kb-start.mjs`. Useful when the PID file
+ *                  is missing. Required to opt into broad tmux
+ *                  prefix matching as well (see
+ *                  KB_FORCE_TMUX_PREFIX_KILL). Cross-clone host-wide
+ *                  kill is intentionally OUT of contract after the
+ *                  Phase 2-A hardening — set up a per-clone PID file
+ *                  flow instead of relying on substring sweeps.
  *   -h, --help     Print this usage and exit 0.
  *
  * Exit codes:
@@ -41,8 +48,14 @@
  */
 
 import { execFileSync, spawnSync } from 'child_process'
-import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { resolve, dirname, relative, isAbsolute } from 'path'
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  readlinkSync,
+  unlinkSync,
+} from 'fs'
+import { basename, dirname, isAbsolute, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -124,10 +137,12 @@ Options:
   --project-root <path>  Explicit project root (overrides env / cwd).
   --force                SIGKILL if SIGTERM does not finish within 5s.
   --dry-run              Print the planned actions, kill nothing.
-  --all                  Host-wide sweep via pgrep (kills KB
-                         supervisors across every project on the
-                         host). Required to bypass the per-project
-                         PID-file scope.
+  --all                  Sweep for supervisors via pgrep, narrowing
+                         the candidates to processes whose argv[1]
+                         resolves to THIS clone's tools/kb-start.mjs
+                         (Phase 2-A: previous host-wide substring
+                         sweep is out of contract). Required to
+                         bypass the per-project PID-file scope.
   -h, --help             Print this usage.
 
 Exit codes:
@@ -246,18 +261,137 @@ async function waitForPidExit(pid, timeoutMs) {
   return !isPidAlive(pid)
 }
 
+/**
+ * Discover supervisor PIDs via pgrep, then narrow the candidates to
+ * the ones started from THIS clone of `tools/kb-start.mjs`.
+ *
+ * Phase 2-A hardening (spec `process-lifecycle.md` v1.3 §3.6 / §7.4):
+ * the older implementation called `pgrep -f "tools/kb-start.mjs"` and
+ * returned every PID whose cmdline contained that substring. That let
+ * unrelated processes through:
+ *
+ *   - editors viewing the script: `nvim tools/kb-start.mjs`
+ *   - shells reading it: `bash -c 'cat tools/kb-start.mjs'`
+ *   - greps: `grep -r 'tools/kb-start.mjs' .`
+ *
+ * On `--all` (host-wide sweep) those would all receive SIGTERM, killing
+ * unrelated developer processes. We now require both:
+ *
+ *   1. `argv[0]` basename is `node` — rules out editors, shells,
+ *      greps. Shebang-launched invocations (`#!/usr/bin/env node`)
+ *      still pass, since the kernel re-execs through `node`.
+ *   2. `argv[1]` resolves (after `realpath`) to the absolute path of
+ *      `<repoRoot>/tools/kb-start.mjs` — rules out supervisors from
+ *      other KB clones on the same host. `--all` is intentionally
+ *      scoped to this clone after Phase 2-A; cross-clone host-wide
+ *      kill is out of contract.
+ *
+ * Relative `argv[1]` (the embedded-layout default — `node
+ * tools/kb-start.mjs --project-root ..`) is resolved against the
+ * supervisor's cwd when readable from `/proc/<pid>/cwd` (Linux), and
+ * falls back to kb-stop's own cwd otherwise. The fallback holds for
+ * the typical flow where kb-stop is invoked from the same clone.
+ *
+ * Set `KB_DEBUG=1` to log skipped candidates with the reason; the
+ * default is silent because host-wide sweeps can list many unrelated
+ * processes and a noisy stderr would obscure the actual stop trace.
+ */
 function pgrepSupervisorPids() {
-  // `-f` matches the full command line (so the script path is visible
-  // even when argv[0] is just `node`). `-x` is intentionally NOT used
-  // because we need substring matching for the script path.
-  const result = spawnSync('pgrep', ['-f', 'tools/kb-start.mjs'], {
+  const result = spawnSync('pgrep', ['-af', 'tools/kb-start.mjs'], {
     encoding: 'utf-8',
   })
   if (result.status !== 0 || !result.stdout) return []
-  return result.stdout
-    .split('\n')
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
+
+  let expectedScriptPath
+  try {
+    expectedScriptPath = realpathSync(resolve(repoRoot, 'tools', 'kb-start.mjs'))
+  } catch {
+    // realpath fails if the script file no longer exists in this
+    // clone. Fall back to the un-resolved absolute path so the
+    // comparison still tightens substring match into prefix-equality
+    // — better than reverting to the legacy false-positive surface.
+    expectedScriptPath = resolve(repoRoot, 'tools', 'kb-start.mjs')
+  }
+
+  const debug = process.env.KB_DEBUG === '1'
+  const pids = []
+  for (const line of result.stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    // `pgrep -a` prepends each match with `<pid> ` followed by the
+    // joined cmdline. The cmdline itself can contain spaces, so we
+    // split only on the first whitespace run to keep argv intact.
+    const space = trimmed.indexOf(' ')
+    const pidPart = space >= 0 ? trimmed.slice(0, space) : trimmed
+    const cmdline = space >= 0 ? trimmed.slice(space + 1) : ''
+    const pid = Number.parseInt(pidPart, 10)
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
+
+    // Naive whitespace tokenization: pgrep does not faithfully
+    // recover quoting, but the supervisor's invocation never quotes
+    // its first two argv tokens (`node tools/kb-start.mjs`), so a
+    // simple split is sufficient. If a future invocation needs
+    // quoting we revisit; until then we keep the parser minimal.
+    const tokens = cmdline.split(/\s+/).filter(Boolean)
+    if (tokens.length < 2) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: cmdline has fewer than 2 tokens (${cmdline})`,
+        )
+      }
+      continue
+    }
+    const argv0 = tokens[0]
+    const argv1 = tokens[1]
+
+    if (basename(argv0) !== 'node') {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: argv[0]=${argv0} is not a node binary`,
+        )
+      }
+      continue
+    }
+
+    let argv1Abs
+    if (isAbsolute(argv1)) {
+      argv1Abs = argv1
+    } else {
+      // Best-effort relative-path resolution. /proc/<pid>/cwd is
+      // Linux-specific; on macOS we fall back to kb-stop's cwd, which
+      // is correct when the operator runs `npm run kb:stop` from the
+      // same clone (the typical embedded-layout flow).
+      let supCwd = process.cwd()
+      try {
+        supCwd = readlinkSync(`/proc/${pid}/cwd`)
+      } catch {
+        // /proc not available or permission denied — keep kb-stop's
+        // cwd. This is the documented best-effort fallback.
+      }
+      argv1Abs = resolve(supCwd, argv1)
+    }
+
+    let argv1Resolved
+    try {
+      argv1Resolved = realpathSync(argv1Abs)
+    } catch {
+      argv1Resolved = argv1Abs
+    }
+
+    if (argv1Resolved !== expectedScriptPath) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: argv[1] resolves to ${argv1Resolved}, ` +
+            `expected ${expectedScriptPath}`,
+        )
+      }
+      continue
+    }
+
+    pids.push(pid)
+  }
+  return pids
 }
 
 function killTmuxSession(name) {
