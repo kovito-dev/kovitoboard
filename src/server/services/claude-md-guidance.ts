@@ -123,23 +123,35 @@ function detectEol(raw: string): '\n' | '\r\n' {
  * helper extracted so the route handler (and tests) can call the
  * trigger condition without re-implementing the policy.
  *
+ * The CLAUDE.md path is anchored on the *server-trusted* `projectRoot`
+ * the supervisor resolved at startup, NOT on `setting.project.path`
+ * from the request body. Trusting the client payload here would let a
+ * crafted PUT redirect the write outside the intended project root
+ * (any caller of `PUT /api/config/setting` can put any string in
+ * `project.path` — `validateSetting` only checks the type and
+ * non-emptiness, not the location).
+ *
  * Returns either the absolute CLAUDE.md path to inject into, or a
  * `reason` tag explaining why injection is not attempted (so the
  * caller can log a single structured event).
  */
 function resolveTarget(
   setting: KovitoboardSetting,
+  projectRoot: string,
 ):
   | { path: string }
   | { skip: 'disabled' | 'no-project-path' } {
   if (setting.claudeMdGuidance?.disabled === true) {
     return { skip: 'disabled' }
   }
-  const projectPath = setting.project?.path
-  if (typeof projectPath !== 'string' || projectPath.length === 0) {
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    // The supervisor always resolves a non-empty projectRoot at
+    // startup; an empty value here means the route was wired up
+    // wrong. Skip injection rather than fall back to anything that
+    // could be influenced by the request body.
     return { skip: 'no-project-path' }
   }
-  return { path: join(projectPath, 'CLAUDE.md') }
+  return { path: join(projectRoot, 'CLAUDE.md') }
 }
 
 /**
@@ -272,6 +284,12 @@ function injectIntoFile(
  * the transition itself — it just executes the injection policy
  * once invoked.
  *
+ * `projectRoot` is the supervisor-resolved, server-trusted absolute
+ * path the route layer has on hand from `createConfigRouter(fs,
+ * projectRoot)`. The helper deliberately does not look at
+ * `setting.project.path`, so a crafted PUT body cannot redirect the
+ * write outside the trusted project root.
+ *
  * Best-effort semantics: any failure is logged and reported via the
  * `reason` tag, never thrown. The caller must continue with
  * `writeSetting` regardless.
@@ -279,8 +297,9 @@ function injectIntoFile(
 export function maybeInjectClaudeMdGuidance(
   fs: FileAccessLayer,
   setting: KovitoboardSetting,
+  projectRoot: string,
 ): ClaudeMdInjectionResult {
-  const target = resolveTarget(setting)
+  const target = resolveTarget(setting, projectRoot)
   if ('skip' in target) {
     return { injected: false, reason: target.skip }
   }

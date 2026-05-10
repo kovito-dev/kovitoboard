@@ -33,7 +33,12 @@ const fs = new DirectFsLayer()
 const baseSetting: KovitoboardSetting = {
   version: '1.1',
   user: { displayName: 'Test', avatar: null },
-  project: { name: 'test-project', description: '', path: '' },
+  // `project.path` is intentionally a *different* directory in the
+  // tests so we can prove the helper anchors writes on the
+  // server-trusted `projectRoot` argument and ignores
+  // `setting.project.path` (security hardening covered in the
+  // "ignores client-supplied project.path" test below).
+  project: { name: 'test-project', description: '', path: '/tmp/should-not-be-used' },
   locale: 'en',
   onboarding: { completedAt: '2026-05-10T00:00:00.000Z', wizardVersion: '0.1.0' },
 }
@@ -47,16 +52,9 @@ afterEach(() => {
   rmSync(workDir, { recursive: true, force: true })
 })
 
-function settingFor(opts: {
-  disabled?: boolean
-  pathOverride?: string
-} = {}): KovitoboardSetting {
+function settingFor(opts: { disabled?: boolean } = {}): KovitoboardSetting {
   return {
     ...baseSetting,
-    project: {
-      ...baseSetting.project,
-      path: opts.pathOverride ?? workDir,
-    },
     ...(opts.disabled === undefined
       ? {}
       : { claudeMdGuidance: { disabled: opts.disabled } }),
@@ -65,33 +63,46 @@ function settingFor(opts: {
 
 describe('maybeInjectClaudeMdGuidance — opt-out flag', () => {
   it('skips entirely when claudeMdGuidance.disabled is true', () => {
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor({ disabled: true }))
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor({ disabled: true }), workDir)
     expect(result).toEqual({ injected: false, reason: 'disabled' })
     expect(fs.existsSync(claudeMdPath)).toBe(false)
   })
 
   it('does not skip when claudeMdGuidance is omitted', () => {
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
     expect(result.reason).toBe('created')
     expect(fs.existsSync(claudeMdPath)).toBe(true)
   })
 
   it('does not skip when claudeMdGuidance.disabled is false', () => {
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor({ disabled: false }))
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor({ disabled: false }), workDir)
     expect(result.injected).toBe(true)
     expect(result.reason).toBe('created')
   })
 
-  it('refuses to operate without project.path', () => {
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor({ pathOverride: '' }))
+  it('refuses to operate when projectRoot is empty', () => {
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), '')
     expect(result).toEqual({ injected: false, reason: 'no-project-path' })
+  })
+
+  it('ignores client-supplied project.path and writes under projectRoot', () => {
+    // `baseSetting.project.path` points at /tmp/should-not-be-used
+    // which does not exist; if the helper trusted it, this test
+    // would either throw or write to that decoy path. The expected
+    // behavior is that the helper writes under `workDir` (the
+    // server-trusted projectRoot we pass) and leaves the decoy path
+    // untouched.
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result.injected).toBe(true)
+    expect(fs.existsSync(claudeMdPath)).toBe(true)
+    expect(fs.existsSync('/tmp/should-not-be-used/CLAUDE.md')).toBe(false)
   })
 })
 
 describe('maybeInjectClaudeMdGuidance — file missing (spec §5.4)', () => {
   it('creates a new CLAUDE.md containing only the marker block', () => {
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
     expect(result.reason).toBe('created')
     expect(typeof result.injectedAt).toBe('string')
@@ -111,7 +122,7 @@ describe('maybeInjectClaudeMdGuidance — append (spec §5.3)', () => {
     const original = '# My project\n\nSome notes.\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
     expect(result.reason).toBe('appended')
 
@@ -126,7 +137,7 @@ describe('maybeInjectClaudeMdGuidance — append (spec §5.3)', () => {
     const original = '# My project\r\n\r\nSome notes.\r\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
 
     const content = readFileSync(claudeMdPath, 'utf-8')
@@ -145,7 +156,7 @@ describe('maybeInjectClaudeMdGuidance — append (spec §5.3)', () => {
     const original = 'no trailing newline'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
 
     const content = readFileSync(claudeMdPath, 'utf-8')
@@ -156,7 +167,7 @@ describe('maybeInjectClaudeMdGuidance — append (spec §5.3)', () => {
     const original = 'body\n\n\n\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.injected).toBe(true)
 
     const content = readFileSync(claudeMdPath, 'utf-8')
@@ -178,7 +189,7 @@ describe('maybeInjectClaudeMdGuidance — already injected (spec §5.5)', () => 
     // Sleep a hair so a touch would be observable. Avoid actual
     // sleep — re-stat after the call is enough because we assert
     // the file content is byte-equal.
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result).toEqual({ injected: false, reason: 'already-injected' })
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(original)
     // mtime check is best-effort; some filesystems coalesce mtime
@@ -192,7 +203,7 @@ describe('maybeInjectClaudeMdGuidance — already injected (spec §5.5)', () => 
       '<!-- KB:GUIDANCE_START -->\ntotally different body\n<!-- KB:GUIDANCE_END -->\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.reason).toBe('already-injected')
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(original)
   })
@@ -205,7 +216,7 @@ describe('maybeInjectClaudeMdGuidance — already injected (spec §5.5)', () => 
       '<!--   KB:GUIDANCE_START   -->\nbody\n<!--KB:GUIDANCE_END-->\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.reason).toBe('already-injected')
   })
 })
@@ -215,7 +226,7 @@ describe('maybeInjectClaudeMdGuidance — broken markers (spec §8.2)', () => {
     const original = 'body\n<!-- KB:GUIDANCE_START -->\nstuff\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result).toEqual({ injected: false, reason: 'broken-markers' })
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(original)
   })
@@ -224,7 +235,7 @@ describe('maybeInjectClaudeMdGuidance — broken markers (spec §8.2)', () => {
     const original = 'body\nstuff\n<!-- KB:GUIDANCE_END -->\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result).toEqual({ injected: false, reason: 'broken-markers' })
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(original)
   })
@@ -235,7 +246,7 @@ describe('maybeInjectClaudeMdGuidance — broken markers (spec §8.2)', () => {
       '<!-- KB:GUIDANCE_START -->\nb\n<!-- KB:GUIDANCE_END -->\n'
     writeFileSync(claudeMdPath, original)
 
-    const result = maybeInjectClaudeMdGuidance(fs, settingFor())
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result).toEqual({ injected: false, reason: 'broken-markers' })
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(original)
   })

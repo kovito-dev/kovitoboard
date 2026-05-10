@@ -18,7 +18,6 @@ import type { FileAccessLayer } from '../fs-layer'
 import { readSetting, writeSetting, validateSetting } from '../setting-manager'
 import { installAgentRefDocs } from '../agent-ref-installer'
 import { maybeInjectClaudeMdGuidance } from '../services/claude-md-guidance'
-import type { KovitoboardSetting } from '../../shared/setting-types'
 
 export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Router {
   const router = Router()
@@ -55,33 +54,15 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       const isOnboardingCompletionTransition =
         prevCompleted == null && typeof nextCompleted === 'string'
 
-      // Run guidance injection while we still have the original body
-      // — if the injection records a `lastInjectedAt`, we merge it
-      // into the body so a single `writeSetting` persists everything.
-      // Best-effort: failures are logged inside the helper and never
-      // bubble up.
-      let toWrite: KovitoboardSetting = body
-      if (isOnboardingCompletionTransition) {
-        const injection = maybeInjectClaudeMdGuidance(fs, body)
-        if (injection.injected && injection.injectedAt) {
-          toWrite = {
-            ...body,
-            claudeMdGuidance: {
-              ...(body.claudeMdGuidance ?? {}),
-              lastInjectedAt: injection.injectedAt,
-            },
-          }
-        }
-        serverLogger.info(
-          {
-            injected: injection.injected,
-            reason: injection.reason,
-          },
-          '[config-routes] CLAUDE.md guidance injection result',
-        )
-      }
-
-      writeSetting(fs, toWrite)
+      // Persist the new setting first so the onboarding-completion
+      // marker (`onboarding.completedAt`) is durable before any
+      // user-facing file (CLAUDE.md) is touched. If injection runs
+      // first and `writeSetting` then fails, CLAUDE.md is mutated
+      // while `setting.json` still says onboarding is incomplete —
+      // the marker prevents a re-injection on retry, so the two
+      // states diverge silently. Writing the setting first keeps
+      // recovery deterministic.
+      writeSetting(fs, body)
 
       // Install agent-ref docs on setting write (R12)
       try {
@@ -93,6 +74,45 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
         }
       } catch (refErr) {
         serverLogger.warn({ err: refErr }, '[config-routes] Failed to install agent-ref docs')
+      }
+
+      // Run guidance injection AFTER the setting write is durable.
+      // The helper anchors its target on the server-trusted
+      // `projectRoot` rather than `body.project.path`, so a crafted
+      // PUT cannot redirect the write outside the project root.
+      // Best-effort: failures are logged inside the helper.
+      if (isOnboardingCompletionTransition) {
+        const injection = maybeInjectClaudeMdGuidance(fs, body, projectRoot)
+        serverLogger.info(
+          {
+            injected: injection.injected,
+            reason: injection.reason,
+          },
+          '[config-routes] CLAUDE.md guidance injection result',
+        )
+        if (injection.injected && injection.injectedAt) {
+          // Record `lastInjectedAt` with a follow-up write so the
+          // setting reflects the actual injection timestamp. If
+          // this write fails the file is still in place; the
+          // marker check on the next attempt would short-circuit
+          // anyway, so the missing timestamp is benign (it just
+          // means the audit log loses one timestamp entry).
+          try {
+            const refreshed = readSetting(fs) ?? body
+            writeSetting(fs, {
+              ...refreshed,
+              claudeMdGuidance: {
+                ...(refreshed.claudeMdGuidance ?? {}),
+                lastInjectedAt: injection.injectedAt,
+              },
+            })
+          } catch (writeErr) {
+            serverLogger.warn(
+              { err: writeErr },
+              '[config-routes] Failed to record claudeMdGuidance.lastInjectedAt',
+            )
+          }
+        }
       }
 
       res.json({ success: true })
