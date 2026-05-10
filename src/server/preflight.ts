@@ -33,6 +33,48 @@
  * tag required by tools/check-release-hygiene.mjs (§9.9 SSOT).
  */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { writeSync } from 'node:fs'
+
+// stderr file descriptor.
+const STDERR_FD = 2
+
+/**
+ * Synchronous stderr write that bypasses libuv buffering. Used for
+ * the FAIL/HINT lines in `enforcePreflight` so the diagnostics
+ * survive the immediately-following `process.exit(1)` even when
+ * stderr is attached to a pipe (supervisor, CI, systemd). The
+ * fall-back to `console.error` only fires if `writeSync` itself
+ * throws — a degenerate case where the operator already has bigger
+ * problems than buffered output.
+ *
+ * Exported only so unit tests can swap in a captured-output sink via
+ * `setBootstrapStderrForTesting`. Production callers should not
+ * import it directly.
+ */
+let bootstrapStderrImpl: (line: string) => void = (line) => {
+  try {
+    writeSync(STDERR_FD, `${line}\n`)
+  } catch {
+    // prettier-ignore
+    console.error(line) // hygiene-allow: console-bootstrap
+  }
+}
+
+function bootstrapStderr(line: string): void {
+  bootstrapStderrImpl(line)
+}
+
+/**
+ * Test-only: replace the synchronous stderr writer with a spy.
+ * Pass `null` to restore the real writeSync-backed implementation.
+ */
+export function setBootstrapStderrForTesting(
+  override: ((line: string) => void) | null,
+): void {
+  bootstrapStderrImpl = override ?? defaultBootstrapStderr
+}
+
+const defaultBootstrapStderr = bootstrapStderrImpl
 
 export type PreflightCheckId = 'PF-1' | 'PF-2' | 'PF-3'
 
@@ -225,16 +267,15 @@ export function runPreflightChecks(
 export function enforcePreflight(result: PreflightResult): void {
   if (result.ok) {
     if (result.skippedReason) {
-      // prettier-ignore
-      console.warn(`[kb-preflight] WARN: ${result.skippedReason}, skipping startup preflight checks`) // hygiene-allow: console-bootstrap
+      bootstrapStderr(
+        `[kb-preflight] WARN: ${result.skippedReason}, skipping startup preflight checks`,
+      )
     }
     return
   }
   for (const failure of result.failures) {
-    // prettier-ignore
-    console.error(`[kb-preflight] FAIL ${failure.id}: ${failure.message}`) // hygiene-allow: console-bootstrap
-    // prettier-ignore
-    console.error(`[kb-preflight] HINT: ${failure.hint}`) // hygiene-allow: console-bootstrap
+    bootstrapStderr(`[kb-preflight] FAIL ${failure.id}: ${failure.message}`)
+    bootstrapStderr(`[kb-preflight] HINT: ${failure.hint}`)
   }
   process.exit(1)
 }
