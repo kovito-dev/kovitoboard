@@ -213,6 +213,51 @@ describe('validatePathForArtifactRead — size cap', () => {
     expect(result.status).toBe(404)
     expect(result.error).toBe('File not found')
   })
+
+  it('refuses a directory even when its reported size is below the cap', () => {
+    // `statSync` reports a size for directories (filesystem-dependent
+    // but always nonzero); without the regular-file guard the size
+    // cap would let a request through and `res.sendFile` would then
+    // either error or behave unexpectedly. The validator must short-
+    // circuit before that.
+    fs.mkdirSync(path.join(projectRoot, 'subdir'), { recursive: true })
+    const result = validatePathForArtifactRead('subdir', ctx(), {
+      maxSize: 100 * 1024 * 1024,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.status).toBe(403)
+    expect(result.error).toContain('not a regular file')
+  })
+
+  it('refuses a FIFO / non-regular file when the size cap is enabled', () => {
+    // FIFOs report size === 0 yet block when opened, which is
+    // exactly the special-file bypass the regular-file guard
+    // closes. Skip the case on platforms without `mkfifo` (most
+    // dev machines have it, CI runs Linux).
+    let mkfifoOk = true
+    const fifoPath = path.join(projectRoot, 'pipe.fifo')
+    try {
+      // Using execSync from `child_process` would work, but importing
+      // it just for one path keeps the test isolated; instead, rely
+      // on Node not exposing mkfifo directly and use the directory
+      // case above as the primary regression test. This block stays
+      // as documentation of the intent and is skipped via try/catch
+      // when the helper is not present.
+      const cp = require('child_process') as typeof import('child_process')
+      cp.execSync(`mkfifo "${fifoPath}"`)
+    } catch {
+      mkfifoOk = false
+    }
+    if (!mkfifoOk || !fs.existsSync(fifoPath)) return
+    const result = validatePathForArtifactRead('pipe.fifo', ctx(), {
+      maxSize: 100 * 1024 * 1024,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.status).toBe(403)
+    expect(result.error).toContain('not a regular file')
+  })
 })
 
 describe('validatePathForArtifactRead — symlink breakouts', () => {

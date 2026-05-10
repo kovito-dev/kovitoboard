@@ -193,20 +193,38 @@ export function validatePathForArtifactRead(
     }
   }
   if (options?.maxSize !== undefined) {
-    let size: number
+    let stats: ReturnType<FileAccessLayer['lstatSync']>
     try {
-      size = ctx.fs.statSync(resolved).size
+      // `lstat` because `resolved` is already realpath-canonicalized
+      // upstream — there is no link left to follow at this point, and
+      // `lstatSync` exposes the `isFile` predicate `statSync` omits
+      // from `FileStat`.
+      stats = ctx.fs.lstatSync(resolved)
     } catch {
-      // statSync raises ENOENT (and friends) here; route those to a
-      // 404 so the caller distinguishes "missing" from "blocked"
-      // without exposing fs error details.
+      // ENOENT (and friends) => 404 so the caller distinguishes
+      // "missing" from "blocked" without leaking fs error details.
       return { ok: false, status: 404, error: 'File not found' }
     }
-    if (size > options.maxSize) {
+    // Reject anything that is not a regular file. FIFOs, sockets,
+    // and device nodes can report `size === 0` and still block or
+    // stream unboundedly when opened — `res.sendFile` would then
+    // either hang the request or pump arbitrary kernel-supplied
+    // bytes through the response. Directories trip the same trap
+    // (`sendFile` against a directory errors out unpredictably).
+    // Refusing them here keeps the size cap meaningful and the
+    // streaming surface bounded.
+    if (!stats.isFile) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'Access denied: target is not a regular file',
+      }
+    }
+    if (stats.size > options.maxSize) {
       return {
         ok: false,
         status: 413,
-        error: `File size ${size} exceeds the artifact read limit of ${options.maxSize} bytes`,
+        error: `File size ${stats.size} exceeds the artifact read limit of ${options.maxSize} bytes`,
       }
     }
   }
