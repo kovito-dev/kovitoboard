@@ -58,6 +58,15 @@ const en: Record<MessageKey, string> = {
   // Navigation
   'nav.titleBar.settings': 'Settings',
 
+  // Project root banner (process-lifecycle.md v1.2 §3 / shared-installation-prevention §M-3)
+  'projectRootBanner.label': 'Project',
+  'projectRootBanner.source.cliArg': 'via --project-root',
+  'projectRootBanner.source.env': 'via KOVITOBOARD_PROJECT_ROOT',
+  'projectRootBanner.source.settingJson': 'restored from setting.json',
+  'projectRootBanner.source.cwdFallback': 'current directory (fallback)',
+  'projectRootBanner.source.unknown': 'unknown source',
+  'projectRootBanner.cwdFallbackWarning': 'KovitoBoard may be looking at the wrong project. Restart with --project-root <path>.',
+
   // Ambient Session Sidebar (DEC-020 / EU8)
   'ambientSidebar.heading': 'Sessions',
   'ambientSidebar.toggle.expand': 'Open sidebar',

@@ -56,6 +56,15 @@ const ja = {
   // ナビゲーション
   'nav.titleBar.settings': '設定',
 
+  // プロジェクトルートバナー（process-lifecycle.md v1.2 §3 / shared-installation-prevention §M-3）
+  'projectRootBanner.label': 'プロジェクト',
+  'projectRootBanner.source.cliArg': '--project-root で指定',
+  'projectRootBanner.source.env': 'KOVITOBOARD_PROJECT_ROOT で指定',
+  'projectRootBanner.source.settingJson': 'setting.json から復元',
+  'projectRootBanner.source.cwdFallback': 'カレントディレクトリ（fallback）',
+  'projectRootBanner.source.unknown': '解決元不明',
+  'projectRootBanner.cwdFallbackWarning': 'プロジェクトを誤認している可能性があります。--project-root を指定して再起動してください。',
+
   // 常駐サイドバー（Ambient Session Sidebar、DEC-020 / EU8）
   'ambientSidebar.heading': 'セッション',
   'ambientSidebar.toggle.expand': 'サイドバーを開く',

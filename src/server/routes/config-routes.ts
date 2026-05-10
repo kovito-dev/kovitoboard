@@ -19,7 +19,23 @@ import { readSetting, writeSetting, validateSetting } from '../setting-manager'
 import { installAgentRefDocs } from '../agent-ref-installer'
 import { maybeInjectClaudeMdGuidance } from '../services/claude-md-guidance'
 
-export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Router {
+/**
+ * Build the configuration router.
+ *
+ * @param projectRoot         supervisor-resolved absolute path
+ * @param projectRootSource   how the supervisor arrived at that path
+ *                            (cli-arg / env / setting-json / cwd-fallback).
+ *                            Defaults to 'cli-arg' when omitted so existing
+ *                            callers that have not been updated keep working
+ *                            in tests and ad-hoc scripts; the production
+ *                            wiring in `src/server/index.ts` always passes
+ *                            the actual source resolved at startup.
+ */
+export function createConfigRouter(
+  fs: FileAccessLayer,
+  projectRoot: string,
+  projectRootSource: 'cli-arg' | 'env' | 'setting-json' | 'cwd-fallback' = 'cli-arg',
+): Router {
   const router = Router()
 
   // GET /api/config/setting
@@ -158,9 +174,16 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
     }
   })
 
-  // GET /api/config/project-root (DEC-009: for Step 3 display)
+  // GET /api/config/project-root (DEC-009: for Step 3 display).
+  // Now also returns the resolution `source`
+  // (cli-arg / env / setting-json / cwd-fallback) so the
+  // ProjectRootBanner can flag a cwd-fallback as a warning state
+  // (process-lifecycle.md v1.2 §3, M-2 in
+  // shared-installation-prevention-request.md). Adding `source` is
+  // additive — existing callers that only read `projectRoot`
+  // continue to work unchanged.
   router.get('/project-root', (_req, res) => {
-    res.json({ projectRoot })
+    res.json({ projectRoot, source: projectRootSource })
   })
 
   // POST /api/config/setup-agent-ref
