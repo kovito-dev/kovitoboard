@@ -15,7 +15,14 @@
  * we do not pin the timestamp).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -218,6 +225,84 @@ describe('maybeInjectClaudeMdGuidance — already injected (spec §5.5)', () => 
 
     const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
     expect(result.reason).toBe('already-injected')
+  })
+})
+
+describe('maybeInjectClaudeMdGuidance — symlink / non-regular target rejection', () => {
+  // Spec hardening (CodeX review on PR #19, finding "symlink
+  // traversal"): the existing-file branch must use `lstat` (not
+  // `stat`) so that a symlink at <projectRoot>/CLAUDE.md cannot
+  // redirect the upstream `existsSync` / `readFileSync` chain to
+  // another path. Following the link would either read content from
+  // outside the project root (info disclosure) or block the
+  // synchronous request on a FIFO / device file. We refuse symlinks
+  // outright (`reason: 'special-file'`); the operator can repair the
+  // file manually if desired.
+
+  it('refuses to read or write when CLAUDE.md is a symlink (even when its target exists)', () => {
+    // Plant the symlink target outside the project root so a
+    // regression that follows the link would actually read from a
+    // different file.
+    const otherFile = join(workDir, '..', 'kb-claude-md-symlink-target.md')
+    writeFileSync(otherFile, 'unrelated content that must not be read')
+    try {
+      symlinkSync(otherFile, claudeMdPath)
+      const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+      expect(result).toEqual({ injected: false, reason: 'special-file' })
+      // The symlink target file must remain untouched (proof that no
+      // read or write followed the link).
+      expect(readFileSync(otherFile, 'utf-8')).toBe(
+        'unrelated content that must not be read',
+      )
+    } finally {
+      rmSync(otherFile, { force: true })
+    }
+  })
+
+  it('refuses to read or write when CLAUDE.md is a dangling symlink', () => {
+    // Dangling symlink: lstat sees the link itself, isFile is false,
+    // isSymbolicLink is true. Without the lstat gate, the upstream
+    // `existsSync` would return false (existsSync follows the link)
+    // and the helper would fall into the new-file branch, which would
+    // then `writeFileAtomic` and replace the symlink. We refuse early.
+    const danglingTarget = join(workDir, 'does-not-exist.md')
+    symlinkSync(danglingTarget, claudeMdPath)
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result).toEqual({ injected: false, reason: 'special-file' })
+    // Symlink itself must still exist (we did not unlink it).
+    // Use lstat-aware probing: we cannot rely on existsSync because
+    // it follows the link.
+    expect(fs.lstatSync(claudeMdPath).isSymbolicLink).toBe(true)
+  })
+})
+
+describe('maybeInjectClaudeMdGuidance — empty existing CLAUDE.md', () => {
+  // Spec hardening (CodeX review on PR #19, low-severity finding
+  // "empty-file append handling"): when the existing file is
+  // whitespace-only or zero-byte, the no-marker append branch
+  // previously prefixed the block with two blank lines (`'' + EOL +
+  // EOL + block + EOL`). That is inconsistent with the fresh-create
+  // branch (spec §5.4 minimal-content goal). The fix special-cases
+  // `trimmed === ''` and emits just the block + trailing EOL.
+
+  it('emits just the block + EOL when the existing file is zero-byte', () => {
+    writeFileSync(claudeMdPath, '')
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result.injected).toBe(true)
+    expect(result.reason).toBe('appended')
+    const content = readFileSync(claudeMdPath, 'utf-8')
+    // No leading blank lines: matches the fresh-create branch byte-for-byte.
+    expect(content.startsWith('<!-- KB:GUIDANCE_START -->')).toBe(true)
+    expect(content.endsWith('\n')).toBe(true)
+  })
+
+  it('emits just the block + EOL when the existing file is whitespace-only (multiple newlines)', () => {
+    writeFileSync(claudeMdPath, '\n\n\n')
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result.injected).toBe(true)
+    const content = readFileSync(claudeMdPath, 'utf-8')
+    expect(content.startsWith('<!-- KB:GUIDANCE_START -->')).toBe(true)
+    expect(content.endsWith('\n')).toBe(true)
   })
 })
 

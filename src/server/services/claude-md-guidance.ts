@@ -44,7 +44,7 @@
  */
 
 import { join } from 'path'
-import type { FileAccessLayer } from '../fs-layer'
+import type { FileAccessLayer, FileLstat } from '../fs-layer'
 import type { KovitoboardSetting } from '../../shared/setting-types'
 import { lazyChildLogger } from '../logger'
 
@@ -104,6 +104,7 @@ export interface ClaudeMdInjectionResult {
     | 'read-failed'
     | 'write-failed'
     | 'file-too-large'
+    | 'special-file'
 }
 
 /**
@@ -202,7 +203,50 @@ function injectIntoFile(
   fs: FileAccessLayer,
   claudeMdPath: string,
 ): ClaudeMdInjectionResult {
-  const exists = fs.existsSync(claudeMdPath)
+  // SECURITY: lstat (NOT stat) the path before any read or write.
+  //
+  // The path resolves to `<projectRoot>/CLAUDE.md` under the
+  // user-controlled project root. A repository can plant a symlink at
+  // that location that points outside the project root, or a FIFO /
+  // device file that would block the synchronous read on the
+  // onboarding request handler. Without an lstat-based gate the
+  // upstream `existsSync` / `readFileSync` chain would silently follow
+  // the symlink (yielding the link target's contents and an unintended
+  // write target via `writeFileAtomic`), and the FIFO case would hang
+  // the request indefinitely. lstat returns metadata about the link
+  // itself, so a symlink reports `isSymbolicLink: true` even when its
+  // target exists.
+  //
+  // ENOENT is the normal "file does not exist" path and falls through
+  // to the new-file branch. Any other error (EACCES, etc.) is a hard
+  // skip — we cannot make a safe call without seeing the metadata.
+  let lstat: FileLstat | null = null
+  try {
+    lstat = fs.lstatSync(claudeMdPath)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') {
+      log.warn(
+        { err, path: claudeMdPath },
+        '[claude-md-guidance] Failed to lstat CLAUDE.md target',
+      )
+      return { injected: false, reason: 'read-failed' }
+    }
+  }
+
+  if (lstat && (lstat.isSymbolicLink || !lstat.isFile)) {
+    log.warn(
+      {
+        path: claudeMdPath,
+        isSymbolicLink: lstat.isSymbolicLink,
+        isFile: lstat.isFile,
+      },
+      '[claude-md-guidance] CLAUDE.md target is a symlink or non-regular file; refusing to read or write',
+    )
+    return { injected: false, reason: 'special-file' }
+  }
+
+  const exists = lstat !== null
 
   if (!exists) {
     // New file: write just the marker block + a trailing newline so
@@ -277,10 +321,14 @@ function injectIntoFile(
     const eol = detectEol(raw)
     const trimmed = raw.replace(/(\r?\n)+$/, '')
     const block = GUIDANCE_LINES.join(eol)
-    // `trimmed + eol + eol + block + eol` puts a single blank line
+    // Empty existing file (whitespace-only or zero-byte): emit just
+    // the block + trailing EOL so the on-disk result matches the
+    // fresh-create branch (spec §5.4 minimal-content goal). Otherwise
+    // `${trimmed}${eol}${eol}${block}${eol}` puts a single blank line
     // between the existing content and the marker block, then ends
-    // the file with a final newline (POSIX text-file convention).
-    const newContent = `${trimmed}${eol}${eol}${block}${eol}`
+    // with a final newline (POSIX text-file convention).
+    const newContent =
+      trimmed === '' ? `${block}${eol}` : `${trimmed}${eol}${eol}${block}${eol}`
     try {
       fs.writeFileAtomic(claudeMdPath, newContent)
     } catch (err) {
