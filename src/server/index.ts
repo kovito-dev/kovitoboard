@@ -157,8 +157,12 @@ const fs = new DirectFsLayer()
 const config = loadConfig(fs)
 
 // Project root (base path for .claude/agents, .kovitoboard/, etc.)
-// Resolved first because ClaudeBridge uses it as its default cwd
-const projectRoot = resolveProjectRoot(fs)
+// Resolved first because ClaudeBridge uses it as its default cwd.
+// We grab the source too so the config router can echo it back to
+// the renderer (ProjectRootBanner needs it to flag a cwd-fallback as
+// a warning state).
+const { path: projectRoot, source: projectRootSource } =
+  resolveProjectRootWithSource(fs)
 
 // Auto-create `.kovitoboard/` directory on first launch
 ensureKovitoboardDir(fs)
@@ -300,7 +304,7 @@ function resolveAndValidatePath(requestedPath: string): string | null {
 // --- Route modules ---
 // Routers handle sub-paths like /api/config/setting, so mount them
 // before the existing app.get('/api/config') to give them priority
-app.use('/api/config', createConfigRouter(fs, projectRoot))
+app.use('/api/config', createConfigRouter(fs, projectRoot, projectRootSource))
 app.use('/api/templates/agents', createTemplateRouter(fs))
 app.use('/api/agents', createAvatarRouter(fs))
 app.use(

@@ -115,6 +115,10 @@ v0.1.0 の UI では以下を変更可能:
 - KB の使い方 → コビーを推薦
 - 調査系 → 「Research Reports」等のアプリ利用を推薦
 
+## KB のライフサイクル
+
+KB の起動・停止・自殺禁止原則は `docs/agent-ref/11-lifecycle.md` を参照してください。あなたは KB の中で動くエージェントなので、§5 の「KB 自身を停止しない」原則は必ず守ってください。
+
 <!-- KB:EXTRA_INSTRUCTIONS_START -->
 <!-- KB:EXTRA_INSTRUCTIONS_END -->
 
