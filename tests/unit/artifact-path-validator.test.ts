@@ -30,6 +30,7 @@ import * as os from 'os'
 import {
   validatePathForArtifactRead,
   resolveArtifactPath,
+  prepareArtifactPathContext,
 } from '../../src/server/artifact-path-validator'
 import { DirectFsLayer } from '../../src/server/fs-layer'
 
@@ -54,7 +55,13 @@ afterEach(() => {
 })
 
 function ctx() {
-  return { projectRoot, uploadDir, fs: fsLayer }
+  // Mirror what `index.ts` does in production: build the context
+  // via `prepareArtifactPathContext` so callers always pass a
+  // canonical projectRoot / uploadDir. In these fixtures neither
+  // is a symlink, so the canonicalization is a no-op for the
+  // returned strings, but the factory call ensures the test path
+  // exercises the same plumbing the route handlers use.
+  return prepareArtifactPathContext({ projectRoot, uploadDir, fs: fsLayer })
 }
 
 function writeFixture(rel: string, content = 'x'): string {
@@ -252,6 +259,24 @@ describe('validatePathForArtifactRead — symlink breakouts', () => {
 
     const result = validatePathForArtifactRead('shortcut', ctx())
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('prepareArtifactPathContext — canonical invariant', () => {
+  it('canonicalizes a symlinked project root once at construction', () => {
+    // Set up a symlinked alias for the project root so we can
+    // assert the factory resolves it to the real target rather
+    // than carrying the symlinked path through to the validator.
+    const realRoot = fs.realpathSync(projectRoot)
+    const aliasRoot = path.join(tmpRoot, 'project-alias')
+    fs.symlinkSync(projectRoot, aliasRoot)
+
+    const built = prepareArtifactPathContext({
+      projectRoot: aliasRoot,
+      uploadDir,
+      fs: fsLayer,
+    })
+    expect(built.projectRoot).toBe(realRoot)
   })
 })
 

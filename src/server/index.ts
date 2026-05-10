@@ -91,7 +91,10 @@ import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
 import type { Scope } from './handlers/types'
 import { HANDLER_LIMITS } from './handlers/types'
-import { validatePathForArtifactRead } from './artifact-path-validator'
+import {
+  validatePathForArtifactRead,
+  prepareArtifactPathContext,
+} from './artifact-path-validator'
 import { listFilesHandler } from './handlers/categoryA/listFiles'
 import { readFileHandler } from './handlers/categoryA/readFile'
 import { writeFileHandler } from './handlers/categoryA/writeFile'
@@ -280,18 +283,19 @@ const _dataFileWatcher = new DataFileWatcher(fs, {
 })
 void _dataFileWatcher
 
-// Cached context for `validatePathForArtifactRead`. The validator
-// closes over `projectRoot`, `uploadDir`, and `fs`, all of which are
-// fixed for the life of the server process; computing the upload dir
-// once here keeps the per-request branch in the route handlers as
-// simple as `validatePathForArtifactRead(filePath, ctx, ...)` and
-// keeps the helper itself trivially unit-testable (see
-// `tests/unit/artifact-path-validator.test.ts`).
-const artifactPathCtx = {
+// Cached context for `validatePathForArtifactRead`. Built via
+// `prepareArtifactPathContext` so `projectRoot` and `uploadDir`
+// are canonicalized exactly once at server startup — the validator
+// itself only canonicalizes the per-request `requestedPath`. The
+// preview pane can poll `/api/artifact{,/raw}` repeatedly, so
+// avoiding redundant `realpath` syscalls on every hit is worth
+// the one-time setup cost. See `prepareArtifactPathContext` for
+// the canonical-context invariant.
+const artifactPathCtx = prepareArtifactPathContext({
   projectRoot,
   uploadDir: getUploadDir(),
   fs,
-}
+})
 
 // --- Route modules ---
 // Routers handle sub-paths like /api/config/setting, so mount them

@@ -49,10 +49,17 @@ export type ArtifactPathValidation =
   | { ok: false; status: number; error: string }
 
 export interface ArtifactPathValidatorContext {
-  /** Absolute project root path. */
+  /**
+   * Absolute, canonicalized project root path. Callers MUST pass a
+   * realpath-resolved value (build the context via
+   * `prepareArtifactPathContext`); the validator does not
+   * re-canonicalize it on every request because `projectRoot` is
+   * process-stable.
+   */
   projectRoot: string
   /**
-   * Absolute upload directory path. Files placed here by the upload
+   * Absolute, canonicalized upload directory path. Same canonical
+   * contract as `projectRoot`. Files placed here by the upload
    * endpoint (`/api/upload`) carry UUID-based names produced by
    * server code, so reads confined to this directory are considered
    * safe even though it lives outside `projectRoot`.
@@ -60,6 +67,29 @@ export interface ArtifactPathValidatorContext {
   uploadDir: string
   /** Filesystem access layer used for the optional size check. */
   fs: FileAccessLayer
+}
+
+/**
+ * Build a canonical `ArtifactPathValidatorContext` from raw inputs.
+ *
+ * Both `projectRoot` and `uploadDir` are realpath-resolved once here
+ * so per-request validation does not have to repeat the syscall on
+ * every `/api/artifact{,/raw}` hit (the preview pane polls these
+ * endpoints frequently). Centralizing the canonicalization in the
+ * factory also keeps the canonical-space invariant from §I-5 in one
+ * place: callers cannot accidentally hand the validator a lexical
+ * project root and silently weaken confinement.
+ */
+export function prepareArtifactPathContext(raw: {
+  projectRoot: string
+  uploadDir: string
+  fs: FileAccessLayer
+}): ArtifactPathValidatorContext {
+  return {
+    projectRoot: realpathUpToExisting(raw.projectRoot),
+    uploadDir: realpathUpToExisting(raw.uploadDir),
+    fs: raw.fs,
+  }
 }
 
 export interface ArtifactPathValidatorOptions {
@@ -99,38 +129,30 @@ export function resolveArtifactPath(
     ? normalize(requestedPath)
     : normalize(resolve(ctx.projectRoot, requestedPath))
 
-  // Canonicalize the requested path AND both allowed roots. Without
-  // canonicalizing the roots, `requestedPath` could resolve to the
-  // real target of a symlinked project root and fail the prefix
-  // check; without canonicalizing the requested path, a symlink
-  // under `projectRoot` pointing outside the allowed roots would
-  // pass the lexical prefix check and let the read leak out.
-  // Either failure mode lets a `?path=...` request reach files
-  // outside the artifact surface, so the comparison has to happen
-  // in canonical space on both sides.
+  // Canonicalize the requested path. Without it, a symlink under
+  // `projectRoot` pointing outside the allowed roots would pass the
+  // lexical prefix check and let the read leak out. The roots are
+  // canonical already (see `prepareArtifactPathContext`), so we only
+  // need the request-side syscall here.
   //
-  // `realpathUpToExisting` resolves the existing prefix and
-  // appends any not-yet-existing segments untouched, so validation
-  // also works for files the caller asked to read but that have
-  // been removed since (we still want the confinement check to
-  // fail safely rather than throw).
+  // `realpathUpToExisting` resolves the existing prefix and appends
+  // any not-yet-existing segments untouched, so validation works for
+  // paths whose tail does not exist yet (a `?path=missing.txt`
+  // request still reaches the size-check / 404 branch instead of
+  // throwing during validation). Realpath failures (loops,
+  // permission errors) refuse the read with `null`.
   let canonical: string
-  let projectRootCanon: string
-  let uploadDirCanon: string
   try {
     canonical = realpathUpToExisting(lexical)
-    projectRootCanon = realpathUpToExisting(ctx.projectRoot)
-    uploadDirCanon = realpathUpToExisting(ctx.uploadDir)
   } catch {
-    // Symlink loops or other realpath failures => refuse the read.
     return null
   }
 
-  if (canonical === projectRootCanon || canonical.startsWith(projectRootCanon + '/')) {
+  if (canonical === ctx.projectRoot || canonical.startsWith(ctx.projectRoot + '/')) {
     return canonical
   }
 
-  if (canonical === uploadDirCanon || canonical.startsWith(uploadDirCanon + '/')) {
+  if (canonical === ctx.uploadDir || canonical.startsWith(ctx.uploadDir + '/')) {
     return canonical
   }
 
@@ -157,24 +179,13 @@ export function validatePathForArtifactRead(
     }
   }
   // Project-relative exclusion check. `resolveArtifactPath` returns
-  // a canonicalized path, so the relative-path computation inside
-  // `isForbidden` only matches the exclusion patterns when its
-  // second argument is canonicalized too — otherwise a symlinked
-  // project root would produce a `..`-prefixed relative form and
-  // skip the check. `isForbidden` itself returns `false` for paths
-  // outside the project (e.g. the upload directory), so attached
-  // uploads keep rendering through the preview pane.
-  let projectRootCanon: string
-  try {
-    projectRootCanon = realpathUpToExisting(ctx.projectRoot)
-  } catch {
-    return {
-      ok: false,
-      status: 403,
-      error: 'Access denied: project root could not be resolved',
-    }
-  }
-  if (isForbidden(resolved, projectRootCanon)) {
+  // a canonicalized path, and `ctx.projectRoot` is canonical too
+  // (built via `prepareArtifactPathContext`), so `isForbidden`'s
+  // relative-path computation lines up with the on-disk layout.
+  // `isForbidden` itself returns `false` for paths outside the
+  // project (e.g. the upload directory), so attached uploads keep
+  // rendering through the preview pane.
+  if (isForbidden(resolved, ctx.projectRoot)) {
     return {
       ok: false,
       status: 403,
