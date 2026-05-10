@@ -308,6 +308,118 @@ function isNodeRuntime(argv0) {
 }
 
 /**
+ * Node flags whose two-token form consumes the following argv as a
+ * value operand. We need this list so the entry-script walker can
+ * skip past `<flag> <value>` pairs without mis-treating the value as
+ * the script. The `=value` form (e.g. `--require=mod`) is handled
+ * separately by the leading-`-` check, since the entire token still
+ * starts with `-`.
+ *
+ * The list covers the value-taking Node flags that reasonably appear
+ * in a real KB / contributor invocation. New flags introduced by
+ * future Node versions and not listed here would cause a false
+ * negative (the value would be mistaken for the script and the
+ * supervisor missed). Add to this set when that happens.
+ */
+const NODE_VALUE_FLAGS = new Set([
+  '-r',
+  '--require',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--experimental-policy',
+  '--policy',
+  '--policy-integrity',
+  '--env-file',
+  '--env-file-if-exists',
+  '--cpu-prof-dir',
+  '--cpu-prof-name',
+  '--cpu-prof-interval',
+  '--heap-prof-dir',
+  '--heap-prof-name',
+  '--heap-prof-interval',
+  '--diagnostic-dir',
+  '--report-directory',
+  '--report-filename',
+  '--report-signal',
+  '--inspect-port',
+  '--inspect-host',
+  '--inspect-brk-node',
+  '--max-http-header-size',
+  '--max-old-space-size',
+  '--max-semi-space-size',
+  '--unhandled-rejections',
+  '--tls-cipher-list',
+  '--openssl-config',
+  '--openssl-shared-config',
+  '--use-bundled-ca',
+  '--conditions',
+  '-C',
+  '--input-type',
+  '--snapshot-blob',
+  '--build-snapshot',
+])
+
+/**
+ * Node flags that put the runtime into "no entry script" mode: the
+ * code is supplied inline via `<flag> <code>`, and any subsequent
+ * positional becomes a data argument to that code, NOT the entry
+ * script. We must recognize these explicitly so a process invoked as
+ * `node -e "..." /abs/tools/kb-start.mjs` is not mistaken for a
+ * supervisor (the kb-start.mjs token is data, not the entry script).
+ */
+const NODE_NO_SCRIPT_FLAGS = new Set([
+  '-e',
+  '--eval',
+  '-p',
+  '--print',
+  // `--check` runs syntax check on a script and exits without running
+  // it. The supervisor must actually run, so a checker process is not
+  // the supervisor. Skip those candidates.
+  '--check',
+  '-c',
+])
+
+/**
+ * Locate the entry-script argument inside an argv array exec'd as
+ * `node [node-flags...] script [script-args...]`. Returns the index
+ * of the entry script in `argv`, or `-1` if none exists (e.g. eval
+ * mode, missing script).
+ *
+ * Walks past:
+ *   - bare flag tokens that start with `-` (e.g. `--inspect`).
+ *   - `<flag> <value>` pairs for flags listed in NODE_VALUE_FLAGS.
+ *   - `--flag=value` tokens (entire token starts with `-`).
+ *
+ * Rejects (returns -1) when an `-e` / `--eval` / `-p` / `--print`
+ * flag is encountered, since those modes have no entry script.
+ */
+function findEntryScriptIndex(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    const tok = argv[i]
+    if (NODE_NO_SCRIPT_FLAGS.has(tok)) {
+      return -1
+    }
+    if (NODE_VALUE_FLAGS.has(tok)) {
+      // Skip the operand. If the operand is missing (last argv),
+      // the cmdline is malformed and the candidate isn't a real
+      // supervisor anyway — bail out.
+      if (i + 1 >= argv.length) return -1
+      i += 1
+      continue
+    }
+    if (tok.startsWith('-')) {
+      // Bare flag (boolean or `--name=value` form). Skip.
+      continue
+    }
+    // First non-flag positional is the entry script (Node consumes
+    // its own flags first; the entry script is the next positional).
+    return i
+  }
+  return -1
+}
+
+/**
  * Discover supervisor PIDs via pgrep, then narrow the candidates to
  * the ones started from THIS clone of `tools/kb-start.mjs`.
  *
@@ -327,17 +439,17 @@ function isNodeRuntime(argv0) {
  *      (`node` / `nodejs` / `node20`-style versioned binaries).
  *      Shebang-launched invocations (`#!/usr/bin/env node`) still
  *      pass since the kernel re-execs through the runtime.
- *   2. At least one non-flag argv token resolves (after `realpath`)
- *      to the absolute path of `<repoRoot>/tools/kb-start.mjs`. We
- *      scan every non-flag token rather than hard-coding argv[1]
- *      so invocations like `node --require preload.cjs
- *      tools/kb-start.mjs` (`--require` consumes its operand) and
- *      `node --inspect tools/kb-start.mjs` (Node flag without
- *      operand) both still match without our parser needing a
- *      complete Node-flag taxonomy. Tokens whose realpath equals
- *      the expected script are accepted; everything else is
- *      ignored. The strong fence is the realpath equality, not the
- *      positional index.
+ *   2. The Node entry script — located by walking past Node flags
+ *      and their operands per `findEntryScriptIndex` — resolves
+ *      (after `realpath`) to the absolute path of
+ *      `<repoRoot>/tools/kb-start.mjs`. We do NOT scan every argv
+ *      token, because that would let `node other-script.js
+ *      /abs/tools/kb-start.mjs` (where kb-start.mjs is data, not
+ *      the entry script) and `node -e "..." /abs/tools/kb-start.mjs`
+ *      (eval-mode, no entry script) match falsely. The walker
+ *      recognizes value-taking flags (`--require`, `--import`,
+ *      `--env-file`, etc.) and refuses eval-mode flags
+ *      (`-e`, `--eval`, `-p`, `--print`).
  *
  * Argv comes from `/proc/<pid>/cmdline` when available (NUL-separated,
  * lossless). On platforms without /proc (e.g. macOS) we fall back to
@@ -423,65 +535,54 @@ function pgrepSupervisorPids() {
       continue
     }
 
-    // Look for any argv token whose realpath equals the expected
-    // script path. This intentionally avoids enumerating Node's
-    // value-taking flags (`--require`, `--import`, `--loader`,
-    // `--env-file`, etc.). False positives — a non-flag value
-    // operand that literally points at our expected script — would
-    // require an operator to invoke
-    // `node --require tools/kb-start.mjs <other.js>`, which is not
-    // a documented KB launch flow.
-    const supCwd = readCwdFromProc(pid)
-    let matched = false
-    let relativeWithoutCwdSeen = false
-    for (let i = 1; i < argv.length; i++) {
-      const tok = argv[i]
-      if (tok.startsWith('-')) continue
-
-      let tokAbs
-      if (isAbsolute(tok)) {
-        tokAbs = tok
-      } else if (supCwd) {
-        tokAbs = resolve(supCwd, tok)
-      } else {
-        // Relative token without a readable supervisor cwd. We refuse
-        // to resolve against kb-stop's cwd because that would alias a
-        // different clone's relative `tools/kb-start.mjs` to THIS
-        // clone's expected path whenever kb-stop is invoked from
-        // inside a clone — the cross-clone collateral kill Phase
-        // 2-A is meant to prevent. Mark the candidate for a DEBUG
-        // note and keep scanning other tokens (an absolute one may
-        // still appear).
-        relativeWithoutCwdSeen = true
-        continue
-      }
-
-      let resolved
-      try {
-        resolved = realpathSync(tokAbs)
-      } catch {
-        resolved = tokAbs
-      }
-
-      if (resolved === expectedScriptPath) {
-        matched = true
-        break
-      }
-    }
-
-    if (!matched) {
+    const scriptIdx = findEntryScriptIndex(argv)
+    if (scriptIdx === -1) {
       if (debug) {
-        if (relativeWithoutCwdSeen) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: no entry script (eval mode or missing positional)`,
+        )
+      }
+      continue
+    }
+    const scriptArg = argv[scriptIdx]
+
+    let scriptAbs
+    if (isAbsolute(scriptArg)) {
+      scriptAbs = scriptArg
+    } else {
+      // Resolve the relative entry script using the supervisor's own
+      // cwd, not kb-stop's cwd. Falling back to kb-stop's cwd would
+      // alias a different clone's relative `tools/kb-start.mjs` onto
+      // THIS clone's expected path whenever kb-stop is invoked from
+      // inside a clone — the cross-clone collateral kill Phase 2-A
+      // is meant to prevent.
+      const supCwd = readCwdFromProc(pid)
+      if (!supCwd) {
+        if (debug) {
           console.error(
-            `[kb-stop] DEBUG: skipping pid ${pid}: relative argv token(s) present and ` +
-              `the supervisor's cwd is not available via /proc; refusing to resolve ` +
+            `[kb-stop] DEBUG: skipping pid ${pid}: relative entry script ${scriptArg} ` +
+              `and supervisor cwd is not available via /proc; refusing to resolve ` +
               `against kb-stop's cwd to avoid cross-clone collateral kill`,
           )
-        } else {
-          console.error(
-            `[kb-stop] DEBUG: skipping pid ${pid}: no argv token resolves to ${expectedScriptPath}`,
-          )
         }
+        continue
+      }
+      scriptAbs = resolve(supCwd, scriptArg)
+    }
+
+    let scriptResolved
+    try {
+      scriptResolved = realpathSync(scriptAbs)
+    } catch {
+      scriptResolved = scriptAbs
+    }
+
+    if (scriptResolved !== expectedScriptPath) {
+      if (debug) {
+        console.error(
+          `[kb-stop] DEBUG: skipping pid ${pid}: entry script resolves to ${scriptResolved}, ` +
+            `expected ${expectedScriptPath}`,
+        )
       }
       continue
     }

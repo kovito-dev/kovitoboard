@@ -243,12 +243,84 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
       // Decoy must not appear in the planned actions...
       expect(r.stdout).not.toContain(`pid ${child.pid}`)
       // ...and the DEBUG note must be the realpath-mismatch one
-      // ("no argv token resolves to..."), not the runtime-rejection
-      // one (which would mean the scanner aborted on the leading
+      // ("entry script resolves to..."), not the runtime-rejection
+      // one (which would mean the walker aborted on the leading
       // node flag).
       expect(r.stderr).toMatch(
         new RegExp(
-          `skipping pid ${child.pid}: no argv token resolves to`,
+          `skipping pid ${child.pid}: entry script resolves to`,
+        ),
+      )
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true })
+    }
+  })
+
+  it('skips `node -e "..." <abs-tools/kb-start.mjs>` (eval-mode rejection, no entry script)', async () => {
+    // CodeX-flagged false positive: when Node runs in eval mode
+    // (-e / --eval), any subsequent argv is *data* for the eval'd
+    // code, not the entry script. A naive "scan all argv tokens
+    // for kb-start.mjs realpath" matcher would still match the
+    // data argument and SIGTERM an unrelated Node process.
+    //
+    // The walker must recognize -e as a no-script mode and skip
+    // the candidate up front. We pass THIS clone's absolute
+    // kb-start.mjs as the data argument because (a) it puts the
+    // realpath-equal token into argv to defeat the substring
+    // fence, and (b) eval mode never loads it as a script, so
+    // the test process stays inert.
+    const KB_START = resolve(REPO_ROOT, 'tools', 'kb-start.mjs')
+    const decoy = spawn(
+      'node',
+      ['-e', 'setInterval(() => {}, 1000)', KB_START],
+      {
+        detached: true,
+        stdio: 'ignore',
+      },
+    )
+    decoys.push(decoy)
+    expect(decoy.pid).toBeGreaterThan(0)
+    await settle()
+
+    const r = runKbStop(['--all', '--dry-run'], { KB_DEBUG: '1' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).not.toContain(`pid ${decoy.pid}`)
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `skipping pid ${decoy.pid}: no entry script \\(eval mode`,
+      ),
+    )
+  })
+
+  it('skips `node other-script.js <abs-tools/kb-start.mjs>` (data-arg false positive defense)', async () => {
+    // Companion to the eval-mode case: even outside eval mode,
+    // a script that takes kb-start.mjs's path as a data argument
+    // must not be matched. The walker treats argv[1] (other.js)
+    // as the entry script; argv[2] (kb-start.mjs path) is then
+    // a script argument, NOT something the matcher inspects.
+    const cloneDir = mkdtempSync(join(tmpdir(), 'kb-stop-decoy-dataarg-'))
+    const otherScript = join(cloneDir, 'other.js')
+    writeFileSync(otherScript, 'setInterval(() => {}, 1000)\n')
+    const KB_START = resolve(REPO_ROOT, 'tools', 'kb-start.mjs')
+
+    const decoy = spawn('node', [otherScript, KB_START], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    decoys.push(decoy)
+    try {
+      expect(decoy.pid).toBeGreaterThan(0)
+      await settle()
+
+      const r = runKbStop(['--all', '--dry-run'], { KB_DEBUG: '1' })
+      expect(r.status).toBe(0)
+      // Decoy is NOT a supervisor — argv[1] is other.js, not
+      // kb-start.mjs — so it must be skipped at the realpath
+      // mismatch check.
+      expect(r.stdout).not.toContain(`pid ${decoy.pid}`)
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `skipping pid ${decoy.pid}: entry script resolves to`,
         ),
       )
     } finally {
