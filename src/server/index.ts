@@ -16,6 +16,7 @@ import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot, resolveProjectRootWithSource } from './config'
 import { ensureKovitoboardDir, ensureLogsDir, getUploadDir } from './paths'
 import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } from './logger'
+import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
 import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord } from './agent-reader'
@@ -172,6 +173,16 @@ ensureKovitoboardDir(fs)
 // opens its rotating stream. The setting is read here (synchronous)
 // so the logger can pick up `logging.retentionDays` if configured.
 ensureLogsDir(fs)
+
+// supervisor-startup.md v1.2 §5.3 step 7 / §6.9: validate runtime
+// prerequisites (PF-1 tmux 3.4+, PF-2 Node 20+, PF-3 claude CLI on
+// PATH) before the heavy initialisation work below. Failures bypass
+// the pino pipeline (which is built two lines down) and surface
+// through bootstrap console output, mirroring log-config.ts. The
+// `KOVITOBOARD_SKIP_PREFLIGHT=1` escape hatch is documented for
+// CI / E2E only.
+enforcePreflight(runPreflightChecks())
+
 await initLogger(projectRoot, readSetting(fs))
 serverLogger.info({ projectRoot }, 'Logger initialized')
 
