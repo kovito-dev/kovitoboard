@@ -1099,4 +1099,46 @@ describe('T-mutex: per-appId dispatch serialization', () => {
     expect(r2.ok).toBe(true)
     expect(order).toHaveLength(2)
   })
+
+  it('two acquireAppLock holders for the same appId never overlap', async () => {
+    // Stronger statement of mutual exclusion than the dispatch-level
+    // test above: this one uses two simulated holders that record
+    // entry / exit events around an `await setTimeout` "work" step.
+    // If the lock were broken, the two holders' work windows would
+    // interleave and we would see `enter:A, enter:B, exit:A, exit:B`.
+    // A working lock guarantees the four events come out as one
+    // holder's enter/exit followed by the other's, in either order.
+    const events: string[] = []
+
+    const worker = async (tag: string) => {
+      const release = await acquireAppLock('lock-only-test-app')
+      try {
+        events.push(`enter:${tag}`)
+        // Simulate handler work that yields to the event loop. The
+        // delay must be long enough that the other holder, if it
+        // were not blocked, would have time to push its `enter`
+        // event before this `exit`.
+        await new Promise<void>((r) => setTimeout(r, 25))
+        events.push(`exit:${tag}`)
+      } finally {
+        release()
+      }
+    }
+
+    await Promise.all([worker('A'), worker('B')])
+
+    // Strict check: the second holder's enter must come AFTER the
+    // first holder's exit. Either ordering of A vs B is acceptable
+    // because microtask scheduling between equal-priority acquirers
+    // is implementation-defined; what is not acceptable is overlap.
+    expect(events).toHaveLength(4)
+    const firstTag = events[0].slice('enter:'.length)
+    const secondTag = firstTag === 'A' ? 'B' : 'A'
+    expect(events).toEqual([
+      `enter:${firstTag}`,
+      `exit:${firstTag}`,
+      `enter:${secondTag}`,
+      `exit:${secondTag}`,
+    ])
+  })
 })
