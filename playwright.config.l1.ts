@@ -242,6 +242,11 @@ export default defineConfig({
         // (v0.1.0-version-display.md §3.3) — keeps L1 deterministic and
         // free of outbound network calls.
         KOVITO_NO_VERSION_CHECK: '1',
+        // Bypass startup preflight (supervisor-startup.md §6.9.4) so
+        // L1 can run on developer machines whose tmux predates 3.4.
+        // The escape hatch is documented for CI / E2E only and never
+        // ships in production startup paths.
+        KOVITOBOARD_SKIP_PREFLIGHT: '1',
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
@@ -256,6 +261,7 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-preonboarding',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_PREONBOARDING,
         KB_E2E_MODE: '1',
+        KOVITOBOARD_SKIP_PREFLIGHT: '1',
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
@@ -270,6 +276,7 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-rich',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_RICH,
         KB_E2E_MODE: '1',
+        KOVITOBOARD_SKIP_PREFLIGHT: '1',
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
