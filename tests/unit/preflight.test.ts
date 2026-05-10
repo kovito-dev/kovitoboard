@@ -324,14 +324,14 @@ describe('runPreflightChecks', () => {
   // before any subprocess is spawned so CI / debug paths do not pay
   // the spawn timeout when the binary is missing.
 
-  it('returns skippedReason without invoking spawn when env opt-in is set', () => {
+  it('returns skippedReason without invoking spawn when env opt-in is set (Node OK)', () => {
     let spawnCalls = 0
     const deps: PreflightDeps = {
       spawn: (...args) => {
         spawnCalls++
         return spawnError('should not be called')
       },
-      nodeVersion: 'v18.0.0', // intentionally below floor; should not matter when skipped
+      nodeVersion: 'v20.10.0',
     }
     const result = runPreflightChecks(deps, { KOVITOBOARD_SKIP_PREFLIGHT: '1' })
     expect(result.ok).toBe(true)
@@ -339,6 +339,25 @@ describe('runPreflightChecks', () => {
     expect('skippedReason' in result && result.skippedReason).toBe(
       'KOVITOBOARD_SKIP_PREFLIGHT=1',
     )
+    expect(spawnCalls).toBe(0)
+  })
+
+  it('PF-2 (Node floor) is enforced even when the env opt-in is set', () => {
+    // The env hatch must not let an unsupported runtime start.
+    let spawnCalls = 0
+    const deps: PreflightDeps = {
+      spawn: (...args) => {
+        spawnCalls++
+        return spawnError('should not be called')
+      },
+      nodeVersion: 'v18.0.0',
+    }
+    const result = runPreflightChecks(deps, { KOVITOBOARD_SKIP_PREFLIGHT: '1' })
+    expect(result.ok).toBe(false)
+    expect(result.failures.map((f) => f.id)).toEqual(['PF-2'])
+    expect(result.failures[0]?.message).toContain('Node.js 20+ required')
+    // Even on the failure path, PF-1 / PF-3 must NOT spawn — the env
+    // hatch's job is to skip the external probes specifically.
     expect(spawnCalls).toBe(0)
   })
 

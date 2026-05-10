@@ -224,33 +224,53 @@ function checkClaude(deps: PreflightDeps): PreflightFailure | null {
  * Callers compose the result with `enforcePreflight` (or perform
  * their own handling) to produce the side-effects.
  *
- * When `KOVITOBOARD_SKIP_PREFLIGHT=1` is set in the supplied env,
- * returns immediately with `{ ok: true, failures: [], skippedReason }`
- * without spawning any subprocess. The escape hatch is meant for
- * CI / E2E / debug paths where the production prerequisites are
- * not present and the spawn timeout would only delay startup.
+ * Asymmetric handling of the skip env hatch:
+ *   - PF-2 (Node 20+) is always evaluated. The rest of the server
+ *     uses Node-20-only APIs, so a stale or leaked
+ *     `KOVITOBOARD_SKIP_PREFLIGHT=1` env var must not let an
+ *     unsupported runtime through. This mirrors the hard
+ *     enforcement in playwright.config.l1.ts.
+ *   - PF-1 (tmux) and PF-3 (`claude`) are skippable. They are
+ *     external host dependencies that some CI / E2E / debug paths
+ *     legitimately lack; the spawn timeout there is pure friction.
+ *
+ * When `KOVITOBOARD_SKIP_PREFLIGHT=1` is set and PF-2 passes,
+ * returns immediately with
+ * `{ ok: true, failures: [], skippedReason }` and no subprocess
+ * is spawned for PF-1 / PF-3.
  */
 export function runPreflightChecks(
   deps: PreflightDeps = defaultDeps,
   env: NodeJS.ProcessEnv = process.env,
 ): PreflightResult {
+  const failures: PreflightFailure[] = []
+  // Always evaluate the Node floor so the env hatch cannot bypass it.
+  const f2 = checkNode(deps)
+  if (f2) failures.push(f2)
+
   if (env[SKIP_ENV_VAR] === '1') {
+    if (failures.length > 0) {
+      // PF-2 failed. The env hatch cannot rescue the runtime; surface
+      // the failure so enforcePreflight exits with the standard hint.
+      return { ok: false, failures }
+    }
     return {
       ok: true,
       failures: [],
       skippedReason: `${SKIP_ENV_VAR}=1`,
     }
   }
-  const failures: PreflightFailure[] = []
   const f1 = checkTmux(deps)
   if (f1) failures.push(f1)
-  const f2 = checkNode(deps)
-  if (f2) failures.push(f2)
   const f3 = checkClaude(deps)
   if (f3) failures.push(f3)
   if (failures.length === 0) {
     return { ok: true, failures: [] }
   }
+  // Sort failures back into the natural PF-1, PF-2, PF-3 order so
+  // tests and operators see a consistent layout regardless of the
+  // unconditional-first ordering above.
+  failures.sort((a, b) => a.id.localeCompare(b.id))
   return { ok: false, failures }
 }
 
