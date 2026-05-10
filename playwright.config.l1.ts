@@ -47,6 +47,7 @@
  * @see docs/design/decisions/DEC-018-test-quality-assurance-strategy.md
  */
 import { defineConfig } from '@playwright/test'
+import { spawnSync } from 'node:child_process'
 import { cpSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -99,6 +100,61 @@ const PROJECT_ROOT_RICH = ALREADY_PREPARED
   : prepareFixtureSync(TEMPLATE_CACHE, 'rich', 'existing-rich')
 
 // Export env for globalSetup/teardown and per-test helpers.
+// Probe the host so the suite can decide whether the production
+// startup preflight (src/server/preflight.ts) will pass on this
+// machine. When the host satisfies the same prerequisites the
+// preflight checks for, the L1 webServer entries omit the escape
+// hatch and exercise the real preflight code path. When it does
+// not, they fall back to KOVITOBOARD_SKIP_PREFLIGHT=1 so the suite
+// still runs on tmux 3.2-era developer boxes and on CI runners
+// without `claude` installed (the preflight unit tests already
+// pin the failure cases). The check intentionally mirrors
+// preflight.ts inline rather than importing it because this config
+// must remain a small, dependency-light entry point that Playwright
+// re-imports from every worker (see the master/worker note above).
+// PF-2 (Node 20+) is treated as a hard runtime requirement of the L1
+// suite, not something the escape hatch can paper over. Production
+// startup explicitly rejects Node < 20, so a green L1 run on Node 18
+// would silently hide regressions that production cannot ship.
+// `tmux` and `claude` remain opt-outable because they are external
+// host dependencies that some CI runners legitimately lack — but the
+// Node floor is enforced unconditionally.
+const NODE_MAJOR_MATCH = /^v(\d+)\./.exec(process.version)
+if (!NODE_MAJOR_MATCH || Number(NODE_MAJOR_MATCH[1]) < 20) {
+  throw new Error(
+    `KovitoBoard L1 suite requires Node.js 20 or newer ` +
+      `(detected: ${process.version}). Production startup rejects ` +
+      `this runtime; run the suite on Node 20+ to keep the guardrail.`,
+  )
+}
+
+function hostMeetsExternalPreflightRequirements(): boolean {
+  const probe = (cmd: string, args: string[]) =>
+    spawnSync(cmd, args, {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  // Mirror PF-1 (tmux 3.4+) from src/server/preflight.ts.
+  const tmuxR = probe('tmux', ['-V'])
+  if (tmuxR.error || tmuxR.status !== 0) return false
+  const tmuxMatch = /^tmux ([0-9]+)\.([0-9]+)/.exec(
+    (tmuxR.stdout ?? '').toString().trim(),
+  )
+  if (!tmuxMatch) return false
+  const tmuxMajor = Number(tmuxMatch[1])
+  const tmuxMinor = Number(tmuxMatch[2])
+  if (tmuxMajor < 3 || (tmuxMajor === 3 && tmuxMinor < 4)) return false
+  // Mirror PF-3 (claude on PATH).
+  const claudeR = probe('claude', ['--version'])
+  if (claudeR.error || claudeR.status !== 0) return false
+  return true
+}
+
+const PREFLIGHT_ENV: Record<string, string> = hostMeetsExternalPreflightRequirements()
+  ? {}
+  : { KOVITOBOARD_SKIP_PREFLIGHT: '1' }
+
 // KB_E2E_TEMPLATE_CACHE is the canonical name introduced by DEC-018.
 // KB_E2E_ROOT is retained as an alias for backwards compatibility.
 //
@@ -242,6 +298,12 @@ export default defineConfig({
         // (v0.1.0-version-display.md §3.3) — keeps L1 deterministic and
         // free of outbound network calls.
         KOVITO_NO_VERSION_CHECK: '1',
+        // Conditionally bypass startup preflight (supervisor-startup.md
+        // §6.9.4) when the host fails the production preflight checks
+        // (e.g. tmux predates 3.4 or `claude` is not on PATH). Hosts
+        // that satisfy the requirements exercise the real preflight
+        // code path. See `hostMeetsPreflightRequirements` above.
+        ...PREFLIGHT_ENV,
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
@@ -256,6 +318,7 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-preonboarding',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_PREONBOARDING,
         KB_E2E_MODE: '1',
+        ...PREFLIGHT_ENV,
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
@@ -270,6 +333,7 @@ export default defineConfig({
         KOVITOBOARD_E2E_TMUX_SESSION: 'kb-e2e-shared-rich',
         KOVITOBOARD_PROJECT_ROOT: PROJECT_ROOT_RICH,
         KB_E2E_MODE: '1',
+        ...PREFLIGHT_ENV,
         KB_LAUNCH_TOKEN: E2E_LAUNCH_TOKEN,
       },
     },
