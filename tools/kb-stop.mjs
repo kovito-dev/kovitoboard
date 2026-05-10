@@ -262,6 +262,39 @@ async function waitForPidExit(pid, timeoutMs) {
 }
 
 /**
+ * Read a process's argv from `/proc/<pid>/cmdline`. The kernel writes
+ * argv NUL-separated, which preserves argument boundaries exactly the
+ * way `exec()` saw them — unlike `pgrep -a` output, this survives
+ * argv tokens that contain whitespace.
+ *
+ * Returns `null` when /proc is not available (typically macOS or a
+ * restricted runtime), so callers can fall back to a lossy parser.
+ */
+function readArgvFromProc(pid) {
+  try {
+    const raw = readFileSync(`/proc/${pid}/cmdline`, 'utf-8')
+    const parts = raw.split('\0')
+    // The trailing NUL produces an empty final segment. A literally
+    // empty argv (no args at all) would also yield `['']`, which is
+    // already useless for our argv[0] check below — drop the trailing
+    // empty entry either way.
+    if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
+    return parts.length > 0 ? parts : null
+  } catch {
+    return null
+  }
+}
+
+/** Read a process's cwd from `/proc/<pid>/cwd`. Returns `null` when unavailable. */
+function readCwdFromProc(pid) {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Discover supervisor PIDs via pgrep, then narrow the candidates to
  * the ones started from THIS clone of `tools/kb-start.mjs`.
  *
@@ -275,7 +308,7 @@ async function waitForPidExit(pid, timeoutMs) {
  *   - greps: `grep -r 'tools/kb-start.mjs' .`
  *
  * On `--all` (host-wide sweep) those would all receive SIGTERM, killing
- * unrelated developer processes. We now require both:
+ * unrelated processes. We now require both:
  *
  *   1. `argv[0]` basename is `node` — rules out editors, shells,
  *      greps. Shebang-launched invocations (`#!/usr/bin/env node`)
@@ -286,11 +319,25 @@ async function waitForPidExit(pid, timeoutMs) {
  *      scoped to this clone after Phase 2-A; cross-clone host-wide
  *      kill is out of contract.
  *
- * Relative `argv[1]` (the embedded-layout default — `node
+ * Argv comes from `/proc/<pid>/cmdline` when available (NUL-separated,
+ * lossless). On platforms without /proc (e.g. macOS) we fall back to
+ * the flat `pgrep -a` output and a naive whitespace split — argv
+ * tokens that contain spaces are not recovered in that case, and the
+ * affected candidate is skipped.
+ *
+ * Relative `argv[1]` (the embedded-layout default, `node
  * tools/kb-start.mjs --project-root ..`) is resolved against the
- * supervisor's cwd when readable from `/proc/<pid>/cwd` (Linux), and
- * falls back to kb-stop's own cwd otherwise. The fallback holds for
- * the typical flow where kb-stop is invoked from the same clone.
+ * supervisor's cwd read from `/proc/<pid>/cwd`. When that cwd cannot
+ * be obtained — same /proc-less platforms — we **refuse** to resolve
+ * the relative path against kb-stop's own cwd. Doing so would let a
+ * supervisor from a different clone match this clone's expected
+ * script path whenever both clones happen to lay out the file at
+ * `tools/kb-start.mjs` under their respective project roots; the
+ * fence is exactly the cross-clone collateral kill that Phase 2-A is
+ * designed to prevent. The candidate is skipped with a DEBUG note
+ * instead, and operators can re-run the supervisor with an absolute
+ * `node /abs/path/to/tools/kb-start.mjs` invocation if they need the
+ * `--all` sweep to reach it on macOS.
  *
  * Set `KB_DEBUG=1` to log skipped candidates with the reason; the
  * default is silent because host-wide sweeps can list many unrelated
@@ -320,30 +367,33 @@ function pgrepSupervisorPids() {
     if (!trimmed) continue
 
     // `pgrep -a` prepends each match with `<pid> ` followed by the
-    // joined cmdline. The cmdline itself can contain spaces, so we
-    // split only on the first whitespace run to keep argv intact.
+    // joined cmdline. We extract the pid first; argv parsing
+    // immediately switches to /proc when available so the flat
+    // cmdline below is only used as a last resort.
     const space = trimmed.indexOf(' ')
     const pidPart = space >= 0 ? trimmed.slice(0, space) : trimmed
-    const cmdline = space >= 0 ? trimmed.slice(space + 1) : ''
+    const flatCmdline = space >= 0 ? trimmed.slice(space + 1) : ''
     const pid = Number.parseInt(pidPart, 10)
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
 
-    // Naive whitespace tokenization: pgrep does not faithfully
-    // recover quoting, but the supervisor's invocation never quotes
-    // its first two argv tokens (`node tools/kb-start.mjs`), so a
-    // simple split is sufficient. If a future invocation needs
-    // quoting we revisit; until then we keep the parser minimal.
-    const tokens = cmdline.split(/\s+/).filter(Boolean)
-    if (tokens.length < 2) {
+    // Argv source priority: /proc (lossless) > pgrep flat output
+    // (lossy whitespace split). The lossy path keeps the macOS flow
+    // working when paths have no embedded whitespace.
+    let argv = readArgvFromProc(pid)
+    if (!argv) {
+      argv = flatCmdline.split(/\s+/).filter(Boolean)
+    }
+    if (argv.length < 2) {
       if (debug) {
         console.error(
-          `[kb-stop] DEBUG: skipping pid ${pid}: cmdline has fewer than 2 tokens (${cmdline})`,
+          `[kb-stop] DEBUG: skipping pid ${pid}: argv has fewer than 2 tokens ` +
+            `(source=${readArgvFromProc(pid) ? 'proc' : 'pgrep-fallback'})`,
         )
       }
       continue
     }
-    const argv0 = tokens[0]
-    const argv1 = tokens[1]
+    const argv0 = argv[0]
+    const argv1 = argv[1]
 
     if (basename(argv0) !== 'node') {
       if (debug) {
@@ -358,16 +408,22 @@ function pgrepSupervisorPids() {
     if (isAbsolute(argv1)) {
       argv1Abs = argv1
     } else {
-      // Best-effort relative-path resolution. /proc/<pid>/cwd is
-      // Linux-specific; on macOS we fall back to kb-stop's cwd, which
-      // is correct when the operator runs `npm run kb:stop` from the
-      // same clone (the typical embedded-layout flow).
-      let supCwd = process.cwd()
-      try {
-        supCwd = readlinkSync(`/proc/${pid}/cwd`)
-      } catch {
-        // /proc not available or permission denied — keep kb-stop's
-        // cwd. This is the documented best-effort fallback.
+      // Resolve the relative argv[1] using the supervisor's own cwd,
+      // not kb-stop's cwd. Falling back to kb-stop's cwd would
+      // mis-resolve a different clone's relative `tools/kb-start.mjs`
+      // to THIS clone's expected path whenever kb-stop is invoked
+      // from inside a clone — exactly the cross-clone collateral
+      // kill the Phase 2-A scope rule is meant to prevent.
+      const supCwd = readCwdFromProc(pid)
+      if (!supCwd) {
+        if (debug) {
+          console.error(
+            `[kb-stop] DEBUG: skipping pid ${pid}: argv[1]=${argv1} is relative and ` +
+              `the supervisor's cwd is not available via /proc; refusing to resolve ` +
+              `against kb-stop's cwd to avoid cross-clone collateral kill`,
+          )
+        }
+        continue
       }
       argv1Abs = resolve(supCwd, argv1)
     }

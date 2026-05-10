@@ -105,8 +105,19 @@ function spawnBashDecoy(): ChildProcess {
  * absolute-path of argv[1] does NOT match this clone's
  * `tools/kb-start.mjs`. The script keeps the process alive with a
  * setInterval so vitest's afterEach can clean it up.
+ *
+ * `relativeArgv1` controls whether argv[1] is passed as the absolute
+ * path (default; matches the typical `node /abs/path/script.mjs`
+ * invocation) or as the bare relative `tools/kb-start.mjs` with the
+ * child's cwd set to the fake clone (matches the embedded-layout
+ * default `node tools/kb-start.mjs --project-root ..`). The relative
+ * variant exercises the /proc-cwd resolution path the matcher uses
+ * to scope the sweep to THIS clone only.
  */
-function spawnNodeOtherCloneDecoy(): { child: ChildProcess; cloneDir: string } {
+function spawnNodeOtherCloneDecoy(opts: { relativeArgv1?: boolean } = {}): {
+  child: ChildProcess
+  cloneDir: string
+} {
   // Build `<cloneDir>/tools/kb-start.mjs` so the absolute-path match
   // against our clone's `tools/kb-start.mjs` resolves to a different
   // file. Real on-disk file is needed because the matcher realpaths
@@ -119,14 +130,24 @@ function spawnNodeOtherCloneDecoy(): { child: ChildProcess; cloneDir: string } {
     decoyScript,
     "// decoy clone, never actually starts a supervisor\nsetInterval(() => {}, 1000)\n",
   )
-  const child = spawn('node', [decoyScript], {
+  const useRelative = opts.relativeArgv1 === true
+  const child = spawn('node', [useRelative ? 'tools/kb-start.mjs' : decoyScript], {
     detached: true,
     stdio: 'ignore',
+    cwd: useRelative ? cloneDir : process.cwd(),
   })
   decoys.push(child)
   return { child, cloneDir }
 }
 
+// We intentionally do not assert "Nothing to do" in the cases
+// below. vitest runs files in parallel, and an unrelated test in
+// another file may legitimately spawn a real `tools/kb-start.mjs`
+// inside this clone, which the absolute-path match correctly
+// retains as a kill target. The contract this suite pins is "the
+// listed decoy must not appear in the planned actions"; whether
+// the planner finds zero or non-zero other supervisors is up to
+// the rest of the suite at any given moment.
 describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
   it('skips bash decoys whose script body contains tools/kb-start.mjs', async () => {
     const decoy = spawnBashDecoy()
@@ -139,7 +160,6 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
     // supervisor pid <decoy.pid>`. The new argv[0] check (basename
     // !== 'node') must filter it out.
     expect(r.stdout).not.toContain(`pid ${decoy.pid}`)
-    expect(r.stdout).toContain('Nothing to do')
   })
 
   it('skips node decoys whose argv[1] points at a different clone', async () => {
@@ -154,7 +174,27 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
       // resolves to <other-clone>/tools/kb-start.mjs, not our
       // clone's path. The absolute-path match must reject it.
       expect(r.stdout).not.toContain(`pid ${child.pid}`)
-      expect(r.stdout).toContain('Nothing to do')
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true })
+    }
+  })
+
+  it('skips node decoys with a relative argv[1] launched from a different clone (cross-clone fence)', async () => {
+    // This case exercises the /proc-cwd resolution path: argv[1] is
+    // the bare string `tools/kb-start.mjs`, which the matcher must
+    // resolve against /proc/<pid>/cwd (the supervisor's cwd, here
+    // the fake clone tempdir) rather than kb-stop's own cwd. If the
+    // fence falls back to kb-stop's cwd, this decoy would alias
+    // onto THIS clone's expected script path and SIGTERM would
+    // leak across clones.
+    const { child, cloneDir } = spawnNodeOtherCloneDecoy({ relativeArgv1: true })
+    try {
+      expect(child.pid).toBeGreaterThan(0)
+      await settle()
+
+      const r = runKbStop(['--all', '--dry-run'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain(`pid ${child.pid}`)
     } finally {
       rmSync(cloneDir, { recursive: true, force: true })
     }
