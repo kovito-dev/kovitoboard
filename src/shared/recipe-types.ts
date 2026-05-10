@@ -195,8 +195,24 @@ export interface RecipeHistoryEntry {
    */
   recipeId?: string
   /**
+   * KB-local app identifier (the directory name under `app/<appId>/`
+   * the agent picked at install time). Optional only for backward
+   * compatibility with `recipe-history.jsonl` files written before
+   * the field was promoted to a first-class member; install entries
+   * written from v0.2.0 onward always include it. Readers that need
+   * to associate a history entry with a specific app instance should
+   * prefer `appId`, then fall back to the legacy `menu[0]` heuristic
+   * for older entries.
+   *
+   * Distinct from `recipeId` — multiple apps may share a `recipeId`
+   * (the recipe author's lineage id) when the same recipe is
+   * installed under different `appId`s via the collision-avoidance
+   * flow at install time.
+   */
+  appId?: string
+  /**
    * For `action: 'uninstall'` entries: whether the user opted to
-   * delete the recipe's `app/data/<recipeId>/` directory along with
+   * delete the recipe's `app/data/<appId>/` directory along with
    * the artifacts. Default behavior is to preserve user data.
    */
   ownDataDeleted?: boolean

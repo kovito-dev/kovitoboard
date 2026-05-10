@@ -54,7 +54,6 @@ import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
 import { getMenuTsPath } from './services/menu-extractor'
-import { removeMenuEntry } from './services/menu-ts-editor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
@@ -1550,10 +1549,12 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
           h.action !== 'uninstall' &&
           h.recipeId === recipeIdParam &&
           h.hash === recipeHash &&
-          // We stored the appId on the history entry under the
-          // legacy key; once Phase F splits the field, this reads from
-          // a dedicated `appId` field instead.
-          (h as { appId?: string }).appId === appId,
+          // `appId` is now a first-class field on RecipeHistoryEntry.
+          // Legacy entries without it cannot satisfy a strict
+          // (recipeId, appId, hash) idempotency match anyway, so the
+          // strict comparison preserves the prior behaviour for
+          // pre-v0.2.0 install rows.
+          h.appId === appId,
       )
     if (alreadyRecorded) {
       res.json({ ok: true })
@@ -1680,10 +1681,14 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     manifestStore.save(manifest)
 
     // Append the install record to recipe-history.jsonl. The
-    // recipeId field now stores the recipe author's id (per
-    // DEC-024 D-8); the appId is captured separately. Older
-    // entries in the same file may still hold appId in `recipeId`;
-    // `findHistoryMatch` and `entryMatchesRecipeId` already cope.
+    // recipeId field stores the recipe author's id (per DEC-024
+    // D-8); the appId is captured as a first-class field on the
+    // entry so callers can attribute history rows to a specific
+    // app instance even when the same recipe was installed under
+    // multiple appIds. Older entries in the same file may still
+    // omit `appId` and hold the install's KB-local identifier in
+    // `menu[0]`; `findHistoryMatch` and `entryMatchesRecipeId`
+    // already cope with that fallback.
     const historyId = generateHistoryId(fs)
     appendRecipeHistory(fs, {
       id: historyId,
@@ -1698,10 +1703,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       artifacts: [],
       menu: [],
       recipeId: recipeIdParam,
-      // Agent-handover history records carry both ids; the upcoming
-      // RecipeHistoryEntry shape change formalises `appId` as a
-      // first-class field. Until then we cast it through.
-      ...({ appId } as Record<string, unknown>),
+      appId,
     })
 
     apiLogger.info(
@@ -1820,179 +1822,46 @@ app.post('/api/apps/:appId/request-removal', async (req, res) => {
   }
 })
 
-// --- Recipe Uninstall API ---
+// --- Recipe Uninstall API (deprecated) ---
+//
+// This endpoint used to perform an end-to-end recipe uninstall —
+// remove artifacts, strip menu entries, delete the manifest, and
+// append an `action: 'uninstall'` history row — but the UI uninstall
+// button it served was retired in DEC-024 D-6. App removal now goes
+// through `POST /api/apps/:appId/request-removal`, which hands an
+// agent the deletion playbook (`buildAppRemovalPrompt`); the agent
+// performs the actual filesystem mutation directly. No surveyed
+// caller (UI, tests, agent templates, agent-ref) reaches this route
+// anymore.
+//
+// Returning 410 makes any remaining caller fail loudly — a silent
+// success here would let an obsolete client believe it had cleaned
+// up state when nothing happened, which is harder to diagnose than
+// a clear "endpoint gone, use the replacement" message. The body
+// names the replacement so an operator who hits this in a log can
+// migrate without spelunking.
+//
+// The uninstall-only helpers (`findLatestInstallEntry`, and the
+// `removeMenuEntry` import that fed this handler) are dropped at
+// the same time so they cannot quietly accumulate callers. Removing
+// the route entirely is deferred to a follow-up cleanup PR.
 
-app.post('/api/recipes/uninstall', async (req, res) => {
-  try {
-    const { recipeId, deleteOwnData } = req.body as {
-      recipeId: unknown
-      deleteOwnData?: unknown
-    }
-
-    if (typeof recipeId !== 'string' || recipeId.length === 0) {
-      res.status(400).json({ error: 'recipeId must be a non-empty string' })
-      return
-    }
-    const shouldDeleteOwnData = deleteOwnData === true
-
-    // Pull state we need before mutating anything. Even if the
-    // manifest was lost (e.g. the user hand-edited the project), we
-    // still want to be able to undo `app/menu.ts` + history, so a
-    // missing manifest is a warning rather than a hard error.
-    const manifest = manifestStore.get(recipeId)
-    if (!manifest) {
-      apiLogger.warn(
-        { recipeId },
-        'Uninstall requested for a recipeId without a manifest; proceeding with best-effort cleanup',
-      )
-    }
-
-    // Recover the install entry — we use it to know which artifact
-    // paths to remove and to preserve metadata (name / hash / version)
-    // on the uninstall history record.
-    const history = readRecipeHistory(fs)
-    const installEntry = findLatestInstallEntry(history, recipeId)
-    if (!installEntry && !manifest) {
-      res.status(404).json({ error: `No install record found for recipeId "${recipeId}"` })
-      return
-    }
-
-    // 1. Remove the artifact files. Sourced from the install history
-    //    (recipe-applicator wrote them under app/<artifact.path>).
-    //    Best-effort: a missing file is fine (we may have been
-    //    invoked twice, or the user removed it manually).
-    const artifactPaths = installEntry?.artifacts ?? []
-    const removedArtifacts: string[] = []
-    for (const rel of artifactPaths) {
-      // Defensive: never let a `..` segment escape the project's
-      // app/ directory. The recipe-applicator only ever writes
-      // under app/, so a `..` here would be either a corrupted
-      // history record or a malicious one.
-      if (rel.split(/[\\/]/).includes('..')) {
-        apiLogger.warn({ recipeId, rel }, 'Skipping artifact with traversal segment')
-        continue
-      }
-      const abs = join(projectRoot, 'app', rel)
-      if (fs.existsSync(abs)) {
-        try {
-          fs.unlinkSync(abs)
-          removedArtifacts.push(rel)
-        } catch (err) {
-          apiLogger.warn({ err, abs }, 'Failed to delete artifact during uninstall')
-        }
-      }
-    }
-
-    // 2. Remove menu entries. Each menu entry id from the install
-    //    record is stripped from app/menu.ts. We tolerate not-found
-    //    (already removed by hand) and log parse-failed (file is in
-    //    an unexpected shape).
-    const menuIds = installEntry?.menu ?? []
-    const menuPath = join(projectRoot, 'app', 'menu.ts')
-    const removedMenuIds: string[] = []
-    if (menuIds.length > 0 && fs.existsSync(menuPath)) {
-      let menuContent = fs.readFileSync(menuPath, 'utf-8')
-      let mutated = false
-      for (const menuId of menuIds) {
-        const result = removeMenuEntry(menuContent, menuId)
-        if (result.kind === 'removed') {
-          menuContent = result.content
-          removedMenuIds.push(menuId)
-          mutated = true
-        } else if (result.kind === 'parse-failed') {
-          apiLogger.warn(
-            { recipeId, menuId, reason: result.reason },
-            'menu.ts parse failed during uninstall; leaving file untouched',
-          )
-          break
-        }
-        // 'not-found' is silent — the entry may have been removed manually.
-      }
-      if (mutated) {
-        // Atomic replace: a partial menu.ts write would surface as a
-        // syntax error on the next read and break the entire menu.
-        fs.writeFileAtomic(menuPath, menuContent)
-      }
-    }
-
-    // 3. Remove the manifest. Manifest cache + on-disk file go
-    //    together; the manifest dispatcher gates handler calls so
-    //    once the manifest is gone the recipe is effectively
-    //    deactivated even if some files remain.
-    if (manifest) {
-      manifestStore.delete(recipeId)
-    }
-    // Also drop the empty parent directory under recipes-installed/
-    // so it does not linger.
-    const installedDir = join(getKovitoboardDir(fs), 'recipes-installed', recipeId)
-    if (fs.existsSync(installedDir)) {
-      try {
-        fs.rmSync(installedDir, { recursive: true, force: true })
-      } catch (err) {
-        apiLogger.warn({ err, installedDir }, 'Failed to remove recipes-installed dir')
-      }
-    }
-
-    // 4. Optionally delete own-data. Default is to *preserve* user
-    //    data unless the caller explicitly opts in via
-    //    `deleteOwnData: true`, so a re-install can recover state.
-    let ownDataDeleted = false
-    const ownDataDir = join(projectRoot, 'app', 'data', recipeId)
-    if (shouldDeleteOwnData && fs.existsSync(ownDataDir)) {
-      try {
-        fs.rmSync(ownDataDir, { recursive: true, force: true })
-        ownDataDeleted = true
-      } catch (err) {
-        apiLogger.warn({ err, ownDataDir }, 'Failed to delete own-data during uninstall')
-      }
-    }
-
-    // 5. Append the uninstall record to history. The recipe-scanner
-    //    walks history in reverse and treats the most recent entry
-    //    for a recipe as the source of truth, so this flips the
-    //    "installed" badge back to the "before install" lane.
-    const historyId = generateHistoryId(fs)
-    appendRecipeHistory(fs, {
-      id: historyId,
-      action: 'uninstall',
-      name: installEntry?.name ?? recipeId,
-      // `RecipeManifest.recipeVersion` was renamed from the legacy
-      // `version` (DEC-024 / spec §3.5). Fall back to the install
-      // history entry first because that always carries the
-      // recipe's `version` field shape.
-      version: installEntry?.version ?? manifest?.recipeVersion ?? '0.0.0',
-      author: installEntry?.author,
-      source: installEntry?.source ?? '',
-      hash: installEntry?.hash ?? manifest?.hash ?? '',
-      appliedAt: new Date().toISOString(),
-      artifacts: removedArtifacts,
-      menu: removedMenuIds,
-      recipeId,
-      ownDataDeleted,
-    })
-
-    apiLogger.info(
-      {
-        recipeId,
-        artifactsRemoved: removedArtifacts.length,
-        menuIdsRemoved: removedMenuIds.length,
-        ownDataDeleted,
-      },
-      'Recipe uninstalled',
-    )
-
-    res.json({
-      success: true,
-      historyId,
-      recipeId,
-      artifactsRemoved: removedArtifacts,
-      menuIdsRemoved: removedMenuIds,
-      ownDataDeleted,
-    })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe uninstall error')
-    res.status(500).json({ error: 'Failed to uninstall recipe' })
-  }
+app.post('/api/recipes/uninstall', (req, res) => {
+  const requestedRecipeId =
+    typeof (req.body as { recipeId?: unknown } | undefined)?.recipeId === 'string'
+      ? (req.body as { recipeId: string }).recipeId
+      : null
+  apiLogger.warn(
+    { recipeId: requestedRecipeId },
+    'Deprecated /api/recipes/uninstall called; use POST /api/apps/:appId/request-removal instead',
+  )
+  res.status(410).json({
+    error:
+      'POST /api/recipes/uninstall is deprecated. Use POST /api/apps/:appId/request-removal ' +
+      'to remove an installed app via the agent-driven removal flow.',
+    deprecatedSince: 'v0.2.0',
+    replacement: 'POST /api/apps/:appId/request-removal',
+  })
 })
 
 // --- App ID Collision-Avoidance API (DEC-024 D-1) ---
@@ -2047,31 +1916,6 @@ app.post('/api/apps/check-id-availability', (req, res) => {
     res.status(500).json({ error: 'Failed to check app-id availability' })
   }
 })
-
-/**
- * Find the most recent `install` entry for a given recipeId. Used by
- * the uninstall endpoint to recover artifact paths and metadata.
- *
- * Matches first by the explicit `recipeId` field (set on entries
- * written after the lifecycle-action change), and falls back to the
- * legacy heuristic ("first menu entry id" derived at install time)
- * for entries written before that field existed.
- */
-function findLatestInstallEntry(
-  history: import('../shared/recipe-types').RecipeHistoryEntry[],
-  recipeId: string,
-): import('../shared/recipe-types').RecipeHistoryEntry | undefined {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const h = history[i]
-    if (h.action === 'uninstall') continue
-    if (h.recipeId === recipeId) return h
-    // Legacy fallback: install entries written before `recipeId` was
-    // captured had `menu: ['<recipeId>', ...]` because the renderer
-    // resolves recipeId from the first menu entry id.
-    if (Array.isArray(h.menu) && h.menu[0] === recipeId) return h
-  }
-  return undefined
-}
 
 // --- File upload API ---
 

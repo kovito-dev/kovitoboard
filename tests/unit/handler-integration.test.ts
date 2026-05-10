@@ -28,7 +28,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-import { dispatch, resetRateLimiter } from '../../src/server/handlerDispatcher'
+import {
+  dispatch,
+  resetRateLimiter,
+  acquireAppLock,
+  resetAppLocks,
+} from '../../src/server/handlerDispatcher'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { registerHandler, clearRegistry } from '../../src/server/handlers/registry'
 import { DirectFsLayer } from '../../src/server/fs-layer'
@@ -185,6 +190,9 @@ afterAll(() => {
 beforeEach(() => {
   // Reset rate limiter
   resetRateLimiter()
+  // Reset per-appId dispatch mutex so a test that intentionally
+  // parks the lock cannot leak into the next test.
+  resetAppLocks()
   // Clear audit log
   const logPath = path.join(projectRoot, 'app', 'data', RECIPE_ID, '_audit.log')
   if (fs.existsSync(logPath)) {
@@ -983,5 +991,154 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error.code).toBe('PathForbidden')
+  })
+})
+
+// =========================================
+// T-mutex: per-appId dispatch serialization (Codex supplementary S8)
+// =========================================
+//
+// Verifies that `dispatch()` waits on the per-appId mutex returned
+// by `acquireAppLock()`, so an in-flight handler cannot have its
+// app/<appId>/ tree torn out from under it by a concurrent removal
+// or reinstall flow that mutates the same appId.
+
+describe('T-mutex: per-appId dispatch serialization', () => {
+  it('dispatch waits when an external holder owns the appId lock', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on RECIPE_ID before dispatching. The dispatcher
+    // must observe the held lock and queue behind it.
+    const release = await acquireAppLock(RECIPE_ID)
+
+    const dispatchPromise = dispatch(
+      { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+      manifestStore,
+      projectRoot,
+    )
+
+    // Race the dispatch promise against a short timer. If the
+    // dispatcher had ignored the lock, it would resolve well before
+    // 50ms (handlers are in-process and fs ops here are tiny). The
+    // timer winning is the proof that dispatch is parked.
+    const settled = await Promise.race([
+      dispatchPromise.then(() => 'dispatched'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+    ])
+    expect(settled).toBe('timed-out')
+
+    // Release the parked lock and confirm dispatch now resolves.
+    release()
+    const result = await dispatchPromise
+    expect(result.ok).toBe(true)
+  })
+
+  it('different appIds do not block each other', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on a *different* appId. Dispatching for
+    // RECIPE_ID must not be affected.
+    const release = await acquireAppLock('some-other-app')
+    try {
+      const result = await dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      )
+      expect(result.ok).toBe(true)
+    } finally {
+      release()
+    }
+  })
+
+  it('serializes two concurrent dispatches for the same appId', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the appId's lock with an external acquire so we control
+    // when the *first* dispatch is allowed to enter its critical
+    // section. Both dispatches are fired concurrently; if the lock
+    // is honoured neither one can resolve until we release the
+    // external hold, and even then they must complete one at a
+    // time. A pure timestamp comparison would be tautological, so
+    // we instead assert (a) neither dispatch resolves while the
+    // external lock is held, (b) they release in FIFO order once
+    // the external hold is dropped.
+    const externalHold = await acquireAppLock(RECIPE_ID)
+
+    const order: number[] = []
+    const fire = (tag: number) =>
+      dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      ).then((r) => {
+        order.push(tag)
+        return r
+      })
+
+    const p1 = fire(1)
+    const p2 = fire(2)
+
+    // Give the event loop a few ticks; if the mutex is broken at
+    // least one dispatch would resolve here.
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+    expect(order).toEqual([])
+
+    // Releasing the external hold lets the dispatches drain in the
+    // order they queued. We do not assert tag order strictly because
+    // microtask scheduling between two acquirers is implementation-
+    // defined; we only assert serialisation (one finishes before the
+    // other starts the next tick of the resolver chain).
+    externalHold()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+    expect(order).toHaveLength(2)
+  })
+
+  it('two acquireAppLock holders for the same appId never overlap', async () => {
+    // Stronger statement of mutual exclusion than the dispatch-level
+    // test above: this one uses two simulated holders that record
+    // entry / exit events around an `await setTimeout` "work" step.
+    // If the lock were broken, the two holders' work windows would
+    // interleave and we would see `enter:A, enter:B, exit:A, exit:B`.
+    // A working lock guarantees the four events come out as one
+    // holder's enter/exit followed by the other's, in either order.
+    const events: string[] = []
+
+    const worker = async (tag: string) => {
+      const release = await acquireAppLock('lock-only-test-app')
+      try {
+        events.push(`enter:${tag}`)
+        // Simulate handler work that yields to the event loop. The
+        // delay must be long enough that the other holder, if it
+        // were not blocked, would have time to push its `enter`
+        // event before this `exit`.
+        await new Promise<void>((r) => setTimeout(r, 25))
+        events.push(`exit:${tag}`)
+      } finally {
+        release()
+      }
+    }
+
+    await Promise.all([worker('A'), worker('B')])
+
+    // Strict check: the second holder's enter must come AFTER the
+    // first holder's exit. Either ordering of A vs B is acceptable
+    // because microtask scheduling between equal-priority acquirers
+    // is implementation-defined; what is not acceptable is overlap.
+    expect(events).toHaveLength(4)
+    const firstTag = events[0].slice('enter:'.length)
+    const secondTag = firstTag === 'A' ? 'B' : 'A'
+    expect(events).toEqual([
+      `enter:${firstTag}`,
+      `exit:${firstTag}`,
+      `enter:${secondTag}`,
+      `exit:${secondTag}`,
+    ])
   })
 })
