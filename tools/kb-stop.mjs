@@ -322,42 +322,67 @@ function isNodeRuntime(argv0) {
  * supervisor missed). Add to this set when that happens.
  */
 const NODE_VALUE_FLAGS = new Set([
+  // Module loading
   '-r',
   '--require',
   '--import',
   '--loader',
   '--experimental-loader',
+  // Policy
   '--experimental-policy',
   '--policy',
   '--policy-integrity',
+  // Env file
   '--env-file',
   '--env-file-if-exists',
+  // Profiling
   '--cpu-prof-dir',
   '--cpu-prof-name',
   '--cpu-prof-interval',
   '--heap-prof-dir',
   '--heap-prof-name',
   '--heap-prof-interval',
+  // Diagnostic / report
   '--diagnostic-dir',
   '--report-directory',
   '--report-filename',
   '--report-signal',
+  // Inspector
   '--inspect-port',
   '--inspect-host',
   '--inspect-brk-node',
+  // V8 / sizes
   '--max-http-header-size',
   '--max-old-space-size',
   '--max-semi-space-size',
+  '--v8-pool-size',
+  // TLS / security
   '--unhandled-rejections',
   '--tls-cipher-list',
   '--openssl-config',
   '--openssl-shared-config',
-  '--use-bundled-ca',
+  // Conditions / inputs
   '--conditions',
   '-C',
   '--input-type',
+  // Snapshot
   '--snapshot-blob',
-  '--build-snapshot',
+  '--build-snapshot-config',
+  // Process / runtime metadata
+  '--title',
+  '--redirect-warnings',
+  // Test runner
+  '--test-shard',
+  '--test-name-pattern',
+  '--test-skip-pattern',
+  '--test-reporter',
+  '--test-reporter-destination',
+  '--test-concurrency',
+  // Tracing
+  '--trace-event-categories',
+  '--trace-event-file-pattern',
+  // Watch
+  '--watch-path',
 ])
 
 /**
@@ -399,11 +424,9 @@ const NODE_NO_SCRIPT_FLAGS = new Set([
  * boolean (no-operand) subset that has appeared in production usage.
  */
 const NODE_BOOLEAN_FLAGS = new Set([
-  // Inspector
+  // Inspector (the bare forms; -port / -host / -brk-node are in VALUE_FLAGS)
   '--inspect',
   '--inspect-brk',
-  '--inspect-publish-uid=http',
-  '--inspect-publish-uid=stderr',
   // Source maps and warnings
   '--enable-source-maps',
   '--no-warnings',
@@ -417,12 +440,12 @@ const NODE_BOOLEAN_FLAGS = new Set([
   '--trace-sigint',
   '--trace-sync-io',
   '--trace-tls',
-  '--trace-event-categories',
-  // Memory / V8
+  // Memory / V8 (sizes are in VALUE_FLAGS)
   '--expose-gc',
   '--track-heap-objects',
   '--zero-fill-buffers',
-  // Module modes / experimental
+  '--v8-options',
+  // Module modes / experimental (boolean toggles)
   '--experimental-modules',
   '--experimental-vm-modules',
   '--experimental-wasi-unstable-preview1',
@@ -433,16 +456,13 @@ const NODE_BOOLEAN_FLAGS = new Set([
   '--experimental-permission',
   '--experimental-shadow-realm',
   '--experimental-test-coverage',
-  '--experimental-vm-modules',
   '--experimental-websocket',
   '--no-experimental-fetch',
   '--no-experimental-global-customevent',
   '--no-experimental-global-webcrypto',
   '--no-experimental-network-imports',
   '--no-experimental-shadow-realm',
-  '--es-module-specifier-resolution=node',
-  '--es-module-specifier-resolution=explicit',
-  // TLS toggles
+  // TLS toggles (boolean, no operand). Values like cipher-list are VALUE_FLAGS.
   '--tls-min-v1.0',
   '--tls-min-v1.1',
   '--tls-min-v1.2',
@@ -452,7 +472,7 @@ const NODE_BOOLEAN_FLAGS = new Set([
   '--use-bundled-ca',
   '--use-openssl-ca',
   '--use-system-ca',
-  // Reports
+  // Reports (boolean toggles; directory / filename are VALUE_FLAGS)
   '--report-on-fatalerror',
   '--report-on-signal',
   '--report-uncaught-exception',
@@ -467,31 +487,22 @@ const NODE_BOOLEAN_FLAGS = new Set([
   '--interactive',
   '-i',
   '--no-addons',
-  '--no-experimental-fetch',
   '--no-force-async-hooks-checks',
   '--node-memory-debug',
   '--openssl-legacy-provider',
-  '--pending-deprecation',
   '--preserve-symlinks',
   '--preserve-symlinks-main',
   '--prof',
   '--prof-process',
-  '--redirect-warnings=stderr',
   '--secure-heap',
-  '--snapshot-blob',
-  '--build-snapshot-config',
+  '--build-snapshot',
+  // Test runner (the bare boolean toggles; --test-shard / --test-name-pattern
+  // / --test-reporter etc. take values and live in NODE_VALUE_FLAGS).
   '--test',
   '--test-only',
-  '--test-shard',
-  '--title',
-  '--use-largepages=on',
-  '--use-largepages=off',
-  '--use-largepages=silent',
-  '--v8-options',
-  '--v8-pool-size',
+  // Watch (the bare toggle; --watch-path takes a value)
   '--watch',
   '--watch-preserve-output',
-  '--zero-fill-buffers',
 ])
 
 /**
