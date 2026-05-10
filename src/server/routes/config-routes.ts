@@ -106,6 +106,21 @@ export function createConfigRouter(
         }
       }
 
+      // SECURITY: overwrite the client-supplied `project.path` with
+      // the supervisor-trusted `projectRoot` before persisting.
+      // `validateSetting` only checks the type and non-emptiness,
+      // not the location, so a crafted PUT could otherwise persist
+      // an attacker-controlled path into `.kovitoboard/setting.json`
+      // and influence later code that reads `setting.project.path`
+      // (notably `config.ts` `resolveProjectRootWithSource`
+      // priority-3 when CLI / env are unset). Since the wizard
+      // reads its displayed value from `GET /api/config/project-root`
+      // (which already returns the supervisor-trusted root),
+      // legitimate clients send the same value we are about to
+      // overwrite — this normalization is a no-op for them and a
+      // defense-in-depth strip for everything else.
+      body.project = { ...body.project, path: projectRoot }
+
       // Persist the new setting first so the onboarding-completion
       // marker (`onboarding.completedAt`) is durable before any
       // user-facing file (CLAUDE.md) is touched. If injection runs
@@ -116,12 +131,24 @@ export function createConfigRouter(
       // recovery deterministic.
       writeSetting(fs, body)
 
-      // Install agent-ref docs on setting write (R12)
+      // Install agent-ref docs on setting write (R12).
+      //
+      // SECURITY (Phase 2-A hardening): the destination root is
+      // anchored on the *server-trusted* `projectRoot` resolved by
+      // the supervisor at startup, NOT on `body.project.path` from
+      // the request body. Trusting the client payload here would let
+      // a crafted PUT redirect the agent-ref tree (and the bundled
+      // .md docs it carries) outside the project root — any caller
+      // of `PUT /api/config/setting` can put any string into
+      // `project.path` because `validateSetting` only checks type
+      // and non-emptiness, not the location. This mirrors the
+      // CLAUDE.md guidance injection pattern (PR #19, D-trusted-root)
+      // applied below.
       try {
-        const result = installAgentRefDocs(fs, body.project.path, body.locale)
+        const result = installAgentRefDocs(fs, projectRoot, body.locale)
         if (result.installed) {
           serverLogger.info(
-            `[config-routes] Installed agent-ref docs to ${body.project.path}/.kovitoboard/agent-ref/`
+            `[config-routes] Installed agent-ref docs to ${projectRoot}/.kovitoboard/agent-ref/`
           )
         }
       } catch (refErr) {
