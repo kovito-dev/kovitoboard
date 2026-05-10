@@ -55,10 +55,11 @@ export interface SidebarContext {
   /**
    * Single-shot preamble for the first message of a sidebar-origin
    * session. Tells the agent how to interpret the rule-line
-   * sentinel-wrapped sections (kbcontext / a11y / Selected /
-   * ExposedContext) the composer will attach. English-only by design
-   * — this is developer-facing diagnostic prose, not user-visible UI
-   * text.
+   * sentinel-wrapped sections (`kbcontext` / `a11y` / `selected` /
+   * `exposed-context`) the composer will attach. The identifier names
+   * match the `KbAuthoredType` wire values emitted by
+   * `wrapWithSentinel(...)`. English-only by design — this is
+   * developer-facing diagnostic prose, not user-visible UI text.
    */
   systemPromptPreamble: string
 }
@@ -124,16 +125,20 @@ function buildKbcontextBlock(params: {
  *
  * Each block is described inline so the agent can attribute information
  * back to its source: `kbcontext` (route/menu), `a11y` (accessibility
- * tree of visible elements), `Selected` (an element the user explicitly
- * picked), `ExposedContext` (state the host app declared via
+ * tree of visible elements), `selected` (an element the user explicitly
+ * picked), `exposed-context` (state the host app declared via
  * `window.kb.exposeContext`).
+ *
+ * Identifier names follow the `KbAuthoredType` wire identifiers emitted
+ * by `wrapWithSentinel(...)` so the agent-facing copy matches the
+ * `KovitoBoard:<kind>` value it actually sees on the wire.
  */
 export const SYSTEM_PROMPT_PREAMBLE = [
   'This conversation was started from the KovitoBoard Ambient Session Sidebar.',
   'The user is working in another KB screen while talking to you.',
   '',
   'User messages may include rule-line sentinel sections labelled',
-  '`kbcontext`, `a11y`, `Selected`, or `ExposedContext`. They describe',
+  '`kbcontext`, `a11y`, `selected`, or `exposed-context`. They describe',
   'the screen the user is currently looking at: respectively, the route',
   'and active menu, the accessibility tree of visible elements, an',
   'element the user explicitly selected, and state the host app exposed',
