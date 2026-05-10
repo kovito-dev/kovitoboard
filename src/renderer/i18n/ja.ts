@@ -37,6 +37,8 @@ const ja = {
   'onboarding.complete.talkToKobi': 'コビーと話してみる',
   'onboarding.complete.goToAgents': 'エージェント一覧へ',
   'onboarding.complete.preparing': '準備中…',
+  'onboarding.complete.skipClaudeMdGuidance': 'CLAUDE.md への案内ブロック追記をスキップする',
+  'onboarding.complete.skipClaudeMdGuidanceHint': 'チェックを入れると、KovitoBoard はあなたのプロジェクト直下の CLAUDE.md に案内ブロックを書き込みません。CLAUDE.md を自分で管理している場合に選択してください。',
   'onboarding.welcome.start': '始める',
   'onboarding.user.avatarHint': 'アバター画像（任意・1MB以下）',
   'onboarding.user.avatarSizeError': 'ファイルサイズが 1MB を超えています',
