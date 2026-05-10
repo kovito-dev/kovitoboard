@@ -127,11 +127,16 @@ export function activateElementPicker(handlers: PickerHandlers): PickerHandle {
 
 /**
  * Serialize a picked element into a compact text snippet suitable for
- * the `[Selected]` section of the agent payload (spec §2.4 α-method).
+ * the `selected` section of the agent payload (spec §2.4 α-method).
  *
  * Includes the element's text content (capped), its tag/role, and a
  * small slice of immediate child structure so the agent can reason
  * about what the user picked even when the text is generic ("OK").
+ *
+ * The output is wrapped in a rule-line sentinel by the caller
+ * (`AmbientSidebar.composePayload`); the previous ` ```Selected `
+ * fence was removed in the K-15 cutover (spec
+ * `kb-authored-sentinel.md` v1.3 §11.3).
  */
 export function describePickedElement(el: Element, opts: { maxTextLength?: number } = {}): string {
   const maxText = opts.maxTextLength ?? 200
@@ -160,5 +165,5 @@ export function describePickedElement(el: Element, opts: { maxTextLength?: numbe
     childrenSummary.length > 0 ? `children: [${childrenSummary.join(', ')}]` : null,
   ].filter((l): l is string => l !== null)
 
-  return ['```Selected', ...lines, '```'].join('\n')
+  return lines.join('\n')
 }

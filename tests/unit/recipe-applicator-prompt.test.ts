@@ -8,7 +8,7 @@
  * prompt builder. The agent relies on the section headings as
  * anchors, so this suite pins:
  *
- *   - The stable header line `KovitoBoard Recipe Installation Request`.
+ *   - The rule-line sentinel envelope wrapping the prompt.
  *   - Presence of the five top-level sections in order: Recipe
  *     Information / Recipe Contents / Your Task / Constraints /
  *     補足.
@@ -21,12 +21,10 @@
  *     under the hood).
  *
  * @see docs/specs/v0.1.0-recipe-install-handover.md §3.4
+ * @see docs/specs/kb-authored-sentinel.md §11.3 (K-15 cutover)
  */
 import { describe, expect, it } from 'vitest'
-import {
-  RECIPE_INSTALL_HEADER,
-  buildRecipePrompt,
-} from '../../src/server/recipe-applicator'
+import { buildRecipePrompt } from '../../src/server/recipe-applicator'
 import type {
   ArtifactWithContent,
   InspectionResult,
@@ -77,21 +75,20 @@ function makeInspection(overrides: Partial<InspectionResult> = {}): InspectionRe
 }
 
 describe('buildRecipePrompt (v2.0)', () => {
-  it('keeps the stable header anchor inside the v2.0 rule-line sentinel envelope', () => {
-    // SS-3 / Q4 dual-write (v2.0): the prompt now opens with a
-    // `━━━━━ KovitoBoard:recipe-install … ━━━━━` rule-line sentinel
-    // so the sentinel-aware parser can chip-collapse it. Rule-line
-    // markers carry no syntactic meaning in Markdown / programming
-    // languages, leaving the model with no incentive to interpret
-    // the inner identifier as a directive — see spec §2 v2.0. The
-    // legacy header anchor stays inside the body so older renderers
-    // (and replayed JSONLs from before the sentinel rollout) still
-    // match their existing detection.
+  it('wraps the prompt in a rule-line recipe-install sentinel envelope', () => {
+    // The prompt opens with a `━━━━━ KovitoBoard:recipe-install … ━━━━━`
+    // rule-line sentinel so the renderer chip-collapses it under the
+    // recipe name. Rule-line markers carry no syntactic meaning in
+    // Markdown / programming languages, leaving the model with no
+    // incentive to interpret the inner identifier as a directive
+    // (spec `kb-authored-sentinel.md` §9.1). The legacy
+    // `KovitoBoard Recipe Installation Request` header anchor was
+    // removed in the K-15 cutover (spec §11.3); the recipe name now
+    // rides on the sentinel header as the chip label.
     const prompt = buildRecipePrompt(makeRecipe(), makeInspection())
-    expect(prompt.startsWith('━━━━━ KovitoBoard:recipe-install')).toBe(true)
+    expect(prompt.startsWith('━━━━━ KovitoBoard:recipe-install:TODO Manager ━━━━━')).toBe(true)
     expect(prompt.endsWith('━━━━━ KovitoBoard:end ━━━━━')).toBe(true)
-    expect(prompt).toContain(RECIPE_INSTALL_HEADER)
-    expect(RECIPE_INSTALL_HEADER).toBe('KovitoBoard Recipe Installation Request')
+    expect(prompt).not.toContain('KovitoBoard Recipe Installation Request')
   })
 
   it('emits the five top-level sections in order', () => {
