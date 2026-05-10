@@ -559,6 +559,15 @@ function findEntryScriptIndex(argv) {
       // `--flag=value` branch swallows them.
       return -1
     }
+    if (tok === '--') {
+      // Bare `--` is Node's documented end-of-options marker. The
+      // next argv (if any) is unconditionally the entry script,
+      // even when it would otherwise look like a flag. Without
+      // this branch the walker would fall into the unknown-flag
+      // rejection path and miss a supervisor launched as
+      // `node -- tools/kb-start.mjs ...`.
+      return i + 1 < argv.length ? i + 1 : -1
+    }
     if (NODE_VALUE_FLAGS.has(tok)) {
       if (i + 1 >= argv.length) return -1
       i += 1

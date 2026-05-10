@@ -256,6 +256,54 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
     }
   })
 
+  it('matches `node -- <abs-tools/kb-start.mjs>` (Node end-of-options marker)', async () => {
+    // Node's documented `--` end-of-options marker means "stop
+    // processing options; the next argv is the entry script".
+    // The walker's refuse-on-unknown bias would otherwise reject
+    // `--` as an unrecognized leading-`-` token and miss a real
+    // supervisor launched this way.
+    //
+    // We exercise the branch via an other-clone decoy whose
+    // entry script realpaths to a different file, so the matcher
+    // skips it at the realpath equality check (proving the walker
+    // accepted argv[2] as the entry script index). The same path
+    // applies to the production case where the real supervisor's
+    // entry script realpaths to THIS clone's tools/kb-start.mjs.
+    const cloneDir = mkdtempSync(join(tmpdir(), 'kb-stop-decoy-double-dash-'))
+    const decoyTools = join(cloneDir, 'tools')
+    mkdirSync(decoyTools, { recursive: true })
+    const decoyScript = join(decoyTools, 'kb-start.mjs')
+    writeFileSync(
+      decoyScript,
+      "// double-dash decoy\nsetInterval(() => {}, 1000)\n",
+    )
+
+    const child = spawn('node', ['--', decoyScript], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    decoys.push(child)
+    try {
+      expect(child.pid).toBeGreaterThan(0)
+      await settle()
+
+      const r = runKbStop(['--all', '--dry-run'], { KB_DEBUG: '1' })
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain(`pid ${child.pid}`)
+      // Crucial: the walker must have accepted argv[2] (decoyScript)
+      // as the entry script and reached the realpath comparison.
+      // If the walker had refused on `--`, we would see the
+      // "no entry script" DEBUG message instead.
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `skipping pid ${child.pid}: entry script resolves to`,
+        ),
+      )
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true })
+    }
+  })
+
   it('skips `node --eval=<code> <abs-tools/kb-start.mjs>` (inline `=`-form eval-mode rejection)', async () => {
     // Sibling case to `node -e "..."` — the inline `=`-form
     // (`--eval=code`) puts node into the same no-script mode but
