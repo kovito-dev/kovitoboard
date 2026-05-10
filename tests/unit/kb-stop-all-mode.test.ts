@@ -242,12 +242,60 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
       expect(r.status).toBe(0)
       // Decoy must not appear in the planned actions...
       expect(r.stdout).not.toContain(`pid ${child.pid}`)
-      // ...and the DEBUG note must be the realpath-mismatch one,
-      // not "no positional script argument" (which would mean the
-      // parser failed to walk past --enable-source-maps).
+      // ...and the DEBUG note must be the realpath-mismatch one
+      // ("no argv token resolves to..."), not the runtime-rejection
+      // one (which would mean the scanner aborted on the leading
+      // node flag).
       expect(r.stderr).toMatch(
-        new RegExp(`skipping pid ${child.pid}: script arg resolves to`),
+        new RegExp(
+          `skipping pid ${child.pid}: no argv token resolves to`,
+        ),
       )
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true })
+    }
+  })
+
+  it('matches `node --require <preload> tools/kb-start.mjs` (value-flag operand handling)', async () => {
+    // CodeX-flagged regression scenario: Node's `--require <mod>`
+    // consumes its operand, so a naive "first non-flag positional"
+    // parser would mistakenly treat the preload module as the
+    // script and skip the real supervisor. The scanner here checks
+    // every non-flag token against the expected realpath, which
+    // correctly accepts the supervisor at argv[3].
+    //
+    // We can't easily simulate THIS clone's tools/kb-start.mjs
+    // running as the entry script (that would actually start a KB
+    // server), so we test the symmetric case: a node decoy whose
+    // entry script lives in a fake other clone, with a junk
+    // `--require` operand. The decoy MUST be skipped by realpath
+    // mismatch (proving the parser scanned past `--require`'s
+    // operand and reached the entry script), not skipped by
+    // "no argv token resolves to..." (which would mean the
+    // scanner failed to read the supervisor's argv at all).
+    const cloneDir = mkdtempSync(join(tmpdir(), 'kb-stop-decoy-require-'))
+    const decoyTools = join(cloneDir, 'tools')
+    mkdirSync(decoyTools, { recursive: true })
+    const decoyScript = join(decoyTools, 'kb-start.mjs')
+    writeFileSync(
+      decoyScript,
+      "// decoy with --require flag\nsetInterval(() => {}, 1000)\n",
+    )
+    const preload = join(cloneDir, 'preload.cjs')
+    writeFileSync(preload, '// no-op preload module')
+
+    const child = spawn('node', ['--require', preload, decoyScript], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    decoys.push(child)
+    try {
+      expect(child.pid).toBeGreaterThan(0)
+      await settle()
+
+      const r = runKbStop(['--all', '--dry-run'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain(`pid ${child.pid}`)
     } finally {
       rmSync(cloneDir, { recursive: true, force: true })
     }

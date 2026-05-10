@@ -308,35 +308,6 @@ function isNodeRuntime(argv0) {
 }
 
 /**
- * Locate the script-path argument inside an argv array exec'd as
- * `node [node-flags...] script [script-args...]`. Node's own flags
- * (`--inspect`, `--enable-source-maps`, `-r`, `-e`, etc.) all start
- * with `-`, so the script is the first non-flag argument after
- * argv[0]. Returns null if no such positional exists.
- *
- * `-e <code>` and `-p <code>` consume their following token as the
- * code argument, but neither is used by the supervisor; we treat
- * them as flags and skip past both. The conservative side-effect
- * is that a contrived `node -e "...tools/kb-start.mjs..."`
- * invocation would have its `-e` content seen as the script — but
- * such a process would not realpath to our expected script path,
- * so it just gets skipped at the equality check.
- */
-function findScriptArgIndex(argv) {
-  for (let i = 1; i < argv.length; i++) {
-    const tok = argv[i]
-    if (tok === '-e' || tok === '--eval' || tok === '-p' || tok === '--print') {
-      // skip the following code token too
-      i += 1
-      continue
-    }
-    if (tok.startsWith('-')) continue
-    return i
-  }
-  return -1
-}
-
-/**
  * Discover supervisor PIDs via pgrep, then narrow the candidates to
  * the ones started from THIS clone of `tools/kb-start.mjs`.
  *
@@ -356,12 +327,17 @@ function findScriptArgIndex(argv) {
  *      (`node` / `nodejs` / `node20`-style versioned binaries).
  *      Shebang-launched invocations (`#!/usr/bin/env node`) still
  *      pass since the kernel re-execs through the runtime.
- *   2. The script-path argument — the first non-flag token after
- *      argv[0] — resolves (after `realpath`) to the absolute path
- *      of `<repoRoot>/tools/kb-start.mjs`. Walking past Node flags
- *      (`--inspect`, `--enable-source-maps`, etc.) keeps `node
- *      --inspect tools/kb-start.mjs` matching even though the
- *      script is at argv[2], not argv[1].
+ *   2. At least one non-flag argv token resolves (after `realpath`)
+ *      to the absolute path of `<repoRoot>/tools/kb-start.mjs`. We
+ *      scan every non-flag token rather than hard-coding argv[1]
+ *      so invocations like `node --require preload.cjs
+ *      tools/kb-start.mjs` (`--require` consumes its operand) and
+ *      `node --inspect tools/kb-start.mjs` (Node flag without
+ *      operand) both still match without our parser needing a
+ *      complete Node-flag taxonomy. Tokens whose realpath equals
+ *      the expected script are accepted; everything else is
+ *      ignored. The strong fence is the realpath equality, not the
+ *      positional index.
  *
  * Argv comes from `/proc/<pid>/cmdline` when available (NUL-separated,
  * lossless). On platforms without /proc (e.g. macOS) we fall back to
@@ -447,54 +423,65 @@ function pgrepSupervisorPids() {
       continue
     }
 
-    const scriptIdx = findScriptArgIndex(argv)
-    if (scriptIdx === -1) {
-      if (debug) {
-        console.error(
-          `[kb-stop] DEBUG: skipping pid ${pid}: no positional script argument after node flags`,
-        )
-      }
-      continue
-    }
-    const scriptArg = argv[scriptIdx]
+    // Look for any argv token whose realpath equals the expected
+    // script path. This intentionally avoids enumerating Node's
+    // value-taking flags (`--require`, `--import`, `--loader`,
+    // `--env-file`, etc.). False positives — a non-flag value
+    // operand that literally points at our expected script — would
+    // require an operator to invoke
+    // `node --require tools/kb-start.mjs <other.js>`, which is not
+    // a documented KB launch flow.
+    const supCwd = readCwdFromProc(pid)
+    let matched = false
+    let relativeWithoutCwdSeen = false
+    for (let i = 1; i < argv.length; i++) {
+      const tok = argv[i]
+      if (tok.startsWith('-')) continue
 
-    let scriptAbs
-    if (isAbsolute(scriptArg)) {
-      scriptAbs = scriptArg
-    } else {
-      // Resolve the relative script path using the supervisor's own
-      // cwd, not kb-stop's cwd. Falling back to kb-stop's cwd would
-      // mis-resolve a different clone's relative `tools/kb-start.mjs`
-      // to THIS clone's expected path whenever kb-stop is invoked
-      // from inside a clone — exactly the cross-clone collateral
-      // kill the Phase 2-A scope rule is meant to prevent.
-      const supCwd = readCwdFromProc(pid)
-      if (!supCwd) {
-        if (debug) {
+      let tokAbs
+      if (isAbsolute(tok)) {
+        tokAbs = tok
+      } else if (supCwd) {
+        tokAbs = resolve(supCwd, tok)
+      } else {
+        // Relative token without a readable supervisor cwd. We refuse
+        // to resolve against kb-stop's cwd because that would alias a
+        // different clone's relative `tools/kb-start.mjs` to THIS
+        // clone's expected path whenever kb-stop is invoked from
+        // inside a clone — the cross-clone collateral kill Phase
+        // 2-A is meant to prevent. Mark the candidate for a DEBUG
+        // note and keep scanning other tokens (an absolute one may
+        // still appear).
+        relativeWithoutCwdSeen = true
+        continue
+      }
+
+      let resolved
+      try {
+        resolved = realpathSync(tokAbs)
+      } catch {
+        resolved = tokAbs
+      }
+
+      if (resolved === expectedScriptPath) {
+        matched = true
+        break
+      }
+    }
+
+    if (!matched) {
+      if (debug) {
+        if (relativeWithoutCwdSeen) {
           console.error(
-            `[kb-stop] DEBUG: skipping pid ${pid}: script arg ${scriptArg} is relative and ` +
+            `[kb-stop] DEBUG: skipping pid ${pid}: relative argv token(s) present and ` +
               `the supervisor's cwd is not available via /proc; refusing to resolve ` +
               `against kb-stop's cwd to avoid cross-clone collateral kill`,
           )
+        } else {
+          console.error(
+            `[kb-stop] DEBUG: skipping pid ${pid}: no argv token resolves to ${expectedScriptPath}`,
+          )
         }
-        continue
-      }
-      scriptAbs = resolve(supCwd, scriptArg)
-    }
-
-    let scriptResolved
-    try {
-      scriptResolved = realpathSync(scriptAbs)
-    } catch {
-      scriptResolved = scriptAbs
-    }
-
-    if (scriptResolved !== expectedScriptPath) {
-      if (debug) {
-        console.error(
-          `[kb-stop] DEBUG: skipping pid ${pid}: script arg resolves to ${scriptResolved}, ` +
-            `expected ${expectedScriptPath}`,
-        )
       }
       continue
     }
