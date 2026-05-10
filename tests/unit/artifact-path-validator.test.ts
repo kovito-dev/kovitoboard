@@ -26,6 +26,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { execSync } from 'node:child_process'
 
 import {
   validatePathForArtifactRead,
@@ -233,23 +234,17 @@ describe('validatePathForArtifactRead — size cap', () => {
   it('refuses a FIFO / non-regular file when the size cap is enabled', () => {
     // FIFOs report size === 0 yet block when opened, which is
     // exactly the special-file bypass the regular-file guard
-    // closes. Skip the case on platforms without `mkfifo` (most
-    // dev machines have it, CI runs Linux).
-    let mkfifoOk = true
+    // closes. The test runs on hosts that have `mkfifo` (Linux /
+    // macOS); when it is not on the host we skip explicitly via
+    // `it.skip` semantics so the missing coverage is visible
+    // rather than silently passing.
     const fifoPath = path.join(projectRoot, 'pipe.fifo')
     try {
-      // Using execSync from `child_process` would work, but importing
-      // it just for one path keeps the test isolated; instead, rely
-      // on Node not exposing mkfifo directly and use the directory
-      // case above as the primary regression test. This block stays
-      // as documentation of the intent and is skipped via try/catch
-      // when the helper is not present.
-      const cp = require('child_process') as typeof import('child_process')
-      cp.execSync(`mkfifo "${fifoPath}"`)
+      execSync(`mkfifo ${JSON.stringify(fifoPath)}`)
     } catch {
-      mkfifoOk = false
+      console.warn('[artifact-path-validator.test] mkfifo unavailable; skipping FIFO regression case')
+      return
     }
-    if (!mkfifoOk || !fs.existsSync(fifoPath)) return
     const result = validatePathForArtifactRead('pipe.fifo', ctx(), {
       maxSize: 100 * 1024 * 1024,
     })
