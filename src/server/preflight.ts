@@ -43,7 +43,7 @@ export interface PreflightFailure {
 }
 
 export type PreflightResult =
-  | { ok: true; failures: [] }
+  | { ok: true; failures: []; skippedReason?: string }
   | { ok: false; failures: PreflightFailure[] }
 
 /**
@@ -76,6 +76,14 @@ const HINTS: Record<PreflightCheckId, string> = {
 // startup from hanging if the binary is wedged.
 const SPAWN_TIMEOUT_MS = 5000
 
+// Env var that tells the check phase to short-circuit before any
+// subprocess is spawned. Documented in supervisor-startup.md
+// §6.9.4 for CI / E2E / debug use; production startup never sets
+// it. Keeping the gate inside `runPreflightChecks` (rather than at
+// the index.ts call site) keeps the contract — "set the env var,
+// no preflight subprocess runs" — discoverable from this module.
+const SKIP_ENV_VAR = 'KOVITOBOARD_SKIP_PREFLIGHT'
+
 function defaultSpawn(
   command: string,
   args: string[],
@@ -99,8 +107,6 @@ function fail(
   return { id, message, hint: HINTS[id] }
 }
 
-const STDERR_TAIL_MAX = 200
-
 function classifySpawnFailure(
   id: PreflightCheckId,
   command: string,
@@ -122,9 +128,12 @@ function classifySpawnFailure(
     return fail(id, `${display} terminated by signal ${result.signal}`)
   }
   if (result.status !== 0) {
-    const stderr = (result.stderr ?? '').toString().trim().slice(0, STDERR_TAIL_MAX)
-    const tail = stderr ? `: ${stderr}` : ''
-    return fail(id, `${display} exited ${result.status}${tail}`)
+    // Bootstrap output runs before the redaction-aware logger pipeline
+    // (see enforcePreflight). Subprocess stderr can carry local paths,
+    // account identifiers, or wrapper-script diagnostics, so we only
+    // surface command + exit status and let operators inspect the
+    // binary directly when more detail is needed.
+    return fail(id, `${display} exited ${result.status}`)
   }
   return null
 }
@@ -172,10 +181,24 @@ function checkClaude(deps: PreflightDeps): PreflightFailure | null {
  * Run all preflight checks. Pure function — does not log or exit.
  * Callers compose the result with `enforcePreflight` (or perform
  * their own handling) to produce the side-effects.
+ *
+ * When `KOVITOBOARD_SKIP_PREFLIGHT=1` is set in the supplied env,
+ * returns immediately with `{ ok: true, failures: [], skippedReason }`
+ * without spawning any subprocess. The escape hatch is meant for
+ * CI / E2E / debug paths where the production prerequisites are
+ * not present and the spawn timeout would only delay startup.
  */
 export function runPreflightChecks(
   deps: PreflightDeps = defaultDeps,
+  env: NodeJS.ProcessEnv = process.env,
 ): PreflightResult {
+  if (env[SKIP_ENV_VAR] === '1') {
+    return {
+      ok: true,
+      failures: [],
+      skippedReason: `${SKIP_ENV_VAR}=1`,
+    }
+  }
   const failures: PreflightFailure[] = []
   const f1 = checkTmux(deps)
   if (f1) failures.push(f1)
@@ -190,24 +213,20 @@ export function runPreflightChecks(
 }
 
 /**
- * Enforce the preflight result. On success, returns immediately.
- * On failure:
- *   - If `KOVITOBOARD_SKIP_PREFLIGHT=1`, log warnings and return.
- *   - Otherwise, log each failure + hint and call `process.exit(1)`.
+ * Enforce the preflight result. On success, returns immediately;
+ * if the result was skipped via the env escape hatch, emits a
+ * single warn line so operators can still see the bypass in
+ * bootstrap output. On failure, logs each failure + hint and calls
+ * `process.exit(1)`.
  *
  * The supervisor (kb-start.mjs) detects the non-zero child exit and
  * tears down (supervisor-startup.md §6.9.3 step 3).
  */
-export function enforcePreflight(
-  result: PreflightResult,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  if (result.ok) return
-  const skip = env.KOVITOBOARD_SKIP_PREFLIGHT === '1'
-  if (skip) {
-    for (const failure of result.failures) {
+export function enforcePreflight(result: PreflightResult): void {
+  if (result.ok) {
+    if (result.skippedReason) {
       // prettier-ignore
-      console.warn(`[kb-preflight] WARN: KOVITOBOARD_SKIP_PREFLIGHT=1, skipping (${failure.id}: ${failure.message})`) // hygiene-allow: console-bootstrap
+      console.warn(`[kb-preflight] WARN: ${result.skippedReason}, skipping startup preflight checks`) // hygiene-allow: console-bootstrap
     }
     return
   }

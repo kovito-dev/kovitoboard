@@ -185,13 +185,18 @@ describe('runPreflightChecks', () => {
     expect(failure?.message).toBe('tmux -V exited 1')
   })
 
-  it('PF-1: includes stderr tail when tmux exits non-zero with output', () => {
+  it('PF-1: omits stderr from the failure message even when present', () => {
+    // stderr can leak local paths / account identifiers in CI wrapper
+    // scripts; bootstrap output runs before the redaction-aware logger
+    // pipeline, so we surface command + exit status only.
     const result = runPreflightChecks(
-      buildDeps({ spawnTable: { tmux: spawnExit(2, 'cannot connect to socket') } }),
+      buildDeps({ spawnTable: { tmux: spawnExit(2, 'cannot connect to socket: /home/user/...') } }),
     )
     expect(result.ok).toBe(false)
     const failure = result.failures.find((f) => f.id === 'PF-1')
-    expect(failure?.message).toBe('tmux -V exited 2: cannot connect to socket')
+    expect(failure?.message).toBe('tmux -V exited 2')
+    expect(failure?.message).not.toContain('cannot connect')
+    expect(failure?.message).not.toContain('/home/')
   })
 
   it('PF-1: surfaces the signal name when tmux is killed', () => {
@@ -265,7 +270,7 @@ describe('runPreflightChecks', () => {
     expect(failure?.message).toBe('claude not found on PATH')
   })
 
-  it('PF-3: fails when claude exits non-zero with stderr', () => {
+  it('PF-3: fails when claude exits non-zero (stderr withheld)', () => {
     const result = runPreflightChecks(
       buildDeps({
         spawnTable: {
@@ -276,7 +281,8 @@ describe('runPreflightChecks', () => {
     )
     expect(result.ok).toBe(false)
     const failure = result.failures.find((f) => f.id === 'PF-3')
-    expect(failure?.message).toBe('claude --version exited 127: login required')
+    expect(failure?.message).toBe('claude --version exited 127')
+    expect(failure?.message).not.toContain('login required')
   })
 
   // Aggregation
@@ -312,6 +318,37 @@ describe('runPreflightChecks', () => {
     expect(result.ok).toBe(false)
     expect(result.failures.map((f) => f.id)).toEqual(['PF-1', 'PF-2', 'PF-3'])
   })
+
+  // KOVITOBOARD_SKIP_PREFLIGHT escape hatch — must short-circuit
+  // before any subprocess is spawned so CI / debug paths do not pay
+  // the spawn timeout when the binary is missing.
+
+  it('returns skippedReason without invoking spawn when env opt-in is set', () => {
+    let spawnCalls = 0
+    const deps: PreflightDeps = {
+      spawn: (...args) => {
+        spawnCalls++
+        return spawnError('should not be called')
+      },
+      nodeVersion: 'v18.0.0', // intentionally below floor; should not matter when skipped
+    }
+    const result = runPreflightChecks(deps, { KOVITOBOARD_SKIP_PREFLIGHT: '1' })
+    expect(result.ok).toBe(true)
+    expect(result.failures).toEqual([])
+    expect('skippedReason' in result && result.skippedReason).toBe(
+      'KOVITOBOARD_SKIP_PREFLIGHT=1',
+    )
+    expect(spawnCalls).toBe(0)
+  })
+
+  it('does not skip when env value is anything other than the literal "1"', () => {
+    const result = runPreflightChecks(
+      buildDeps({ spawnTable: { tmux: spawnError('ENOENT') } }),
+      { KOVITOBOARD_SKIP_PREFLIGHT: 'true' },
+    )
+    expect(result.ok).toBe(false)
+    expect(result.failures[0]?.id).toBe('PF-1')
+  })
 })
 
 // --- enforcePreflight ----------------------------------------------
@@ -337,7 +374,7 @@ describe('enforcePreflight', () => {
     warnSpy.mockRestore()
   })
 
-  it('returns silently when result.ok is true', () => {
+  it('returns silently when result.ok is true and not skipped', () => {
     enforcePreflight({ ok: true, failures: [] })
     expect(exitSpy).not.toHaveBeenCalled()
     expect(errorSpy).not.toHaveBeenCalled()
@@ -351,7 +388,7 @@ describe('enforcePreflight', () => {
       hint: 'Install / upgrade tmux 3.4+. ...',
     }
     expect(() =>
-      enforcePreflight({ ok: false, failures: [failure] }, { PATH: '/usr/bin' }),
+      enforcePreflight({ ok: false, failures: [failure] }),
     ).toThrow(/process\.exit\(1\)/)
     expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errorSpy).toHaveBeenCalledWith(
@@ -362,51 +399,32 @@ describe('enforcePreflight', () => {
     )
   })
 
-  it('logs warn-only and continues when KOVITOBOARD_SKIP_PREFLIGHT=1', () => {
-    const failure: PreflightFailure = {
-      id: 'PF-3',
-      message: 'claude CLI not found or unresponsive',
-      hint: 'Install Claude Code: ...',
-    }
-    enforcePreflight(
-      { ok: false, failures: [failure] },
-      { KOVITOBOARD_SKIP_PREFLIGHT: '1' },
-    )
+  it('emits a single warn line when result carries skippedReason', () => {
+    enforcePreflight({
+      ok: true,
+      failures: [],
+      skippedReason: 'KOVITOBOARD_SKIP_PREFLIGHT=1',
+    })
     expect(exitSpy).not.toHaveBeenCalled()
     expect(warnSpy).toHaveBeenCalledWith(
-      '[kb-preflight] WARN: KOVITOBOARD_SKIP_PREFLIGHT=1, skipping (PF-3: claude CLI not found or unresponsive)',
+      '[kb-preflight] WARN: KOVITOBOARD_SKIP_PREFLIGHT=1, skipping startup preflight checks',
     )
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
-  it('does not skip when KOVITOBOARD_SKIP_PREFLIGHT is set to a non-"1" value', () => {
-    const failure: PreflightFailure = {
-      id: 'PF-2',
-      message: 'Node.js 20+ required (detected: v18.0.0)',
-      hint: 'Upgrade to Node.js 20+. ...',
-    }
-    expect(() =>
-      enforcePreflight(
-        { ok: false, failures: [failure] },
-        { KOVITOBOARD_SKIP_PREFLIGHT: 'true' },
-      ),
-    ).toThrow(/process\.exit\(1\)/)
-    expect(exitSpy).toHaveBeenCalledWith(1)
-  })
-
   it('logs every failure even when several are present', () => {
     const failures: PreflightFailure[] = [
-      { id: 'PF-1', message: 'tmux not found', hint: 'tmux hint' },
-      { id: 'PF-3', message: 'claude not found', hint: 'claude hint' },
+      { id: 'PF-1', message: 'tmux not found on PATH', hint: 'tmux hint' },
+      { id: 'PF-3', message: 'claude not found on PATH', hint: 'claude hint' },
     ]
-    expect(() => enforcePreflight({ ok: false, failures }, {})).toThrow(
+    expect(() => enforcePreflight({ ok: false, failures })).toThrow(
       /process\.exit\(1\)/,
     )
     expect(errorSpy.mock.calls.flat()).toContain(
-      '[kb-preflight] FAIL PF-1: tmux not found',
+      '[kb-preflight] FAIL PF-1: tmux not found on PATH',
     )
     expect(errorSpy.mock.calls.flat()).toContain(
-      '[kb-preflight] FAIL PF-3: claude not found',
+      '[kb-preflight] FAIL PF-3: claude not found on PATH',
     )
   })
 })

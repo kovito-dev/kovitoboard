@@ -119,6 +119,7 @@ function hostMeetsPreflightRequirements(): boolean {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+  // Mirror PF-1 (tmux 3.4+) from src/server/preflight.ts.
   const tmuxR = probe('tmux', ['-V'])
   if (tmuxR.error || tmuxR.status !== 0) return false
   const tmuxMatch = /^tmux ([0-9]+)\.([0-9]+)/.exec(
@@ -128,6 +129,12 @@ function hostMeetsPreflightRequirements(): boolean {
   const tmuxMajor = Number(tmuxMatch[1])
   const tmuxMinor = Number(tmuxMatch[2])
   if (tmuxMajor < 3 || (tmuxMajor === 3 && tmuxMinor < 4)) return false
+  // Mirror PF-2 (Node 20+). Without this gate, a Node 18 host would
+  // leave PREFLIGHT_ENV empty and exercise the production preflight
+  // code path even though production startup would fail.
+  const nodeMatch = /^v(\d+)\./.exec(process.version)
+  if (!nodeMatch || Number(nodeMatch[1]) < 20) return false
+  // Mirror PF-3 (claude on PATH).
   const claudeR = probe('claude', ['--version'])
   if (claudeR.error || claudeR.status !== 0) return false
   return true
