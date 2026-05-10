@@ -381,18 +381,139 @@ const NODE_NO_SCRIPT_FLAGS = new Set([
 ])
 
 /**
+ * Boolean Node flags that take no operand. The walker treats any
+ * leading-`-` token NOT in this set, NODE_VALUE_FLAGS, or
+ * NODE_NO_SCRIPT_FLAGS as an unknown flag and rejects the candidate
+ * (refuse-on-unknown). The conservative bias is intentional: a false
+ * negative (we miss a legitimate supervisor on a future Node flag)
+ * is recoverable (the operator can re-run with `--force` or a
+ * per-PID kill), but a false positive (we SIGTERM the wrong process)
+ * is destructive.
+ *
+ * `--name=value` form is recognized inline; we don't need each
+ * value-flag also listed here for the `=value` shape because the
+ * leading `-` plus the embedded `=` makes the token unambiguously
+ * a single flag-and-value.
+ *
+ * Source: Node.js v22 / v20 documented CLI options, narrowed to the
+ * boolean (no-operand) subset that has appeared in production usage.
+ */
+const NODE_BOOLEAN_FLAGS = new Set([
+  // Inspector
+  '--inspect',
+  '--inspect-brk',
+  '--inspect-publish-uid=http',
+  '--inspect-publish-uid=stderr',
+  // Source maps and warnings
+  '--enable-source-maps',
+  '--no-warnings',
+  '--trace-warnings',
+  '--trace-deprecation',
+  '--throw-deprecation',
+  '--no-deprecation',
+  '--pending-deprecation',
+  '--trace-uncaught',
+  '--trace-exit',
+  '--trace-sigint',
+  '--trace-sync-io',
+  '--trace-tls',
+  '--trace-event-categories',
+  // Memory / V8
+  '--expose-gc',
+  '--track-heap-objects',
+  '--zero-fill-buffers',
+  // Module modes / experimental
+  '--experimental-modules',
+  '--experimental-vm-modules',
+  '--experimental-wasi-unstable-preview1',
+  '--experimental-fetch',
+  '--experimental-global-customevent',
+  '--experimental-global-webcrypto',
+  '--experimental-network-imports',
+  '--experimental-permission',
+  '--experimental-shadow-realm',
+  '--experimental-test-coverage',
+  '--experimental-vm-modules',
+  '--experimental-websocket',
+  '--no-experimental-fetch',
+  '--no-experimental-global-customevent',
+  '--no-experimental-global-webcrypto',
+  '--no-experimental-network-imports',
+  '--no-experimental-shadow-realm',
+  '--es-module-specifier-resolution=node',
+  '--es-module-specifier-resolution=explicit',
+  // TLS toggles
+  '--tls-min-v1.0',
+  '--tls-min-v1.1',
+  '--tls-min-v1.2',
+  '--tls-min-v1.3',
+  '--tls-max-v1.2',
+  '--tls-max-v1.3',
+  '--use-bundled-ca',
+  '--use-openssl-ca',
+  '--use-system-ca',
+  // Reports
+  '--report-on-fatalerror',
+  '--report-on-signal',
+  '--report-uncaught-exception',
+  '--report-compact',
+  // Misc
+  '--abort-on-uncaught-exception',
+  '--force-async-hooks-checks',
+  '--force-fips',
+  '--force-node-api-uncaught-exceptions-policy',
+  '--frozen-intrinsics',
+  '--insecure-http-parser',
+  '--interactive',
+  '-i',
+  '--no-addons',
+  '--no-experimental-fetch',
+  '--no-force-async-hooks-checks',
+  '--node-memory-debug',
+  '--openssl-legacy-provider',
+  '--pending-deprecation',
+  '--preserve-symlinks',
+  '--preserve-symlinks-main',
+  '--prof',
+  '--prof-process',
+  '--redirect-warnings=stderr',
+  '--secure-heap',
+  '--snapshot-blob',
+  '--build-snapshot-config',
+  '--test',
+  '--test-only',
+  '--test-shard',
+  '--title',
+  '--use-largepages=on',
+  '--use-largepages=off',
+  '--use-largepages=silent',
+  '--v8-options',
+  '--v8-pool-size',
+  '--watch',
+  '--watch-preserve-output',
+  '--zero-fill-buffers',
+])
+
+/**
  * Locate the entry-script argument inside an argv array exec'd as
  * `node [node-flags...] script [script-args...]`. Returns the index
  * of the entry script in `argv`, or `-1` if none exists (e.g. eval
- * mode, missing script).
+ * mode, missing script, unknown leading-`-` token before the script).
  *
  * Walks past:
- *   - bare flag tokens that start with `-` (e.g. `--inspect`).
+ *   - boolean flags listed in NODE_BOOLEAN_FLAGS.
  *   - `<flag> <value>` pairs for flags listed in NODE_VALUE_FLAGS.
- *   - `--flag=value` tokens (entire token starts with `-`).
+ *   - `--flag=value` tokens (any leading `-` token containing `=`).
  *
- * Rejects (returns -1) when an `-e` / `--eval` / `-p` / `--print`
- * flag is encountered, since those modes have no entry script.
+ * Rejects (returns -1) when:
+ *   - a no-script flag is encountered (`-e` / `--eval` / `-p` /
+ *     `--print` / `-c` / `--check`).
+ *   - a leading-`-` token is unrecognized. This is the
+ *     refuse-on-unknown bias — we'd rather miss a legitimate
+ *     supervisor on a future Node flag than treat the value of an
+ *     unknown value-taking flag as the entry script and SIGTERM
+ *     the wrong process.
+ *   - argv runs out before a non-flag positional appears.
  */
 function findEntryScriptIndex(argv) {
   for (let i = 1; i < argv.length; i++) {
@@ -401,19 +522,22 @@ function findEntryScriptIndex(argv) {
       return -1
     }
     if (NODE_VALUE_FLAGS.has(tok)) {
-      // Skip the operand. If the operand is missing (last argv),
-      // the cmdline is malformed and the candidate isn't a real
-      // supervisor anyway — bail out.
       if (i + 1 >= argv.length) return -1
       i += 1
       continue
     }
     if (tok.startsWith('-')) {
-      // Bare flag (boolean or `--name=value` form). Skip.
-      continue
+      // `--flag=value` is one self-contained token.
+      if (tok.includes('=')) continue
+      // Single-letter combined boolean flags like `-rT` (uncommon)
+      // and the canonical short forms (`-i`).
+      if (NODE_BOOLEAN_FLAGS.has(tok)) continue
+      // Unknown flag: refuse the candidate. We do not silently
+      // continue past it because that would alias a future
+      // value-taking flag's operand into the entry-script slot.
+      return -1
     }
-    // First non-flag positional is the entry script (Node consumes
-    // its own flags first; the entry script is the next positional).
+    // First non-flag positional is the entry script.
     return i
   }
   return -1
