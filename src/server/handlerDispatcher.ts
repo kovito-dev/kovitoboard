@@ -68,7 +68,42 @@ export interface DispatchRequest {
 // Different appIds are independent: lock keys are the appId string,
 // so unrelated apps continue to run in parallel.
 
-const appLocks = new Map<string, Promise<void>>()
+interface AppLockEntry {
+  /** Promise that resolves once the current holder calls `release`. */
+  held: Promise<void>
+  /** Release callback bound to the holder. */
+  release: () => void
+}
+
+const appLocks = new Map<string, AppLockEntry>()
+
+/**
+ * Maximum time `acquireAppLock` will wait for the current holder to
+ * release before giving up. A stuck handler (hung subprocess, blocked
+ * fs op) would otherwise let dispatch requests for the same appId
+ * pile up unboundedly behind it; the timeout caps that head-of-line
+ * blocking risk and surfaces the stall as a `LockWaitTimeout` error
+ * the caller can map to a 5xx-equivalent handler error.
+ *
+ * 30 seconds is generous for any in-process handler — Category A
+ * handlers are fs / kv operations that complete in milliseconds, and
+ * the only awaitable subprocess work (Claude CLI handover) lives on
+ * a different code path. A real hang at this layer is therefore
+ * pathological and should fail loud rather than queue forever.
+ */
+const APP_LOCK_WAIT_TIMEOUT_MS = 30_000
+
+/**
+ * Error thrown by `acquireAppLock` when waiting for the current
+ * holder exceeds `APP_LOCK_WAIT_TIMEOUT_MS`. The caller catches this
+ * to emit an `Internal` handler error rather than retrying forever.
+ */
+export class AppLockWaitTimeoutError extends Error {
+  constructor(appId: string, timeoutMs: number) {
+    super(`acquireAppLock("${appId}") timed out after ${timeoutMs}ms`)
+    this.name = 'AppLockWaitTimeoutError'
+  }
+}
 
 /**
  * Acquire the per-appId dispatch lock. Resolves once any in-flight
@@ -76,43 +111,71 @@ const appLocks = new Map<string, Promise<void>>()
  * function the caller MUST call (in a `finally`) to let the next
  * waiter proceed.
  *
- * Implementation: each appId maps to a `Promise<void>` representing
- * the currently-held lock. New acquirers chain on the existing
- * promise, so waiters are released in FIFO microtask order. The map
- * entry is cleared by the release callback so an idle appId does not
- * keep an entry alive.
+ * Implementation: each appId maps to an entry holding a
+ * `Promise<void>` (the currently-held lock) and its resolver. New
+ * acquirers race that promise against a wait-timeout deadline and
+ * throw `AppLockWaitTimeoutError` when the deadline is reached so
+ * a hung handler cannot pile up the queue forever. The map entry is
+ * cleared by the release callback so an idle appId does not keep an
+ * entry alive.
  */
 export async function acquireAppLock(appId: string): Promise<() => void> {
-  // Wait until no current holder exists. We loop because two waiters
-  // can observe `existing` simultaneously, and only one of them will
-  // be next-in-line — the other has to wait again on the new entry.
+  const deadline = Date.now() + APP_LOCK_WAIT_TIMEOUT_MS
+  // Loop because two waiters can observe `existing` simultaneously,
+  // and only one of them will become the next holder — the other has
+  // to wait again on whatever entry now occupies the slot.
   while (appLocks.has(appId)) {
     const existing = appLocks.get(appId)
-    if (existing) await existing
+    if (!existing) break
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      throw new AppLockWaitTimeoutError(appId, APP_LOCK_WAIT_TIMEOUT_MS)
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        existing.held,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new AppLockWaitTimeoutError(appId, APP_LOCK_WAIT_TIMEOUT_MS)),
+            remainingMs,
+          )
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
   let release!: () => void
   const held = new Promise<void>((resolve) => {
     release = () => {
-      // Only clear the map slot if it still points at *this* lock —
+      // Only clear the map slot if it still points at *this* entry —
       // an out-of-order release (released twice, or after a lock
       // ownership bug elsewhere) must not wipe a successor's entry.
-      if (appLocks.get(appId) === held) {
+      if (appLocks.get(appId)?.held === held) {
         appLocks.delete(appId)
       }
       resolve()
     }
   })
-  appLocks.set(appId, held)
+  appLocks.set(appId, { held, release })
   return release
 }
 
 /**
- * Reset all in-flight per-appId locks. For testing only.
+ * Drop all per-appId lock state. For testing only.
  *
- * Resolves any outstanding holder promises so awaiting waiters do not
- * stay parked indefinitely if the test forgot to release.
+ * Walks every parked entry and resolves its `held` promise via the
+ * stored `release` callback so any awaiter that is still parked on
+ * `existing.held` returns immediately, then clears the map. Without
+ * the explicit resolve step a test that forgot to call its release
+ * function would leave its sibling waiters stuck on the previous
+ * promise indefinitely.
  */
 export function resetAppLocks(): void {
+  for (const entry of appLocks.values()) {
+    entry.release()
+  }
   appLocks.clear()
 }
 
@@ -271,7 +334,22 @@ export async function dispatch(
   projectRoot: string,
   kovitoboardRoot?: string,
 ): Promise<HandlerResponse<unknown>> {
-  const release = await acquireAppLock(request.appId)
+  let release: (() => void) | undefined
+  try {
+    release = await acquireAppLock(request.appId)
+  } catch (err) {
+    // A hung handler holding the per-appId lock would otherwise let
+    // queued dispatches stack up; surface the stall as a clean error
+    // so the caller can fail-fast rather than retry forever.
+    if (err instanceof AppLockWaitTimeoutError) {
+      serverLogger.warn({ err, appId: request.appId }, '[dispatcher] app lock wait timed out')
+      return handlerError(
+        'Internal',
+        `Dispatch timed out waiting for the per-app mutex on "${request.appId}"`,
+      )
+    }
+    throw err
+  }
   try {
     return await dispatchInner(request, manifestStore, projectRoot, kovitoboardRoot)
   } finally {

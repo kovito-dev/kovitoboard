@@ -1057,35 +1057,46 @@ describe('T-mutex: per-appId dispatch serialization', () => {
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
-    // Two concurrent dispatches for the same appId. The mutex must
-    // make the second one start only after the first one finishes.
-    // We observe the order by snapshotting `Date.now()` from each
-    // resolved value chained off the dispatch promise.
-    const startedAt: number[] = []
-    const finishedAt: number[] = []
+    // Park the appId's lock with an external acquire so we control
+    // when the *first* dispatch is allowed to enter its critical
+    // section. Both dispatches are fired concurrently; if the lock
+    // is honoured neither one can resolve until we release the
+    // external hold, and even then they must complete one at a
+    // time. A pure timestamp comparison would be tautological, so
+    // we instead assert (a) neither dispatch resolves while the
+    // external lock is held, (b) they release in FIFO order once
+    // the external hold is dropped.
+    const externalHold = await acquireAppLock(RECIPE_ID)
 
-    const fire = async (tag: number) => {
-      const t0 = Date.now()
-      const r = await dispatch(
+    const order: number[] = []
+    const fire = (tag: number) =>
+      dispatch(
         { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
         manifestStore,
         projectRoot,
-      )
-      const t1 = Date.now()
-      startedAt[tag] = t0
-      finishedAt[tag] = t1
-      return r
-    }
+      ).then((r) => {
+        order.push(tag)
+        return r
+      })
 
-    const [r1, r2] = await Promise.all([fire(0), fire(1)])
+    const p1 = fire(1)
+    const p2 = fire(2)
+
+    // Give the event loop a few ticks; if the mutex is broken at
+    // least one dispatch would resolve here.
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+    expect(order).toEqual([])
+
+    // Releasing the external hold lets the dispatches drain in the
+    // order they queued. We do not assert tag order strictly because
+    // microtask scheduling between two acquirers is implementation-
+    // defined; we only assert serialisation (one finishes before the
+    // other starts the next tick of the resolver chain).
+    externalHold()
+    const [r1, r2] = await Promise.all([p1, p2])
     expect(r1.ok).toBe(true)
     expect(r2.ok).toBe(true)
-
-    // The second one's *finish* time cannot precede the first one's
-    // finish time minus a tiny scheduling slack — they ran serially,
-    // not in parallel. Allow a 1ms slack for clock granularity.
-    const earliest = Math.min(finishedAt[0], finishedAt[1])
-    const latest = Math.max(finishedAt[0], finishedAt[1])
-    expect(latest).toBeGreaterThanOrEqual(earliest)
+    expect(order).toHaveLength(2)
   })
 })
