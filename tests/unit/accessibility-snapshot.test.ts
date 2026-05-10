@@ -56,13 +56,19 @@ describe('accessibility-snapshot', () => {
     document.body.innerHTML = ''
   })
 
-  it('emits a fenced ```a11y block', () => {
+  it('emits a plain-text role outline (no fence wrapper)', () => {
+    // The previous ` ```a11y ` fence was dropped in the K-15 cutover
+    // (spec `kb-authored-sentinel.md` §11.3) — the rule-line sentinel
+    // applied by `AmbientSidebar.composePayload` carries the kind
+    // identifier instead, so this function returns plain indented
+    // role lines.
     document.body.innerHTML = '<h1>Reports</h1><a href="#">Open</a>'
     const result = captureAccessibilitySnapshot()
     expect(result).not.toBeNull()
     if (!result) throw new Error('result is null')
-    expect(result.block.startsWith('```a11y')).toBe(true)
-    expect(result.block.trimEnd().endsWith('```')).toBe(true)
+    expect(result.block).not.toContain('```')
+    expect(result.block).toMatch(/heading\[level=1\]: "Reports"/)
+    expect(result.block).toMatch(/link: "Open"/)
   })
 
   it('includes role + name for headings, links, and buttons', () => {
@@ -95,8 +101,8 @@ describe('accessibility-snapshot', () => {
     const result = captureAccessibilitySnapshot({ maxBytes: 1_000 })
     if (!result) throw new Error('result is null')
     expect(result.truncated).toBe(true)
-    // The output respects the cap (with small overhead for fence wrapper).
-    expect(result.block.length).toBeLessThanOrEqual(1_000 + 100)
+    // The output respects the cap.
+    expect(result.block.length).toBeLessThanOrEqual(1_000)
   })
 
   it('skips SCRIPT and STYLE subtrees', () => {

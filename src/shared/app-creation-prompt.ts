@@ -73,13 +73,10 @@ export function buildAppCreationPrompt(request: AppCreationRequest): string {
   const outputBlock = renderOptional(output, UNFILLED_WITH_GUIDANCE)
   const frequencyBlock = renderOptional(frequency, UNFILLED_PLAIN)
 
-  // SS-3 / Q4 dual-write: keep the legacy `KovitoBoard App Creation
-  // Request` first-line anchor so older renderers chip-collapse the
-  // message, while wrapping the whole body in the v1.0 sentinel for
-  // sentinel-aware ones.
+  // The whole body is wrapped in a rule-line sentinel so the renderer
+  // collapses it under an "app-create" chip; section headings inside
+  // the body keep the agent oriented as it works through Steps 1-4.
   const body = [
-    'KovitoBoard App Creation Request',
-    '',
     '## ユーザーの要件',
     '',
     '### 目的と概要',

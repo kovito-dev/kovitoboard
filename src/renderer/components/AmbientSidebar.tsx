@@ -306,12 +306,13 @@ export function AmbientSidebar({
    */
   function composePayload(userText: string, isFirstMessage: boolean): string {
     const parts: string[] = []
-    // SS-3 / Q4 dual-write: each KB-authored sub-block is now wrapped
-    // in a `<!-- KB:auto-msg type=… -->` sentinel so a sentinel-aware
-    // parser can walk them in O(blocks) without falling back to the
-    // legacy ladder. The fence body is preserved verbatim inside the
-    // sentinel so older renderers continue to chip-collapse the same
-    // bytes via their own pattern.
+    // Each KB-authored sub-block is wrapped in a rule-line sentinel
+    // so the renderer's `parseKbAuthoredSections` walks them in
+    // O(blocks). The previous dual-write fences (` ```kbcontext `,
+    // ` ```a11y `, ` ```Selected `, ` ```ExposedContext `) were
+    // dropped in v0.2.0 (K-15, spec
+    // `kb-authored-sentinel.md` v1.3 §11.3) — only the sentinel
+    // envelope identifies the kind now.
     if (isFirstMessage) {
       parts.push(wrapWithSentinel('preamble', sidebarContext.systemPromptPreamble))
     }
@@ -353,16 +354,13 @@ export function AmbientSidebar({
 
     // β-method: app-published context (Phase 5 §2.4). Apps call
     // window.kb.exposeContext({...}) to publish state the DOM does
-    // not carry. We embed the latest payload as an [ExposedContext]
-    // block. Skipped when no app has published yet.
+    // not carry. We ship the serialized payload as the body of an
+    // `exposed-context` sentinel; the sentinel header carries the
+    // kind identifier so no inner fence is needed (K-15 cutover).
+    // Skipped when no app has published yet.
     const exposed = getExposedContext()
     if (exposed) {
-      parts.push(
-        wrapWithSentinel(
-          'exposed-context',
-          ['```ExposedContext', exposed.serialized, '```'].join('\n'),
-        ),
-      )
+      parts.push(wrapWithSentinel('exposed-context', exposed.serialized))
     }
 
     parts.push(userText)

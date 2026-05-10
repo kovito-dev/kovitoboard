@@ -54,9 +54,11 @@ export interface SidebarContext {
   kbcontextBlock: string
   /**
    * Single-shot preamble for the first message of a sidebar-origin
-   * session. Tells the agent how to interpret kbcontext / a11y /
-   * Selected / ExposedContext blocks. English-only by design — this is
-   * developer-facing diagnostic prose, not user-visible UI text.
+   * session. Tells the agent how to interpret the rule-line
+   * sentinel-wrapped sections (kbcontext / a11y / Selected /
+   * ExposedContext) the composer will attach. English-only by design
+   * — this is developer-facing diagnostic prose, not user-visible UI
+   * text.
    */
   systemPromptPreamble: string
 }
@@ -91,7 +93,12 @@ function resolveScreenLabel(
   return appId
 }
 
-/** Build the kbcontext Markdown code-block (spec §2.3). */
+/**
+ * Build the kbcontext key/value block (spec §2.3). The block is
+ * wrapped in a rule-line sentinel by the caller (`composePayload`)
+ * so the previous ` ```kbcontext ` fence is no longer emitted on the
+ * wire — the sentinel carries the kind identifier instead.
+ */
 function buildKbcontextBlock(params: {
   url: string
   activeMenu: string | null
@@ -105,12 +112,15 @@ function buildKbcontextBlock(params: {
     `appId: ${params.appId}`,
     `screenLabel: ${params.screenLabel}`,
   ].filter((l): l is string => l !== null)
-  return ['```kbcontext', ...lines, '```'].join('\n')
+  return lines.join('\n')
 }
 
 /**
  * One-shot preamble for new sidebar-origin sessions. Architect-finalized
- * wording (kovito-hq 2026-04-27, spec v0.1.0-ambient-sidebar.md §4.5).
+ * wording (kovito-hq 2026-04-27, spec v0.1.0-ambient-sidebar.md §4.5;
+ * reworded for v0.2.0 to match the rule-line sentinel envelope after
+ * the K-15 legacy-fence removal — spec `kb-authored-sentinel.md` v1.3
+ * §11.3).
  *
  * Each block is described inline so the agent can attribute information
  * back to its source: `kbcontext` (route/menu), `a11y` (accessibility
@@ -122,13 +132,14 @@ export const SYSTEM_PROMPT_PREAMBLE = [
   'This conversation was started from the KovitoBoard Ambient Session Sidebar.',
   'The user is working in another KB screen while talking to you.',
   '',
-  'User messages may include fenced code-blocks tagged `kbcontext`, `a11y`,',
-  '`Selected`, or `ExposedContext`. They describe the screen the user is',
-  'currently looking at: respectively, the route and active menu, the',
-  'accessibility tree of visible elements, an element the user explicitly',
-  'selected, and state the host app exposed via `window.kb.exposeContext`.',
+  'User messages may include rule-line sentinel sections labelled',
+  '`kbcontext`, `a11y`, `Selected`, or `ExposedContext`. They describe',
+  'the screen the user is currently looking at: respectively, the route',
+  'and active menu, the accessibility tree of visible elements, an',
+  'element the user explicitly selected, and state the host app exposed',
+  'via `window.kb.exposeContext`.',
   '',
-  'Treat these blocks as authoritative context for the current screen.',
+  'Treat these sections as authoritative context for the current screen.',
   'When the user says "this", "this screen", or "this information",',
   'consult them first. You may also draw on them proactively when',
   'answering would benefit from knowing what is on screen.',
