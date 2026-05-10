@@ -138,4 +138,83 @@ test.describe('CLAUDE.md guidance injection — onboarding trigger @preonboardin
 
     expect(existsSync(claudeMdPath)).toBe(false)
   })
+
+  test('preserves server-managed claudeMdGuidance fields across an unrelated full-document PUT', async ({ page, kbFixture }) => {
+    // Spec hardening (CodeX review on PR #19, findings
+    // "server-managed field integrity" + "preference clobbering"):
+    // PUT /api/config/setting is a full-document write, so without
+    // server-side merge-back any later unrelated update would erase:
+    //   (a) the server-managed `lastInjectedAt` audit field
+    //       recorded by a previous injection, and
+    //   (b) an already-persisted `disabled = true` opt-out (when
+    //       the new body omits `claudeMdGuidance` entirely).
+    //
+    // This test drives the production wizard once to produce the
+    // initial state, then issues a second PUT that simulates an
+    // unrelated client (e.g. a profile-name change) which does NOT
+    // include `claudeMdGuidance` in its body. The persisted
+    // `lastInjectedAt` must survive.
+    const claudeMdPath = ensureNoClaudeMd(kbFixture.projectRoot)
+
+    await page.goto('/')
+    await page.waitForURL('**/onboarding', { timeout: 10_000 })
+
+    await page.getByRole('button', { name: '日本語' }).click()
+    await page.getByRole('button', { name: '始める' }).click()
+    await page.locator('#displayName').fill('テストユーザー')
+    await page.getByRole('button', { name: '次へ' }).click()
+    await page.locator('#projectName').fill('claude-md-guidance-test')
+    await page.getByRole('button', { name: '次へ' }).click()
+    await page.getByRole('button', { name: 'あとで追加する' }).click()
+    await page.getByRole('button', { name: 'エージェント一覧へ' }).click()
+
+    // Capture the post-onboarding state so we know what
+    // `lastInjectedAt` to assert against later.
+    let recordedTimestamp: string | undefined
+    await expect(async () => {
+      const res = await page.request.get('/api/config/setting')
+      expect(res.ok()).toBeTruthy()
+      const body = await res.json() as {
+        onboarding?: { completedAt?: string | null }
+        claudeMdGuidance?: { lastInjectedAt?: string }
+      } | null
+      expect(body?.claudeMdGuidance?.lastInjectedAt).toBeTruthy()
+      recordedTimestamp = body?.claudeMdGuidance?.lastInjectedAt
+    }).toPass({ timeout: 10_000 })
+    expect(existsSync(claudeMdPath)).toBe(true)
+    expect(recordedTimestamp).toBeTruthy()
+
+    // Now issue an unrelated full-document PUT that intentionally
+    // omits `claudeMdGuidance` (the wizard does this when the
+    // opt-out checkbox is left unchecked). Without server-side
+    // merge-back, this would erase the previously recorded
+    // `lastInjectedAt` from disk.
+    const currentRes = await page.request.get('/api/config/setting')
+    const current = await currentRes.json() as Record<string, unknown> & {
+      user: { displayName: string }
+      claudeMdGuidance?: { disabled?: boolean; lastInjectedAt?: string }
+    }
+    const unrelatedBody: Record<string, unknown> = {
+      ...current,
+      user: { ...current.user, displayName: 'updated-display-name' },
+    }
+    delete unrelatedBody.claudeMdGuidance
+
+    const putRes = await page.request.put('/api/config/setting', {
+      data: unrelatedBody,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(putRes.ok()).toBeTruthy()
+
+    // The persisted `lastInjectedAt` must still match the value
+    // recorded after onboarding — proof that the server merged the
+    // server-managed claudeMdGuidance fields back into the document.
+    const afterRes = await page.request.get('/api/config/setting')
+    const after = await afterRes.json() as {
+      user: { displayName: string }
+      claudeMdGuidance?: { disabled?: boolean; lastInjectedAt?: string }
+    }
+    expect(after.user.displayName).toBe('updated-display-name')
+    expect(after.claudeMdGuidance?.lastInjectedAt).toBe(recordedTimestamp)
+  })
 })

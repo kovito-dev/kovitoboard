@@ -64,6 +64,32 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       const isOnboardingCompletionTransition =
         prevCompleted == null && typeof nextCompleted === 'string'
 
+      // PUT /api/config/setting is a full-document write. Without
+      // merging the persisted `claudeMdGuidance` block back in, two
+      // regressions surface:
+      //
+      //   (a) any later unrelated update (e.g. avatar change) would
+      //       erase the server-managed `lastInjectedAt` audit field
+      //       recorded by a previous injection — clients never resend
+      //       it because we strip it from the request body above.
+      //   (b) a wizard run that omits `claudeMdGuidance` entirely
+      //       would silently clear an already-persisted `disabled =
+      //       true` opt-out (the wizard sends `claudeMdGuidance` only
+      //       when the user actively checks the opt-out box).
+      //
+      // Spread order: persisted server-managed fields first, then any
+      // client-supplied fields on top. Clients that explicitly send
+      // `disabled: false` still see that take effect (opt-in remains
+      // possible); clients that omit the block preserve persisted
+      // state. The server-managed `lastInjectedAt` is already stripped
+      // from the body above, so it can only come from `prev` here.
+      if (prev?.claudeMdGuidance) {
+        body.claudeMdGuidance = {
+          ...prev.claudeMdGuidance,
+          ...(body.claudeMdGuidance ?? {}),
+        }
+      }
+
       // Persist the new setting first so the onboarding-completion
       // marker (`onboarding.completedAt`) is durable before any
       // user-facing file (CLAUDE.md) is touched. If injection runs
