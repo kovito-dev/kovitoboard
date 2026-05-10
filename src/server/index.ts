@@ -6,7 +6,7 @@
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
-import { join, isAbsolute, resolve, normalize, dirname, basename } from 'path'
+import { join, resolve, dirname, basename } from 'path'
 import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -90,6 +90,8 @@ import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/api
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
 import type { Scope } from './handlers/types'
+import { HANDLER_LIMITS } from './handlers/types'
+import { validatePathForArtifactRead } from './artifact-path-validator'
 import { listFilesHandler } from './handlers/categoryA/listFiles'
 import { readFileHandler } from './handlers/categoryA/readFile'
 import { writeFileHandler } from './handlers/categoryA/writeFile'
@@ -278,37 +280,17 @@ const _dataFileWatcher = new DataFileWatcher(fs, {
 })
 void _dataFileWatcher
 
-/**
- * Resolve the requested file path and verify it sits inside one of
- * the allowed roots (the project, or the upload directory). Returns
- * a safe absolute path, or null if the path is invalid.
- *
- * Upload paths (`/tmp/kovitoboard-uploads/...`) need to be readable
- * via `/api/artifact{,/raw}` so the FilePreview pane can render
- * images and files the user just attached to a chat message — those
- * paths live outside `projectRoot`, but they are produced by our
- * own upload endpoint with a UUID-based filename, so allowing reads
- * confined to the upload dir is safe.
- */
-function resolveAndValidatePath(requestedPath: string): string | null {
-  const resolved = isAbsolute(requestedPath)
-    ? normalize(requestedPath)
-    : normalize(resolve(projectRoot, requestedPath))
-
-  // Project-rooted paths (projectRoot itself is also allowed).
-  if (resolved === projectRoot || resolved.startsWith(projectRoot + '/')) {
-    return resolved
-  }
-
-  // Upload directory. `normalize` already collapsed any `..` segments,
-  // so a prefix check on the upload root is enough to keep the read
-  // confined to files our own upload endpoint produced.
-  const uploadDir = getUploadDir()
-  if (resolved === uploadDir || resolved.startsWith(uploadDir + '/')) {
-    return resolved
-  }
-
-  return null
+// Cached context for `validatePathForArtifactRead`. The validator
+// closes over `projectRoot`, `uploadDir`, and `fs`, all of which are
+// fixed for the life of the server process; computing the upload dir
+// once here keeps the per-request branch in the route handlers as
+// simple as `validatePathForArtifactRead(filePath, ctx, ...)` and
+// keeps the helper itself trivially unit-testable (see
+// `tests/unit/artifact-path-validator.test.ts`).
+const artifactPathCtx = {
+  projectRoot,
+  uploadDir: getUploadDir(),
+  fs,
 }
 
 // --- Route modules ---
@@ -2010,12 +1992,12 @@ app.get('/api/artifact', (req, res) => {
     res.status(400).json({ error: 'path is required' })
     return
   }
-  const resolved = resolveAndValidatePath(filePath)
-  if (!resolved) {
-    res.status(403).json({ error: 'Access denied: path is outside project root' })
+  const validation = validatePathForArtifactRead(filePath, artifactPathCtx)
+  if (!validation.ok) {
+    res.status(validation.status).json({ error: validation.error })
     return
   }
-  const result = readArtifact(fs, resolved)
+  const result = readArtifact(fs, validation.resolved)
   if (!result) {
     res.status(404).json({ error: 'File not found' })
     return
@@ -2029,16 +2011,18 @@ app.get('/api/artifact/raw', (req, res) => {
     res.status(400).json({ error: 'path is required' })
     return
   }
-  const resolved = resolveAndValidatePath(filePath)
-  if (!resolved) {
-    res.status(403).json({ error: 'Access denied: path is outside project root' })
+  // Pass the size cap so a single oversized file cannot stream
+  // unbounded bytes through `res.sendFile`. The cap matches the
+  // `read-file` handler so callers see a consistent limit whether
+  // they reach the file via the dispatcher or this preview route.
+  const validation = validatePathForArtifactRead(filePath, artifactPathCtx, {
+    maxSize: HANDLER_LIMITS.READ_FILE_MAX_SIZE,
+  })
+  if (!validation.ok) {
+    res.status(validation.status).json({ error: validation.error })
     return
   }
-  if (!fs.existsSync(resolved)) {
-    res.status(404).json({ error: 'File not found' })
-    return
-  }
-  res.sendFile(resolved)
+  res.sendFile(validation.resolved)
 })
 
 // Mount user-defined API routes from app/api/
