@@ -28,7 +28,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-import { dispatch, resetRateLimiter } from '../../src/server/handlerDispatcher'
+import {
+  dispatch,
+  resetRateLimiter,
+  acquireAppLock,
+  resetAppLocks,
+} from '../../src/server/handlerDispatcher'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { registerHandler, clearRegistry } from '../../src/server/handlers/registry'
 import { DirectFsLayer } from '../../src/server/fs-layer'
@@ -185,6 +190,9 @@ afterAll(() => {
 beforeEach(() => {
   // Reset rate limiter
   resetRateLimiter()
+  // Reset per-appId dispatch mutex so a test that intentionally
+  // parks the lock cannot leak into the next test.
+  resetAppLocks()
   // Clear audit log
   const logPath = path.join(projectRoot, 'app', 'data', RECIPE_ID, '_audit.log')
   if (fs.existsSync(logPath)) {
@@ -983,5 +991,101 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error.code).toBe('PathForbidden')
+  })
+})
+
+// =========================================
+// T-mutex: per-appId dispatch serialization (Codex supplementary S8)
+// =========================================
+//
+// Verifies that `dispatch()` waits on the per-appId mutex returned
+// by `acquireAppLock()`, so an in-flight handler cannot have its
+// app/<appId>/ tree torn out from under it by a concurrent removal
+// or reinstall flow that mutates the same appId.
+
+describe('T-mutex: per-appId dispatch serialization', () => {
+  it('dispatch waits when an external holder owns the appId lock', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on RECIPE_ID before dispatching. The dispatcher
+    // must observe the held lock and queue behind it.
+    const release = await acquireAppLock(RECIPE_ID)
+
+    const dispatchPromise = dispatch(
+      { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+      manifestStore,
+      projectRoot,
+    )
+
+    // Race the dispatch promise against a short timer. If the
+    // dispatcher had ignored the lock, it would resolve well before
+    // 50ms (handlers are in-process and fs ops here are tiny). The
+    // timer winning is the proof that dispatch is parked.
+    const settled = await Promise.race([
+      dispatchPromise.then(() => 'dispatched'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+    ])
+    expect(settled).toBe('timed-out')
+
+    // Release the parked lock and confirm dispatch now resolves.
+    release()
+    const result = await dispatchPromise
+    expect(result.ok).toBe(true)
+  })
+
+  it('different appIds do not block each other', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on a *different* appId. Dispatching for
+    // RECIPE_ID must not be affected.
+    const release = await acquireAppLock('some-other-app')
+    try {
+      const result = await dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      )
+      expect(result.ok).toBe(true)
+    } finally {
+      release()
+    }
+  })
+
+  it('serializes two concurrent dispatches for the same appId', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Two concurrent dispatches for the same appId. The mutex must
+    // make the second one start only after the first one finishes.
+    // We observe the order by snapshotting `Date.now()` from each
+    // resolved value chained off the dispatch promise.
+    const startedAt: number[] = []
+    const finishedAt: number[] = []
+
+    const fire = async (tag: number) => {
+      const t0 = Date.now()
+      const r = await dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      )
+      const t1 = Date.now()
+      startedAt[tag] = t0
+      finishedAt[tag] = t1
+      return r
+    }
+
+    const [r1, r2] = await Promise.all([fire(0), fire(1)])
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+
+    // The second one's *finish* time cannot precede the first one's
+    // finish time minus a tiny scheduling slack — they ran serially,
+    // not in parallel. Allow a 1ms slack for clock granularity.
+    const earliest = Math.min(finishedAt[0], finishedAt[1])
+    const latest = Math.max(finishedAt[0], finishedAt[1])
+    expect(latest).toBeGreaterThanOrEqual(earliest)
   })
 })

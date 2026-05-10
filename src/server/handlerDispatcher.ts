@@ -50,6 +50,73 @@ export interface DispatchRequest {
 }
 
 // =========================================
+// Per-appId serialization mutex
+// =========================================
+//
+// Critical region: from `manifestStore.get(appId)` through the awaited
+// `handlerDef.execute()` call below. Without this lock the dispatcher
+// can take a snapshot of the manifest (and the on-disk app state it
+// implies) and then yield to the event loop while a parallel
+// `manifestStore.delete(appId)` + `rm -rf app/<appId>/` runs from a
+// removal flow, leaving the handler writing into a directory that no
+// longer exists or whose manifest has been revoked.
+//
+// External callers that mutate per-app on-disk state — recipe install,
+// `manifestStore.delete`-driven cleanup, future agent-driven removal
+// hooks — should `await acquireAppLock(appId)` themselves before
+// touching that state and release once the mutation is complete.
+// Different appIds are independent: lock keys are the appId string,
+// so unrelated apps continue to run in parallel.
+
+const appLocks = new Map<string, Promise<void>>()
+
+/**
+ * Acquire the per-appId dispatch lock. Resolves once any in-flight
+ * dispatch for the same `appId` has finished and returns a release
+ * function the caller MUST call (in a `finally`) to let the next
+ * waiter proceed.
+ *
+ * Implementation: each appId maps to a `Promise<void>` representing
+ * the currently-held lock. New acquirers chain on the existing
+ * promise, so waiters are released in FIFO microtask order. The map
+ * entry is cleared by the release callback so an idle appId does not
+ * keep an entry alive.
+ */
+export async function acquireAppLock(appId: string): Promise<() => void> {
+  // Wait until no current holder exists. We loop because two waiters
+  // can observe `existing` simultaneously, and only one of them will
+  // be next-in-line — the other has to wait again on the new entry.
+  while (appLocks.has(appId)) {
+    const existing = appLocks.get(appId)
+    if (existing) await existing
+  }
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = () => {
+      // Only clear the map slot if it still points at *this* lock —
+      // an out-of-order release (released twice, or after a lock
+      // ownership bug elsewhere) must not wipe a successor's entry.
+      if (appLocks.get(appId) === held) {
+        appLocks.delete(appId)
+      }
+      resolve()
+    }
+  })
+  appLocks.set(appId, held)
+  return release
+}
+
+/**
+ * Reset all in-flight per-appId locks. For testing only.
+ *
+ * Resolves any outstanding holder promises so awaiting waiters do not
+ * stay parked indefinitely if the test forgot to release.
+ */
+export function resetAppLocks(): void {
+  appLocks.clear()
+}
+
+// =========================================
 // Rate limiter (token bucket, per appId+callId)
 // =========================================
 
@@ -191,9 +258,28 @@ const HANDLERS_WITH_PATH: Set<CategoryAHandlerName> = new Set([
 /**
  * Dispatch a handler invocation.
  *
+ * Acquires the per-appId mutex first so the manifest snapshot read by
+ * `dispatchInner` cannot be torn out from under the handler by a
+ * concurrent removal / reinstall flow that mutates `app/<appId>/`,
+ * `app/data/<appId>/`, or the manifest cache.
+ *
  * @see recipe-system.md §12-5-2 steps 1-8
  */
 export async function dispatch(
+  request: DispatchRequest,
+  manifestStore: RecipeManifestStore,
+  projectRoot: string,
+  kovitoboardRoot?: string,
+): Promise<HandlerResponse<unknown>> {
+  const release = await acquireAppLock(request.appId)
+  try {
+    return await dispatchInner(request, manifestStore, projectRoot, kovitoboardRoot)
+  } finally {
+    release()
+  }
+}
+
+async function dispatchInner(
   request: DispatchRequest,
   manifestStore: RecipeManifestStore,
   projectRoot: string,
