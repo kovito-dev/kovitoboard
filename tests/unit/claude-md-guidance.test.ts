@@ -221,6 +221,46 @@ describe('maybeInjectClaudeMdGuidance — already injected (spec §5.5)', () => 
   })
 })
 
+describe('maybeInjectClaudeMdGuidance — defensive size cap', () => {
+  // Spec hardening (CodeX review on PR #19, finding "unbounded file
+  // read"): the existing CLAUDE.md lives under the user-controlled
+  // project root. Reading and regex-scanning an unusually large file
+  // synchronously would block the event loop on the onboarding
+  // request. We cap at 1 MB and skip injection above the cap; the
+  // caller (`config-routes.ts`) treats this as a best-effort skip
+  // (`reason: 'file-too-large'`) and continues with the rest of the
+  // settings PUT. The spec follow-up tracks the formal §5 entry; for
+  // now this test pins the helper-level contract.
+
+  it('skips with reason file-too-large when the existing CLAUDE.md exceeds 1 MB', () => {
+    // Build a string just over the 1 MB cap. The marker-scan branch
+    // would otherwise compile two global regex matches over this
+    // entire body on every onboarding completion.
+    const body = 'a'.repeat(1024 * 1024 + 1)
+    writeFileSync(claudeMdPath, body)
+
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result).toEqual({ injected: false, reason: 'file-too-large' })
+    // The file must remain byte-identical — defensive skip, not a
+    // rewrite.
+    expect(readFileSync(claudeMdPath, 'utf-8')).toBe(body)
+  })
+
+  it('still injects when the existing CLAUDE.md is exactly at the 1 MB cap', () => {
+    // The cap is "above 1 MB skipped" — exactly 1 MB still goes
+    // through (the comparison is `> MAX`, not `>=`). We use a body
+    // that is exactly 1 MB and would still parse cleanly through the
+    // marker scanner (the scanner ignores the body content; it just
+    // wants START / END markers, of which we have none here).
+    const body = 'a'.repeat(1024 * 1024)
+    writeFileSync(claudeMdPath, body)
+
+    const result = maybeInjectClaudeMdGuidance(fs, settingFor(), workDir)
+    expect(result.injected).toBe(true)
+    expect(result.reason).toBe('appended')
+  })
+})
+
 describe('maybeInjectClaudeMdGuidance — broken markers (spec §8.2)', () => {
   it('refuses to repair a file with only the start marker', () => {
     const original = 'body\n<!-- KB:GUIDANCE_START -->\nstuff\n'

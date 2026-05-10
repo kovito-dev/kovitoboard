@@ -72,4 +72,53 @@ describe('validateSetting', () => {
   it('不正な locale を拒否する', () => {
     expect(validateSetting({ ...validSetting, locale: 'fr' })).toBe(false)
   })
+
+  // claudeMdGuidance is optional (claude-md-guidance-injection.md
+  // §7.1). The schema is type-only here; the route handler additionally
+  // strips the server-managed `lastInjectedAt` from request bodies so
+  // a crafted PUT cannot persist a forged audit timestamp.
+
+  it('accepts a setting without claudeMdGuidance (defaults apply)', () => {
+    expect(validateSetting({ ...validSetting })).toBe(true)
+  })
+
+  it('accepts claudeMdGuidance with disabled boolean only', () => {
+    const withFlag = {
+      ...validSetting,
+      claudeMdGuidance: { disabled: true },
+    }
+    expect(validateSetting(withFlag)).toBe(true)
+  })
+
+  it('accepts claudeMdGuidance with lastInjectedAt string', () => {
+    const withTimestamp = {
+      ...validSetting,
+      claudeMdGuidance: { lastInjectedAt: '2026-05-10T03:14:25.123Z' },
+    }
+    expect(validateSetting(withTimestamp)).toBe(true)
+  })
+
+  it('rejects claudeMdGuidance with non-boolean disabled', () => {
+    const bad = {
+      ...validSetting,
+      claudeMdGuidance: { disabled: 'yes' },
+    }
+    expect(validateSetting(bad)).toBe(false)
+  })
+
+  it('rejects claudeMdGuidance with non-string lastInjectedAt (e.g. number)', () => {
+    const bad = {
+      ...validSetting,
+      claudeMdGuidance: { lastInjectedAt: 1234567890 },
+    }
+    expect(validateSetting(bad)).toBe(false)
+  })
+
+  it('rejects claudeMdGuidance set to null', () => {
+    const bad = {
+      ...validSetting,
+      claudeMdGuidance: null,
+    }
+    expect(validateSetting(bad)).toBe(false)
+  })
 })

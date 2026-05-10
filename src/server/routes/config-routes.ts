@@ -39,6 +39,16 @@ export function createConfigRouter(fs: FileAccessLayer, projectRoot: string): Ro
       res.status(400).json({ error: 'Invalid setting data' })
       return
     }
+    // SECURITY: `claudeMdGuidance.lastInjectedAt` is a server-managed
+    // audit field. The injection helper records it after a real write
+    // (see the follow-up `writeSetting` below). Strip any client-
+    // supplied value before persistence so a crafted PUT cannot forge
+    // an injection timestamp — including the `disabled = true` case
+    // where no CLAUDE.md write happens, which would otherwise let the
+    // client persist arbitrary timestamps unattended.
+    if (body.claudeMdGuidance && 'lastInjectedAt' in body.claudeMdGuidance) {
+      delete body.claudeMdGuidance.lastInjectedAt
+    }
     try {
       // Detect the onboarding-completion transition
       // (`onboarding.completedAt: null/undefined → string`) BEFORE

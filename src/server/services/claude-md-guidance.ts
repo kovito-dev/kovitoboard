@@ -103,7 +103,27 @@ export interface ClaudeMdInjectionResult {
     | 'no-project-path'
     | 'read-failed'
     | 'write-failed'
+    | 'file-too-large'
 }
+
+/**
+ * Defensive cap on the existing CLAUDE.md size before we load it
+ * into memory and scan for markers. The file lives under the
+ * user-controlled project root, so an unusually large value is
+ * either accidental (committed binary, runaway log appended into the
+ * file) or adversarial. A normal CLAUDE.md is at most a few KB; 1 MB
+ * is a generous ceiling that still keeps the synchronous read off
+ * the event-loop hazard list.
+ *
+ * Above the cap we skip injection entirely (`reason:
+ * 'file-too-large'`) instead of refusing the entire onboarding
+ * write — the helper's contract is best-effort.
+ *
+ * Note: the spec (`claude-md-guidance-injection.md` v1.2 §5) does
+ * not yet list this branch. A backlog item tracks the spec follow-up
+ * (BL-2026-XXX in kovitoboard-dev/tasks/backlog.md).
+ */
+const MAX_CLAUDE_MD_BYTES = 1 * 1024 * 1024
 
 /**
  * Detect the file's line ending. CRLF wins iff the file contains at
@@ -208,6 +228,30 @@ function injectIntoFile(
       injectedAt: new Date().toISOString(),
       reason: 'created',
     }
+  }
+
+  // Defensive: stat the file before loading the entire body into
+  // memory. The path lives under the user-controlled project root
+  // and the route handler runs synchronously, so an unusually large
+  // CLAUDE.md (committed binary, runaway log appended into it,
+  // adversarial input) could otherwise block the event loop while
+  // we scan for markers. Above MAX_CLAUDE_MD_BYTES we skip
+  // injection rather than degrade the onboarding response.
+  try {
+    const stat = fs.statSync(claudeMdPath)
+    if (stat.size > MAX_CLAUDE_MD_BYTES) {
+      log.warn(
+        { path: claudeMdPath, size: stat.size, cap: MAX_CLAUDE_MD_BYTES },
+        '[claude-md-guidance] CLAUDE.md exceeds defensive size cap; skipping injection',
+      )
+      return { injected: false, reason: 'file-too-large' }
+    }
+  } catch (err) {
+    log.warn(
+      { err, path: claudeMdPath },
+      '[claude-md-guidance] Failed to stat existing CLAUDE.md',
+    )
+    return { injected: false, reason: 'read-failed' }
   }
 
   let raw: string
