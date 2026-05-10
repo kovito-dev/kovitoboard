@@ -297,14 +297,18 @@ function readCwdFromProc(pid) {
 /**
  * Detect whether `argv[0]`'s basename names a Node-compatible
  * runtime: `node`, `nodejs` (Debian/Ubuntu legacy alternative), and
- * versioned variants like `node20`, `node-canary`. Anything starting
- * with `nodem` (e.g. `nodemon`) is rejected because nodemon is a
- * watcher binary that itself spawns a real `node tools/kb-start.mjs`
- * child — we want to act on the child, not on nodemon.
+ * versioned variants like `node20`, `node22.1.0`.
+ *
+ * The match is intentionally narrow. Earlier permissive forms
+ * (`^node([\d_-].*)?$`) admitted unrelated binaries that happen to
+ * begin with `node`, including third-party watchers (`node-dev`),
+ * monitors (`node_exporter`), and supervisor wrappers (`nodemon`),
+ * any of which could carry kb-start.mjs in argv as data and trigger
+ * a false-positive kill if accepted as the runtime.
  */
 function isNodeRuntime(argv0) {
   const base = basename(argv0)
-  return /^node(js|[\d_-].*)?$/.test(base)
+  return /^node(js|\d+(\.\d+)*)?$/.test(base)
 }
 
 /**
@@ -526,10 +530,33 @@ const NODE_BOOLEAN_FLAGS = new Set([
  *     the wrong process.
  *   - argv runs out before a non-flag positional appears.
  */
+/**
+ * `--eval=...` / `--print=...` are the inline-`=` forms of the
+ * no-script flags. They put the runtime into eval mode just like
+ * the two-token `-e <code>` / `--eval <code>` forms, so subsequent
+ * positionals are eval-data, NOT the entry script. Matched as a
+ * prefix because the suffix (`<code>`) is the eval payload.
+ */
+const NODE_NO_SCRIPT_INLINE_PREFIXES = ['--eval=', '--print=']
+
+function isNoScriptInlineFlag(tok) {
+  for (const prefix of NODE_NO_SCRIPT_INLINE_PREFIXES) {
+    if (tok.startsWith(prefix)) return true
+  }
+  return false
+}
+
 function findEntryScriptIndex(argv) {
   for (let i = 1; i < argv.length; i++) {
     const tok = argv[i]
     if (NODE_NO_SCRIPT_FLAGS.has(tok)) {
+      return -1
+    }
+    if (isNoScriptInlineFlag(tok)) {
+      // `--eval=<code>` and `--print=<code>` look like `--flag=value`
+      // tokens, but they put node into a no-script mode, so the
+      // walker must reject the candidate before the generic
+      // `--flag=value` branch swallows them.
       return -1
     }
     if (NODE_VALUE_FLAGS.has(tok)) {

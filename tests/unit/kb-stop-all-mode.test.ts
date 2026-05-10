@@ -256,6 +256,37 @@ describe('tools/kb-stop.mjs --all — absolute-path match (Phase 2-A)', () => {
     }
   })
 
+  it('skips `node --eval=<code> <abs-tools/kb-start.mjs>` (inline `=`-form eval-mode rejection)', async () => {
+    // Sibling case to `node -e "..."` — the inline `=`-form
+    // (`--eval=code`) puts node into the same no-script mode but
+    // looks like a `--flag=value` token. The walker must reject
+    // the candidate BEFORE the generic `--flag=value` branch
+    // skips the token. Without that guard, kb-stop --all would
+    // mis-identify the data argument (kb-start.mjs path) as the
+    // entry script and SIGTERM the unrelated eval process.
+    const KB_START = resolve(REPO_ROOT, 'tools', 'kb-start.mjs')
+    const decoy = spawn(
+      'node',
+      ['--eval=setInterval(() => {}, 1000)', KB_START],
+      {
+        detached: true,
+        stdio: 'ignore',
+      },
+    )
+    decoys.push(decoy)
+    expect(decoy.pid).toBeGreaterThan(0)
+    await settle()
+
+    const r = runKbStop(['--all', '--dry-run'], { KB_DEBUG: '1' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).not.toContain(`pid ${decoy.pid}`)
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `skipping pid ${decoy.pid}: no entry script \\(eval mode`,
+      ),
+    )
+  })
+
   it('skips `node -e "..." <abs-tools/kb-start.mjs>` (eval-mode rejection, no entry script)', async () => {
     // CodeX-flagged false positive: when Node runs in eval mode
     // (-e / --eval), any subsequent argv is *data* for the eval'd
