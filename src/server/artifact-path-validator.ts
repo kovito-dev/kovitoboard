@@ -42,6 +42,7 @@
 import { isAbsolute, normalize, resolve } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import { isForbidden } from './scopeValidator'
+import { realpathUpToExisting } from './pathResolver'
 
 export type ArtifactPathValidation =
   | { ok: true; resolved: string }
@@ -73,8 +74,17 @@ export interface ArtifactPathValidatorOptions {
 
 /**
  * Project-root and upload-directory confinement, no exclusion check.
- * Returns the normalized absolute path, or `null` when the requested
- * path resolves outside both allowed roots.
+ * Returns the canonicalized absolute path, or `null` when the
+ * requested path resolves outside both allowed roots.
+ *
+ * The check follows symlinks via `realpathUpToExisting` before the
+ * prefix comparison so a symlink under `projectRoot` (or
+ * `uploadDir`) that points outside the allowed roots cannot bypass
+ * the confinement: the canonicalized target is what gets compared,
+ * not the lexical path the caller submitted. `realpathUpToExisting`
+ * resolves the existing prefix and appends any not-yet-existing
+ * segments untouched, so validation works whether the file exists
+ * or not.
  *
  * Exposed for callers that need just the confinement step (none in
  * production today; kept available so future preview-adjacent
@@ -85,16 +95,43 @@ export function resolveArtifactPath(
   requestedPath: string,
   ctx: Pick<ArtifactPathValidatorContext, 'projectRoot' | 'uploadDir'>,
 ): string | null {
-  const resolved = isAbsolute(requestedPath)
+  const lexical = isAbsolute(requestedPath)
     ? normalize(requestedPath)
     : normalize(resolve(ctx.projectRoot, requestedPath))
 
-  if (resolved === ctx.projectRoot || resolved.startsWith(ctx.projectRoot + '/')) {
-    return resolved
+  // Canonicalize the requested path AND both allowed roots. Without
+  // canonicalizing the roots, `requestedPath` could resolve to the
+  // real target of a symlinked project root and fail the prefix
+  // check; without canonicalizing the requested path, a symlink
+  // under `projectRoot` pointing outside the allowed roots would
+  // pass the lexical prefix check and let the read leak out.
+  // Either failure mode lets a `?path=...` request reach files
+  // outside the artifact surface, so the comparison has to happen
+  // in canonical space on both sides.
+  //
+  // `realpathUpToExisting` resolves the existing prefix and
+  // appends any not-yet-existing segments untouched, so validation
+  // also works for files the caller asked to read but that have
+  // been removed since (we still want the confinement check to
+  // fail safely rather than throw).
+  let canonical: string
+  let projectRootCanon: string
+  let uploadDirCanon: string
+  try {
+    canonical = realpathUpToExisting(lexical)
+    projectRootCanon = realpathUpToExisting(ctx.projectRoot)
+    uploadDirCanon = realpathUpToExisting(ctx.uploadDir)
+  } catch {
+    // Symlink loops or other realpath failures => refuse the read.
+    return null
   }
 
-  if (resolved === ctx.uploadDir || resolved.startsWith(ctx.uploadDir + '/')) {
-    return resolved
+  if (canonical === projectRootCanon || canonical.startsWith(projectRootCanon + '/')) {
+    return canonical
+  }
+
+  if (canonical === uploadDirCanon || canonical.startsWith(uploadDirCanon + '/')) {
+    return canonical
   }
 
   return null
@@ -119,11 +156,25 @@ export function validatePathForArtifactRead(
       error: 'Access denied: path is outside project root',
     }
   }
-  // Project-relative exclusion check. `isForbidden` returns `false`
-  // when the resolved path lives outside the project (e.g. the
-  // upload directory), so attached uploads keep rendering through
-  // the preview pane.
-  if (isForbidden(resolved, ctx.projectRoot)) {
+  // Project-relative exclusion check. `resolveArtifactPath` returns
+  // a canonicalized path, so the relative-path computation inside
+  // `isForbidden` only matches the exclusion patterns when its
+  // second argument is canonicalized too — otherwise a symlinked
+  // project root would produce a `..`-prefixed relative form and
+  // skip the check. `isForbidden` itself returns `false` for paths
+  // outside the project (e.g. the upload directory), so attached
+  // uploads keep rendering through the preview pane.
+  let projectRootCanon: string
+  try {
+    projectRootCanon = realpathUpToExisting(ctx.projectRoot)
+  } catch {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Access denied: project root could not be resolved',
+    }
+  }
+  if (isForbidden(resolved, projectRootCanon)) {
     return {
       ok: false,
       status: 403,

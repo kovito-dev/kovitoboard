@@ -208,6 +208,53 @@ describe('validatePathForArtifactRead — size cap', () => {
   })
 })
 
+describe('validatePathForArtifactRead — symlink breakouts', () => {
+  it('refuses a project-internal symlink that points outside the project', () => {
+    // Set up a real file outside the project + an inside-project
+    // symlink that points at it. A lexical prefix check would let
+    // the request through because the link itself sits under
+    // `projectRoot`; the canonicalization step has to reject it.
+    const outside = path.join(tmpRoot, 'outside.txt')
+    fs.writeFileSync(outside, 'host secret')
+    const linkInside = path.join(projectRoot, 'linked-out')
+    fs.symlinkSync(outside, linkInside)
+
+    const result = validatePathForArtifactRead('linked-out', ctx())
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Access denied: path is outside project root',
+    })
+  })
+
+  it('refuses a symlinked sub-tree that escapes via an intermediate dir', () => {
+    // Symlink a whole intermediate directory rather than the leaf,
+    // so the canonicalization step has to walk the chain rather
+    // than just check the last segment.
+    const outsideDir = path.join(tmpRoot, 'out-tree')
+    fs.mkdirSync(outsideDir)
+    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'host secret')
+    const linkInside = path.join(projectRoot, 'inner')
+    fs.symlinkSync(outsideDir, linkInside)
+
+    const result = validatePathForArtifactRead('inner/secret.txt', ctx())
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.status).toBe(403)
+  })
+
+  it('still permits a symlink that points at a different location *inside* the project', () => {
+    // A project-internal symlink that stays inside the project is
+    // not a confinement violation.
+    writeFixture('docs/note.md', 'inside note')
+    const linkInside = path.join(projectRoot, 'shortcut')
+    fs.symlinkSync(path.join(projectRoot, 'docs/note.md'), linkInside)
+
+    const result = validatePathForArtifactRead('shortcut', ctx())
+    expect(result.ok).toBe(true)
+  })
+})
+
 describe('resolveArtifactPath — bare confinement', () => {
   it('returns the absolute path for a project-relative input', () => {
     writeFixture('a.txt', '1')
