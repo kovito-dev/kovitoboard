@@ -37,7 +37,10 @@ function spawnExit(status: number, stderr = ''): SpawnSyncReturns<string> {
   } as SpawnSyncReturns<string>
 }
 
-function spawnError(message: string): SpawnSyncReturns<string> {
+function spawnError(
+  message: string,
+  code: string = 'ENOENT',
+): SpawnSyncReturns<string> {
   return {
     pid: 0,
     output: ['', '', ''],
@@ -45,8 +48,19 @@ function spawnError(message: string): SpawnSyncReturns<string> {
     stderr: '',
     status: null,
     signal: null,
-    error: Object.assign(new Error(message), { code: 'ENOENT' }),
+    error: Object.assign(new Error(message), { code }),
   } as unknown as SpawnSyncReturns<string>
+}
+
+function spawnSignal(signal: NodeJS.Signals): SpawnSyncReturns<string> {
+  return {
+    pid: 1234,
+    output: ['', '', ''],
+    stdout: '',
+    stderr: '',
+    status: null,
+    signal,
+  } as SpawnSyncReturns<string>
 }
 
 interface FakeSpawnTable {
@@ -147,15 +161,46 @@ describe('runPreflightChecks', () => {
     )
     expect(result.ok).toBe(false)
     const failure = result.failures.find((f) => f.id === 'PF-1')
-    expect(failure?.message).toBe('tmux not found')
+    expect(failure?.message).toBe('tmux not found on PATH')
   })
 
-  it('PF-1: fails when tmux exits non-zero', () => {
+  it('PF-1: differentiates non-ENOENT spawn errors from "not found"', () => {
     const result = runPreflightChecks(
-      buildDeps({ spawnTable: { tmux: spawnExit(1, 'broken') } }),
+      buildDeps({
+        spawnTable: { tmux: spawnError('permission denied', 'EACCES') },
+      }),
     )
     expect(result.ok).toBe(false)
-    expect(result.failures[0]?.id).toBe('PF-1')
+    const failure = result.failures.find((f) => f.id === 'PF-1')
+    expect(failure?.message).toMatch(/^tmux -V launch failed:/)
+    expect(failure?.message).toContain('permission denied')
+  })
+
+  it('PF-1: fails when tmux exits non-zero (no stderr)', () => {
+    const result = runPreflightChecks(
+      buildDeps({ spawnTable: { tmux: spawnExit(1) } }),
+    )
+    expect(result.ok).toBe(false)
+    const failure = result.failures.find((f) => f.id === 'PF-1')
+    expect(failure?.message).toBe('tmux -V exited 1')
+  })
+
+  it('PF-1: includes stderr tail when tmux exits non-zero with output', () => {
+    const result = runPreflightChecks(
+      buildDeps({ spawnTable: { tmux: spawnExit(2, 'cannot connect to socket') } }),
+    )
+    expect(result.ok).toBe(false)
+    const failure = result.failures.find((f) => f.id === 'PF-1')
+    expect(failure?.message).toBe('tmux -V exited 2: cannot connect to socket')
+  })
+
+  it('PF-1: surfaces the signal name when tmux is killed', () => {
+    const result = runPreflightChecks(
+      buildDeps({ spawnTable: { tmux: spawnSignal('SIGKILL') } }),
+    )
+    expect(result.ok).toBe(false)
+    const failure = result.failures.find((f) => f.id === 'PF-1')
+    expect(failure?.message).toBe('tmux -V terminated by signal SIGKILL')
   })
 
   it('PF-1 hint mentions install / upgrade guidance', () => {
@@ -217,15 +262,21 @@ describe('runPreflightChecks', () => {
     )
     expect(result.ok).toBe(false)
     const failure = result.failures.find((f) => f.id === 'PF-3')
-    expect(failure?.message).toContain('claude CLI not found')
+    expect(failure?.message).toBe('claude not found on PATH')
   })
 
-  it('PF-3: fails when claude exits non-zero', () => {
+  it('PF-3: fails when claude exits non-zero with stderr', () => {
     const result = runPreflightChecks(
-      buildDeps({ spawnTable: { tmux: spawnOk('tmux 3.4\n'), claude: spawnExit(127) } }),
+      buildDeps({
+        spawnTable: {
+          tmux: spawnOk('tmux 3.4\n'),
+          claude: spawnExit(127, 'login required'),
+        },
+      }),
     )
     expect(result.ok).toBe(false)
-    expect(result.failures.find((f) => f.id === 'PF-3')).toBeDefined()
+    const failure = result.failures.find((f) => f.id === 'PF-3')
+    expect(failure?.message).toBe('claude --version exited 127: login required')
   })
 
   // Aggregation

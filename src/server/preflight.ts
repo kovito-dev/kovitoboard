@@ -99,11 +99,40 @@ function fail(
   return { id, message, hint: HINTS[id] }
 }
 
+const STDERR_TAIL_MAX = 200
+
+function classifySpawnFailure(
+  id: PreflightCheckId,
+  command: string,
+  args: string[],
+  result: SpawnSyncReturns<string>,
+): PreflightFailure | null {
+  // Distinguish ENOENT (binary missing) from signal / non-zero exit
+  // so operators get an accurate hint instead of a generic
+  // "not found" message that would mis-direct triage.
+  const display = `${command} ${args.join(' ')}`
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      return fail(id, `${command} not found on PATH`)
+    }
+    return fail(id, `${display} launch failed: ${result.error.message}`)
+  }
+  if (result.signal) {
+    return fail(id, `${display} terminated by signal ${result.signal}`)
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? '').toString().trim().slice(0, STDERR_TAIL_MAX)
+    const tail = stderr ? `: ${stderr}` : ''
+    return fail(id, `${display} exited ${result.status}${tail}`)
+  }
+  return null
+}
+
 function checkTmux(deps: PreflightDeps): PreflightFailure | null {
   const result = deps.spawn('tmux', ['-V'])
-  if (result.error || result.status !== 0) {
-    return fail('PF-1', 'tmux not found')
-  }
+  const failure = classifySpawnFailure('PF-1', 'tmux', ['-V'], result)
+  if (failure) return failure
   const stdout = (result.stdout ?? '').toString().trim()
   const match = /^tmux ([0-9]+)\.([0-9]+)/.exec(stdout)
   if (!match) {
@@ -131,9 +160,8 @@ function checkNode(deps: PreflightDeps): PreflightFailure | null {
 
 function checkClaude(deps: PreflightDeps): PreflightFailure | null {
   const result = deps.spawn('claude', ['--version'])
-  if (result.error || result.status !== 0) {
-    return fail('PF-3', 'claude CLI not found or unresponsive')
-  }
+  const failure = classifySpawnFailure('PF-3', 'claude', ['--version'], result)
+  if (failure) return failure
   // Per spec §6.9.5: the version string itself is not validated here
   // (that is the job of version-management.md). Reaching exit 0 is
   // sufficient evidence that the binary exists and responds.
