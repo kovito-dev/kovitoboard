@@ -112,7 +112,23 @@ const PROJECT_ROOT_RICH = ALREADY_PREPARED
 // preflight.ts inline rather than importing it because this config
 // must remain a small, dependency-light entry point that Playwright
 // re-imports from every worker (see the master/worker note above).
-function hostMeetsPreflightRequirements(): boolean {
+// PF-2 (Node 20+) is treated as a hard runtime requirement of the L1
+// suite, not something the escape hatch can paper over. Production
+// startup explicitly rejects Node < 20, so a green L1 run on Node 18
+// would silently hide regressions that production cannot ship.
+// `tmux` and `claude` remain opt-outable because they are external
+// host dependencies that some CI runners legitimately lack — but the
+// Node floor is enforced unconditionally.
+const NODE_MAJOR_MATCH = /^v(\d+)\./.exec(process.version)
+if (!NODE_MAJOR_MATCH || Number(NODE_MAJOR_MATCH[1]) < 20) {
+  throw new Error(
+    `KovitoBoard L1 suite requires Node.js 20 or newer ` +
+      `(detected: ${process.version}). Production startup rejects ` +
+      `this runtime; run the suite on Node 20+ to keep the guardrail.`,
+  )
+}
+
+function hostMeetsExternalPreflightRequirements(): boolean {
   const probe = (cmd: string, args: string[]) =>
     spawnSync(cmd, args, {
       encoding: 'utf-8',
@@ -129,18 +145,13 @@ function hostMeetsPreflightRequirements(): boolean {
   const tmuxMajor = Number(tmuxMatch[1])
   const tmuxMinor = Number(tmuxMatch[2])
   if (tmuxMajor < 3 || (tmuxMajor === 3 && tmuxMinor < 4)) return false
-  // Mirror PF-2 (Node 20+). Without this gate, a Node 18 host would
-  // leave PREFLIGHT_ENV empty and exercise the production preflight
-  // code path even though production startup would fail.
-  const nodeMatch = /^v(\d+)\./.exec(process.version)
-  if (!nodeMatch || Number(nodeMatch[1]) < 20) return false
   // Mirror PF-3 (claude on PATH).
   const claudeR = probe('claude', ['--version'])
   if (claudeR.error || claudeR.status !== 0) return false
   return true
 }
 
-const PREFLIGHT_ENV: Record<string, string> = hostMeetsPreflightRequirements()
+const PREFLIGHT_ENV: Record<string, string> = hostMeetsExternalPreflightRequirements()
   ? {}
   : { KOVITOBOARD_SKIP_PREFLIGHT: '1' }
 
