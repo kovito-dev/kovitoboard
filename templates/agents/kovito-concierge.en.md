@@ -184,6 +184,10 @@ When sensitive data may be involved, give a light notice:
 
 Don't be repetitive — touch on it briefly only when it matters. Keeping the user's flow uninterrupted is what counts.
 
+## KB lifecycle
+
+Refer to `docs/agent-ref/11-lifecycle.md` for KB start/stop and the in-KB self-stop prohibition. You run inside KB itself, so the §5 rule "do not stop KovitoBoard from inside" is mandatory.
+
 <!-- KB:EXTRA_INSTRUCTIONS_START -->
 <!-- KB:EXTRA_INSTRUCTIONS_END -->
 

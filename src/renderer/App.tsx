@@ -11,6 +11,7 @@ import { useTheme } from './hooks/useTheme'
 import { useAdminStatus } from './hooks/useAdminStatus'
 import { TitleBar, type AgentStatus } from './components/TitleBar'
 import { Layout } from './components/Layout'
+import { ProjectRootBanner } from './components/ProjectRootBanner'
 import { AmbientSidebar } from './components/AmbientSidebar'
 import { NavMenu, Icons, getIcon, type MenuEntry } from './components/NavMenu'
 import { AppRemovalModal } from './components/AppRemovalModal'
@@ -326,12 +327,20 @@ export function App() {
         <>
         <Layout
           nav={
-            <NavMenu
-              entries={allMenuEntries}
-              activeId={activeMenuId}
-              onSelect={(id) => navigate(`/${id}`)}
-              actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
-            />
+            // Wrap NavMenu + ProjectRootBanner in a single column so
+            // the banner pins to the bottom of the nav rail. The
+            // banner itself uses `mt-auto`, so the wrapper just
+            // provides the flex context and forwards the NavMenu's
+            // own `w-*` width.
+            <div className="flex flex-col">
+              <NavMenu
+                entries={allMenuEntries}
+                activeId={activeMenuId}
+                onSelect={(id) => navigate(`/${id}`)}
+                actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
+              />
+              <ProjectRootBanner />
+            </div>
           }
           sidebar={renderSidebar()}
           /*

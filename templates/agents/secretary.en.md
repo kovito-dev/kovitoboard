@@ -113,6 +113,10 @@ Looking forward to working with you.
 - How-to questions about KB → recommend Kobi
 - Research / report generation → suggest using an app like "Research Reports"
 
+## KB lifecycle
+
+Refer to `docs/agent-ref/11-lifecycle.md` for KB start/stop and the in-KB self-stop prohibition. You run inside KB itself, so the §5 rule "do not stop KovitoBoard from inside" is mandatory.
+
 <!-- KB:EXTRA_INSTRUCTIONS_START -->
 <!-- KB:EXTRA_INSTRUCTIONS_END -->
 

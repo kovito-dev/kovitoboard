@@ -63,7 +63,7 @@
 
 import { spawn } from 'child_process'
 import { createServer as createNetServer } from 'net'
-import { resolve, dirname } from 'path'
+import { resolve, dirname, relative, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import {
@@ -74,6 +74,10 @@ import {
   mkdirSync,
   openSync,
   closeSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
   constants as fsConstants,
 } from 'fs'
 import {
@@ -162,6 +166,179 @@ const projectRoot =
   null
 
 // ---------------------------------------------------------------------------
+// PID file + multi-launch refuse (process-lifecycle.md v1.2 §6 / §10)
+//
+// The supervisor publishes its pid (and a small metadata blob) at
+// `<projectRoot>/.kovitoboard/run/supervisor.pid` so `kb-stop` can
+// find it deterministically and so a second `npm start` against the
+// same projectRoot bails out instead of silently launching a parallel
+// supervisor.
+//
+// Path anchoring: when projectRoot is unresolved (no --project-root,
+// no env var, and the cwd is outside the KB clone), we fall back to
+// the KB clone root for the same reason the detach branch does — the
+// PID file goes somewhere predictable so `kb-stop` can still find it.
+// In the embedded model (the only supported deployment per
+// kovitoboard-master-spec §2.2 / process-lifecycle §1) projectRoot is
+// always set, so the fallback only matters for contributor / test
+// usage from inside the clone.
+// ---------------------------------------------------------------------------
+
+const PID_FILE_PATH = resolve(
+  projectRoot ?? repoRoot,
+  '.kovitoboard',
+  'run',
+  'supervisor.pid',
+)
+
+function isPidAlive(pid) {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false
+  try {
+    // Signal 0 = no signal sent, just check the deliverability. The
+    // call succeeds when the pid exists and we are allowed to signal
+    // it; throws ESRCH when the process is gone, EPERM when it
+    // exists but is owned by another user (still alive — we treat
+    // that as "running", because launching a second supervisor would
+    // collide on ports anyway).
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    if (err && err.code === 'EPERM') return true
+    return false
+  }
+}
+
+function readPidFile() {
+  if (!existsSync(PID_FILE_PATH)) return null
+  let raw
+  try {
+    raw = readFileSync(PID_FILE_PATH, 'utf-8')
+  } catch {
+    return { broken: 'read-failed' }
+  }
+  let data
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return { broken: 'parse-failed' }
+  }
+  if (!data || typeof data !== 'object' || typeof data.pid !== 'number') {
+    return { broken: 'schema' }
+  }
+  return data
+}
+
+function writePidFile(meta) {
+  const dir = dirname(PID_FILE_PATH)
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch (err) {
+    console.warn(
+      `[kb-start] WARN: failed to prepare ${dir} (${err && err.message}); skipping PID file write`,
+    )
+    return false
+  }
+  // Atomic write: same-directory temp file + rename. Without atomicity,
+  // a crash mid-write would leave a half-written PID file that
+  // multi-launch detection cannot parse (and would treat as broken on
+  // every subsequent startup until the user removed it).
+  const tempPath = `${PID_FILE_PATH}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
+  try {
+    writeFileSync(tempPath, JSON.stringify(meta, null, 2) + '\n', { mode: 0o600 })
+    renameSync(tempPath, PID_FILE_PATH)
+    return true
+  } catch (err) {
+    try {
+      unlinkSync(tempPath)
+    } catch {
+      // best-effort cleanup
+    }
+    console.warn(
+      `[kb-start] WARN: failed to write PID file (${err && err.message})`,
+    )
+    return false
+  }
+}
+
+function removePidFile() {
+  try {
+    unlinkSync(PID_FILE_PATH)
+  } catch {
+    // ENOENT is the expected case after a SIGKILL clean-up; ignore.
+  }
+}
+
+/**
+ * Examine an existing PID file and either bail out (alive supervisor),
+ * warn + overwrite (stale / corrupt PID file), or do nothing (no PID
+ * file). Spec process-lifecycle §6.4.
+ */
+function checkExistingSupervisor() {
+  const existing = readPidFile()
+  if (!existing) return
+  if (existing.broken) {
+    console.warn(
+      `[kb-start] WARN: ${existing.broken === 'parse-failed' ? 'corrupt' : 'unreadable'} PID file at ${PID_FILE_PATH}; overwriting`,
+    )
+    return
+  }
+  if (isPidAlive(existing.pid)) {
+    const url =
+      existing.ports && existing.ports.vite
+        ? ` (Frontend: http://localhost:${existing.ports.vite})`
+        : ''
+    // The `kb:stop` script lives in `package.json` inside the KB clone
+    // (`repoRoot`), NOT in the user project root. In the embedded
+    // layout — `<project>/kovitoboard/` is the clone, and `kb-start`
+    // launches with `--project-root ..` — pointing the operator at
+    // `projectRoot` would land them outside the clone where the npm
+    // script does not exist. Use `repoRoot` so the hint is always
+    // runnable.
+    const stopHint = `cd ${repoRoot} && npm run kb:stop`
+    console.error(
+      `[kb-start] ERROR: KovitoBoard supervisor is already running` +
+        ` (pid=${existing.pid})${url}.\n` +
+        `[kb-start]        To stop it, run: ${stopHint}`,
+    )
+    process.exit(1)
+  }
+  console.warn(
+    `[kb-start] WARN: stale PID file detected (pid=${existing.pid}, dead); overwriting`,
+  )
+}
+
+/**
+ * Refuse to start when the cwd lives inside the KB clone and the user
+ * did not point us at a target project (M-1, spec
+ * `shared-installation-prevention-request.md` §M-1). The embedded
+ * model expects `cd <project>/kovitoboard && npm start -- --project-root ..`,
+ * which sets projectRoot via --project-root and bypasses this branch.
+ *
+ * The check is bounded by `projectRoot == null` so any explicit
+ * --project-root or KOVITOBOARD_PROJECT_ROOT immediately satisfies
+ * the requirement, even if the operator happens to be running from
+ * inside a checkout for development reasons.
+ */
+function refuseKbCloneSelfManagement() {
+  if (projectRoot) return
+  const rel = relative(repoRoot, process.cwd())
+  // `relative` returns '' when paths match, '..' / '../...' when cwd
+  // is outside repoRoot, and an in-tree relative path (no leading
+  // '..', not absolute) when cwd is inside.
+  const cwdInsideClone =
+    rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  if (!cwdInsideClone) return
+  console.error(
+    `[kb-start] ERROR: KovitoBoard cannot manage itself as a project.\n` +
+      `[kb-start]        Specify the target project explicitly:\n` +
+      `[kb-start]          npm start -- --project-root <path-to-project>\n` +
+      `[kb-start]        Or set KOVITOBOARD_PROJECT_ROOT=<path>.\n` +
+      `[kb-start]        See README.md "Starting the server" for the embedded deployment model.`,
+  )
+  process.exit(1)
+}
+
+// ---------------------------------------------------------------------------
 // Detach branch: re-exec self in the background, then exit
 //
 // When the user invokes `--detach` (or sets `KOVITOBOARD_DETACH=1`), we
@@ -180,6 +357,19 @@ const projectRoot =
 // added by the process-lifecycle Phase 1 work; once landed, this
 // message will mention `npm run kb:stop` as the preferred command.
 // ---------------------------------------------------------------------------
+
+// M-1 must run BEFORE the detach branch so a stray
+// `cd <kb-clone> && npm start -- --detach` does not silently
+// background a self-managing supervisor; the refuse covers both
+// foreground and detached invocations.
+refuseKbCloneSelfManagement()
+
+// Multi-launch detection runs in the parent here so a misfire (an
+// already-running supervisor) is reported in the operator's terminal
+// instead of buried in `kb-detach-stderr.log`. The detached child
+// re-runs the same check from `launch()` to catch anything that
+// changed during the spawn window.
+checkExistingSupervisor()
 
 if (decideDetach(process.argv.slice(2), process.env)) {
   const { childArgs, childEnv } = buildDetachedSpawnArgs(
@@ -589,16 +779,46 @@ async function launch() {
     env,
   })
 
-  // Surface the resolved URLs prominently so a user who specified no
-  // ports (and thus may have landed on something other than 5173)
-  // knows exactly where to point their browser. Shown after spawn
-  // because that is the moment we have committed to these ports.
+  // Publish the supervisor pid + chosen ports + tmux session name so
+  // `kb-stop` (and a future second `kb-start` against the same
+  // projectRoot) can find this process deterministically. Spec
+  // process-lifecycle.md v1.2 §6.3 SSOT for the lifecycle (write at
+  // launch / delete at shutdown). The write happens AFTER spawn so
+  // we know the children survived the fork; if a port collision
+  // killed us mid-resolvePort() above, no PID file gets created.
+  const tmuxSessionName =
+    process.env.KOVITOBOARD_E2E_TMUX_SESSION ??
+    `kovitoboard-${(projectRoot ? projectRoot.split('/').pop() : repoRoot.split('/').pop()) ?? 'unknown'}`.replace(/[.:]/g, '-')
+  writePidFile({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    projectRoot: projectRoot ?? repoRoot,
+    projectRootSource: projectRoot
+      ? parseStringFlag(process.argv, '--project-root')
+        ? 'cli-arg'
+        : 'env'
+      : 'cwd-fallback',
+    ports: { backend: backendPort, vite: vitePort },
+    tmux: { sessionName: tmuxSessionName },
+  })
+
+  // Surface the resolved URLs and operational metadata prominently so
+  // a user who specified no ports (and thus may have landed on
+  // something other than 5173) knows exactly where to point their
+  // browser, and so the operator can copy-paste the projectRoot /
+  // tmux session into a kb-stop / kb-diagnose invocation. Shown
+  // after spawn because that is the moment we have committed to
+  // these ports.
   console.log('')
   console.log('[kb-start] KovitoBoard ready')
+  console.log(`[kb-start]   Project:  ${projectRoot ?? '(cwd fallback) ' + repoRoot}`)
   console.log(`[kb-start]   Backend:  http://localhost:${backendPort}`)
   console.log(
     `[kb-start]   Frontend: http://localhost:${vitePort}  ← open this in your browser`,
   )
+  console.log(`[kb-start]   tmux session: ${tmuxSessionName}`)
+  console.log(`[kb-start]   PID file: ${PID_FILE_PATH}`)
+  console.log('[kb-start]   Stop with: npm run kb:stop')
   console.log('')
 
   // --- Server exit handler ---
@@ -666,6 +886,11 @@ function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`[kb-start] Received ${signal}, shutting down...`)
+  // Remove the PID file before kicking the children so a racing
+  // kb-stop sees the file disappear (its readiness signal). The
+  // children kill is best-effort either way; the absence of a PID
+  // file is our publicly-visible "graceful shutdown started" state.
+  removePidFile()
   killChild(serverChild, signal)
   killChild(viteChild, signal)
 
