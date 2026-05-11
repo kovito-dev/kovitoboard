@@ -385,16 +385,6 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
         `Allowed: letters, digits, "_", "-", ".", "/", "@".`,
       )
     }
-    // L-R5: recipeId length ceiling (security-limits v1.1 — tightened
-    // from the legacy 256-char check that lived inline before the
-    // SSOT migration).
-    checkParserLimit({
-      limit: 'MAX_RECIPE_ID_LENGTH',
-      limitValue: MAX_RECIPE_ID_LENGTH,
-      actualValue: data.recipeId.length,
-      httpStatus: 400,
-      recipeId: data.recipeId,
-    })
     recipeId = data.recipeId
   } else {
     // v0.1.x backward-compat fallback. The recipe omitted
@@ -412,6 +402,25 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
       'please add an explicit `recipeId` field.',
     )
   }
+  // L-R5: recipeId length ceiling (security-limits v1.1 — tightened
+  // from the legacy 256-char check that lived inline before the
+  // SSOT migration). Applied AFTER both branches resolve so the
+  // synthesized fallback id (`deriveRecipeIdFromName(name)`) is
+  // gated by the same ceiling as an explicit `recipeId` from the
+  // recipe.yaml — without this, a 128-char `name` could produce a
+  // 128-char fallback id that bypasses L-R5 entirely.
+  // We intentionally do NOT attach the raw recipeId to the warn
+  // record: a hostile recipe.yaml could put a 500 KiB recipeId in
+  // (still inside the L-R1 yaml cap), and echoing the full string
+  // into the log line would re-introduce the attacker-driven log
+  // amplification path the L-R5 check is supposed to close. The
+  // `actualValue` (length) alone is enough for operators to triage.
+  checkParserLimit({
+    limit: 'MAX_RECIPE_ID_LENGTH',
+    limitValue: MAX_RECIPE_ID_LENGTH,
+    actualValue: recipeId.length,
+    httpStatus: 400,
+  })
 
   return {
     recipeId,

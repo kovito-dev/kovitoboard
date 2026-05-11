@@ -374,6 +374,27 @@ describe('recipe-parser DoS limits', () => {
         MAX_RECIPE_ID_LENGTH + 1,
       )
     })
+
+    it('also applies to the kebab-case(name) fallback path', async () => {
+      // No explicit recipeId in the yaml: the parser falls back to
+      // `kebab-case(name)`. A 128-char ASCII name produces a
+      // 128-char fallback id which exceeds the L-R5 ceiling — the
+      // ceiling must therefore gate the synthesized id too, not
+      // only the explicitly-supplied one.
+      const longName = 'a'.repeat(MAX_RECIPE_NAME_LENGTH)
+      const yaml = buildRecipeYaml({ name: longName }).replace(
+        /^recipeId: ".*"$/m,
+        '',
+      )
+      // Sanity: the manipulated yaml no longer carries a recipeId
+      // line so the parser must take the fallback branch.
+      expect(yaml.includes('recipeId:')).toBe(false)
+      await expectLimitThrow(
+        seedSingleArtifact(yaml),
+        'MAX_RECIPE_ID_LENGTH',
+        MAX_RECIPE_ID_LENGTH + (MAX_RECIPE_NAME_LENGTH - MAX_RECIPE_ID_LENGTH),
+      )
+    })
   })
 
   describe('L-R6: MAX_APP_ID_LENGTH (mark-installed validator)', () => {
