@@ -76,6 +76,7 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
       mtimeMs: 0,
       isSymbolicLink: false,
       isFile: true,
+      nlink: 1,
     }),
     chmodSync: () => {},
     rmSync: () => {},

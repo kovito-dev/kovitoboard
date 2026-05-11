@@ -287,6 +287,25 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
           CLIENT_MESSAGE_APP_ROOT_ESCAPE,
         )
       }
+      // Hard-link defence: a regular file with `nlink > 1` shares
+      // its inode with at least one other directory entry, possibly
+      // outside `app/<appId>/` — a path the scanner cannot
+      // enumerate cheaply but that the export would still package
+      // by reading the inode contents. A symlink check alone misses
+      // this because hard links are indistinguishable from honest
+      // regular files at the lstat surface (`isSymbolicLink` is
+      // `false`). Refuse the scan to keep the boundary policy
+      // conservative; a legitimate app tree rooted under recipe
+      // install never produces hard-linked artifacts (the dotfile +
+      // `node_modules` skips above already cover the common
+      // package-manager hard-link layouts that pnpm / npm-cache
+      // produce).
+      if (lstat.isFile && lstat.nlink > 1) {
+        throw new AppIdBoundaryError(
+          `app tree contains a hard-linked file at "${relativePath}" (nlink=${lstat.nlink})`,
+          CLIENT_MESSAGE_APP_ROOT_ESCAPE,
+        )
+      }
 
       // Detect directory by trying readdirSync (FileStat has no isDirectory)
       let isDir = false
