@@ -1,0 +1,170 @@
+/*
+ * KovitoBoard
+ * Copyright (C) 2026 Anode LLC
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+/**
+ * Recipe export `appId` boundary defence — E2E tests (v0.2.x).
+ *
+ * Verifies the Codex #11 v0.2.x grandfather defence:
+ *
+ *   - `POST /api/recipes/export` rejects an `appId` containing a path
+ *     traversal segment with 400 `InvalidAppId`.
+ *   - `GET /api/recipes/app-scan` rejects the same input with the same
+ *     status / body shape.
+ *   - Both routes also reject `RESERVED_DIRS` entries (`api`, `pages`,
+ *     `styles`, `data`) even though those strings would pass the
+ *     app-name regex.
+ *   - The legitimate grandfather export path still functions for an
+ *     existing app (the `l1-fixture-app` shipped in the
+ *     `blank-onboarded` template).
+ *
+ * @see docs/specs/recipe-system.md §7.7 / §10.6.4 (export attack
+ *      surface in grandfather paths)
+ * @see docs/specs/app-directory-extension.md (app-name pattern,
+ *      RESERVED_DIRS)
+ */
+import { test, expect } from './helpers/l1-per-test-setup'
+
+const VALID_METADATA = {
+  recipeId: 'l1-fixture-app-export',
+  name: 'L1 Fixture App',
+  description: 'Exported by the appId boundary defence E2E test.',
+  version: '1.0.0',
+}
+
+const EXPECTED_PROJECT = 'l1-default'
+
+/**
+ * Build the API base URL for the active Playwright project.
+ *
+ * The export grandfather path lives in the `l1-default` project (port
+ * 3001, `blank-onboarded` fixture) — that is where the sample apps
+ * needed by the legitimate-export case (`l1-fixture-app`) are seeded.
+ * Reading the port from `test.info().project.metadata.port` instead of
+ * a literal keeps the spec aligned with the
+ * `playwright.config.l1.ts` source of truth, so a future port move
+ * does not silently desynchronise the test from the server it pokes.
+ *
+ * The `EXPECTED_PROJECT` assertion guards against an accidental
+ * project assignment misroute (e.g. someone tags this spec with
+ * `@rich-project`) by failing loudly with a clear message instead of
+ * hitting a different webServer that does not have the
+ * `l1-fixture-app` fixture.
+ */
+function apiBase(testInfo: import('@playwright/test').TestInfo): string {
+  expect(
+    testInfo.project.name,
+    `recipe-export-appid-defense.spec.ts must run against the "${EXPECTED_PROJECT}" project (it depends on the blank-onboarded fixture's l1-fixture-app)`,
+  ).toBe(EXPECTED_PROJECT)
+  const port = testInfo.project.metadata?.port
+  expect(typeof port, `project "${testInfo.project.name}" is missing metadata.port`).toBe('number')
+  return `http://127.0.0.1:${port}`
+}
+
+test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
+  test('POST /api/recipes/export rejects path traversal appId with 400 InvalidAppId', async ({
+    request,
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
+    const res = await request.post(`${API_BASE}/api/recipes/export`, {
+      data: {
+        appId: '../etc/passwd',
+        metadata: VALID_METADATA,
+      },
+    })
+    expect(res.status()).toBe(400)
+    const body = (await res.json()) as { error: string; message?: string }
+    expect(body.error).toBe('InvalidAppId')
+    // The message echoes back the validator's reason so the client can
+    // surface a precise hint without having to parse the regex
+    // literal client-side.
+    expect(typeof body.message).toBe('string')
+    expect(body.message).toMatch(/appId/)
+  })
+
+  test('GET /api/recipes/app-scan rejects path traversal appId with 400 InvalidAppId', async ({
+    request,
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
+    const res = await request.get(
+      `${API_BASE}/api/recipes/app-scan?appId=${encodeURIComponent('../etc/passwd')}`,
+    )
+    expect(res.status()).toBe(400)
+    const body = (await res.json()) as { error: string; message?: string }
+    expect(body.error).toBe('InvalidAppId')
+    expect(body.message).toMatch(/appId/)
+  })
+
+  test('POST /api/recipes/export rejects RESERVED_DIR appId (api) with 400 InvalidAppId', async ({
+    request,
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
+    // `api` matches the app-name regex but is one of the directories
+    // recipe install never creates as `app/<appId>/`; allowing it
+    // here would let an exporter walk `app/api/` (a sibling tree
+    // outside the recipe contract).
+    const res = await request.post(`${API_BASE}/api/recipes/export`, {
+      data: {
+        appId: 'api',
+        metadata: VALID_METADATA,
+      },
+    })
+    expect(res.status()).toBe(400)
+    const body = (await res.json()) as { error: string; message?: string }
+    expect(body.error).toBe('InvalidAppId')
+    // The body is intentionally a generic `appId is invalid`: the
+    // route layer never echoes the offending `appId` (or the regex
+    // literal it failed) so a probe cannot fingerprint which branch
+    // of `validateAppId` rejected the input. The full reason — including
+    // the literal "reserved" wording — stays in the server warn log.
+    expect(body.message).toMatch(/invalid/)
+  })
+
+  test('GET /api/recipes/app-scan rejects RESERVED_DIR appId (data) with 400 InvalidAppId', async ({
+    request,
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
+    const res = await request.get(
+      `${API_BASE}/api/recipes/app-scan?appId=${encodeURIComponent('data')}`,
+    )
+    expect(res.status()).toBe(400)
+    const body = (await res.json()) as { error: string; message?: string }
+    expect(body.error).toBe('InvalidAppId')
+    expect(body.message).toMatch(/invalid/)
+  })
+
+  test('POST /api/recipes/export still serves a 200 download for a valid existing app (grandfather path preserved)', async ({
+    request,
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
+    // `l1-fixture-app` ships in the `blank-onboarded` template (see
+    // tests/fixtures/projects/blank-onboarded/app/l1-fixture-app/)
+    // and exposes a single `pages/L1FixturePage.tsx` artifact. The
+    // defence must not regress this happy path — recipe export is
+    // grandfathered through the v0.2.x install freeze.
+    const res = await request.post(`${API_BASE}/api/recipes/export`, {
+      data: {
+        appId: 'l1-fixture-app',
+        metadata: {
+          recipeId: 'l1-fixture-app-export',
+          name: 'L1 Fixture App',
+          description: 'Exported by the appId boundary defence E2E test.',
+          version: '1.0.0',
+        },
+      },
+    })
+    expect(res.status()).toBe(200)
+    const contentType = res.headers()['content-type'] ?? ''
+    expect(contentType).toContain('text/markdown')
+    const body = await res.text()
+    // Sanity-check the YAML frontmatter — anything more specific
+    // belongs in `tests/unit/recipe-exporter-*` (the structural
+    // contract is exercised there). All we care about here is that
+    // the boundary defence did not turn a legitimate export into a
+    // refusal.
+    expect(body.startsWith('---')).toBe(true)
+    expect(body).toContain('recipeId: "l1-fixture-app-export"')
+    expect(body).toContain('## artifacts/pages/L1FixturePage.tsx')
+  })
+})
