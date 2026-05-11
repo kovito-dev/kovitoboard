@@ -130,6 +130,35 @@ npm run diagnose > diag.md
 
 `diag.md` には KovitoBoard / Node / OS / Claude Code / tmux のバージョン、`setting.json` のオンボーディング状態、稼働中のサーバーログ末尾 100 行が含まれます。ホームディレクトリのパスは `~` にマスクされますが、GitHub Issue に貼り付ける前に内容(特にログ行)を確認してください。マスクされない機微情報が残っている可能性があります。
 
+## レシピ配布モデル
+
+KovitoBoard は **アプリケーション本体** (AGPL-3.0 ライセンスの OSS) と **レシピ配布** (安全性のために設計された二段モデル) を区別します:
+
+- **KovitoHub signed publisher (推奨、v0.3.0 から提供):**
+  レシピは KovitoHub という中央マーケットプレイスを通じて配布されます。
+  Publisher が登録され、レビューを受け、レシピに暗号署名します。
+  一般 user および自分のレシピを他者に配布したい場合の推奨経路です。
+
+- **Developer sideload mode (opt-in、v0.3.0 から提供):**
+  ローカルテスト / 開発用途では、KovitoBoard 起動前に
+  `KB_DEVELOPER_MODE=1` を設定することで sideload モードを有効化できます。
+  Sideload されたレシピは厳格な warning を表示し、他 user への再配布は不可です。
+
+### 現状 (v0.2.x)
+
+`/api/recipes/install` 経由のレシピインストールは v0.2.0 / v0.2.1 で
+**一時的に無効化** されています。インストールフローは **v0.3.0** で
+KovitoHub 統合とともに再有効化されます。
+
+- **既存レシピ** (v0.1.x または v0.2.0 でインストール済) は変更なく動作し続けます (grandfather、`docs/specs/recipe-system.md` で grandfather 契約を参照)。
+  表示・アンインストール・エクスポートのフローは維持されます。
+- **新規レシピのインストール** は v0.3.0 まで利用できません。
+
+より詳細な背景 (OSS 哲学 + signed-only 配布 + developer sideload) は、
+`docs/specs/prompt-injection-threat-model.md` (起票予定) を参照してください。
+
+**注**: prompt-injection-threat-model spec を導入する KB バージョンの確定は v0.3.0 release plan で行います。
+
 ## データの取り扱い
 
 KovitoBoard は Claude Code を介してエージェントを動かします。以下の点に注意してください。

@@ -167,6 +167,27 @@ active server log. Home directory paths are masked as `~`, but please
 review the contents (especially log lines) before posting to GitHub
 Issues — other potentially sensitive information may remain.
 
+## Recipe distribution model
+
+KovitoBoard distinguishes the **application body** (this OSS, AGPL-3.0 licensed) from **recipe distribution** (a two-tier model designed for safety):
+
+- **KovitoHub signed publisher (recommended, from v0.3.0):**
+  Recipes are distributed via KovitoHub, a central marketplace. Publishers register, are reviewed, and cryptographically sign their recipes. This is the recommended path for general users and for anyone wanting to share their recipes with others.
+
+- **Developer sideload mode (opt-in, from v0.3.0):**
+  For local testing and development, set `KB_DEVELOPER_MODE=1` before launching KovitoBoard to enable sideload mode. Sideloaded recipes show strict warnings and cannot be redistributed to other users.
+
+### Current state (v0.2.x)
+
+Recipe install via `/api/recipes/install` is **temporarily disabled in v0.2.0 / v0.2.1**. The install flow will be re-enabled in **v0.3.0** alongside KovitoHub integration.
+
+- **Existing recipes** (installed in v0.1.x or v0.2.0) continue to work unchanged (grandfathered, see `docs/specs/recipe-system.md` for grandfather contract). Display, uninstall, and export flows are preserved.
+- **New recipe installation** is unavailable until v0.3.0.
+
+For deeper background (OSS philosophy + signed-only distribution + developer sideload), see `docs/specs/prompt-injection-threat-model.md` (planned).
+
+**Note:** The exact KB version that introduces the prompt-injection-threat-model spec will be finalized in the v0.3.0 release plan.
+
 ## Data Handling
 
 KovitoBoard runs agents through Claude Code. Please be aware:
