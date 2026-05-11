@@ -80,6 +80,16 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
     // because `scanAppDirectory` calls `realpathSync` on `app/` and
     // `app/<appId>/` for its symlink escape check.
     realpathSync: (path: string) => path,
+    // Per-entry symlink defence in `scanDir` calls `lstatSync` on
+    // every walked entry; report regular-file metadata so the guard
+    // never fires for this in-memory layout.
+    lstatSync: () => ({
+      size: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      isSymbolicLink: false,
+      isFile: true,
+    }),
     watch: () => ({ close: () => {} }),
   } as unknown as FileAccessLayer
 }

@@ -265,6 +265,29 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
 
       if (entry.startsWith('.') || entry === 'node_modules') continue
 
+      // Per-entry symlink defence: the entry-level boundary check at
+      // the top of `scanAppDirectory` only canonicalises `appRoot`
+      // itself, so a planted symlink anywhere *inside* the app tree
+      // (e.g. `app/<appId>/pages -> /etc` or
+      // `app/<appId>/assets/link -> ../../api`) would still be
+      // followed by `readdirSync` / `statSync` / `readFileSync`.
+      // `lstatSync` (which does NOT follow symlinks) lets us see the
+      // link verbatim and refuse the scan as a whole. The route
+      // layer maps `AppIdBoundaryError` into the same 400
+      // `InvalidAppId` body the other boundary failures use; the
+      // operator log keeps the offending relative path for triage.
+      // Refusing (rather than skipping) keeps the policy uniform
+      // with the entry-level escape branch and avoids partial
+      // exports whose semantics would depend on which symlinks were
+      // present at scan time.
+      const lstat = fs.lstatSync(fullPath)
+      if (lstat.isSymbolicLink) {
+        throw new AppIdBoundaryError(
+          `app tree contains a symlink at "${relativePath}"`,
+          CLIENT_MESSAGE_APP_ROOT_ESCAPE,
+        )
+      }
+
       // Detect directory by trying readdirSync (FileStat has no isDirectory)
       let isDir = false
       try {

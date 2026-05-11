@@ -67,6 +67,16 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
     mkdirSync: () => {},
     watch: () => ({ close: () => {} }),
     realpathSync: (path: string) => path,
+    // No symlinks in this in-memory layout; report every entry as a
+    // regular file so the per-entry symlink defence in `scanDir`
+    // never fires here.
+    lstatSync: () => ({
+      size: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      isSymbolicLink: false,
+      isFile: true,
+    }),
     chmodSync: () => {},
     rmSync: () => {},
     renameSync: () => {},

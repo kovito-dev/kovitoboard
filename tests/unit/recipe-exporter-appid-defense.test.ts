@@ -39,15 +39,23 @@ beforeEach(() => {
 /**
  * Tiny in-memory FileAccessLayer for the boundary tests.
  *
- * `realpathOverride` lets a test simulate a planted symlink: when set,
- * it replaces the identity `realpathSync` only for the listed paths so
- * we can assert the scanner refuses to walk a tree that escapes
- * `app/`. Without the override every path is its own canonical form,
- * which mirrors the production layout when no symlinks are present.
+ * `realpathOverride` lets a test simulate a planted symlink at the
+ * app-root level: when set, it replaces the identity `realpathSync`
+ * only for the listed paths so we can assert the scanner refuses to
+ * walk a tree that escapes `app/`. Without the override every path
+ * is its own canonical form, which mirrors the production layout
+ * when no symlinks are present.
+ *
+ * `symlinkPaths` lets a test plant a symlink *inside* the app tree
+ * (e.g. `app/<appId>/pages` linked to `/etc`). Anything in this set
+ * is reported by `lstatSync` as `isSymbolicLink: true` so the
+ * per-entry symlink defence in `scanDir` can refuse it. Paths not in
+ * the set behave as ordinary directories or regular files.
  */
 function makeFs(
   files: Record<string, string>,
   realpathOverride: Record<string, string> = {},
+  symlinkPaths: Set<string> = new Set(),
 ): FileAccessLayer {
   const dirs = new Set<string>()
   for (const path of Object.keys(files)) {
@@ -89,6 +97,18 @@ function makeFs(
     unlinkSync: () => {},
     mkdirSync: () => {},
     realpathSync: (path: string) => realpathOverride[path] ?? path,
+    // `lstatSync` is used by the per-entry symlink defence inside
+    // `scanDir`. Default `isFile: true / isSymbolicLink: false` keeps
+    // every existing test behaving as plain regular files; tests
+    // exercising the nested-symlink branch pass paths via
+    // `symlinkPaths`, which flips `isSymbolicLink: true`.
+    lstatSync: (path: string) => ({
+      size: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      isSymbolicLink: symlinkPaths.has(path),
+      isFile: !symlinkPaths.has(path),
+    }),
     watch: () => ({ close: () => {} }),
   } as unknown as FileAccessLayer
 }
@@ -292,5 +312,44 @@ describe('scanAppDirectory — boundary defence', () => {
       'pages/MyApp.tsx',
       'utils/helpers.ts',
     ])
+  })
+
+  it('refuses a directory-level nested symlink (e.g. app/<appId>/pages -> /etc)', () => {
+    // The entry-level boundary check at the top of `scanAppDirectory`
+    // canonicalises only `appRoot` itself. A planted symlink inside
+    // the app tree (here `app/foo/pages` linked to `/etc`) would still
+    // be followed by the recursive walk if the per-entry `lstatSync`
+    // defence were missing. The scan must throw before reading any
+    // file under the foreign tree.
+    const fs = makeFs(
+      {
+        [`${PROJECT_ROOT}/app/menu.ts`]: '',
+        [`${PROJECT_ROOT}/app/foo/pages/Index.tsx`]: 'export {}',
+      },
+      {},
+      new Set([`${PROJECT_ROOT}/app/foo/pages`]),
+    )
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(/symlink/)
+  })
+
+  it('refuses a file-level nested symlink (e.g. app/<appId>/utils/link.ts -> ../../api/list-files.ts)', () => {
+    // Symlink at the file level (rather than the directory level)
+    // must be refused by the same per-entry guard. The recursive walk
+    // would otherwise read the link target via `readFileSync` and
+    // package it into the recipe artifact list under the link's own
+    // relative path.
+    const fs = makeFs(
+      {
+        [`${PROJECT_ROOT}/app/menu.ts`]: '',
+        [`${PROJECT_ROOT}/app/api/list-files.ts`]: 'export {}',
+        [`${PROJECT_ROOT}/app/foo/pages/Index.tsx`]: 'export {}',
+        [`${PROJECT_ROOT}/app/foo/utils/link.ts`]: 'export {}',
+      },
+      {},
+      new Set([`${PROJECT_ROOT}/app/foo/utils/link.ts`]),
+    )
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(/symlink/)
   })
 })
