@@ -150,7 +150,7 @@ KovitoBoard は **アプリケーション本体** (AGPL-3.0 ライセンスの 
 **一時的に無効化** されています。インストールフローは **v0.3.0** で
 KovitoHub 統合とともに再有効化されます。
 
-- **既存レシピ** (v0.1.x または v0.2.0 でインストール済) は変更なく動作し続けます (grandfather、`docs/specs/recipe-system.md` で grandfather 契約を参照)。
+- **既存レシピ** (v0.1.x または install disable 適用前の v0.2.0 でインストール済) は変更なく動作し続けます (grandfather、`docs/specs/recipe-system.md` で grandfather 契約を参照)。
   表示・アンインストール・エクスポートのフローは維持されます。
 - **新規レシピのインストール** は v0.3.0 まで利用できません。
 

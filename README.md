@@ -181,7 +181,7 @@ KovitoBoard distinguishes the **application body** (this OSS, AGPL-3.0 licensed)
 
 Recipe install via `/api/recipes/install` is **temporarily disabled in v0.2.0 / v0.2.1**. The install flow will be re-enabled in **v0.3.0** alongside KovitoHub integration.
 
-- **Existing recipes** (installed in v0.1.x or v0.2.0) continue to work unchanged (grandfathered, see `docs/specs/recipe-system.md` for grandfather contract). Display, uninstall, and export flows are preserved.
+- **Existing recipes** (installed in v0.1.x, or in v0.2.0 before the install disable took effect) continue to work unchanged (grandfathered, see `docs/specs/recipe-system.md` for grandfather contract). Display, uninstall, and export flows are preserved.
 - **New recipe installation** is unavailable until v0.3.0.
 
 For deeper background (OSS philosophy + signed-only distribution + developer sideload), see `docs/specs/prompt-injection-threat-model.md` (planned).
