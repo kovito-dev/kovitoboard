@@ -26,16 +26,6 @@
  */
 import { test, expect } from './helpers/l1-per-test-setup'
 
-// `recipe-install-disable.spec.ts` runs against the `l1-default`
-// Playwright project (port 3001, `blank-onboarded` fixture) and that
-// is also where the export grandfather path lives — sample apps are
-// only seeded into the default fixture. We pin the same base URL here
-// rather than reading `test.info().project.metadata.port` so an
-// accidental project assignment misroute (e.g. someone adds a `@rich`
-// tag) shows up as a hard 4xx instead of silently hitting a different
-// server.
-const API_BASE = 'http://127.0.0.1:3001'
-
 const VALID_METADATA = {
   recipeId: 'l1-fixture-app-export',
   name: 'L1 Fixture App',
@@ -43,10 +33,40 @@ const VALID_METADATA = {
   version: '1.0.0',
 }
 
+const EXPECTED_PROJECT = 'l1-default'
+
+/**
+ * Build the API base URL for the active Playwright project.
+ *
+ * The export grandfather path lives in the `l1-default` project (port
+ * 3001, `blank-onboarded` fixture) — that is where the sample apps
+ * needed by the legitimate-export case (`l1-fixture-app`) are seeded.
+ * Reading the port from `test.info().project.metadata.port` instead of
+ * a literal keeps the spec aligned with the
+ * `playwright.config.l1.ts` source of truth, so a future port move
+ * does not silently desynchronise the test from the server it pokes.
+ *
+ * The `EXPECTED_PROJECT` assertion guards against an accidental
+ * project assignment misroute (e.g. someone tags this spec with
+ * `@rich-project`) by failing loudly with a clear message instead of
+ * hitting a different webServer that does not have the
+ * `l1-fixture-app` fixture.
+ */
+function apiBase(testInfo: import('@playwright/test').TestInfo): string {
+  expect(
+    testInfo.project.name,
+    `recipe-export-appid-defense.spec.ts must run against the "${EXPECTED_PROJECT}" project (it depends on the blank-onboarded fixture's l1-fixture-app)`,
+  ).toBe(EXPECTED_PROJECT)
+  const port = testInfo.project.metadata?.port
+  expect(typeof port, `project "${testInfo.project.name}" is missing metadata.port`).toBe('number')
+  return `http://127.0.0.1:${port}`
+}
+
 test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
   test('POST /api/recipes/export rejects path traversal appId with 400 InvalidAppId', async ({
     request,
-  }) => {
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
     const res = await request.post(`${API_BASE}/api/recipes/export`, {
       data: {
         appId: '../etc/passwd',
@@ -65,7 +85,8 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
 
   test('GET /api/recipes/app-scan rejects path traversal appId with 400 InvalidAppId', async ({
     request,
-  }) => {
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
     const res = await request.get(
       `${API_BASE}/api/recipes/app-scan?appId=${encodeURIComponent('../etc/passwd')}`,
     )
@@ -77,7 +98,8 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
 
   test('POST /api/recipes/export rejects RESERVED_DIR appId (api) with 400 InvalidAppId', async ({
     request,
-  }) => {
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
     // `api` matches the app-name regex but is one of the directories
     // recipe install never creates as `app/<appId>/`; allowing it
     // here would let an exporter walk `app/api/` (a sibling tree
@@ -101,7 +123,8 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
 
   test('GET /api/recipes/app-scan rejects RESERVED_DIR appId (data) with 400 InvalidAppId', async ({
     request,
-  }) => {
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
     const res = await request.get(
       `${API_BASE}/api/recipes/app-scan?appId=${encodeURIComponent('data')}`,
     )
@@ -113,7 +136,8 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
 
   test('POST /api/recipes/export still serves a 200 download for a valid existing app (grandfather path preserved)', async ({
     request,
-  }) => {
+  }, testInfo) => {
+    const API_BASE = apiBase(testInfo)
     // `l1-fixture-app` ships in the `blank-onboarded` template (see
     // tests/fixtures/projects/blank-onboarded/app/l1-fixture-app/)
     // and exposes a single `pages/L1FixturePage.tsx` artifact. The
