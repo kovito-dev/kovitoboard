@@ -70,7 +70,12 @@ import {
   approvedScopesMatch,
   apiSectionMatches,
 } from './recipe-install-sessions'
-import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
+import {
+  scanAppDirectory,
+  exportAsMarkdown,
+  validateAppId,
+  AppIdBoundaryError,
+} from './recipe-exporter'
 import type { RecipeParseRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
   ServerToClientEvent,
@@ -1076,10 +1081,13 @@ app.post('/api/recipes/export', (req, res) => {
   try {
     const { appId, metadata } = req.body as RecipeExportRequest
 
-    if (typeof appId !== 'string' || appId.trim().length === 0) {
-      res.status(400).json({ error: 'appId is required' })
-      return
-    }
+    // `validateAppId` enforces the `app-name` regex from
+    // `app-directory-extension.md` and rejects RESERVED_DIRS. Any
+    // failure throws `AppIdBoundaryError`, which we map to a 400
+    // `InvalidAppId` in the catch block below alongside the same
+    // class thrown from `scanAppDirectory`'s realpath escape check.
+    const validatedAppId = validateAppId(appId)
+
     if (!metadata || typeof metadata.recipeId !== 'string' || metadata.recipeId.trim().length === 0) {
       res.status(400).json({ error: 'metadata.recipeId is required' })
       return
@@ -1103,7 +1111,7 @@ app.post('/api/recipes/export', (req, res) => {
       return
     }
 
-    const scan = scanAppDirectory(fs, appId.trim())
+    const scan = scanAppDirectory(fs, validatedAppId)
 
     // Refuse export when the app contains custom backend files.
     // Backend route handlers (`app/<appId>/api/*.ts`) live outside
@@ -1141,7 +1149,7 @@ app.post('/api/recipes/export', (req, res) => {
     }
 
     if (scan.artifacts.length === 0) {
-      res.status(400).json({ error: `No artifacts found under app/${appId.trim()}/` })
+      res.status(400).json({ error: `No artifacts found under app/${validatedAppId}/` })
       return
     }
 
@@ -1149,14 +1157,14 @@ app.post('/api/recipes/export', (req, res) => {
     // manifest; user-authored apps do not. Pass `null` in the latter
     // case so the writer omits the `api:` section, leaving the
     // receiving install flow to surface the missing-handler warning.
-    const manifest = manifestStore.get(appId.trim())
+    const manifest = manifestStore.get(validatedAppId)
     const api = manifest ? manifest.api : null
 
     // Build the recipe document in memory and stream it as a download.
     // Nothing is written to disk on the server side — the browser is
     // responsible for saving the file (see DEC-024 #5 follow-up,
     // 2026-05-04: directory format and explicit outputPath dropped).
-    const markdown = exportAsMarkdown(fs, appId.trim(), scan, metadata, api)
+    const markdown = exportAsMarkdown(fs, validatedAppId, scan, metadata, api)
     const filename = buildRecipeDownloadFilename(metadata.recipeId.trim())
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
@@ -1170,6 +1178,25 @@ app.post('/api/recipes/export', (req, res) => {
     res.setHeader('Permissions-Policy', 'identity-credentials-get=(), publickey-credentials-get=()')
     res.send(markdown)
   } catch (err) {
+    if (err instanceof AppIdBoundaryError) {
+      // Both the route-layer `validateAppId` call and the symlink
+      // escape check inside `scanAppDirectory` raise this. Mapping
+      // them to the same 400 keeps the boundary policy uniform: the
+      // client gets `InvalidAppId` whether the input was malformed
+      // or the resolved path tried to leave `app/`.
+      apiLogger.warn(
+        { route: '/api/recipes/export', err: { name: err.name, message: err.message } },
+        'invalid appId',
+      )
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
+      return
+    }
     apiLogger.error(
       {
         err: err instanceof Error
@@ -1184,14 +1211,28 @@ app.post('/api/recipes/export', (req, res) => {
 
 app.get('/api/recipes/app-scan', (req, res) => {
   try {
-    const appId = typeof req.query.appId === 'string' ? req.query.appId : ''
-    if (appId.trim().length === 0) {
-      res.status(400).json({ error: 'appId query parameter is required' })
-      return
-    }
-    const result = scanAppDirectory(fs, appId.trim())
+    // `validateAppId` rejects non-string inputs as well, so we feed the
+    // raw query value in directly; the response is a uniform 400
+    // `InvalidAppId` for any malformed query, which keeps the policy
+    // aligned with `/api/recipes/export`.
+    const validatedAppId = validateAppId(req.query?.appId)
+    const result = scanAppDirectory(fs, validatedAppId)
     res.json(result)
   } catch (err) {
+    if (err instanceof AppIdBoundaryError) {
+      apiLogger.warn(
+        { route: '/api/recipes/app-scan', err: { name: err.name, message: err.message } },
+        'invalid appId',
+      )
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
+      return
+    }
     apiLogger.error({ err }, 'App scan error')
     res.status(500).json({ error: 'Failed to scan app/ directory' })
   }

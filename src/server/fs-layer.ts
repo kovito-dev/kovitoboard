@@ -30,6 +30,7 @@ import {
   unlinkSync as fsUnlinkSync,
   rmSync as fsRmSync,
   symlinkSync as fsSymlinkSync,
+  realpathSync as fsRealpathSync,
   openSync as fsOpenSync,
   readSync as fsReadSync,
   closeSync as fsCloseSync,
@@ -202,6 +203,17 @@ export interface FileAccessLayer {
   mkdirSync(path: string, options?: { recursive?: boolean }): void
   /** Symbolic link creation (for agent-ref setup etc.) */
   symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void
+  /**
+   * Resolve `path` to its canonical absolute form, following every
+   * symbolic link in the chain and removing `.` / `..` segments.
+   *
+   * Used by security-sensitive callers (`recipe-exporter.scanAppDirectory`
+   * etc.) to enforce that a derived path stays inside the trusted root
+   * even when an intermediate component is a planted symlink. Throws
+   * `ENOENT` when any link in the chain is dangling, so callers should
+   * either confirm `existsSync` first or catch the error.
+   */
+  realpathSync(path: string): string
 
   // --- Watch ---
   watch(
@@ -475,6 +487,13 @@ export class DirectFsLayer implements FileAccessLayer {
 
   symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void {
     fsSymlinkSync(target, path, type)
+  }
+
+  realpathSync(path: string): string {
+    // `fs.realpathSync` returns a string when no `encoding` option is
+    // passed. The Node typings widen the signature to allow `Buffer`
+    // for the `'buffer'` encoding overload, so we narrow back here.
+    return fsRealpathSync(path) as string
   }
 
   watch(
