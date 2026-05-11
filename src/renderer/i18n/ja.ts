@@ -125,10 +125,13 @@ const ja = {
   'recipe.button.createApp': 'アプリ新規作成',
   'recipe.code.button.expandAll': 'すべて展開',
   'recipe.tab.sample': 'サンプルレシピ',
-  'recipe.tab.import': '読み込み',
   'recipe.tab.history': '履歴',
-  // recipe.tab.export was removed in DEC-024 #5 — recipe export now
-  // runs from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.export was retired earlier — recipe export now runs
+  // from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.import was retired in v0.2.x alongside the recipe
+  // install temporary disable (recipe-system.md §10.6).
+  'recipe.install.comingSoon':
+    'レシピのインストールは v0.2.x で一時停止しています。KovitoHub の署名済み配布モデル経由で v0.3.0 にて再開予定です。',
 
   // アプリ新規作成モーダル（v0.1.0-app-creation-flow.md §7.4）
   'appCreate.modal.title': 'アプリ新規作成',
@@ -231,44 +234,18 @@ const ja = {
   'chat.topic.status.sending': '送信中...',
   'chat.topic.button.start': '開始',
 
-  // サンプルレシピ
+  // サンプルレシピ — v0.2.x ではインストールを一時停止中の閲覧専用表示。
+  // インストール / 再インストール / 警告 / picker のキーはインストール経路と
+  // 同時に廃止し、上の `recipe.install.comingSoon` がサンプル画面の CTA に
+  // 取って代わる。
   'recipe.sample.status.loading': 'サンプルレシピを読み込み中...',
-  'recipe.sample.status.installing': 'インストール中...',
   'recipe.sample.button.reload': '再読み込み',
-  'recipe.sample.button.install': 'インストール',
   'recipe.sample.empty': 'サンプルレシピはありません',
   'recipe.sample.emptyHint': 'recipes/ ディレクトリにレシピを追加すると、ここに表示されます。',
   'recipe.sample.section.available': 'インストール前 ({count})',
   'recipe.sample.section.installed': 'インストール済み ({count})',
   'recipe.sample.badge.installed': 'インストール済み',
   'recipe.sample.installedDate': 'インストール日',
-  'recipe.sample.justInstalled.title': 'インストール完了',
-  'recipe.sample.justInstalled.body': '左側のメニューに新しい項目が追加されました。再読み込みは不要です。',
-  'recipe.sample.justInstalled.dismiss': '閉じる',
-  'recipe.sample.button.reinstall': '再インストール',
-  'recipe.sample.status.reinstalling': '再インストール中...',
-
-  // レシピインストール v2.0 — declarative 警告ダイアログ
-  'recipe.install.warning.title': '注意: declarative 外の実装を含むレシピ',
-  'recipe.install.warning.body': 'レシピ「{name}」は declarative handler の枠を超える実装を含みます:',
-  'recipe.install.warning.note': 'エージェントが実装する際、フル権限のコードが追加される可能性があります。信頼できる配布元のレシピか確認の上で進めてください。',
-  'recipe.install.warning.continue': '続ける',
-  'recipe.install.warning.cancel': 'キャンセル',
-  'recipe.install.warning.pattern.express-router': 'Express Router の使用',
-  'recipe.install.warning.pattern.direct-fetch': '直接 HTTP 通信（fetch）',
-  'recipe.install.warning.pattern.axios-import': 'axios による HTTP 通信',
-  'recipe.install.warning.pattern.child-process': 'シェル / 子プロセスの実行',
-  'recipe.install.warning.pattern.node-fs-direct': 'Node.js fs API の直接利用',
-  'recipe.install.warning.pattern.shell-exec': 'exec / spawn の使用',
-  'recipe.install.warning.pattern.process-env-write': '環境変数の書き換え',
-
-  // レシピインストール — 安全境界・信頼コード明示 (D-4)
-  'recipe.install.warning.safetyBoundary.heading': '安全境界',
-  'recipe.install.warning.safetyBoundary.body':
-    'このレシピは KovitoBoard の安全境界内で動作します。レシピのアーティファクトは検査されており(拡張子の whitelist / パスプレフィックスの制限 / type api の禁止 / 危険パターンの検出)、renderer 側のみで動作します。バックエンドのルートハンドラはレシピに含めることができません。',
-  'recipe.install.warning.trustedCode.heading': 'レシピページは信頼コードとして動作します',
-  'recipe.install.warning.trustedCode.body':
-    'レシピのページは KovitoBoard の組み込み UI と同じ JavaScript realm 内で first-party 権限で動作します。/api/* エンドポイントの呼び出し、WebSocket 通信、localStorage / sessionStorage へのアクセスが可能です。上記のハンドラスコープは window.kb.call() ハンドラに適用される範囲で、ページは直接の fetch / WebSocket でこれを bypass できます。信頼できるソースのレシピのみをインストールしてください。',
 
   // アプリ削除フロー (DEC-024 #3)
   'nav.action.removeApp': 'アプリを削除',
@@ -289,13 +266,6 @@ const ja = {
   'appRemoval.picker.button.confirm': '削除を依頼',
   'appRemoval.error.noAgents': 'エージェントが定義されていません。エージェント画面でエージェントを作成してください。',
   'appRemoval.error.sessionCreationFailed': 'セッションの作成に失敗しました: {error}',
-
-  // レシピインストール v2.0 — agent picker
-  'recipe.install.picker.title': 'インストールを依頼するエージェント',
-  'recipe.install.picker.body': '「{name}」のインストール作業を行うエージェントを選択してください。エージェントが対話で配置を進めます。',
-  'recipe.install.picker.confirm': 'インストールを依頼',
-  'recipe.install.picker.cancel': 'キャンセル',
-  'recipe.install.picker.noAgents': 'エージェントが定義されていません。エージェント画面でエージェントを作成してください。',
 
   // エージェント一覧
   'agent.list.title': 'エージェント',
@@ -435,36 +405,8 @@ const ja = {
   'recipe.export.error.customBeNotExportable':
     'このアプリはレシピとしてエクスポートできません: app/{appId}/api/ 配下のファイル({files})はレシピの安全境界の外側で扱われるためです (recipe-inspector は拡張子に関わらず api/ 配下のすべての artifact を拒否します)。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) api/ 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
 
-  // レシピインポート
-  'recipe.import.verdict.blocked': 'ブロック',
-  'recipe.import.verdict.warning': '警告',
-  'recipe.import.verdict.caution': '注意',
-  'recipe.import.verdict.safe': '安全',
-  'recipe.import.field.path': 'レシピのパス',
-  'recipe.import.field.pathHint': 'ローカルのレシピディレクトリまたは .md ファイルのパスを入力してください。',
-  'recipe.import.button.parse': '解析',
-  'recipe.import.button.apply': '適用',
-  'recipe.import.button.importAnother': '別のレシピを読み込む',
-  'recipe.import.status.parsing': 'レシピを解析中...',
-  'recipe.import.status.applying': '適用中...',
-  'recipe.import.findings.title': '検査結果 ({count} 件)',
-  'recipe.import.code.title': '成果物コード',
-  'recipe.import.menu.title': 'メニュー追加',
-  'recipe.import.hint.reviewRequired': '※ 全コードを確認後に適用可能になります',
-  'recipe.import.applied.title': 'レシピを適用しました',
-  'recipe.import.applied.description': 'ID: {id} — エージェントがファイルを作成しています。セッション画面で進捗を確認できます。',
-  // RC-3: ファイル選択ダイアログ
-  'recipe.import.upload.label': 'レシピを選択',
-  'recipe.import.upload.button.file': '.md ファイルを選択',
-  'recipe.import.upload.button.dir': 'ディレクトリを選択',
-  'recipe.import.upload.hint': '単一の .md レシピ、または recipe.yaml を含むレシピディレクトリを選んでください（合計 5MB 以下）。',
-  'recipe.import.upload.noFiles': 'ファイルが選択されていません',
-  'recipe.import.upload.noSupportedFiles': '対応形式のファイルが含まれていません（.md / .markdown / .yaml / .ts / .tsx / .css / .json）',
-  'recipe.import.upload.tooManyFiles': 'ファイル数が多すぎます（最大 {max}）',
-  'recipe.import.upload.fileTooLarge': 'ファイルが大きすぎます: {name}（1MB 以下）',
-  'recipe.import.upload.totalTooLarge': '合計サイズが 5MB を超えています',
-  'recipe.import.upload.unsupportedExtension': '対応していない拡張子です: {name}',
-  'recipe.import.advanced.toggle': 'パスを直接入力する（上級者向け）',
+  // レシピインポート — v0.2.x でレシピインストール一時停止と合わせて廃止。
+  // v0.3.0 の developer sideload mode で復活予定。
 
   // エージェント構造化フィールドエディタ
   'agent.field.displayName.label': '表示名',

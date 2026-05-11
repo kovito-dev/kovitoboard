@@ -57,11 +57,6 @@ import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
-import { applyRecipe, buildRecipePrompt } from './recipe-applicator'
-import {
-  resolveAgentWindowForRecipe,
-  buildAgentResolutionError,
-} from './services/recipe-agent-resolver'
 import {
   validateProposedAppId,
   findAvailableAppId,
@@ -76,7 +71,7 @@ import {
   apiSectionMatches,
 } from './recipe-install-sessions'
 import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
-import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
+import type { RecipeParseRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
   ServerToClientEvent,
   ClientToServerEvent,
@@ -85,7 +80,6 @@ import type {
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
 import { dispatch as dispatchHandler } from './handlerDispatcher'
-import { validateApiSection } from './recipe/apiTypes'
 import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
@@ -996,88 +990,39 @@ app.post('/api/recipes/parse', async (req, res) => {
   }
 })
 
-app.post('/api/recipes/apply', async (req, res) => {
-  // Deprecated in v0.1.0 (DEC-024 #2 / spec F8). The agent-handover
-  // install flow at `POST /api/recipes/install` (and the dispatcher
-  // setup at `POST /api/recipes/<recipeId>/mark-installed`) supersedes
-  // this route. The legacy endpoint is kept for backward compatibility
-  // with existing L1 E2E coverage and direct API callers; it will be
-  // removed in v0.2.0.
-  apiLogger.warn(
+// `POST /api/recipes/apply` — removed in v0.2.x.
+//
+// The deprecated apply flow was withdrawn alongside the temporary
+// disable of `/api/recipes/install` (recipe-system.md §10.6 /
+// http-api-contract.md §4.3.8.A / §10.1.1). Removing the route's
+// internals — agent resolution, applyRecipe transform, tmux send —
+// physically eliminates the attack surface that depended on the
+// client-supplied inspection verdict. There is no re-enable plan;
+// callers should migrate to `/api/recipes/install` once it ships
+// again in v0.3.0 alongside the KovitoHub signed publisher model.
+app.post('/api/recipes/apply', (_req, res) => {
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
     { route: '/api/recipes/apply' },
-    'POST /api/recipes/apply is deprecated and will be removed in v0.2.0. ' +
-    'Use POST /api/recipes/install with the v2.0 agent-handover flow ' +
-    '(spec docs/specs/v0.1.0-recipe-install-handover.md §3.2).',
+    'POST /api/recipes/apply was removed in v0.2.x. ' +
+    'The deprecated apply flow was withdrawn along with recipe install temporary disable.',
   )
-  try {
-    const { recipe, inspection, agentId } = req.body as RecipeApplyRequest
-
-    if (!recipe || !recipe.metadata) {
-      res.status(400).json({ error: 'recipe is required' })
-      return
-    }
-    if (!inspection) {
-      res.status(400).json({ error: 'inspection is required' })
-      return
-    }
-    // Re-validate: blocked recipes cannot be applied
-    if (inspection.verdict === 'blocked') {
-      res.status(403).json({ error: 'Cannot apply a recipe with blocked verdict' })
-      return
-    }
-
-    // Resolve the tmux agent window to send to. We MUST target an
-    // interactive `claude --agent <id>` window, not the bare `main`
-    // shell tmux creates alongside the session — otherwise the recipe
-    // prompt is pasted into bash and silently lost.
-    //
-    // The resolver reuses an already-running window when one exists,
-    // and otherwise auto-launches `kovito-concierge` (or the first
-    // registered agent) and waits for the live input prompt before
-    // proceeding. Failure modes (no agents / startup failed / startup
-    // timeout because of a folder-trust prompt) come back as a
-    // structured resolution that we translate into an actionable
-    // 409 / 500 / 503 response.
-    const resolution = await resolveAgentWindowForRecipe(fs, config, tmuxBridge, {
-      preferredAgentId: agentId,
-    })
-    if (resolution.kind !== 'ready') {
-      const { status, error } = buildAgentResolutionError(resolution)
-      apiLogger.warn(
-        { resolution },
-        'Recipe apply aborted: agent window unavailable',
-      )
-      res.status(status).json({ error })
-      return
-    }
-    const windowName = resolution.windowName
-
-    const result = await applyRecipe(recipe, inspection, tmuxBridge, windowName)
-    if (!result.success) {
-      res.status(500).json({ error: result.error || 'Failed to apply recipe' })
-      return
-    }
-
-    // Record history
-    const historyId = generateHistoryId(fs)
-    appendRecipeHistory(fs, {
-      id: historyId,
-      action: 'install',
-      name: recipe.metadata.name,
-      version: recipe.metadata.version,
-      author: recipe.metadata.author,
-      source: recipe.sourcePath,
-      hash: recipe.hash,
-      appliedAt: new Date().toISOString(),
-      artifacts: recipe.artifacts.map((a) => a.path),
-      menu: recipe.menu.map((m) => m.id),
-    })
-
-    res.json({ success: true, historyId })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe apply error')
-    res.status(500).json({ error: 'Failed to apply recipe' })
-  }
+  res.status(410).json({
+    error: 'RecipeApplyRemoved',
+    message:
+      'POST /api/recipes/apply has been removed in v0.2.x. The deprecated apply flow ' +
+      'was withdrawn along with recipe install temporary disable.',
+    details: {
+      endpoint: '/api/recipes/apply',
+      kbVersion: '0.2.x',
+      plannedReenable: 'not planned (use /api/recipes/install in v0.3.0)',
+      grandfatherDocs: 'docs/specs/recipe-system.md §10.6',
+    },
+  })
 })
 
 app.get('/api/recipes/history', (_req, res) => {
@@ -1270,218 +1215,40 @@ app.get('/api/recipes/app-scan', (req, res) => {
 // `/agents/<agentId>?openLatestSession=1` to bridge the gap). The
 // renderer follows the same pattern for `recipe-install`.
 
-app.post('/api/recipes/install', async (req, res) => {
-  try {
-    const body = (req.body ?? {}) as Record<string, unknown>
-    const recipe = body.recipe
-    const inspectionInput = body.inspection
-    const agentIdRaw = body.agentId
-    const recipeSource = body.recipeSource
-
-    // -- Recipe validation (minimal; the parser already vetted shape) --
-    if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) {
-      res.status(400).json({ error: 'recipe is required' })
-      return
-    }
-    const parsed = recipe as Record<string, unknown>
-    if (!parsed.metadata || typeof parsed.metadata !== 'object') {
-      res.status(400).json({ error: 'recipe.metadata is required' })
-      return
-    }
-    const metadata = parsed.metadata as Record<string, unknown>
-    if (typeof metadata.name !== 'string' || metadata.name.length === 0) {
-      res.status(400).json({ error: 'recipe.metadata.name is required' })
-      return
-    }
-    if (typeof metadata.recipeId !== 'string' || metadata.recipeId.length === 0) {
-      res.status(400).json({ error: 'recipe.metadata.recipeId is required' })
-      return
-    }
-
-    // The api section is optional in v2.0 — recipes without
-    // declarative handlers still install. When present, validate
-    // shape early so a malformed api never reaches the prompt.
-    if (parsed.api !== undefined && parsed.api !== null) {
-      const apiValidation = validateApiSection(parsed.api)
-      if (apiValidation) {
-        res.status(400).json({ error: `Invalid api section: ${apiValidation}` })
-        return
-      }
-    }
-
-    if (typeof agentIdRaw !== 'string' || agentIdRaw.length === 0) {
-      res.status(400).json({ error: 'agentId is required' })
-      return
-    }
-    const agentId = agentIdRaw
-
-    if (
-      recipeSource !== 'sample' &&
-      recipeSource !== 'import' &&
-      recipeSource !== 'url'
-    ) {
-      res.status(400).json({
-        error: 'recipeSource must be one of: sample, import, url',
-      })
-      return
-    }
-
-    // -- Inspection: prefer the FE-provided result, fall back to recompute --
-    //
-    // The FE has typically just called `/api/recipes/parse` and has
-    // a fresh `InspectionResult`. We accept it as a hint to avoid a
-    // second inspection pass. When absent / malformed, fall back to
-    // a fresh `inspectRecipe` so the prompt's "inspection result"
-    // section never goes stale.
-    let inspection: Awaited<ReturnType<typeof inspectRecipe>>
-    if (
-      inspectionInput &&
-      typeof inspectionInput === 'object' &&
-      typeof (inspectionInput as Record<string, unknown>).pureDeclarative === 'boolean'
-    ) {
-      inspection = inspectionInput as Awaited<ReturnType<typeof inspectRecipe>>
-    } else {
-      inspection = await inspectRecipe(parsed as unknown as Parameters<typeof inspectRecipe>[0])
-    }
-
-    // -- Issue an install-session nonce --
-    //
-    // Bind the metadata KB just inspected (recipeId, recipeHash, the
-    // declared scopes, and the canonicalised api section) to a one-
-    // shot nonce. The nonce is woven into the install prompt below
-    // so the agent echoes it on `mark-installed`, where the handler
-    // verifies that the body's approvedScopes / recipeHash / api all
-    // match what KB stored here. Without this binding, any caller
-    // that can reach the API can mint a manifest with arbitrary
-    // scopes or handler bindings — see codex-review-response-
-    // 2026-05-05.md §6.1.
-    const recipeIdForSession = String(metadata.recipeId)
-    const recipeHashForSession = String((parsed as { hash?: unknown }).hash ?? '')
-    const declaredScopes = (
-      (parsed.api as { scopes?: unknown } | undefined)?.scopes ?? []
-    ) as Scope[]
-    const issueResult = issueInstallSession({
-      recipeId: recipeIdForSession,
-      recipeHash: recipeHashForSession,
-      recipeVersion: String(metadata.version ?? ''),
-      recipeSource: recipeSource as string,
-      approvedScopes: declaredScopes,
-      api: parsed.api ?? null,
-    })
-    if (!issueResult.ok) {
-      if (issueResult.reason === 'invalid_api') {
-        // The recipe parser already validates `api`'s shape, but
-        // canonicalisation imposes its own depth / cycle bounds so
-        // a deeply nested or self-referential api section cannot
-        // overflow the stack on this path. Reject the install with
-        // 400; the recipe author has to flatten the api section
-        // before retrying.
-        apiLogger.warn(
-          { agentId, recipeId: recipeIdForSession },
-          'Recipe install rejected: api section too deep or cyclic',
-        )
-        res.status(400).json({
-          error:
-            'Recipe api section is too deep or contains a cycle. ' +
-            'Simplify the api block in the recipe before retrying install.',
-        })
-        return
-      }
-      // 'at_capacity' — bounded store, refuse new sessions.
-      // SessionManager has no public release API for a queued
-      // reservation today, so the reservation lingers until the
-      // next ensureSession call shifts it off — the leak is bounded
-      // by however many capacity-rejections happen before the next
-      // legitimate install for this agentId, which is small in
-      // practice and self-resolving.
-      apiLogger.warn(
-        { agentId, recipeId: recipeIdForSession },
-        'Recipe install rejected: install-session store at capacity',
-      )
-      res.status(503).json({
-        error:
-          'KovitoBoard has too many install sessions in flight. ' +
-          'Wait a few minutes for them to expire or restart the app, then try again.',
-      })
-      return
-    }
-    const installNonce = issueResult.nonce
-
-    // -- Build the v2.0 install prompt --
-    //
-    // Pass the `{ fs, projectRoot }` context so the prompt builder
-    // can scan `app/<appId>/manifest.json` and surface a "reinstall
-    // detection" section listing every app that already shares this
-    // recipeId (DEC-024 #4 / spec §3.5). The `installNonce` is
-    // included in the Step 7 curl snippet so the agent echoes it on
-    // mark-installed.
-    const prompt = buildRecipePrompt(
-      parsed as unknown as Parameters<typeof buildRecipePrompt>[0],
-      inspection,
-      { fs, projectRoot, installNonce },
-    )
-
-    // -- Reserve origin so the resulting session is tagged --
-    sessionManager.reserveOrigin(agentId, 'recipe-install')
-
-    // -- Tmux-first delivery (mirrors `/api/sessions/new`) --
-    const tmuxAgent = await ensureTmuxAgent(agentId)
-    if (!tmuxAgent) {
-      apiLogger.warn(
-        { agentId, recipeId: metadata.recipeId },
-        'Recipe install: failed to start tmux agent window',
-      )
-      res.status(503).json({
-        error: `Could not start tmux agent window for "${agentId}". Make sure tmux is installed and the agent definition exists.`,
-      })
-      return
-    }
-
-    let result: { success: boolean; error?: string }
-    if (tmuxAgent.justStarted) {
-      // Wait for the prompt before sending. Claude Code's first
-      // launch can linger 15+ seconds while it fetches credentials,
-      // so we wait up to 45 seconds before giving up.
-      const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
-      if (!ready) {
-        apiLogger.warn(
-          { agentId, timeoutMs: 45000, endpoint: req.path },
-          'Prompt wait timeout for agent (recipe-install)',
-        )
-      }
-      result = await tmuxBridge.sendMessage(tmuxAgent.windowName, prompt)
-    } else {
-      // Already running: end the existing session with `/clear` and
-      // start fresh so the install handover prompt is the first
-      // message of the new conversation.
-      result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, prompt)
-    }
-
-    if (!result.success) {
-      apiLogger.error(
-        { err: result.error, agentId, recipeId: metadata.recipeId, windowName: tmuxAgent.windowName },
-        'Recipe install failed: tmux send returned an error',
-      )
-      res.status(500).json({
-        error: result.error || 'Failed to deliver the install handover prompt to the agent.',
-      })
-      return
-    }
-
-    apiLogger.info(
-      { agentId, recipeId: metadata.recipeId, recipeSource, windowName: tmuxAgent.windowName },
-      'Recipe install handover dispatched',
-    )
-    res.json({
-      ok: true,
-      agentId,
-      via: 'tmux',
-      windowName: tmuxAgent.windowName,
-    })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe install error')
-    res.status(500).json({ error: 'Failed to install recipe' })
-  }
+// `POST /api/recipes/install` — temporarily disabled in v0.2.x.
+//
+// Recipe install is blocked during the prompt-injection defence
+// design freeze and the KovitoHub central-distribution preparation
+// (recipe-system.md §10.6 / http-api-contract.md §4.3.8.A /
+// §10.1.1). Returning 410 Gone here keeps the install handover
+// prompt builder, install-session store, and tmux delivery path
+// intact for v0.3.0 re-enable under the signed publisher model,
+// while making sure no caller can mint a fresh install handover
+// while v0.2.x is in the field. Existing install-grandfather
+// surfaces (manifest read, uninstall, export, dispatcher) stay
+// operational — see recipe-system.md §10.6.3.
+app.post('/api/recipes/install', (_req, res) => {
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
+    { route: '/api/recipes/install' },
+    'POST /api/recipes/install is temporarily disabled in v0.2.x. ' +
+    'Re-enable is planned for v0.3.0 with the KovitoHub signed publisher model.',
+  )
+  res.status(410).json({
+    error: 'RecipeInstallDisabled',
+    message:
+      'Recipe install is disabled in v0.2.x. KovitoHub sync release is planned for v0.3.0.',
+    details: {
+      endpoint: '/api/recipes/install',
+      kbVersion: '0.2.x',
+      plannedReenable: 'v0.3.0 (KovitoHub signed publisher model + developer sideload mode)',
+      grandfatherDocs: 'docs/specs/recipe-system.md §10.6',
+    },
+  })
 })
 
 // --- Recipe Mark-Installed API (DEC-024 #2 / spec §3.3) ---

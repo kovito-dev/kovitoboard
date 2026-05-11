@@ -6,9 +6,16 @@
 /**
  * Recipe handler E2E tests — Phase L
  *
- * Verifies the full path: install -> WebSocket kb-call -> response validation.
+ * Verifies the full path: manifest setup -> WebSocket kb-call -> response validation.
  *
- * L1: Recipe installation (/api/recipes/install)
+ * The v0.2.x recipe install temporary disable (recipe-system.md §10.6)
+ * does not change the grandfather dispatcher path; these tests still
+ * register a manifest through `POST /api/recipes/_test/issue-nonce`
+ * (KB_E2E_MODE seam) + `POST /api/recipes/:recipeId/mark-installed`
+ * because the dispatcher reads from the manifest store regardless of
+ * how the manifest got there.
+ *
+ * L1: Manifest setup via mark-installed (grandfather entry point)
  * L2: write-file + list-files calls -> create files in own-data and list them
  * L3: read-file call -> verify file content in own-data
  * L4: Excluded paths / undeclared callId / path traversal -> error responses
@@ -142,12 +149,15 @@ async function installTestRecipe(
   await request.post(`${API_BASE}/api/recipes/_test/clear-manifest`, {
     data: { appId: TEST_RECIPE_ID },
   })
-  // The fake-claude harness cannot run the install handover prompt,
-  // so we mint a nonce through the KB_E2E_MODE-only test endpoint
-  // instead of the real `/api/recipes/install` flow. The nonce is
-  // bound to the same recipeId / hash / scopes / api the production
-  // code would have stored, so the production mark-installed handler
-  // accepts the call without any test-mode bypass at the auth check.
+  // The install handover prompt path is unavailable here for two
+  // reasons: fake-claude cannot execute the handover prompt, and the
+  // v0.2.x temporary disable returns 410 Gone for the public
+  // `/api/recipes/install` route anyway. Tests mint the install
+  // session nonce through the KB_E2E_MODE-only test endpoint
+  // instead. The nonce is bound to the same recipeId / hash / scopes
+  // / api the production code would have stored, so the production
+  // mark-installed handler accepts the call without any test-mode
+  // bypass at the auth check.
   const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
     data: {
       recipeId: TEST_RECIPE_ID,
@@ -179,7 +189,7 @@ async function installTestRecipe(
 }
 
 // =========================================
-// L1: Recipe installation
+// L1: Manifest setup (grandfather entry point)
 // =========================================
 
 test.describe('Recipe handler E2E', () => {
