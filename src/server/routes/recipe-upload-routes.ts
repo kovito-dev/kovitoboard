@@ -238,11 +238,13 @@ export function createRecipeUploadRouter(fs: FileAccessLayer): Router {
         res.json({ recipe, inspection })
       } catch (err) {
         // Map security-limits breaches to the spec-mandated 413 / 400
-        // envelope (security-limits.md §6.2). The structured warn log
-        // emitted inside the parser keeps the forensic fields; this
-        // outer log records the route-level outcome.
+        // envelope (security-limits.md §6.2). The structured warn
+        // log already fired inside `checkParserLimit` with the
+        // forensic fields operators need; emitting another warn
+        // here would double the log volume on a route attackers can
+        // flood, so the route layer only translates the exception
+        // into the HTTP envelope.
         if (err instanceof RecipeParseError) {
-          uploadLog.warn({ err }, 'Recipe upload rejected by security limits')
           res.status(err.context.httpStatus).json({
             error:
               err.context.httpStatus === 413

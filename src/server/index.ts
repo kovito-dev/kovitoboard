@@ -986,10 +986,12 @@ app.post('/api/recipes/parse', async (req, res) => {
   } catch (err) {
     // Security-limits breaches return a generic envelope without
     // leaking path / size details to the caller (spec §6.2). The
-    // structured warn log emitted by `checkParserLimit` retains the
-    // forensic fields for operators.
+    // structured warn log was already emitted by `checkParserLimit`
+    // at the parser boundary with the forensic fields operators
+    // need; emitting a second warn here would double the log
+    // volume on the very path attackers can flood, so the route
+    // layer only translates the exception into the HTTP envelope.
     if (err instanceof RecipeParseError) {
-      apiLogger.warn({ err }, 'Recipe parse rejected by security limits')
       res.status(err.context.httpStatus).json({
         error:
           err.context.httpStatus === 413
