@@ -17,7 +17,6 @@
  * Spec: docs/specs/v0.1.0-app-removal-flow.md §4 / F3 / F4.
  *
  * UI references:
- *   - Modal chrome / Escape: `RecipeInstallAgentPickerModal.tsx`.
  *   - Agent list styling: `AppCreateModal.tsx` agent list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'

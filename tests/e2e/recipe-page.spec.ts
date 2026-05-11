@@ -15,46 +15,39 @@ import { test, expect } from './helpers/l1-per-test-setup'
 const API_BASE = 'http://127.0.0.1:3001'
 
 test.describe('Recipe page', () => {
-  test('レシピページに 3 つのタブが表示される', async ({ page }) => {
+  test('レシピページに 2 つのタブが表示される', async ({ page }) => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // DEC-024 #5: Export tab was removed from /recipes (recipe export now
-    // happens from the AmbientSidebar's per-app actions popover). The
-    // remaining tabs are Sample / Import / History (en), or
-    // サンプルレシピ / 読み込み / 履歴 (ja). The L1 fixture is locale=en.
+    // The Export tab was retired earlier (recipe export now happens
+    // from the AmbientSidebar's per-app actions popover). The Import
+    // tab was retired in v0.2.x alongside the recipe install
+    // temporary disable (recipe-system.md §10.6). Only Sample /
+    // History remain. The L1 fixture is locale=en.
     const sampleTab = page.getByRole('button', { name: 'Sample recipes' })
-    const importTab = page.getByRole('button', { name: 'Import' })
     const historyTab = page.getByRole('button', { name: 'History' })
+    const importTab = page.getByRole('button', { name: 'Import' })
 
     await expect(sampleTab).toBeVisible()
-    await expect(importTab).toBeVisible()
     await expect(historyTab).toBeVisible()
+    await expect(importTab).toHaveCount(0)
   })
 
   test('タブをクリックしてコンテンツが切り替わる', async ({ page }) => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // The default tab is "Sample recipes" (DEC-024 #5). Switch through
-    // the other two tabs and verify at least one shows different content.
+    // The default tab is "Sample recipes". Switch to the History tab
+    // and confirm the content area updates (a smoke check that the
+    // remaining tabs still wire up correctly).
     const contentArea = page.locator('.overflow-y-auto').last()
     const initialContent = await contentArea.textContent()
 
-    // Switch to History tab
     await page.getByRole('button', { name: 'History' }).click()
     await page.waitForTimeout(300)
     const historyContent = await contentArea.textContent()
 
-    // Switch to Import tab
-    await page.getByRole('button', { name: 'Import' }).click()
-    await page.waitForTimeout(300)
-    const importContent = await contentArea.textContent()
-
-    // At least one tab should show different content
-    // (all three being identical would indicate tabs are broken)
-    const allSame = initialContent === historyContent && historyContent === importContent
-    expect(allSame).toBe(false)
+    expect(initialContent).not.toBe(historyContent)
   })
 
   test('recipes/parse API が空のリクエストを拒否する', async ({ request }) => {

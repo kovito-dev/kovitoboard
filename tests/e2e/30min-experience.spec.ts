@@ -379,85 +379,36 @@ test.describe('S6: Rejection flow', () => {
 })
 
 // ---------------------------------------------------------------------------
-// S7: Recipe installation -> scope approval -> operation
+// S7: Recipe installation surface — v0.2.x temporary disable
 // ---------------------------------------------------------------------------
-test.describe('S7: Recipe installation flow', () => {
-  test('S7-a: Sample recipe install flow surfaces the warning + agent picker', async ({ page, kbFixture: _kbFixture }) => {
+test.describe('S7: Recipe install temporary disable', () => {
+  test('S7-a: Sample recipes page shows the disable notice and no install buttons', async ({
+    page,
+    kbFixture: _kbFixture,
+  }) => {
     void _kbFixture
 
-    // Stub `/api/recipes/parse` so we can deterministically force the
-    // `pureDeclarative: false` branch that surfaces the warning dialog.
-    // The legacy `recipe-install-modal` testid was removed in DEC-024 #4
-    // when the install flow was split into a two-stage warning +
-    // agent-picker UI (see `RecipeInstallWarningDialog.tsx` and
-    // `RecipeInstallAgentPickerModal.tsx`).
-    await page.route('**/api/recipes/parse**', async (route) => {
-      const url = new URL(route.request().url())
-      const sourcePath = url.searchParams.get('sourcePath') ?? '/tmp/s7-fixture'
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          recipe: {
-            metadata: {
-              recipeId: 's7-fixture-recipe',
-              name: 'S7 fixture recipe',
-              description: 'Fixture recipe surfaced by the S7-a stub',
-              version: '1.0.0',
-              author: 'kovito-test',
-            },
-            artifacts: [],
-            menu: [],
-            hash: 'sha256:s7a-fixture',
-            sourceFormat: 'directory',
-            sourcePath,
-          },
-          inspection: {
-            verdict: 'safe',
-            findings: [],
-            pureDeclarative: false,
-            detectedNonDeclarativePatterns: ['express-router'],
-          },
-        }),
-      })
-    })
+    // Recipe install is temporarily disabled in v0.2.x while the
+    // KovitoHub signed publisher model is being prepared
+    // (recipe-system.md §10.6). The sample page now renders a
+    // Coming-in-v0.3.0 notice instead of install / reinstall CTAs;
+    // the standalone disable contract is covered by
+    // `recipe-install-disable.spec.ts`.
 
-    // Fetch available recipes up front so we can target a non-installed one
     const listRes = await page.request.get('/api/recipes/sample')
     expect(listRes.ok()).toBeTruthy()
-    const recipes = await listRes.json() as Array<{ id: string; installed?: boolean }>
+    const recipes = (await listRes.json()) as Array<{ id: string }>
     expect(Array.isArray(recipes)).toBe(true)
     expect(recipes.length).toBeGreaterThan(0)
-
-    const target = recipes.find((r) => !r.installed)
-    if (!target) {
-      test.skip(true, 'All sample recipes are already installed in this fixture')
-      return
-    }
 
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // Sample tab is default; the install button for the target recipe must exist
-    const installBtn = page.getByTestId(`recipe-install-button-${target.id}`)
-    await expect(installBtn).toBeVisible({ timeout: 10_000 })
-    await installBtn.click()
-
-    // Stage 1: warning dialog (only surfaces for non-pure declarative recipes)
-    const warning = page.getByTestId('recipe-install-warning-dialog')
-    await expect(warning).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId('recipe-install-warning-continue')).toBeVisible()
-    await expect(page.getByTestId('recipe-install-warning-cancel')).toBeVisible()
-
-    // Stage 2: agent picker (continue past warning)
-    await page.getByTestId('recipe-install-warning-continue').click()
-    const picker = page.getByTestId('recipe-install-agent-picker')
-    await expect(picker).toBeVisible({ timeout: 10_000 })
-
-    // Cancel the picker so no install POST fires (kovito-concierge in
-    // blank-onboarded keeps the fixture clean for later tests).
-    await page.getByTestId('recipe-install-picker-cancel').click()
-    await expect(picker).not.toBeVisible({ timeout: 5_000 })
+    await expect(page.getByTestId('recipe-install-disabled-notice')).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(page.locator('[data-testid^="recipe-install-button-"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid^="recipe-reinstall-button-"]')).toHaveCount(0)
   })
 })
 
@@ -557,45 +508,19 @@ test.describe('S10: Research Reports API smoke', () => {
 })
 
 // ---------------------------------------------------------------------------
-// S11: Recipe parse/apply smoke
-// Full export/import loop is blocked pending endpoint completion; this
-// verifies the parse path which is the first half of import.
+// S11: Recipe parse smoke
+// The full import / apply path was retired in v0.2.x alongside the
+// recipe install temporary disable (recipe-system.md §10.6). The
+// `POST /api/recipes/parse` endpoint stays operational so manifests
+// and exports can still surface parsed recipe content; this smoke
+// test guards the parse path's basic input validation.
 // ---------------------------------------------------------------------------
-test.describe('S11: Recipe import UI smoke', () => {
-  test('S11-a: Recipe import tab renders the parse form and validates empty input', async ({ page, request, kbFixture: _kbFixture }) => {
+test.describe('S11: Recipe parse smoke', () => {
+  test('S11-a: /api/recipes/parse rejects empty body', async ({ request, kbFixture: _kbFixture }) => {
     void _kbFixture
-    // API-level validation: empty source is rejected
     const apiRes = await request.post('/api/recipes/parse', { data: {} })
     expect(apiRes.status()).toBeGreaterThanOrEqual(400)
     expect(apiRes.status()).toBeLessThan(500)
-
-    // UI-level: import tab renders the controls
-    await page.goto('/recipes')
-    await page.waitForLoadState('networkidle')
-    await page.getByRole('button', { name: 'Import' }).click()
-
-    // The legacy absolute-path entry was moved into a collapsed
-    // <details> expander (see RecipeImport.tsx around the
-    // "advanced.toggle" i18n key) so the input is reachable only
-    // after opening the expander. Match the toggle label in either
-    // ja ("パスを直接入力する（上級者向け）") or en
-    // ("Enter a path directly (advanced)") locale.
-    await page
-      .locator('details > summary')
-      .filter({ hasText: /パスを直接入力|Enter a path directly/i })
-      .click()
-
-    const input = page.getByTestId('recipe-import-source-input')
-    await expect(input).toBeVisible({ timeout: 10_000 })
-    const parseBtn = page.getByTestId('recipe-import-parse')
-    await expect(parseBtn).toBeVisible()
-
-    // Empty input keeps the parse button disabled
-    await expect(parseBtn).toBeDisabled()
-
-    // Filling the input enables the parse button (smoke contract)
-    await input.fill('/tmp/kb-nonexistent-recipe')
-    await expect(parseBtn).toBeEnabled()
   })
 })
 

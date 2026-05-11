@@ -16,7 +16,6 @@
  * @see docs/specs/v0.1.0-recipe-install-handover.md §3.4
  */
 import { extname } from 'path'
-import type { TmuxBridge } from './tmux-bridge'
 import type { FileAccessLayer } from './fs-layer'
 import { sanitizeInstruction } from './recipe-inspector'
 import { scanAppManifests } from './services/app-manifest'
@@ -395,24 +394,10 @@ export function buildRecipePrompt(
   })
 }
 
-/**
- * Apply a recipe by building the prompt and sending it via tmux.
- */
-export async function applyRecipe(
-  recipe: ParsedRecipe,
-  inspection: InspectionResult,
-  tmuxBridge: TmuxBridge,
-  windowName: string,
-): Promise<{ success: boolean; error?: string }> {
-  const prompt = buildRecipePrompt(recipe, inspection)
-
-  const result = await tmuxBridge.sendMessage(windowName, prompt)
-  if (!result.success) {
-    return { success: false, error: result.error || 'Failed to send message via tmux' }
-  }
-
-  return { success: true }
-}
+// `applyRecipe` (the deprecated v0.1.x apply transform) was removed
+// in v0.2.x alongside `POST /api/recipes/apply`. The v0.3.0 install
+// flow will rebuild on top of `buildRecipePrompt` directly, so the
+// prompt builder + its sentinel wrapping are kept intact here.
 
 // --- Helpers ---
 

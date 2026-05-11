@@ -4,37 +4,36 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Recipes page — tab container for Sample, Import, and History.
+ * Recipes page — tab container for Sample and History.
  *
- * The legacy "Export" tab was removed in DEC-024 #5: recipe export now
- * runs from the AmbientSidebar's per-app actions popover so the user
- * can never accidentally export "everything under app/" instead of a
- * specific app. The standalone export tab + `RecipeExport.tsx`
- * component were deleted at the same time.
+ * The legacy "Export" tab was retired earlier so recipe export now
+ * runs from the AmbientSidebar's per-app actions popover. The
+ * "Import" tab and `RecipeImport.tsx` were retired in v0.2.x when
+ * recipe install was temporarily disabled (recipe-system.md §10.6
+ * / http-api-contract.md §4.3.8.A). The v0.3.0 release will bring
+ * back recipe install via the KovitoHub signed publisher model.
  *
- * Header also hosts the "Create new app" entry point (spec
- * docs/specs/v0.1.0-app-creation-flow.md, EU9). Clicking the button
- * opens an AppCreateModal that captures purpose / optional details /
- * target agent, then starts a new agent session and navigates to it.
+ * Header also hosts the "Create new app" entry point. Clicking the
+ * button opens an AppCreateModal that captures purpose / optional
+ * details / target agent, then starts a new agent session and
+ * navigates to it.
  */
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { t } from '../i18n'
 import type { AgentInfo, NewSessionResponse, SessionOrigin } from '../types'
 import { RecipeSample } from '../components/RecipeSample'
-import { RecipeImport } from '../components/RecipeImport'
 import { RecipeHistory } from '../components/RecipeHistory'
 import { AppCreateModal, type AppCreateSubmission } from '../components/AppCreateModal'
 import { buildAppCreationPrompt } from '../../shared/app-creation-prompt'
 
-type TabId = 'sample' | 'import' | 'history'
+type TabId = 'sample' | 'history'
 
 // Built at module evaluation. See i18n/index.ts `readPersistedLocale()`
 // for how the locale used here is restored from localStorage before
 // this constant is computed (OSS fallback: en).
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'sample', label: t('recipe.tab.sample') },
-  { id: 'import', label: t('recipe.tab.import') },
   { id: 'history', label: t('recipe.tab.history') },
 ]
 
@@ -180,7 +179,6 @@ export function RecipesPage({ agents, startNewSession, theme = 'dark' }: Recipes
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {activeTab === 'sample' && <RecipeSample agents={agents} theme={theme} />}
-        {activeTab === 'import' && <RecipeImport />}
         {activeTab === 'history' && <RecipeHistory />}
       </div>
 
