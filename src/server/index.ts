@@ -1001,7 +1001,12 @@ app.post('/api/recipes/parse', async (req, res) => {
 // callers should migrate to `/api/recipes/install` once it ships
 // again in v0.3.0 alongside the KovitoHub signed publisher model.
 app.post('/api/recipes/apply', (_req, res) => {
-  apiLogger.warn(
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
     { route: '/api/recipes/apply' },
     'POST /api/recipes/apply was removed in v0.2.x. ' +
     'The deprecated apply flow was withdrawn along with recipe install temporary disable.',
@@ -1223,7 +1228,12 @@ app.get('/api/recipes/app-scan', (req, res) => {
 // surfaces (manifest read, uninstall, export, dispatcher) stay
 // operational — see recipe-system.md §10.6.3.
 app.post('/api/recipes/install', (_req, res) => {
-  apiLogger.warn(
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
     { route: '/api/recipes/install' },
     'POST /api/recipes/install is temporarily disabled in v0.2.x. ' +
     'Re-enable is planned for v0.3.0 with the KovitoHub signed publisher model.',

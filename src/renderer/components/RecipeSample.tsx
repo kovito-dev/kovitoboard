@@ -18,7 +18,6 @@
  * while viewing `/ext/<appId>`.
  */
 import { useState, useEffect, useCallback } from 'react'
-import type { AgentInfo } from '../types'
 import { getRecipeDescription, getRecipeName } from '../utils/recipe-display'
 import { t } from '../i18n'
 import { kbFetch } from '../lib/kbFetch'
@@ -51,14 +50,7 @@ interface SampleRecipeInfo {
 
 type LoadState = 'loading' | 'loaded' | 'error'
 
-interface RecipeSampleProps {
-  /** Kept for API compatibility with the surrounding RecipesPage. */
-  agents?: AgentInfo[]
-  /** Kept for API compatibility with the surrounding RecipesPage. */
-  theme?: 'dark' | 'light'
-}
-
-export function RecipeSample(_props: RecipeSampleProps) {
+export function RecipeSample() {
   const [recipes, setRecipes] = useState<SampleRecipeInfo[]>([])
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)

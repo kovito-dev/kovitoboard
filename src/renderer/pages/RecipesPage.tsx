@@ -178,7 +178,7 @@ export function RecipesPage({ agents, startNewSession, theme = 'dark' }: Recipes
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
-        {activeTab === 'sample' && <RecipeSample agents={agents} theme={theme} />}
+        {activeTab === 'sample' && <RecipeSample />}
         {activeTab === 'history' && <RecipeHistory />}
       </div>
 
