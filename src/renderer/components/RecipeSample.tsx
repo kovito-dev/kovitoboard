@@ -82,39 +82,61 @@ export function RecipeSample(_props: RecipeSampleProps) {
     fetchRecipes()
   }, [fetchRecipes])
 
+  // v0.2.x disable notice — recipe install is temporarily off until
+  // the KovitoHub signed publisher model ships in v0.3.0. Rendered
+  // outside the state-specific branches below so the explanation is
+  // visible on loading / error / empty / loaded paths alike.
+  const disableNotice = (
+    <div
+      data-testid="recipe-install-disabled-notice"
+      className="px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-secondary)]"
+    >
+      {t('recipe.install.comingSoon')}
+    </div>
+  )
+
   if (state === 'loading') {
     return (
-      <div className="flex items-center justify-center py-8">
-        <div className="text-[var(--text-dim)] text-sm">{t('recipe.sample.status.loading')}</div>
+      <div className="space-y-6">
+        {disableNotice}
+        <div className="flex items-center justify-center py-8">
+          <div className="text-[var(--text-dim)] text-sm">{t('recipe.sample.status.loading')}</div>
+        </div>
       </div>
     )
   }
 
   if (state === 'error') {
     return (
-      <div className="space-y-3">
-        <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
-          {error}
+      <div className="space-y-6">
+        {disableNotice}
+        <div className="space-y-3">
+          <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+            {error}
+          </div>
+          <button
+            onClick={() => {
+              setState('loading')
+              setError(null)
+              fetchRecipes()
+            }}
+            className="px-3 py-1.5 text-sm border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--bg-elevated)] transition-colors"
+          >
+            {t('recipe.sample.button.reload')}
+          </button>
         </div>
-        <button
-          onClick={() => {
-            setState('loading')
-            setError(null)
-            fetchRecipes()
-          }}
-          className="px-3 py-1.5 text-sm border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--bg-elevated)] transition-colors"
-        >
-          {t('recipe.sample.button.reload')}
-        </button>
       </div>
     )
   }
 
   if (recipes.length === 0) {
     return (
-      <div className="py-8 text-center">
-        <p className="text-sm text-[var(--text-dim)]">{t('recipe.sample.empty')}</p>
-        <p className="text-xs text-[var(--text-dim)] mt-1">{t('recipe.sample.emptyHint')}</p>
+      <div className="space-y-6">
+        {disableNotice}
+        <div className="py-8 text-center">
+          <p className="text-sm text-[var(--text-dim)]">{t('recipe.sample.empty')}</p>
+          <p className="text-xs text-[var(--text-dim)] mt-1">{t('recipe.sample.emptyHint')}</p>
+        </div>
       </div>
     )
   }
@@ -124,14 +146,7 @@ export function RecipeSample(_props: RecipeSampleProps) {
 
   return (
     <div className="space-y-6">
-      {/* v0.2.x disable notice — recipe install is temporarily off
-          until the KovitoHub signed publisher model ships in v0.3.0. */}
-      <div
-        data-testid="recipe-install-disabled-notice"
-        className="px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-secondary)]"
-      >
-        {t('recipe.install.comingSoon')}
-      </div>
+      {disableNotice}
 
       {/* Available section — read-only listing. Install buttons are
           removed; the sample metadata is still rendered so users can
