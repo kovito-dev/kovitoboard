@@ -6,8 +6,16 @@
 /**
  * Recipe scanner — scan `recipes/` directory at startup and cache sample recipe metadata.
  *
- * Used by Phase G to provide `GET /api/recipes/sample` with pre-scanned recipe info.
+ * Used to back `GET /api/recipes/sample` with pre-scanned recipe info.
  * Gracefully handles missing directories and parse failures (logs warning, skips).
+ *
+ * v0.2.x: The install trigger paths are disabled (`/api/recipes/install`
+ * returns 410 Gone, the UI install buttons are gone — recipe-system.md
+ * §10.6). The scanner itself keeps parsing + caching so the sample
+ * cards stay browseable and grandfather install lineage (the
+ * `installed` flag + `historyEntry` join) keeps rendering. The
+ * scanner is not the right place to gate install — gating happens
+ * at the install endpoint and at the UI level.
  */
 import { recipeLogger } from '../logger'
 import { join, resolve, dirname } from 'path'

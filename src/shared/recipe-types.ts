@@ -255,17 +255,11 @@ export interface RecipeParseUploadRequest {
   files: RecipeUploadFile[]
 }
 
-export interface RecipeApplyRequest {
-  recipe: ParsedRecipe
-  inspection: InspectionResult
-  agentId?: string
-}
-
-export interface RecipeApplyResponse {
-  success: boolean
-  historyId: string
-  error?: string
-}
+// `RecipeApplyRequest` / `RecipeApplyResponse` were retired in v0.2.x
+// when `POST /api/recipes/apply` was removed alongside the recipe
+// install temporary disable (recipe-system.md §10.6 /
+// http-api-contract.md §4.3.8.A). The v0.3.0 install flow will run
+// through `InstallRecipeRequest` / `MarkInstalledRequest` only.
 
 /**
  * Request body for `POST /api/recipes/install` (v2.0 — agent-handover flow).

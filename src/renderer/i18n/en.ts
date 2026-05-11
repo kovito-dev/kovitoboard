@@ -128,10 +128,13 @@ const en: Record<MessageKey, string> = {
   'recipe.button.createApp': 'Create new app',
   'recipe.code.button.expandAll': 'Expand all',
   'recipe.tab.sample': 'Sample recipes',
-  'recipe.tab.import': 'Import',
   'recipe.tab.history': 'History',
-  // recipe.tab.export was removed in DEC-024 #5 — recipe export now
-  // runs from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.export was retired earlier — recipe export now runs
+  // from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.import was retired in v0.2.x alongside the recipe
+  // install temporary disable (recipe-system.md §10.6).
+  'recipe.install.comingSoon':
+    'Recipe install is temporarily disabled in v0.2.x. The KovitoHub signed publisher model is planned for v0.3.0.',
 
   // App creation modal (v0.1.0-app-creation-flow.md §7.4)
   'appCreate.modal.title': 'Create new app',
@@ -235,44 +238,18 @@ const en: Record<MessageKey, string> = {
   'chat.topic.status.sending': 'Sending...',
   'chat.topic.button.start': 'Start',
 
-  // Sample recipes
+  // Sample recipes — read-only listing while recipe install is
+  // disabled in v0.2.x. Install / reinstall / warning / picker keys
+  // were retired alongside the disable; the `recipe.install.comingSoon`
+  // key above replaces the install CTAs on the sample page.
   'recipe.sample.status.loading': 'Loading sample recipes...',
-  'recipe.sample.status.installing': 'Installing...',
   'recipe.sample.button.reload': 'Reload',
-  'recipe.sample.button.install': 'Install',
   'recipe.sample.empty': 'No sample recipes',
   'recipe.sample.emptyHint': 'Add recipes to the recipes/ directory and they will appear here.',
   'recipe.sample.section.available': 'Available ({count})',
   'recipe.sample.section.installed': 'Installed ({count})',
   'recipe.sample.badge.installed': 'Installed',
   'recipe.sample.installedDate': 'Installed on',
-  'recipe.sample.justInstalled.title': 'Install complete',
-  'recipe.sample.justInstalled.body': 'A new entry has been added to the left navigation. No reload is needed.',
-  'recipe.sample.justInstalled.dismiss': 'Dismiss',
-  'recipe.sample.button.reinstall': 'Reinstall',
-  'recipe.sample.status.reinstalling': 'Reinstalling...',
-
-  // Recipe install v2.0 — non-declarative warning dialog
-  'recipe.install.warning.title': 'Warning: recipe contains non-declarative code',
-  'recipe.install.warning.body': 'Recipe "{name}" includes patterns that go beyond the declarative handler model:',
-  'recipe.install.warning.note': 'When the agent applies this recipe it may install code with full privileges. Continue only if you trust the source.',
-  'recipe.install.warning.continue': 'Continue',
-  'recipe.install.warning.cancel': 'Cancel',
-  'recipe.install.warning.pattern.express-router': 'Express Router usage',
-  'recipe.install.warning.pattern.direct-fetch': 'Direct HTTP via fetch()',
-  'recipe.install.warning.pattern.axios-import': 'HTTP via axios',
-  'recipe.install.warning.pattern.child-process': 'Shell / child process execution',
-  'recipe.install.warning.pattern.node-fs-direct': 'Direct Node.js fs API usage',
-  'recipe.install.warning.pattern.shell-exec': 'exec / spawn usage',
-  'recipe.install.warning.pattern.process-env-write': 'process.env writes',
-
-  // Recipe install — safety boundary + trusted code disclosure (D-4)
-  'recipe.install.warning.safetyBoundary.heading': 'Safety boundary',
-  'recipe.install.warning.safetyBoundary.body':
-    'This recipe runs inside KovitoBoard\'s safety boundary. Recipe artifacts are inspected (extension whitelist, path prefix restriction, type \'api\' forbidden, dangerous pattern detection) and confined to the renderer side; backend route handlers cannot be packaged into a recipe.',
-  'recipe.install.warning.trustedCode.heading': 'Recipe page = trusted code',
-  'recipe.install.warning.trustedCode.body':
-    'Recipe pages run with first-party privileges in the same JavaScript realm as KovitoBoard\'s built-in UI. They can call any /api/* endpoint, send WebSocket messages, and access localStorage / sessionStorage. The handler scopes shown above apply to window.kb.call() handlers; pages may bypass them via direct fetch / WebSocket. Install only recipes from sources you trust.',
 
   // App removal flow (DEC-024 #3)
   'nav.action.removeApp': 'Remove app',
@@ -293,13 +270,6 @@ const en: Record<MessageKey, string> = {
   'appRemoval.picker.button.confirm': 'Remove with this agent',
   'appRemoval.error.noAgents': 'No agents are defined. Create one from the Agents page first.',
   'appRemoval.error.sessionCreationFailed': 'Failed to create session: {error}',
-
-  // Recipe install v2.0 — agent picker
-  'recipe.install.picker.title': 'Choose an agent to install this recipe',
-  'recipe.install.picker.body': 'Select the agent that will install "{name}". The agent will walk you through the placement interactively.',
-  'recipe.install.picker.confirm': 'Install with this agent',
-  'recipe.install.picker.cancel': 'Cancel',
-  'recipe.install.picker.noAgents': 'No agents are defined. Create one from the Agents page first.',
 
   // Agent list
   'agent.list.title': 'Agents',
@@ -439,36 +409,8 @@ const en: Record<MessageKey, string> = {
   'recipe.export.error.customBeNotExportable':
     'This app cannot be exported as a recipe: app/{appId}/api/ contains files ({files}) which fall outside the recipe safety boundary — recipe-inspector rejects every artifact whose path starts with api/, regardless of extension. To distribute this app, either rewrite the BE logic using Category A handlers (declarative api.calls + window.kb.call) or document the api/ part separately and ask recipients to implement it via agent assistance after recipe install.',
 
-  // Recipe import
-  'recipe.import.verdict.blocked': 'Blocked',
-  'recipe.import.verdict.warning': 'Warning',
-  'recipe.import.verdict.caution': 'Caution',
-  'recipe.import.verdict.safe': 'Safe',
-  'recipe.import.field.path': 'Recipe path',
-  'recipe.import.field.pathHint': 'Enter the path to a local recipe directory or .md file.',
-  'recipe.import.button.parse': 'Parse',
-  'recipe.import.button.apply': 'Apply',
-  'recipe.import.button.importAnother': 'Import another recipe',
-  'recipe.import.status.parsing': 'Parsing recipe...',
-  'recipe.import.status.applying': 'Applying...',
-  'recipe.import.findings.title': 'Inspection results ({count} items)',
-  'recipe.import.code.title': 'Artifact code',
-  'recipe.import.menu.title': 'Menu entries',
-  'recipe.import.hint.reviewRequired': 'Review all code before applying',
-  'recipe.import.applied.title': 'Recipe applied',
-  'recipe.import.applied.description': 'ID: {id} — The agent is creating files. Check progress on the sessions screen.',
-  // RC-3: file picker dialog
-  'recipe.import.upload.label': 'Pick a recipe',
-  'recipe.import.upload.button.file': 'Choose .md file',
-  'recipe.import.upload.button.dir': 'Choose directory',
-  'recipe.import.upload.hint': 'Select a single .md recipe or a recipe directory (with recipe.yaml). 5MB total max.',
-  'recipe.import.upload.noFiles': 'No file selected',
-  'recipe.import.upload.noSupportedFiles': 'No supported files in selection (.md / .markdown / .yaml / .ts / .tsx / .css / .json)',
-  'recipe.import.upload.tooManyFiles': 'Too many files (max {max})',
-  'recipe.import.upload.fileTooLarge': 'File too large: {name} (must be 1MB or less)',
-  'recipe.import.upload.totalTooLarge': 'Combined upload exceeds 5MB',
-  'recipe.import.upload.unsupportedExtension': 'Unsupported extension: {name}',
-  'recipe.import.advanced.toggle': 'Enter a path directly (advanced)',
+  // Recipe import — retired in v0.2.x alongside the recipe install
+  // temporary disable. Will return with the v0.3.0 sideload mode.
 
   // Agent structured field editor
   'agent.field.displayName.label': 'Display name',
