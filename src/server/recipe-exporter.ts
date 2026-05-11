@@ -70,13 +70,45 @@ export const APP_ID_RESERVED_DIRS = Object.freeze([
  * (rather than a plain `Error`) keeps the route's `catch` block from
  * having to pattern-match on the message string and prevents future
  * scanner exceptions from being silently downgraded into 400s.
+ *
+ * Two messages are carried separately so the HTTP boundary can keep
+ * the response body free of internal detail while operators retain
+ * the diagnostic context in server logs:
+ *
+ * - `message` — verbose, includes the offending `appId`, the regex
+ *   the input failed, or the canonical realpath that escaped `app/`.
+ *   This is what gets recorded in `apiLogger.warn` and the unit-test
+ *   assertions look at.
+ * - `clientMessage` — generic, safe to echo to the HTTP client. Never
+ *   mentions filesystem paths, attacker-controlled `appId` values, or
+ *   the regex literal. The route layer renders this into the 400
+ *   `InvalidAppId` body.
  */
 export class AppIdBoundaryError extends Error {
-  constructor(message: string) {
+  readonly clientMessage: string
+  constructor(message: string, clientMessage: string) {
     super(message)
     this.name = 'AppIdBoundaryError'
+    this.clientMessage = clientMessage
   }
 }
+
+/**
+ * Generic client-safe message returned for any input-validation
+ * failure (`validateAppId`). Crafted so a probe cannot use the response
+ * body to infer whether the rejection came from the regex check or the
+ * RESERVED_DIRS list, and never echoes the offending `appId` itself.
+ */
+const CLIENT_MESSAGE_INVALID_APP_ID = 'appId is invalid'
+
+/**
+ * Generic client-safe message returned by `scanAppDirectory` when the
+ * realpath escape check fires. Communicates the boundary semantics
+ * ("the resolved path left `app/`") without leaking the canonical
+ * realpath strings that would otherwise disclose absolute filesystem
+ * locations of the host project root or symlink targets.
+ */
+const CLIENT_MESSAGE_APP_ROOT_ESCAPE = 'appId resolves outside the app directory'
 
 /**
  * Validate that `appId` is a string matching {@link APP_ID_PATTERN}
@@ -91,15 +123,22 @@ export class AppIdBoundaryError extends Error {
  */
 export function validateAppId(appId: unknown): string {
   if (typeof appId !== 'string') {
-    throw new AppIdBoundaryError('appId must be a string')
+    throw new AppIdBoundaryError(
+      'appId must be a string',
+      CLIENT_MESSAGE_INVALID_APP_ID,
+    )
   }
   if (!APP_ID_PATTERN.test(appId)) {
     throw new AppIdBoundaryError(
       `appId must match ${APP_ID_PATTERN.toString()}`,
+      CLIENT_MESSAGE_INVALID_APP_ID,
     )
   }
   if ((APP_ID_RESERVED_DIRS as readonly string[]).includes(appId)) {
-    throw new AppIdBoundaryError(`appId "${appId}" is reserved`)
+    throw new AppIdBoundaryError(
+      `appId "${appId}" is reserved`,
+      CLIENT_MESSAGE_INVALID_APP_ID,
+    )
   }
   return appId
 }
@@ -182,6 +221,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   ) {
     throw new AppIdBoundaryError(
       `appRoot "${appRootReal}" escapes app/ directory "${appDirReal}"`,
+      CLIENT_MESSAGE_APP_ROOT_ESCAPE,
     )
   }
 

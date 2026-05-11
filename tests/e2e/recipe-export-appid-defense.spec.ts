@@ -91,7 +91,12 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
     expect(res.status()).toBe(400)
     const body = (await res.json()) as { error: string; message?: string }
     expect(body.error).toBe('InvalidAppId')
-    expect(body.message).toMatch(/reserved/)
+    // The body is intentionally a generic `appId is invalid`: the
+    // route layer never echoes the offending `appId` (or the regex
+    // literal it failed) so a probe cannot fingerprint which branch
+    // of `validateAppId` rejected the input. The full reason — including
+    // the literal "reserved" wording — stays in the server warn log.
+    expect(body.message).toMatch(/invalid/)
   })
 
   test('GET /api/recipes/app-scan rejects RESERVED_DIR appId (data) with 400 InvalidAppId', async ({
@@ -103,7 +108,7 @@ test.describe('Recipe export appId boundary defence (v0.2.x)', () => {
     expect(res.status()).toBe(400)
     const body = (await res.json()) as { error: string; message?: string }
     expect(body.error).toBe('InvalidAppId')
-    expect(body.message).toMatch(/reserved/)
+    expect(body.message).toMatch(/invalid/)
   })
 
   test('POST /api/recipes/export still serves a 200 download for a valid existing app (grandfather path preserved)', async ({

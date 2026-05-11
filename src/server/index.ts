@@ -1188,7 +1188,13 @@ app.post('/api/recipes/export', (req, res) => {
         { route: '/api/recipes/export', err: { name: err.name, message: err.message } },
         'invalid appId',
       )
-      res.status(400).json({ error: 'InvalidAppId', message: err.message })
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
       return
     }
     apiLogger.error(
@@ -1218,7 +1224,13 @@ app.get('/api/recipes/app-scan', (req, res) => {
         { route: '/api/recipes/app-scan', err: { name: err.name, message: err.message } },
         'invalid appId',
       )
-      res.status(400).json({ error: 'InvalidAppId', message: err.message })
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
       return
     }
     apiLogger.error({ err }, 'App scan error')
