@@ -149,19 +149,26 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
     throw new Error(`recipe.yaml not found in directory: ${dirPath}`)
   }
 
-  const yamlContent = fs.readFileSync(yamlPath, 'utf-8')
-  // L-R1: reject oversized recipe.yaml before invoking the YAML
-  // parser. gray-matter and js-yaml will happily allocate large
-  // structures from huge inputs, so the parser entry is where the
-  // ceiling has to land (spec §6.1).
-  const yamlBytes = Buffer.byteLength(yamlContent, 'utf-8')
+  // L-R1: reject oversized recipe.yaml on stat metadata BEFORE
+  // readFileSync materializes the file into a Node string. Without
+  // this, a hostile 1 GiB recipe.yaml would be fully decoded into
+  // memory before the ceiling check fires — the OOM path the limit
+  // is supposed to close. gray-matter / js-yaml would then re-walk
+  // that same string and allocate a YAML AST on top.
+  const yamlStat = fs.statSync(yamlPath)
   checkParserLimit({
     limit: 'MAX_RECIPE_YAML_BYTES',
     limitValue: MAX_RECIPE_YAML_BYTES,
-    actualValue: yamlBytes,
+    actualValue: yamlStat.size,
     httpStatus: 413,
     extraFields: { sourcePath: dirPath },
   })
+
+  const yamlContent = fs.readFileSync(yamlPath, 'utf-8')
+  // Decoded byte count (utf-8 round-trip matches `yamlStat.size`
+  // for well-formed inputs); used below to seed the cumulative
+  // total-byte counter for L-R2.
+  const yamlBytes = Buffer.byteLength(yamlContent, 'utf-8')
 
   const { data } = matter(yamlContent)
 
@@ -242,19 +249,22 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
  * Structure: YAML frontmatter + ## artifacts/path sections with fenced code blocks
  */
 function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecipe {
-  const content = fs.readFileSync(filePath, 'utf-8')
   // L-R2: the .md envelope holds yaml + inline artifact bodies, so
-  // the file total is the meaningful ceiling here (spec §5.1 row L-R2
-  // explicitly names the Markdown file). L-R1 is directory-only and
-  // does not apply to .md recipes.
-  const contentBytes = Buffer.byteLength(content, 'utf-8')
+  // the file total is the meaningful ceiling here (spec §5.1 row
+  // L-R2 explicitly names the Markdown file). L-R1 is
+  // directory-only and does not apply to .md recipes. Checked on
+  // stat metadata BEFORE readFileSync so a hostile multi-GiB .md
+  // recipe never lands in memory.
+  const stat = fs.statSync(filePath)
   checkParserLimit({
     limit: 'MAX_RECIPE_TOTAL_BYTES',
     limitValue: MAX_RECIPE_TOTAL_BYTES,
-    actualValue: contentBytes,
+    actualValue: stat.size,
     httpStatus: 413,
     extraFields: { sourcePath: filePath },
   })
+
+  const content = fs.readFileSync(filePath, 'utf-8')
 
   const { data, content: body } = matter(content)
 
