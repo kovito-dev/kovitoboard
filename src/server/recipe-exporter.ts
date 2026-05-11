@@ -36,6 +36,75 @@ import type {
 } from '../shared/recipe-types'
 
 /**
+ * Pattern that an `appId` must satisfy to be accepted by the export /
+ * app-scan boundary.
+ *
+ * Mirrors the `app-name` contract from
+ * `docs/specs/app-directory-extension.md`: lowercase letter to start,
+ * lowercase alphanumerics or hyphens after that, max 64 characters.
+ * Anything outside this set is rejected before the scanner builds a
+ * filesystem path.
+ */
+export const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+
+/**
+ * Reserved directory names directly under `app/` that recipe install
+ * never creates as `app/<appId>/`. Sourced from
+ * `docs/specs/app-directory-extension.md` (RESERVED_DIRS) so that an
+ * attacker cannot use them as `appId` to navigate into shared trees
+ * (`app/api/`, `app/data/`, `app/pages/`, `app/styles/`).
+ */
+export const APP_ID_RESERVED_DIRS = Object.freeze([
+  'api',
+  'pages',
+  'styles',
+  'data',
+] as const)
+
+/**
+ * Boundary error raised by `validateAppId` / `scanAppDirectory` when
+ * the supplied `appId` would let the scanner step outside `app/`.
+ *
+ * The route layer maps any `AppIdBoundaryError` thrown from the
+ * exporter into a 400 `InvalidAppId` response. A dedicated error type
+ * (rather than a plain `Error`) keeps the route's `catch` block from
+ * having to pattern-match on the message string and prevents future
+ * scanner exceptions from being silently downgraded into 400s.
+ */
+export class AppIdBoundaryError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AppIdBoundaryError'
+  }
+}
+
+/**
+ * Validate that `appId` is a string matching {@link APP_ID_PATTERN}
+ * and is not one of the {@link APP_ID_RESERVED_DIRS}. Returns the
+ * validated value verbatim (no trimming, no case folding) so callers
+ * can rely on a verified single source of truth.
+ *
+ * Whitespace is *not* tolerated: a leading or trailing space would
+ * fail the regex, which is intentional — the legacy `appId.trim()`
+ * call sites used to paper over malformed inputs from the client and
+ * we are now treating every non-conforming value as a 400.
+ */
+export function validateAppId(appId: unknown): string {
+  if (typeof appId !== 'string') {
+    throw new AppIdBoundaryError('appId must be a string')
+  }
+  if (!APP_ID_PATTERN.test(appId)) {
+    throw new AppIdBoundaryError(
+      `appId must match ${APP_ID_PATTERN.toString()}`,
+    )
+  }
+  if ((APP_ID_RESERVED_DIRS as readonly string[]).includes(appId)) {
+    throw new AppIdBoundaryError(`appId "${appId}" is reserved`)
+  }
+  return appId
+}
+
+/**
  * Infer artifact type from a relative path under `app/<appId>/`.
  *
  * **Caller contract:** this function expects paths that have
@@ -70,9 +139,16 @@ export function inferArtifactType(relativePath: string): ArtifactType {
  *          exist — the API layer treats that as a 400.
  */
 export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanResult {
+  // Defence in depth: route handlers also validate `appId`, but this
+  // call is reachable from internal helpers / unit tests that bypass
+  // the HTTP boundary. Throwing `AppIdBoundaryError` keeps both paths
+  // covered with a single source of truth (the route layer maps the
+  // throw into a 400 `InvalidAppId`).
+  const validated = validateAppId(appId)
+
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
-  const appRoot = join(appDir, appId)
+  const appRoot = join(appDir, validated)
 
   if (!fs.existsSync(appRoot)) {
     return {
@@ -83,6 +159,30 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
       customBeFilesCount: 0,
       customBeFilesCountApproximate: false,
     }
+  }
+
+  // Symlink escape defence: even when `appId` is in the allowed
+  // alphabet, a symlink planted at `app/<appId>/` (or anywhere along
+  // the way to it) could resolve to a path outside `app/`. Compare
+  // the canonical paths after `realpathSync`; if `appRoot` does not
+  // resolve under the canonical `appDir`, refuse the scan rather
+  // than walk the foreign directory tree.
+  //
+  // `appDir` itself can be a symlink (e.g. when the project root is
+  // mounted via a symlinked overlay), so we resolve both sides and
+  // accept any descendant of `appDirReal` as well as the trivial
+  // `appRootReal === appDirReal` case (defensive — it can only
+  // happen if `appId` resolved to an empty path, which the regex
+  // already rules out).
+  const appDirReal = fs.realpathSync(appDir)
+  const appRootReal = fs.realpathSync(appRoot)
+  if (
+    appRootReal !== appDirReal &&
+    !appRootReal.startsWith(appDirReal + sep)
+  ) {
+    throw new AppIdBoundaryError(
+      `appRoot "${appRootReal}" escapes app/ directory "${appDirReal}"`,
+    )
   }
 
   const artifacts: AppScanResult['artifacts'] = []
@@ -190,7 +290,7 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   if (fs.existsSync(menuPath)) {
     try {
       const menuContent = fs.readFileSync(menuPath, 'utf-8')
-      menu = parseMenuTsForApp(menuContent, appId).map((entry) => ({
+      menu = parseMenuTsForApp(menuContent, validated).map((entry) => ({
         id: entry.id,
         label: entry.label,
         icon: entry.icon,

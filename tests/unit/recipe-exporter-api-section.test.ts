@@ -68,6 +68,11 @@ function makeFs(files: Record<string, string>): {
       readBytesSync: () => Buffer.alloc(0),
       unlinkSync: () => {},
       mkdirSync: () => {},
+      // Identity realpath: no symlinks in this in-memory layout, so
+      // the canonical form equals the input. `scanAppDirectory` calls
+      // `realpathSync` on `app/` and `app/<appId>/` for its symlink
+      // escape check; both must resolve here so the check passes.
+      realpathSync: (path: string) => path,
       watch: () => ({ close: () => {} }),
     } as unknown as FileAccessLayer,
   }
