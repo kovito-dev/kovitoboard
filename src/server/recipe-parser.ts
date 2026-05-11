@@ -357,7 +357,13 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
   }
   // L-R7: cap on name length. Applied before the rest of the
   // metadata pipeline so an oversized name never reaches log lines
-  // or UI hints unredacted.
+  // or UI hints unredacted. `data.name.length` counts UTF-16 code
+  // units (JavaScript's native String length), not Unicode code
+  // points or grapheme clusters — a name made entirely of astral
+  // characters (e.g. emoji) therefore admits ~64 visible characters
+  // before tripping the 128 limit. The byte / memory cost of the
+  // string scales with code units, so the UTF-16 unit count is the
+  // right axis for the DoS-resistance ceiling.
   checkParserLimit({
     limit: 'MAX_RECIPE_NAME_LENGTH',
     limitValue: MAX_RECIPE_NAME_LENGTH,
