@@ -16,6 +16,7 @@
 import type { ApiSection } from './apiTypes.js'
 import { isValidScope, validateApiSection, parseApiSection } from './apiTypes.js'
 import type { Scope } from '../handlers/types.js'
+import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 
 /** Mirrors the v2.0 install request body in the spec. */
 export interface MarkInstalledBody {
@@ -45,9 +46,18 @@ export type MarkInstalledValidation =
 
 /**
  * Format constraint for `appId` (mirrors the collision-avoidance API
- * in `app-id-collision.ts`).
+ * in `app-id-collision.ts`). The total length cap derives from the
+ * shared `MAX_APP_ID_LENGTH` SSOT in `src/shared/security-limits.ts`
+ * so any future tightening of L-R6 stays in lockstep with the regex:
+ *   - one mandatory leading lowercase letter
+ *   - up to `MAX_APP_ID_LENGTH - 1` trailing `[a-z0-9-]` characters
+ *
+ * Computed once at module load — RegExp construction is cheap but the
+ * validator is called on every mark-installed request.
  */
-const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+const APP_ID_PATTERN = new RegExp(
+  `^[a-z][a-z0-9-]{0,${MAX_APP_ID_LENGTH - 1}}$`,
+)
 
 /**
  * Format constraint for the URL `:recipeId` segment. Mirrors the

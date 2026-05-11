@@ -32,9 +32,20 @@
 import { join } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { parseMenuTs } from './menu-extractor'
+import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 
-/** Format constraint matching the spec §3.1 regex. */
-export const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+/**
+ * Format constraint matching the spec §3.1 regex. The total length
+ * cap derives from the shared `MAX_APP_ID_LENGTH` SSOT in
+ * `src/shared/security-limits.ts` so both this collision-checker
+ * and `markInstalledValidator.ts` stay in lockstep with L-R6 when
+ * the ceiling moves.
+ *   - one mandatory leading lowercase letter
+ *   - up to `MAX_APP_ID_LENGTH - 1` trailing `[a-z0-9-]` characters
+ */
+export const APP_ID_PATTERN = new RegExp(
+  `^[a-z][a-z0-9-]{0,${MAX_APP_ID_LENGTH - 1}}$`,
+)
 
 /**
  * Maximum number of suffix-numbered candidates to try before giving
@@ -117,10 +128,13 @@ export function findAvailableAppId(
   // Walk the suffix sequence looking for an opening.
   for (let i = 2; i <= SUFFIX_MAX_INDEX; i++) {
     const suffix = `-${i}`
-    // Trim the base id so the result still fits in 64 characters.
+    // Trim the base id so the result still fits in the shared
+    // `MAX_APP_ID_LENGTH` ceiling. The constant is the SSOT for
+    // L-R6, so changing it in `security-limits.ts` automatically
+    // updates the suffix-trim logic here.
     const base =
-      proposedId.length + suffix.length > 64
-        ? proposedId.slice(0, 64 - suffix.length)
+      proposedId.length + suffix.length > MAX_APP_ID_LENGTH
+        ? proposedId.slice(0, MAX_APP_ID_LENGTH - suffix.length)
         : proposedId
     const candidate = `${base}${suffix}`
     // Defensive: if the trim landed us on a hyphen tail, skip.

@@ -55,7 +55,7 @@ import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
-import { parseRecipe } from './recipe-parser'
+import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import {
   validateProposedAppId,
@@ -984,6 +984,22 @@ app.post('/api/recipes/parse', async (req, res) => {
 
     res.json({ recipe, inspection })
   } catch (err) {
+    // Security-limits breaches return a generic envelope without
+    // leaking path / size details to the caller (spec §6.2). The
+    // structured warn log was already emitted by `checkParserLimit`
+    // at the parser boundary with the forensic fields operators
+    // need; emitting a second warn here would double the log
+    // volume on the very path attackers can flood, so the route
+    // layer only translates the exception into the HTTP envelope.
+    if (err instanceof RecipeParseError) {
+      res.status(err.context.httpStatus).json({
+        error:
+          err.context.httpStatus === 413
+            ? 'Recipe exceeds the maximum allowed size'
+            : 'Recipe exceeds an allowed limit',
+      })
+      return
+    }
     const message = err instanceof Error ? err.message : 'Failed to parse recipe'
     apiLogger.error({ err }, 'Recipe parse error')
     res.status(400).json({ error: message })
