@@ -201,26 +201,27 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
   }
 
   // Symlink escape defence: even when `appId` is in the allowed
-  // alphabet, a symlink planted at `app/<appId>/` (or anywhere along
-  // the way to it) could resolve to a path outside `app/`. Compare
-  // the canonical paths after `realpathSync`; if `appRoot` does not
-  // resolve under the canonical `appDir`, refuse the scan rather
-  // than walk the foreign directory tree.
-  //
-  // `appDir` itself can be a symlink (e.g. when the project root is
-  // mounted via a symlinked overlay), so we resolve both sides and
-  // accept any descendant of `appDirReal` as well as the trivial
-  // `appRootReal === appDirReal` case (defensive — it can only
-  // happen if `appId` resolved to an empty path, which the regex
-  // already rules out).
+  // alphabet, a symlink planted at `app/<appId>/` could redirect the
+  // scanner to a foreign tree. The realpath check pins `appRoot` to
+  // its expected canonical position — `realpath(app/) + sep + appId`
+  // — instead of merely confirming it sits "somewhere under
+  // `realpath(app/)`". The looser "descendant of `appDirReal`"
+  // variant we previously used would still accept e.g.
+  // `app/foo -> app/api` (sibling RESERVED_DIRS subtree) or
+  // `app/foo -> app/other-app` (cross-app access), bypassing both
+  // the RESERVED_DIRS exclusion and the per-app isolation. By
+  // requiring an exact match against the expected join, any symlink
+  // that redirects `app/<appId>/` away from its own physical
+  // location is refused — symlinks are only tolerated on `app/`
+  // itself (legitimate "project root mounted via symlinked overlay"
+  // case, where `realpath(app/<appId>) === join(realpath(app/), appId)`
+  // still holds).
   const appDirReal = fs.realpathSync(appDir)
   const appRootReal = fs.realpathSync(appRoot)
-  if (
-    appRootReal !== appDirReal &&
-    !appRootReal.startsWith(appDirReal + sep)
-  ) {
+  const expectedAppRootReal = join(appDirReal, validated)
+  if (appRootReal !== expectedAppRootReal) {
     throw new AppIdBoundaryError(
-      `appRoot "${appRootReal}" escapes app/ directory "${appDirReal}"`,
+      `appRoot "${appRootReal}" does not match expected canonical path "${expectedAppRootReal}"`,
       CLIENT_MESSAGE_APP_ROOT_ESCAPE,
     )
   }

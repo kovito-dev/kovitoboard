@@ -210,7 +210,53 @@ describe('scanAppDirectory — boundary defence', () => {
       },
     )
     expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
-    expect(() => scanAppDirectory(fs, 'foo')).toThrow(/escapes/)
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(
+      /does not match expected canonical path/,
+    )
+  })
+
+  it('refuses a symlinked appRoot that lands on a RESERVED_DIRS sibling (e.g. app/foo -> app/api)', () => {
+    // Bypass attempt against the RESERVED_DIRS exclusion: `app/foo`
+    // is a benign-looking appId, but the planted symlink redirects
+    // its canonical resolution to `app/api/`. A guard that only
+    // checked "still under realpath(app/)" would happily walk the
+    // backend handler tree; the strict per-appId match refuses it.
+    const fs = makeFs(
+      {
+        [`${PROJECT_ROOT}/app/menu.ts`]: '',
+        [`${PROJECT_ROOT}/app/api/list-files.ts`]: 'export {}',
+        [`${PROJECT_ROOT}/app/foo/pages/Index.tsx`]: 'export {}',
+      },
+      {
+        [`${PROJECT_ROOT}/app`]: `${PROJECT_ROOT}/app`,
+        [`${PROJECT_ROOT}/app/foo`]: `${PROJECT_ROOT}/app/api`,
+      },
+    )
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(
+      /does not match expected canonical path/,
+    )
+  })
+
+  it('refuses a symlinked appRoot that points at another app (e.g. app/foo -> app/other-app)', () => {
+    // Cross-app access attempt: `app/foo` resolves to a sibling
+    // app's directory. The scanner must not let `appId=foo` walk
+    // `app/other-app/` even though both sit under `realpath(app/)`.
+    const fs = makeFs(
+      {
+        [`${PROJECT_ROOT}/app/menu.ts`]: '',
+        [`${PROJECT_ROOT}/app/other-app/pages/Other.tsx`]: 'export {}',
+        [`${PROJECT_ROOT}/app/foo/pages/Index.tsx`]: 'export {}',
+      },
+      {
+        [`${PROJECT_ROOT}/app`]: `${PROJECT_ROOT}/app`,
+        [`${PROJECT_ROOT}/app/foo`]: `${PROJECT_ROOT}/app/other-app`,
+      },
+    )
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
+    expect(() => scanAppDirectory(fs, 'foo')).toThrow(
+      /does not match expected canonical path/,
+    )
   })
 
   it('accepts when realpath(appRoot) lands inside realpath(app/) even when both legs go through symlinks', () => {
