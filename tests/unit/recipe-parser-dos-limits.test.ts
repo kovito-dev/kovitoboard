@@ -140,7 +140,17 @@ function makeFs(seed: Record<string, string>): FileAccessLayer {
       throw new Error('rmSync not supported in mock')
     },
     existsSync: (p) => files.has(p) || dirs.has(p),
-    statSync: () => ({ size: 0, mtime: new Date(), mtimeMs: 0 }),
+    statSync: (p) => {
+      // Return the on-disk byte count from the seeded content so
+      // the parser's stat-before-read L-R4 / L-R2 checks see the
+      // same size the artifact will actually contribute (the parser
+      // enforces ceilings on stat metadata before invoking
+      // readFileSync, so a flat `size: 0` mock would silently
+      // disable the stat-side enforcement).
+      const f = files.get(p)
+      const size = f != null ? Buffer.byteLength(f, 'utf-8') : 0
+      return { size, mtime: new Date(), mtimeMs: 0 }
+    },
     readdirSync: (p) => {
       const prefix = p.endsWith('/') ? p : p + '/'
       const items = new Set<string>()

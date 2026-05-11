@@ -174,40 +174,52 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
   }
   const api = extractApiSection(data.api, metadata.recipeId)
 
-  // Read artifact file contents. We track total bytes (yaml + each
-  // artifact) and short-circuit as soon as L-R2 is breached so a
-  // pathologically wide tree cannot drain the walk before reject.
+  // Read artifact file contents. We stat each file BEFORE reading
+  // so an oversized artifact never gets pulled into memory — the
+  // L-R4 / L-R2 ceilings reject from stat metadata first, then
+  // readFileSync runs only on the already-bounded subset. Without
+  // the stat-first ordering the parser would still materialize a
+  // hostile artifact body before checking the byte count, which is
+  // the OOM path the limits are supposed to close.
   let totalBytes = yamlBytes
   const artifacts: ArtifactWithContent[] = rawArtifacts.map((entry) => {
     const filePath = join(dirPath, entry.path)
     if (!fs.existsSync(filePath)) {
       throw new Error(`Artifact file not found: ${entry.path} (expected at ${filePath})`)
     }
-    const content = fs.readFileSync(filePath, 'utf-8')
-    const sizeBytes = Buffer.byteLength(content, 'utf-8')
-    // L-R4: per-file ceiling.
+    const stat = fs.statSync(filePath)
+    // L-R4: per-file ceiling, checked on stat metadata so an
+    // oversized artifact never reaches readFileSync.
     checkParserLimit({
       limit: 'MAX_ARTIFACT_FILE_BYTES',
       limitValue: MAX_ARTIFACT_FILE_BYTES,
-      actualValue: sizeBytes,
+      actualValue: stat.size,
       httpStatus: 413,
       recipeId: metadata.recipeId,
       extraFields: { artifactPath: entry.path },
     })
-    totalBytes += sizeBytes
-    // L-R2: short-circuit before further allocations.
+    // L-R2: cumulative total from stat metadata so a wide tree of
+    // many medium-sized artifacts cannot drain the walk before the
+    // running total trips the cap.
     checkParserLimit({
       limit: 'MAX_RECIPE_TOTAL_BYTES',
       limitValue: MAX_RECIPE_TOTAL_BYTES,
-      actualValue: totalBytes,
+      actualValue: totalBytes + stat.size,
       httpStatus: 413,
       recipeId: metadata.recipeId,
       extraFields: { artifactPath: entry.path },
     })
+    totalBytes += stat.size
+    const content = fs.readFileSync(filePath, 'utf-8')
+    // utf-8 round-trip: `Buffer.byteLength(content, 'utf-8')`
+    // matches `stat.size` for every well-formed input. We surface
+    // the decoded count to keep the historical contract on
+    // ArtifactWithContent.sizeBytes; the DoS enforcement above
+    // already used the on-disk size as the source of truth.
     return {
       ...entry,
       content,
-      sizeBytes,
+      sizeBytes: Buffer.byteLength(content, 'utf-8'),
     }
   })
 
