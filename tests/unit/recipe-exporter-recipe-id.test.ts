@@ -72,7 +72,6 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
       mtimeMs: 0,
       isSymbolicLink: false,
       isFile: true,
-      nlink: 1,
     }),
     watch: () => ({ close: () => {} }),
   } as unknown as FileAccessLayer

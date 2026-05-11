@@ -287,25 +287,21 @@ export function scanAppDirectory(fs: FileAccessLayer, appId: string): AppScanRes
           CLIENT_MESSAGE_APP_ROOT_ESCAPE,
         )
       }
-      // Hard-link defence: a regular file with `nlink > 1` shares
-      // its inode with at least one other directory entry, possibly
-      // outside `app/<appId>/` — a path the scanner cannot
-      // enumerate cheaply but that the export would still package
-      // by reading the inode contents. A symlink check alone misses
-      // this because hard links are indistinguishable from honest
-      // regular files at the lstat surface (`isSymbolicLink` is
-      // `false`). Refuse the scan to keep the boundary policy
-      // conservative; a legitimate app tree rooted under recipe
-      // install never produces hard-linked artifacts (the dotfile +
-      // `node_modules` skips above already cover the common
-      // package-manager hard-link layouts that pnpm / npm-cache
-      // produce).
-      if (lstat.isFile && lstat.nlink > 1) {
-        throw new AppIdBoundaryError(
-          `app tree contains a hard-linked file at "${relativePath}" (nlink=${lstat.nlink})`,
-          CLIENT_MESSAGE_APP_ROOT_ESCAPE,
-        )
-      }
+      // Note: an earlier draft of this guard also refused regular
+      // files with `nlink > 1` (intended as a hard-link escape
+      // defence). That rule was withdrawn because `nlink > 1` does
+      // not distinguish a malicious hard link to outside
+      // `app/<appId>/` from a legitimate intra-tree hard link a
+      // build tool may have created — the over-block produced an
+      // availability regression on otherwise-valid app trees. Hard
+      // links from a writer with project-root access remain a
+      // documented boundary of the threat model (callers controlling
+      // the project filesystem can produce arbitrary inodes there);
+      // the export grandfather path defends against the routes /
+      // symlink classes Codex #11 actually scoped, and per-inode
+      // alias accounting is deferred to the v0.3.0 signed-publisher
+      // schema redesign (BL-2026-138) along with the related
+      // `pathResolver.ts` migration.
 
       // Detect directory by trying readdirSync (FileStat has no isDirectory)
       let isDir = false

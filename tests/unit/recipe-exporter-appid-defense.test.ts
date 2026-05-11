@@ -52,18 +52,11 @@ beforeEach(() => {
  * per-entry symlink defence in `scanDir` can refuse it. Paths not in
  * the set behave as ordinary directories or regular files.
  *
- * `hardLinkPaths` lets a test mark an entry as having `nlink > 1`
- * (i.e. another directory entry — possibly outside `app/<appId>/` —
- * also points at the same inode). The hard-link defence in
- * `scanDir` refuses these even though `isSymbolicLink` is `false`,
- * since `lstatSync` cannot otherwise distinguish them from honest
- * regular files. Paths not in the set get the default `nlink: 1`.
  */
 function makeFs(
   files: Record<string, string>,
   realpathOverride: Record<string, string> = {},
   symlinkPaths: Set<string> = new Set(),
-  hardLinkPaths: Set<string> = new Set(),
 ): FileAccessLayer {
   const dirs = new Set<string>()
   for (const path of Object.keys(files)) {
@@ -106,19 +99,16 @@ function makeFs(
     mkdirSync: () => {},
     realpathSync: (path: string) => realpathOverride[path] ?? path,
     // `lstatSync` is used by the per-entry symlink defence inside
-    // `scanDir`. Default `isFile: true / isSymbolicLink: false /
-    // nlink: 1` keeps every existing test behaving as plain regular
-    // files; tests exercising the nested-symlink branch pass paths
-    // via `symlinkPaths`, and tests exercising the hard-link
-    // branch pass paths via `hardLinkPaths` (which flips `nlink: 2`
-    // so the guard refuses the entry).
+    // `scanDir`. Default `isFile: true / isSymbolicLink: false`
+    // keeps every existing test behaving as plain regular files;
+    // tests exercising the nested-symlink branch pass paths via
+    // `symlinkPaths`, which flips `isSymbolicLink: true`.
     lstatSync: (path: string) => ({
       size: 0,
       mtime: new Date(0),
       mtimeMs: 0,
       isSymbolicLink: symlinkPaths.has(path),
       isFile: !symlinkPaths.has(path),
-      nlink: hardLinkPaths.has(path) ? 2 : 1,
     }),
     watch: () => ({ close: () => {} }),
   } as unknown as FileAccessLayer
@@ -342,27 +332,6 @@ describe('scanAppDirectory — boundary defence', () => {
     )
     expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
     expect(() => scanAppDirectory(fs, 'foo')).toThrow(/symlink/)
-  })
-
-  it('refuses a hard-linked file inside the app tree (nlink > 1)', () => {
-    // Hard-link defence: a regular file whose inode is reachable from
-    // outside `app/<appId>/` cannot be detected by `isSymbolicLink`
-    // (the symlink check returns false for hard links). The scanner
-    // sees `nlink: 2` and refuses, matching the policy applied to
-    // symlinks. The fixture marks `app/foo/utils/secret.ts` as a
-    // hard link; the scan must throw before reading any artifact.
-    const fs = makeFs(
-      {
-        [`${PROJECT_ROOT}/app/menu.ts`]: '',
-        [`${PROJECT_ROOT}/app/foo/pages/Index.tsx`]: 'export {}',
-        [`${PROJECT_ROOT}/app/foo/utils/secret.ts`]: 'export {}',
-      },
-      {},
-      new Set(),
-      new Set([`${PROJECT_ROOT}/app/foo/utils/secret.ts`]),
-    )
-    expect(() => scanAppDirectory(fs, 'foo')).toThrow(AppIdBoundaryError)
-    expect(() => scanAppDirectory(fs, 'foo')).toThrow(/hard-linked/)
   })
 
   it('refuses a file-level nested symlink (e.g. app/<appId>/utils/link.ts -> ../../api/list-files.ts)', () => {

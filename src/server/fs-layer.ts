@@ -67,18 +67,6 @@ export interface FileStat {
 export interface FileLstat extends FileStat {
   isSymbolicLink: boolean
   isFile: boolean
-  /**
-   * Hard-link count for the inode (the value Node returns as
-   * `Stats.nlink`). Security-sensitive scanners use it to refuse
-   * regular files that have been hard-linked into their tree from
-   * outside — a link the symlink check above cannot see, since
-   * `isSymbolicLink` is `false` for hard links. A value of `1`
-   * means the only directory entry referencing the inode is the one
-   * the caller just lstat'd; any value above `1` means another path
-   * — possibly outside the scope being scanned — also points at the
-   * same inode.
-   */
-  nlink: number
 }
 
 /** Abstracted watch event (subset of chokidar) */
@@ -486,11 +474,6 @@ export class DirectFsLayer implements FileAccessLayer {
       // is never reported as a regular file).
       isSymbolicLink: s.isSymbolicLink(),
       isFile: s.isFile(),
-      // Carry through the hard-link count so callers can refuse
-      // files that have been hard-linked into a scanned tree from
-      // outside (lstat would otherwise report them as ordinary
-      // regular files indistinguishable from honest content).
-      nlink: s.nlink,
     }
   }
 
