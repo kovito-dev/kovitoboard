@@ -20,10 +20,97 @@ import type {
   ArtifactType,
   RecipeMenuEntry,
 } from '../shared/recipe-types'
+import {
+  MAX_RECIPE_YAML_BYTES,
+  MAX_RECIPE_TOTAL_BYTES,
+  MAX_RECIPE_ARTIFACTS,
+  MAX_ARTIFACT_FILE_BYTES,
+  MAX_RECIPE_ID_LENGTH,
+  MAX_RECIPE_NAME_LENGTH,
+  MAX_INSTRUCTION_BYTES,
+  MAX_PERMISSION_ENTRIES,
+} from '../shared/security-limits'
 import { validateApiSection, parseApiSection } from './recipe/apiTypes.js'
 
 const ALLOWED_EXTENSIONS = new Set(['.tsx', '.ts', '.css', '.json', '.md'])
 const VALID_ARTIFACT_TYPES = new Set<ArtifactType>(['page', 'style', 'lib', 'hook', 'util'])
+
+/**
+ * Structured context captured when an external input exceeds one of
+ * the security-limits boundaries enforced at parser entry. The route
+ * layer reads `httpStatus` to decide between 413 (size overflow) and
+ * 400 (count / length overflow).
+ *
+ * @see docs/specs/security-limits.md (kovitoboard-dev) v1.1 §5.1 / §6.2
+ */
+export interface RecipeParseErrorContext {
+  /** Limit identifier (e.g. `MAX_RECIPE_YAML_BYTES`). */
+  limit: string
+  /** Configured ceiling. */
+  limitValue: number
+  /** Observed value that breached the ceiling. */
+  actualValue: number
+  /** HTTP status the route layer should map this error to. */
+  httpStatus: 413 | 400
+  /** Recipe identifier when known at the point of detection. */
+  recipeId?: string
+}
+
+/**
+ * Thrown when the parser refuses an input because it would exceed a
+ * security-limits boundary. The route layer translates this into a
+ * generic 413 / 400 response (no path leakage per spec §6.2).
+ *
+ * Distinct from the legacy `Error` instances thrown by the recipe
+ * metadata / artifact shape checks so the route layer can branch on
+ * `err instanceof RecipeParseError` without string-matching messages.
+ */
+export class RecipeParseError extends Error {
+  readonly code = 'RECIPE_PARSE_LIMIT_EXCEEDED'
+  readonly context: RecipeParseErrorContext
+
+  constructor(context: RecipeParseErrorContext, message?: string) {
+    super(
+      message ??
+        `${context.limit} exceeded (limit=${context.limitValue}, actual=${context.actualValue})`,
+    )
+    this.name = 'RecipeParseError'
+    this.context = context
+  }
+}
+
+/**
+ * Centralized limit check + structured warn log. Keeps every call
+ * site identical so the post-mortem log fields stay uniform and
+ * routes can rely on a single error type.
+ */
+function checkParserLimit(opts: {
+  limit: string
+  limitValue: number
+  actualValue: number
+  httpStatus: 413 | 400
+  recipeId?: string
+  extraFields?: Record<string, unknown>
+}): void {
+  if (opts.actualValue <= opts.limitValue) return
+  recipeLogger.warn(
+    {
+      ...(opts.recipeId ? { recipeId: opts.recipeId } : {}),
+      ...(opts.extraFields ?? {}),
+      limit: opts.limit,
+      limitValue: opts.limitValue,
+      actualValue: opts.actualValue,
+    },
+    'recipe input exceeded limit',
+  )
+  throw new RecipeParseError({
+    limit: opts.limit,
+    limitValue: opts.limitValue,
+    actualValue: opts.actualValue,
+    httpStatus: opts.httpStatus,
+    recipeId: opts.recipeId,
+  })
+}
 
 /**
  * Parse a recipe from a local file or directory path.
@@ -63,25 +150,64 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
   }
 
   const yamlContent = fs.readFileSync(yamlPath, 'utf-8')
+  // L-R1: reject oversized recipe.yaml before invoking the YAML
+  // parser. gray-matter and js-yaml will happily allocate large
+  // structures from huge inputs, so the parser entry is where the
+  // ceiling has to land (spec §6.1).
+  const yamlBytes = Buffer.byteLength(yamlContent, 'utf-8')
+  checkParserLimit({
+    limit: 'MAX_RECIPE_YAML_BYTES',
+    limitValue: MAX_RECIPE_YAML_BYTES,
+    actualValue: yamlBytes,
+    httpStatus: 413,
+    extraFields: { sourcePath: dirPath },
+  })
+
   const { data } = matter(yamlContent)
 
   const metadata = extractMetadata(data)
-  const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts)
+  const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts, metadata.recipeId)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
   const instruction: string | undefined = typeof data.instruction === 'string' ? data.instruction : undefined
-  const api = extractApiSection(data.api)
+  if (instruction !== undefined) {
+    checkInstructionLength(instruction, metadata.recipeId)
+  }
+  const api = extractApiSection(data.api, metadata.recipeId)
 
-  // Read artifact file contents
+  // Read artifact file contents. We track total bytes (yaml + each
+  // artifact) and short-circuit as soon as L-R2 is breached so a
+  // pathologically wide tree cannot drain the walk before reject.
+  let totalBytes = yamlBytes
   const artifacts: ArtifactWithContent[] = rawArtifacts.map((entry) => {
     const filePath = join(dirPath, entry.path)
     if (!fs.existsSync(filePath)) {
       throw new Error(`Artifact file not found: ${entry.path} (expected at ${filePath})`)
     }
     const content = fs.readFileSync(filePath, 'utf-8')
+    const sizeBytes = Buffer.byteLength(content, 'utf-8')
+    // L-R4: per-file ceiling.
+    checkParserLimit({
+      limit: 'MAX_ARTIFACT_FILE_BYTES',
+      limitValue: MAX_ARTIFACT_FILE_BYTES,
+      actualValue: sizeBytes,
+      httpStatus: 413,
+      recipeId: metadata.recipeId,
+      extraFields: { artifactPath: entry.path },
+    })
+    totalBytes += sizeBytes
+    // L-R2: short-circuit before further allocations.
+    checkParserLimit({
+      limit: 'MAX_RECIPE_TOTAL_BYTES',
+      limitValue: MAX_RECIPE_TOTAL_BYTES,
+      actualValue: totalBytes,
+      httpStatus: 413,
+      recipeId: metadata.recipeId,
+      extraFields: { artifactPath: entry.path },
+    })
     return {
       ...entry,
       content,
-      sizeBytes: Buffer.byteLength(content, 'utf-8'),
+      sizeBytes,
     }
   })
 
@@ -105,13 +231,29 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
  */
 function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecipe {
   const content = fs.readFileSync(filePath, 'utf-8')
+  // L-R2: the .md envelope holds yaml + inline artifact bodies, so
+  // the file total is the meaningful ceiling here (spec §5.1 row L-R2
+  // explicitly names the Markdown file). L-R1 is directory-only and
+  // does not apply to .md recipes.
+  const contentBytes = Buffer.byteLength(content, 'utf-8')
+  checkParserLimit({
+    limit: 'MAX_RECIPE_TOTAL_BYTES',
+    limitValue: MAX_RECIPE_TOTAL_BYTES,
+    actualValue: contentBytes,
+    httpStatus: 413,
+    extraFields: { sourcePath: filePath },
+  })
+
   const { data, content: body } = matter(content)
 
   const metadata = extractMetadata(data)
-  const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts)
+  const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts, metadata.recipeId)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
   const instruction: string | undefined = typeof data.instruction === 'string' ? data.instruction : undefined
-  const api = extractApiSection(data.api)
+  if (instruction !== undefined) {
+    checkInstructionLength(instruction, metadata.recipeId)
+  }
+  const api = extractApiSection(data.api, metadata.recipeId)
 
   // Parse artifact contents from markdown body
   const artifactContents = parseArtifactSections(body)
@@ -121,10 +263,22 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
     if (fileContent === undefined) {
       throw new Error(`Artifact content not found in markdown body: ## ${key}`)
     }
+    const sizeBytes = Buffer.byteLength(fileContent, 'utf-8')
+    // L-R4: per-file ceiling. L-R2 already passed on the envelope,
+    // but a single oversized inline artifact still needs explicit
+    // rejection so the route layer can emit a precise log line.
+    checkParserLimit({
+      limit: 'MAX_ARTIFACT_FILE_BYTES',
+      limitValue: MAX_ARTIFACT_FILE_BYTES,
+      actualValue: sizeBytes,
+      httpStatus: 413,
+      recipeId: metadata.recipeId,
+      extraFields: { artifactPath: entry.path },
+    })
     return {
       ...entry,
       content: fileContent,
-      sizeBytes: Buffer.byteLength(fileContent, 'utf-8'),
+      sizeBytes,
     }
   })
 
@@ -144,7 +298,6 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
 
 /** Format constraint for `recipeId` (DEC-024 D-8 / spec §3.3). */
 const RECIPE_ID_PATTERN = /^[A-Za-z0-9_\-./@]+$/
-const RECIPE_ID_MAX_LENGTH = 256
 
 /**
  * Synthesize a `recipeId` from the recipe name when the YAML omits
@@ -180,6 +333,15 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
   if (typeof data.name !== 'string' || data.name.trim().length === 0) {
     throw new Error('Recipe metadata: "name" is required')
   }
+  // L-R7: cap on name length. Applied before the rest of the
+  // metadata pipeline so an oversized name never reaches log lines
+  // or UI hints unredacted.
+  checkParserLimit({
+    limit: 'MAX_RECIPE_NAME_LENGTH',
+    limitValue: MAX_RECIPE_NAME_LENGTH,
+    actualValue: data.name.length,
+    httpStatus: 400,
+  })
   if (typeof data.description !== 'string' || data.description.trim().length === 0) {
     throw new Error('Recipe metadata: "description" is required')
   }
@@ -195,12 +357,16 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
         `Allowed: letters, digits, "_", "-", ".", "/", "@".`,
       )
     }
-    if (data.recipeId.length > RECIPE_ID_MAX_LENGTH) {
-      throw new Error(
-        `Recipe metadata: "recipeId" is too long ` +
-        `(${data.recipeId.length} chars; max ${RECIPE_ID_MAX_LENGTH}).`,
-      )
-    }
+    // L-R5: recipeId length ceiling (security-limits v1.1 — tightened
+    // from the legacy 256-char check that lived inline before the
+    // SSOT migration).
+    checkParserLimit({
+      limit: 'MAX_RECIPE_ID_LENGTH',
+      limitValue: MAX_RECIPE_ID_LENGTH,
+      actualValue: data.recipeId.length,
+      httpStatus: 400,
+      recipeId: data.recipeId,
+    })
     recipeId = data.recipeId
   } else {
     // v0.1.x backward-compat fallback. The recipe omitted
@@ -264,10 +430,21 @@ function extractI18nOverrides(
 /**
  * Extract and validate artifact entries from YAML data.
  */
-function extractArtifactEntries(artifacts: unknown): ArtifactEntry[] {
+function extractArtifactEntries(
+  artifacts: unknown,
+  recipeId?: string,
+): ArtifactEntry[] {
   if (!Array.isArray(artifacts) || artifacts.length === 0) {
     throw new Error('Recipe must have at least one artifact')
   }
+  // L-R3: cap on artifact entry count.
+  checkParserLimit({
+    limit: 'MAX_RECIPE_ARTIFACTS',
+    limitValue: MAX_RECIPE_ARTIFACTS,
+    actualValue: artifacts.length,
+    httpStatus: 400,
+    recipeId,
+  })
 
   return artifacts.map((a, i) => {
     if (typeof a !== 'object' || a === null) {
@@ -322,9 +499,28 @@ function extractMenuEntries(menu: unknown): RecipeMenuEntry[] {
  *
  * @see recipe-system.md §12-4-1 (block conditions)
  */
-function extractApiSection(apiData: unknown): RecipeApiSection | undefined {
+function extractApiSection(
+  apiData: unknown,
+  recipeId?: string,
+): RecipeApiSection | undefined {
   if (apiData === undefined || apiData === null) {
     return undefined // api: not specified is allowed (recipe without handlers)
+  }
+
+  // L-R9: cap on declared permission entries. Run before the shape
+  // validator so a scope-flood payload is rejected before any
+  // per-entry walk.
+  if (apiData !== null && typeof apiData === 'object' && !Array.isArray(apiData)) {
+    const maybeScopes = (apiData as Record<string, unknown>).scopes
+    if (Array.isArray(maybeScopes)) {
+      checkParserLimit({
+        limit: 'MAX_PERMISSION_ENTRIES',
+        limitValue: MAX_PERMISSION_ENTRIES,
+        actualValue: maybeScopes.length,
+        httpStatus: 400,
+        recipeId,
+      })
+    }
   }
 
   const validationError = validateApiSection(apiData)
@@ -341,6 +537,21 @@ function extractApiSection(apiData: unknown): RecipeApiSection | undefined {
       args: c.args,
     })),
   }
+}
+
+/**
+ * L-R8: cap on `recipe.instruction` body. Extracted so the same
+ * limit check applies to both directory and Markdown recipe formats.
+ */
+function checkInstructionLength(instruction: string, recipeId?: string): void {
+  const bytes = Buffer.byteLength(instruction, 'utf-8')
+  checkParserLimit({
+    limit: 'MAX_INSTRUCTION_BYTES',
+    limitValue: MAX_INSTRUCTION_BYTES,
+    actualValue: bytes,
+    httpStatus: 413,
+    recipeId,
+  })
 }
 
 /**
