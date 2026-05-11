@@ -196,12 +196,18 @@ describe('parseRecipe — recipeId', () => {
     expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(/recipeId.*invalid characters/)
   })
 
-  it('throws when recipeId exceeds 256 characters', async () => {
+  it('throws when recipeId exceeds the configured ceiling (L-R5 = 64 chars)', async () => {
+    // The recipeId ceiling moved from the legacy 256 chars to the
+    // security-limits.md v1.1 L-R5 boundary of 64 chars. The error
+    // now flows through `RecipeParseError` (a structured envelope
+    // the route layer maps to 400) rather than the legacy
+    // free-form Error, so the assertion matches the structured
+    // limit identifier instead of the old `"too long"` phrasing.
     const { parseRecipe } = await import('../../src/server/recipe-parser')
-    const longId = 'a'.repeat(257)
+    const longId = 'a'.repeat(65)
     const yaml = makeRecipeYaml({ recipeId: longId, name: 'Doc Viewer' })
     const fs = makeMockFs(seedRecipe(yaml))
-    expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(/recipeId.*too long/)
+    expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(/MAX_RECIPE_ID_LENGTH/)
   })
 
   it('falls back to kebab-case(name) when recipeId is missing, with a warn log', async () => {

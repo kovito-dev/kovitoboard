@@ -46,9 +46,12 @@ export interface RecipeMetadata {
    * The recipe author's chosen immutable identifier. Required as of
    * v0.1.0 (DEC-024 D-8). Constraints:
    *   - matches `/^[A-Za-z0-9_\-./@]+$/`
-   *   - 1〜256 characters
+   *   - 1〜64 characters (security-limits.md v1.1 L-R5; tightened
+   *     from the legacy 256-char ceiling in v0.2.x)
    * Forms accepted: `"document-viewer"`, `"kovito-dev/document-viewer"`,
-   * `"sha256:abc123..."`, `"org-foo/recipe-bar@1.0.0"`.
+   * `"org-foo/recipe-bar@1.0.0"`. Full hex hashes (`sha256-…`) need
+   * to fit within 64 chars; the previously documented `sha256:…`
+   * literal example no longer fits and is dropped.
    *
    * v0.1.x backward compatibility: when a `recipe.yaml` does not
    * declare `recipeId`, `recipe-parser.ts` synthesizes one via
