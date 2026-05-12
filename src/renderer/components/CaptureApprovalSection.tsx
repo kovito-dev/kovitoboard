@@ -87,6 +87,22 @@ export function CaptureApprovalSection({
           {t('recipe.capture.description')}
         </p>
       </header>
+      {/*
+        Normative warning (v1.7 / spec app-directory-extension v1.4
+        §10.5.5). Always-visible, never collapsed, displayed at every
+        approval moment so the user sees the v0.2.x same-instance
+        trust collapse the same way they see the checkbox itself.
+      */}
+      <div
+        data-testid="capture-trust-warning"
+        role="alert"
+        className="flex items-start gap-2 border border-amber-400 bg-amber-50 text-amber-900 rounded px-3 py-2"
+      >
+        <span aria-hidden="true" className="text-base leading-5">⚠</span>
+        <p className="text-xs leading-5">
+          {t('recipe.capture.trustWarning')}
+        </p>
+      </div>
       <ul className="flex flex-col gap-2 list-none p-0 m-0">
         {renderable.map((kind) => (
           <CaptureRow

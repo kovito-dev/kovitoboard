@@ -155,6 +155,11 @@ const en: Record<MessageKey, string> = {
   'recipe.capture.approveButton': 'Approve Selected',
   'recipe.capture.error.notApproved':
     "Capture '{kind}' is not approved for this recipe.",
+  // Normative warning text (spec v1.4 §10.5.5). Always-visible at
+  // approval point. Communicates the v0.2.x same-instance trust
+  // collapse to the user.
+  'recipe.capture.trustWarning':
+    'By approving capture for this recipe, you agree to trust all other recipes installed in this KovitoBoard instance. v0.2.x cannot structurally isolate one recipe from another. This is an experimental preview; future versions will close this gap.',
 
   // App creation modal (v0.1.0-app-creation-flow.md §7.4)
   'appCreate.modal.title': 'Create new app',

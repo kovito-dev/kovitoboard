@@ -5,69 +5,48 @@
  */
 /**
  * Capture-token issuance + revocation endpoints
- * (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
+ * (v0.2.0 Phase 1 ①, spec v1.7 §6.10.6 / v1.5 §10.6.7.3〜§10.6.7.4).
  *
- * Mounted under `/api/app/capture-token` and serves the lifecycle
- * half of the per-recipe-page capture token mechanism:
+ * Mounted under `/api/app/capture-token`:
+ *   - `POST /api/app/capture-token/issue` — mint a fresh token
+ *     against a server-issued `mountId`. The `appId` is derived from
+ *     the mountStore record, **never** from caller-supplied input
+ *     (I-CR4). Spec v1.7 changed the request body from `{ appId }`
+ *     to `{ mountId }` to close the upstream `req.body.appId`
+ *     forgery the previous capture-token mechanism still allowed
+ *     (PR #30 attempt 4 CodeX HIGH).
+ *   - `POST /api/app/capture-token/revoke` — drop a token by its
+ *     header value. Idempotent.
  *
- *   - `POST /api/app/capture-token/issue` — recipe page mount-time
- *     mint. `captureBridge.ts` calls this from `injectKb` and
- *     caches the response token in a closure for the lifetime of
- *     the mount. Grandfather recipes
- *     (`manifest.captureRequires.length === 0`) get a
- *     `{ token: null, reason: 'grandfather-no-capture' }` response
- *     so the client can fail-fast without holding a useless token.
- *   - `POST /api/app/capture-token/revoke` — recipe page unmount-time
- *     teardown. Idempotent; double-revoke during React cleanup
- *     races is safe.
+ * Both endpoints require the host-only `verifyInternalAuth`
+ * middleware on top of the launch-token + Origin allowlist already
+ * mounted at `/api`. The capture-runtime endpoint
+ * (`/api/app/capture/<kind>`) does **not** run `verifyInternalAuth`
+ * — that path is the legitimate recipe-page route, gated by the
+ * `X-KB-Capture-Token` header instead.
  *
- * The capture endpoint
- * (`/api/app/capture/<kind>`, see `capture-routes.ts`) reads the
- * resulting token from the `X-KB-Capture-Token` header on every
- * request and derives the authoritative `appId` from the token
- * store. `req.body.appId` is ignored end-to-end (I-CR4).
- *
- * Wire authentication is provided by the existing
- * `createTokenAndOriginGuard` middleware mounted at `app.use('/api',
- * verifyTokenAndOrigin)` in `src/server/index.ts`; this router only
- * implements the capture-token-specific contract on top.
- *
- * @see recipe-system.md v1.6 §6.10.6
- * @see http-api-contract.md v1.4 §10.6.7
- * @see app-directory-extension.md v1.3 §10.5.2
+ * @see recipe-system.md v1.7 §6.10.6 (I-CR4〜I-CR8 + H-CR1〜H-CR5)
+ * @see http-api-contract.md v1.5 §10.6.7.3〜§10.6.7.4
+ * @see app-directory-extension.md v1.4 §10.5.2
  * @stable v0.2.0
  */
 import { Router } from 'express'
+import type { RequestHandler } from 'express'
 import type { Logger } from 'pino'
 import {
   issueCaptureToken,
   revokeCaptureToken,
+  withCriticalSection,
   MAX_ACTIVE_TOKENS,
   TOKEN_TTL_MS,
 } from '../recipe-capture-sessions.js'
-import type { RecipeManifest } from '../recipe/apiTypes.js'
-import { MAX_APP_ID_LENGTH } from '../../shared/security-limits.js'
-
-/**
- * Same narrow contract as `CaptureManifestLookup` in
- * `capture-routes.ts` — kept duplicated rather than coupling the
- * two routers, because each lookup tests a different invariant
- * (the token endpoint cares about grandfather skipping, the
- * capture endpoint cares about declaration / consent).
- */
-export interface CaptureTokenManifestLookup {
-  get(appId: string): RecipeManifest | null
-}
+import { getMount, MOUNT_ID_PATTERN } from '../recipe-capture-mount-sessions.js'
 
 export interface CreateCaptureTokenRouterOptions {
-  manifestStore: CaptureTokenManifestLookup
   logger: Logger
+  /** Host-only auth middleware bound to the current launch token. */
+  verifyInternalAuth: RequestHandler
 }
-
-/** Same shape as `markInstalledValidator.APP_ID_PATTERN`. */
-const APP_ID_PATTERN = new RegExp(
-  `^[a-z][a-z0-9-]{0,${MAX_APP_ID_LENGTH - 1}}$`,
-)
 
 const TOKEN_PATTERN = /^[0-9a-f]{32}$/
 
@@ -78,67 +57,73 @@ export function createCaptureTokenRouter(
   opts: CreateCaptureTokenRouterOptions,
 ): Router {
   const router = Router()
-  const { manifestStore, logger } = opts
+  const { logger, verifyInternalAuth } = opts
+
+  // Spec v1.5 §10.6.7.0: capture-token endpoints are host-only and
+  // sit behind `verifyInternalAuth` on top of the launch-token
+  // guard already mounted at /api.
+  router.use(verifyInternalAuth)
 
   /**
    * POST /api/app/capture-token/issue
    *
-   * Mint a capture token bound to the given `appId`. The response
-   * shape matches `http-api-contract.md` v1.4 §10.6.7.1: 200 +
-   * token on success, 200 + `token: null` for grandfather installs,
-   * 400 for malformed `appId`, 404 for unknown `appId`, 503 when
-   * the in-memory store is at the {@link MAX_ACTIVE_TOKENS} cap.
+   * Mint a fresh capture token bound to the given `mountId`. The
+   * appId is derived from the mountStore record (`getMount`); the
+   * request body's `mountId` is the only caller-supplied input the
+   * router trusts (I-CR4).
+   *
+   * Spec v1.5 §10.6.7.3 contract:
+   *   - 200 `{ token, expiresAt }` on success.
+   *   - 400 `InvalidMountId` on malformed mountId.
+   *   - 401 `MountNotFound` when the mountId is unknown / expired.
+   *   - 503 `CaptureTokenStoreFull` when the store is at the cap.
+   *
+   * Per-mount idempotency: a second `/issue` against the same
+   * `mountId` atomically replaces the existing token (H-CR4 SSOT).
+   * The replacement does not count against the cap.
    */
   router.post('/issue', (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>
-    const rawAppId = body.appId
+    const rawMountId = body.mountId
 
-    if (typeof rawAppId !== 'string' || !APP_ID_PATTERN.test(rawAppId)) {
+    if (typeof rawMountId !== 'string' || !MOUNT_ID_PATTERN.test(rawMountId)) {
       res.status(400).json({
-        error: 'InvalidAppId',
+        error: 'InvalidMountId',
         message:
-          `appId must match /^[a-z][a-z0-9-]{0,${MAX_APP_ID_LENGTH - 1}}$/.`,
+          'mountId must be a 32-character lowercase hex string ' +
+          '(server-issued by /api/app/capture-mount/open).',
         details: {
-          // Echo only the truncated prefix back — the validator
-          // already refused the value, and any longer echo would
-          // amplify hostile inputs into the response body.
-          appId:
-            typeof rawAppId === 'string' ? rawAppId.slice(0, 64) : null,
+          mountId:
+            typeof rawMountId === 'string' ? rawMountId.slice(0, 64) : null,
         },
       })
       return
     }
-    const appId = rawAppId
+    const mountId = rawMountId
 
-    const manifest = manifestStore.get(appId)
-    if (!manifest) {
-      res.status(404).json({
-        error: 'NoMatchingManifest',
-        message: `No installed recipe matches appId "${appId}".`,
-        details: { appId },
+    // The mount lookup is the **only** path through which `appId`
+    // enters this handler. `req.body.appId` is intentionally never
+    // read — that was the attempt-4 cross-app capability theft
+    // (I-CR4).
+    const mountResult = getMount(mountId)
+    if (!mountResult.ok) {
+      res.status(401).json({
+        error: 'MountNotFound',
+        message:
+          mountResult.reason === 'expired'
+            ? 'mountId has expired. Re-open the mount to mint a fresh identity.'
+            : 'mountId is not registered. The mount may never have been opened, ' +
+              'or it was closed in the meantime.',
+        details: { mountId },
       })
-      logger.info({ appId }, 'capture-token issue: no matching manifest')
+      logger.info({ mountId, reason: mountResult.reason }, 'capture-token issue: mount not found')
       return
     }
+    const appId = mountResult.appId
 
-    // Grandfather skip: a recipe that declared nothing under
-    // `capture.requires` cannot legitimately make capture calls
-    // (spec v1.6 §6.10.6.7). Returning `token: null` lets the
-    // client fail-fast without consuming a store slot.
-    if (manifest.captureRequires.length === 0) {
-      res.status(200).json({
-        token: null,
-        expiresAt: null,
-        reason: 'grandfather-no-capture',
-      })
-      logger.info(
-        { appId, recipeId: manifest.recipeId, trustLevel: manifest.trustLevel },
-        'capture-token issue: grandfather skip',
-      )
-      return
-    }
-
-    const result = issueCaptureToken(appId)
+    const result = withCriticalSection('capture-token/issue', () =>
+      issueCaptureToken({ mountId, appId }),
+    )
     if (!result.ok) {
       res.status(503).json({
         error: 'CaptureTokenStoreFull',
@@ -146,12 +131,12 @@ export function createCaptureTokenRouter(
           `Capture-token store is full (max ${MAX_ACTIVE_TOKENS} active tokens). ` +
           'Retry after waiting or after another recipe page unmounts.',
         details: {
-          maxActiveTokens: MAX_ACTIVE_TOKENS,
+          currentLimit: MAX_ACTIVE_TOKENS,
           retryAfter: STORE_FULL_RETRY_AFTER_S,
         },
       })
       logger.warn(
-        { appId, recipeId: manifest.recipeId, maxActiveTokens: MAX_ACTIVE_TOKENS },
+        { mountId, appId, currentLimit: MAX_ACTIVE_TOKENS },
         'capture-token issue: store full',
       )
       return
@@ -160,10 +145,9 @@ export function createCaptureTokenRouter(
     res.status(200).json({
       token: result.token,
       expiresAt: result.expiresAt,
-      reason: null,
     })
     logger.info(
-      { appId, recipeId: manifest.recipeId, ttlMs: TOKEN_TTL_MS },
+      { mountId, appId, ttlMs: TOKEN_TTL_MS },
       'capture-token issue: ok',
     )
   })
@@ -172,12 +156,9 @@ export function createCaptureTokenRouter(
    * POST /api/app/capture-token/revoke
    *
    * Drop a token from the store. Idempotent — a second revoke
-   * during a React cleanup race is harmless. Spec
-   * `http-api-contract.md` v1.4 §10.6.7.2:
-   *   - 200 `{ ok: true, revoked: true }` when the entry existed.
-   *   - 200 `{ ok: true, revoked: false }` when the entry was
-   *     already gone (expired sweep, double-revoke).
-   *   - 401 when the `X-KB-Capture-Token` header is missing.
+   * during a React cleanup race is harmless. Spec v1.5 §10.6.7.4:
+   *   - 200 `{ ok: true, revoked: true|false }`.
+   *   - 401 when `X-KB-Capture-Token` header is missing.
    *   - 400 when the header value is malformed.
    */
   router.post('/revoke', (req, res) => {
@@ -198,7 +179,9 @@ export function createCaptureTokenRouter(
       })
       return
     }
-    const revoked = revokeCaptureToken(headerToken)
+    const revoked = withCriticalSection('capture-token/revoke', () =>
+      revokeCaptureToken(headerToken),
+    )
     res.status(200).json({ ok: true, revoked })
     logger.info({ revoked }, 'capture-token revoke')
   })

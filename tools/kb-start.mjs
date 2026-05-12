@@ -745,6 +745,15 @@ async function launch() {
   // token is intentionally avoided: it only travels through the env vars
   // of the two children, never through stdout.
   const launchToken = randomBytes(16).toString('hex')
+  // Internal token (v0.2.0 / spec v1.7 §6.10.6.9). Issued per launch
+  // alongside the launch token; gates the host-only capture-mount /
+  // capture-token / host-bootstrap audit endpoints so recipe code
+  // cannot mint or revoke capture identities even if it observes
+  // the launch token. Same format (32-char hex) and lifetime rules
+  // as KB_LAUNCH_TOKEN. Honest claim: same-realm in v0.2.x means
+  // this is hardening, not structural isolation — see spec
+  // §6.10.6.11.
+  const internalToken = randomBytes(16).toString('hex')
 
   const env = {
     ...process.env,
@@ -761,6 +770,7 @@ async function launch() {
     // upgrade) does not match. Vite picks it up too so the index.html
     // transform can embed the token in a meta tag for the renderer.
     KB_LAUNCH_TOKEN: launchToken,
+    KB_INTERNAL_TOKEN: internalToken,
   }
 
   // --- Server (tsx watch — auto-reloads server source changes; the

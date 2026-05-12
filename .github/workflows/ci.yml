@@ -10,6 +10,11 @@ jobs:
   hygiene:
     name: Release Hygiene
     runs-on: ubuntu-latest
+    # Source-only checks (Japanese / PII / meta-note / internal IDs)
+    # run without `node_modules`. The post-build half (H-CR2
+    # top-level await + H-CR4 atomicity, spec v1.7 §6.10.6.17
+    # H-CR5-A) lives in `hygiene-post-build` so it can consume the
+    # Vite production manifest.
     steps:
       - uses: actions/checkout@v5
 
@@ -21,6 +26,29 @@ jobs:
       - name: Check release hygiene
         run: node tools/check-release-hygiene.mjs --strict
         # --strict: treat Japanese warnings as errors (CI policy)
+
+  hygiene-post-build:
+    name: Release Hygiene (post-build)
+    runs-on: ubuntu-latest
+    # Spec v1.7 §6.10.6.17: the post-build gate consumes the Vite
+    # production manifest to walk the host bootstrap chain, so it
+    # must run after the build artifacts have been produced.
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Check post-build hygiene
+        run: node tools/check-release-hygiene.mjs --post-build-only
 
   typecheck:
     name: Type Check

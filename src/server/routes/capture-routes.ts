@@ -56,6 +56,7 @@ import {
   type CaptureAuditReason,
 } from '../auditLogger.js'
 import { consumeCaptureToken } from '../recipe-capture-sessions.js'
+import { getMount } from '../recipe-capture-mount-sessions.js'
 
 /**
  * Minimal manifest-store contract this router depends on. Kept
@@ -242,7 +243,39 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
       })
       return
     }
-    const appId = tokenResult.appId
+
+    // Spec v1.7 §6.10.6.4 / v1.5 §10.6.3 step 2: token → mountId →
+    // mountStore → appId. The token record cached the appId at
+    // issue time, but the authoritative chain runs through
+    // mountStore so a mount that was closed (or expired) between
+    // token issue and the capture call still surfaces as
+    // `mount-not-found` rather than letting a stale token authorise
+    // a capture against a dead mount.
+    const tokenMountId = tokenResult.mountId
+    const mountResult = getMount(tokenMountId)
+    if (!mountResult.ok) {
+      res.status(403).json({
+        error: 'NoActiveRecipe',
+        message:
+          'Capture token references a mount that is no longer active. ' +
+          'The recipe page may have unmounted between token issue and the capture call.',
+        details: {
+          kind,
+          reason: 'mount-not-found',
+          remediation:
+            'Reload the recipe page so a fresh mount + token is issued.',
+        },
+      })
+      recordDecision({
+        kind,
+        rawKind,
+        appId: null,
+        manifest: null,
+        reason: 'mount-not-found',
+      })
+      return
+    }
+    const appId = mountResult.appId
 
     const manifest = manifestStore.get(appId)
     if (!manifest) {

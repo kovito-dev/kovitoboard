@@ -143,6 +143,7 @@ export type CaptureAuditReason =
   | 'capture-token-missing'
   | 'capture-token-invalid'
   | 'capture-token-expired'
+  | 'mount-not-found'
   | 'no-matching-manifest'
   | 'no-active-recipe'
   | 'unresolved-appid'

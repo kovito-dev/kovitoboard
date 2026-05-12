@@ -9,6 +9,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const KB_LAUNCH_TOKEN_PLACEHOLDER = '<!-- KB:LAUNCH_TOKEN_META -->'
+const KB_INTERNAL_TOKEN_PLACEHOLDER = '<!-- KB:INTERNAL_TOKEN_META -->'
 // Mirror of the format the server enforces in
 // `src/server/middleware/auth.ts`: 32 lowercase hex characters,
 // which is the shape `randomBytes(16).toString('hex')` produces.
@@ -46,10 +47,28 @@ function kbLaunchTokenInjectorPlugin(): Plugin {
             'server enforces in resolveLaunchTokenOrThrow().',
         )
       }
-      return html.replace(
-        KB_LAUNCH_TOKEN_PLACEHOLDER,
-        `<meta name="kb-launch-token" content="${token}">`,
-      )
+      const internalToken = process.env.KB_INTERNAL_TOKEN ?? ''
+      if (
+        internalToken.length > 0 &&
+        !KB_LAUNCH_TOKEN_FORMAT_RE.test(internalToken)
+      ) {
+        throw new Error(
+          'KB_INTERNAL_TOKEN must be 32 lowercase hex characters ' +
+            '(same format as KB_LAUNCH_TOKEN). Refusing to inject a ' +
+            'non-conforming value into index.html so dev mode keeps the ' +
+            'same HTML-injection guarantee the server enforces in ' +
+            'resolveInternalTokenOrThrow().',
+        )
+      }
+      return html
+        .replace(
+          KB_LAUNCH_TOKEN_PLACEHOLDER,
+          `<meta name="kb-launch-token" content="${token}">`,
+        )
+        .replace(
+          KB_INTERNAL_TOKEN_PLACEHOLDER,
+          `<meta name="kb-internal-token" content="${internalToken}">`,
+        )
     },
   }
 }
@@ -73,7 +92,17 @@ export default defineConfig({
     // KovitoBoard is a local-first app, so bundle size has limited practical
     // impact. Raise the threshold to suppress the cosmetic warning; route-based
     // code-splitting as a proper long-term fix is deferred (BL-2026-036).
-    chunkSizeWarningLimit: 1500
+    chunkSizeWarningLimit: 1500,
+    // Spec v1.7 §6.10.6.17 / H-CR5-A: post-build hygiene gate
+    // (`tools/check-release-hygiene.mjs`) reads the production
+    // build manifest to walk the static import graph and assert
+    // (a) absence of module-level top-level `await` in bootstrap
+    // chain and (b) atomicity of the four capture-mount /
+    // capture-token critical sections. Vite emits the manifest
+    // alongside other build artifacts; we keep the default name
+    // (`.vite/manifest.json` under `outDir`) and let the hygiene
+    // gate read it from either location.
+    manifest: true,
   },
   server: {
     port: process.env.VITE_PORT ? parseInt(process.env.VITE_PORT, 10) : 5173,

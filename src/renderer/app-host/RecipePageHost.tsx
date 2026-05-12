@@ -29,27 +29,84 @@
  *   `appId`/`Page` props but does NOT remount RecipePageHost. A
  *   useState lazy initializer only runs on first mount, so the bridge
  *   stayed bound to the originally-mounted recipe and the new page's
- *   `kb.call` arrived at the dispatcher under the wrong recipe id —
- *   surfaced to the user as
- *   `Call "list-docs" is not declared in recipe "todo"`.
+ *   `kb.call` arrived at the dispatcher under the wrong recipe id.
  *
  *   The render-time mutation is safe because `window.kb` is global
  *   state outside React's render reconciliation; we are not setting
  *   any React state here.
+ *
+ * Host bootstrap sentinel (v0.2.0 / spec v1.7 §6.10.6.13 H-CR1):
+ *
+ *   On every mount we POST a record to `/api/audit/host-bootstrap`
+ *   reflecting whether `globalThis.__kbHostBootstrapComplete === true`.
+ *   The post is host-emitted (not recipe-cooperative), so a malicious
+ *   recipe cannot opt out of being observed. The audit log entry is
+ *   the operational truth used by L1 E2E to confirm the bootstrap
+ *   fence actually held for every fixture mount.
  */
 
 import { useEffect, useRef, type ComponentType } from 'react'
 import { injectKb } from './injectKb'
+import { hostFetchWithInternalAuth } from './hostBootstrap'
+import { createLogger } from '../lib/logger'
 
 interface Props {
   appId: string
   Page: ComponentType
 }
 
+const sentinelLog = createLogger('host-bootstrap-sentinel')
+
+interface KbHostBootstrapGlobal {
+  __kbHostBootstrapComplete?: boolean
+}
+
+/**
+ * Emit a host-bootstrap sentinel record for this mount.
+ *
+ * Reads `globalThis.__kbHostBootstrapComplete` and POSTs the result
+ * to `/api/audit/host-bootstrap`. The post is fire-and-forget; the
+ * audit log itself is the canonical truth for L1 E2E. Logs locally
+ * as well so operators see violations in real time.
+ */
+function emitHostBootstrapSentinel(
+  appId: string,
+  recipePath: string,
+): void {
+  const completed =
+    (globalThis as unknown as KbHostBootstrapGlobal)
+      .__kbHostBootstrapComplete === true
+  const event = completed
+    ? 'host-bootstrap-verified'
+    : 'host-bootstrap-violation'
+  if (!completed) {
+    sentinelLog.error(
+      { appId, recipePath },
+      'host bootstrap violation: recipe page mounted before host bootstrap completed',
+    )
+  }
+  void hostFetchWithInternalAuth('/api/audit/host-bootstrap', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event,
+      recipePath,
+      appId,
+      when: 'before-recipe-render',
+    }),
+  }).catch(() => {
+    /* best-effort — operators see the failure via the logger */
+  })
+}
+
 export function RecipePageHost({ appId, Page }: Props) {
   // `current` holds the recipe id we last bound `window.kb` to and the
   // cleanup returned by that injectKb call.
   const ref = useRef<{ appId: string; cleanup: () => void } | null>(null)
+  // Idempotence: emit the sentinel exactly once per mount target,
+  // not per render. Strict Mode + React Router reconciliation could
+  // otherwise duplicate the audit entry.
+  const sentinelEmittedForAppId = useRef<string | null>(null)
 
   if (ref.current === null) {
     // First render of this wrapper instance — bind the bridge.
@@ -62,6 +119,15 @@ export function RecipePageHost({ appId, Page }: Props) {
     ref.current.cleanup()
     ref.current = { appId, cleanup: injectKb(appId) }
   }
+
+  useEffect(() => {
+    if (sentinelEmittedForAppId.current === appId) return
+    sentinelEmittedForAppId.current = appId
+    // `recipePath` is currently the appId — we keep them as separate
+    // fields so future routing changes (e.g. /ext/<appId>/<page>)
+    // can distinguish the two without breaking log readers.
+    emitHostBootstrapSentinel(appId, appId)
+  }, [appId])
 
   // Final cleanup on unmount. We deliberately ignore re-renders here
   // (the `[]` dep) because the prop-change branch above already keeps

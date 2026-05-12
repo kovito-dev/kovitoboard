@@ -151,6 +151,13 @@ const ja = {
   'recipe.capture.approveButton': '選択した項目を承認',
   'recipe.capture.error.notApproved':
     "キャプチャ '{kind}' はこのレシピで承認されていません。",
+  // Normative warning text (spec v1.4 §10.5.5). Always-visible at
+  // approval point. Communicates the v0.2.x same-instance trust
+  // collapse to the user — approving capture for one recipe means
+  // trusting all other recipes installed in the same KovitoBoard
+  // instance, because v0.2.x cannot structurally isolate them.
+  'recipe.capture.trustWarning':
+    'この recipe の capture を承認すると、同じ KovitoBoard インスタンスにインストール済みの他のすべての recipe を信頼することに同意したことになります。v0.2.x は recipe 間の構造的な隔離を提供できません。これは experimental preview 機能で、将来バージョンで解消される予定です。',
 
   // アプリ新規作成モーダル（v0.1.0-app-creation-flow.md §7.4）
   'appCreate.modal.title': 'アプリ新規作成',

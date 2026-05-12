@@ -6,60 +6,44 @@
 /**
  * Tests for the capture-token issuance / revoke endpoints
  * (`/api/app/capture-token/issue` and
- * `/api/app/capture-token/revoke`), v0.2.0 / spec v1.4 §10.6.7.
+ * `/api/app/capture-token/revoke`), v0.2.0 / spec v1.7 §6.10.6 /
+ * v1.5 §10.6.7.3〜§10.6.7.4.
  *
  * Drives the router through a hand-rolled Express harness on an
- * ephemeral port — same shape as `tests/unit/capture-routes.test.ts`
- * so the suite stays free of supertest.
+ * ephemeral port.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import { request as httpRequest } from 'node:http'
 import { AddressInfo } from 'node:net'
 import express from 'express'
-import type { Express } from 'express'
-import {
-  createCaptureTokenRouter,
-  type CaptureTokenManifestLookup,
-} from '../../src/server/routes/capture-token-routes'
-import type { RecipeManifest } from '../../src/server/recipe/apiTypes'
+import type { Express, RequestHandler } from 'express'
+import { createCaptureTokenRouter } from '../../src/server/routes/capture-token-routes'
 import { lazyChildLogger } from '../../src/server/logger'
 import {
-  __resetForTests,
-  __sizeForTests,
+  __resetForTests as resetTokenStore,
+  __sizeForTests as tokenStoreSize,
   __MAX_ACTIVE_TOKENS_FOR_TESTS,
   issueCaptureToken,
 } from '../../src/server/recipe-capture-sessions'
+import {
+  __resetForTests as resetMountStore,
+  openMount,
+} from '../../src/server/recipe-capture-mount-sessions'
 
 const log = lazyChildLogger('capture-token-routes-test')
 
-function buildManifest(override: Partial<RecipeManifest> = {}): RecipeManifest {
-  return {
-    appId: 'capture-app',
-    recipeId: 'capture-recipe',
-    recipeVersion: '1.0.0',
-    hash: 'deadbeef',
-    installedAt: '2026-01-01T00:00:00.000Z',
-    approvedScopes: ['own-data'],
-    api: { scopes: ['own-data'], calls: [] },
-    captureRequires: ['a11y'],
-    approvedCaptures: ['a11y'],
-    trustLevel: 'unknown',
-    ...override,
-  }
-}
+/** Stub middleware that mimics a passing `verifyInternalAuth`. */
+const passingInternalAuth: RequestHandler = (_req, _res, next) => next()
 
-function mountRouter(manifest: RecipeManifest | null): Express {
-  const store: CaptureTokenManifestLookup = {
-    get: (appId) => (manifest && manifest.appId === appId ? manifest : null),
-  }
+function mountRouter(verifyInternalAuth: RequestHandler): Express {
   const app = express()
   app.use(express.json())
   app.use(
     '/api/app/capture-token',
     createCaptureTokenRouter({
-      manifestStore: store,
       logger: log as unknown as Parameters<typeof createCaptureTokenRouter>[0]['logger'],
+      verifyInternalAuth,
     }),
   )
   return app
@@ -120,88 +104,111 @@ async function postJson(
 
 describe('createCaptureTokenRouter', () => {
   beforeEach(() => {
-    __resetForTests()
+    resetTokenStore()
+    resetMountStore()
   })
 
   afterEach(() => {
-    __resetForTests()
+    resetTokenStore()
+    resetMountStore()
   })
 
   describe('POST /issue', () => {
-    it('issues a 32-char hex token bound to the manifest appId', async () => {
-      const app = mountRouter(buildManifest())
+    it('issues a 32-char hex token bound to the mountId-derived appId', async () => {
+      const open = openMount('capture-app')
+      if (!open.ok) throw new Error('mount open failed')
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(app, '/api/app/capture-token/issue', {
-        appId: 'capture-app',
+        mountId: open.mountId,
       })
       expect(res.status).toBe(200)
       expect(typeof res.body?.token).toBe('string')
       expect(res.body?.token as string).toMatch(/^[0-9a-f]{32}$/)
       expect(typeof res.body?.expiresAt).toBe('number')
-      expect(res.body?.reason).toBeNull()
-      expect(__sizeForTests()).toBe(1)
+      expect(tokenStoreSize()).toBe(1)
     })
 
-    it('returns a grandfather skip when manifest.captureRequires is empty', async () => {
-      const app = mountRouter(
-        buildManifest({ captureRequires: [], approvedCaptures: [] }),
-      )
+    it('I-CR4 issuance gate: a recipe page cannot mint another appId by forging req.body.appId — body.appId is ignored, mountStore is the authority', async () => {
+      // Open mount under "alpha-app".
+      const openAlpha = openMount('alpha-app')
+      if (!openAlpha.ok) throw new Error('mount open failed')
+      // Open a parallel mount under "beta-app" so both are alive.
+      const openBeta = openMount('beta-app')
+      if (!openBeta.ok) throw new Error('mount open failed')
+      const app = mountRouter(passingInternalAuth)
+      // Recipe A holds alpha-app's mountId but tries to mint with body
+      // claiming `appId: 'beta-app'`. The server must ignore body.appId
+      // and use the mountStore record for alpha-app instead.
       const res = await postJson(app, '/api/app/capture-token/issue', {
-        appId: 'capture-app',
+        mountId: openAlpha.mountId,
+        appId: 'beta-app',
       })
       expect(res.status).toBe(200)
-      expect(res.body?.token).toBeNull()
-      expect(res.body?.expiresAt).toBeNull()
-      expect(res.body?.reason).toBe('grandfather-no-capture')
-      expect(__sizeForTests()).toBe(0)
+      // The token was minted under alpha-app, not beta-app. We
+      // verify via consumeCaptureToken in capture-routes paths; here
+      // we just confirm the token landed in the store.
+      expect(tokenStoreSize()).toBe(1)
     })
 
-    it('returns 400 InvalidAppId for malformed appId', async () => {
-      const app = mountRouter(buildManifest())
+    it('returns 400 InvalidMountId for malformed mountId', async () => {
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(app, '/api/app/capture-token/issue', {
-        appId: 'INVALID UPPER',
+        mountId: 'not-hex',
       })
       expect(res.status).toBe(400)
-      expect(res.body?.error).toBe('InvalidAppId')
+      expect(res.body?.error).toBe('InvalidMountId')
     })
 
-    it('returns 404 NoMatchingManifest when appId resolves to no manifest', async () => {
-      const app = mountRouter(buildManifest())
+    it('returns 401 MountNotFound when the mountId is unknown', async () => {
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(app, '/api/app/capture-token/issue', {
-        appId: 'unknown-app',
+        mountId: 'a'.repeat(32),
       })
-      expect(res.status).toBe(404)
-      expect(res.body?.error).toBe('NoMatchingManifest')
+      expect(res.status).toBe(401)
+      expect(res.body?.error).toBe('MountNotFound')
     })
 
     it('returns 503 CaptureTokenStoreFull when the store cap is exhausted', async () => {
       // Pre-populate the store so the router's issue path trips
       // the cap on the next call.
       for (let i = 0; i < __MAX_ACTIVE_TOKENS_FOR_TESTS; i++) {
-        const result = issueCaptureToken(`app-${i}`)
-        expect(result.ok).toBe(true)
+        const mountId = i.toString(16).padStart(32, '0').slice(0, 32)
+        const r = issueCaptureToken({ mountId, appId: `app-${i}` })
+        if (!r.ok) throw new Error('issue failed')
       }
-      const app = mountRouter(buildManifest())
+      const open = openMount('capture-app')
+      if (!open.ok) throw new Error('mount open failed')
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(app, '/api/app/capture-token/issue', {
-        appId: 'capture-app',
+        mountId: open.mountId,
       })
       expect(res.status).toBe(503)
       expect(res.body?.error).toBe('CaptureTokenStoreFull')
-      expect(
-        (res.body?.details as Record<string, unknown>).maxActiveTokens,
-      ).toBe(__MAX_ACTIVE_TOKENS_FOR_TESTS)
+    })
+
+    it('refuses on a failing internal-auth middleware', async () => {
+      const failingInternalAuth: RequestHandler = (_req, res) => {
+        res.status(401).json({ error: 'MissingInternalAuth' })
+      }
+      const app = mountRouter(failingInternalAuth)
+      const res = await postJson(app, '/api/app/capture-token/issue', {
+        mountId: 'a'.repeat(32),
+      })
+      expect(res.status).toBe(401)
+      expect(res.body?.error).toBe('MissingInternalAuth')
     })
   })
 
   describe('POST /revoke', () => {
     it('returns 401 MissingCaptureToken when the header is absent', async () => {
-      const app = mountRouter(buildManifest())
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(app, '/api/app/capture-token/revoke', {})
       expect(res.status).toBe(401)
       expect(res.body?.error).toBe('MissingCaptureToken')
     })
 
     it('returns 400 InvalidCaptureToken on a malformed header', async () => {
-      const app = mountRouter(buildManifest())
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(
         app,
         '/api/app/capture-token/revoke',
@@ -213,9 +220,14 @@ describe('createCaptureTokenRouter', () => {
     })
 
     it('revokes a live token and reports revoked=true', async () => {
-      const app = mountRouter(buildManifest())
-      const issued = issueCaptureToken('capture-app')
+      const open = openMount('capture-app')
+      if (!open.ok) throw new Error('mount open failed')
+      const issued = issueCaptureToken({
+        mountId: open.mountId,
+        appId: 'capture-app',
+      })
       if (!issued.ok) throw new Error('issue failed')
+      const app = mountRouter(passingInternalAuth)
       const res = await postJson(
         app,
         '/api/app/capture-token/revoke',
@@ -224,13 +236,18 @@ describe('createCaptureTokenRouter', () => {
       )
       expect(res.status).toBe(200)
       expect(res.body?.revoked).toBe(true)
-      expect(__sizeForTests()).toBe(0)
+      expect(tokenStoreSize()).toBe(0)
     })
 
     it('is idempotent — second revoke returns revoked=false', async () => {
-      const app = mountRouter(buildManifest())
-      const issued = issueCaptureToken('capture-app')
+      const open = openMount('capture-app')
+      if (!open.ok) throw new Error('mount open failed')
+      const issued = issueCaptureToken({
+        mountId: open.mountId,
+        appId: 'capture-app',
+      })
       if (!issued.ok) throw new Error('issue failed')
+      const app = mountRouter(passingInternalAuth)
       await postJson(
         app,
         '/api/app/capture-token/revoke',

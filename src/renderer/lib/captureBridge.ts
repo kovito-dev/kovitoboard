@@ -4,47 +4,48 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Capture bridge — implementation of `window.kb.capture.<kind>`.
+ * Recipe-visible capture bridge — implementation of
+ * `window.kb.capture.<kind>` (v0.2.0 / spec v1.7 §6.10.6 / v1.4
+ * §10.5.2).
  *
  * The v0.2.0 opt-in mechanism (Phase 1 prompt-injection ①) splits
- * its verification across four layers (spec
- * `recipe-system.md` v1.6 §6.10 / `app-directory-extension.md` v1.3
- * §10.5.2):
+ * its verification across four layers:
  *
  *   - declaration (`manifest.captureRequires`)
  *   - consent (`manifest.approvedCaptures`)
- *   - source authentication (per-recipe-page capture token,
- *     v1.6 §6.10.6 / I-CR4 / I-CR5)
+ *   - source authentication (per-recipe-page capture token, v1.7
+ *     §6.10.6 / I-CR4)
  *   - enforcement (server router at `/api/app/capture/<kind>`)
  *
- * This module is the client-side glue that owns layer 3 on the
- * recipe page. At mount time the bridge calls
- * `POST /api/app/capture-token/issue` and caches the resulting
- * token in a **closure variable** — never in `localStorage` /
- * `sessionStorage` (I-CR4 / spec v1.6 §6.10.6.2 SSOT). Every
- * `window.kb.capture.<kind>()` call attaches the token via
- * `X-KB-Capture-Token`; the server resolves the token to the
- * authoritative `appId`, so a forged `req.body.appId` cannot
- * borrow another app's authorisation (cross-app capability theft
- * is structurally prevented).
+ * This module is the **recipe-visible** surface. It receives an
+ * initial `mountId` + `token` as closure parameters at mount time
+ * (set up by `injectKb`); it never reaches the host-only EPs
+ * (`/api/app/capture-mount/*`, `/api/app/capture-token/*`)
+ * directly. When the cached token expires the bridge asks the
+ * host-only `captureBridgeRegistry` for a refresh; the registry
+ * holds `KB_INTERNAL_TOKEN` in a closure recipe code cannot reach
+ * (I-CR4 / I-CR6 / I-CR7).
  *
- * On unmount, `injectKb` invokes `revokeToken()` which calls
- * `POST /api/app/capture-token/revoke` and clears the closure.
- * Network failures during revoke only log a warning — KB process
- * termination eventually wipes the server-side in-memory store
- * (I-CR5).
- *
- * Per spec v1.3 §10.5.2 "server-side 403 reception", token-related
- * 403s (`capture-token-missing` / `-invalid` / `-expired`) are
- * collapsed into `CaptureNotApprovedError` on the client so attackers
- * cannot use the error code as a token oracle. The technical reason
- * is preserved via the log line but not surfaced to recipe code.
+ * Per spec v1.4.1 §10.5.2 "server-side 403 reception", token-related
+ * 403s (`capture-token-missing` / `-invalid` / `-expired` /
+ * `mount-not-found` / `no-matching-manifest`) collapse into
+ * `CaptureNotApprovedError` on the client so attackers cannot use
+ * the error code as a token oracle. The technical reason is
+ * preserved via the log line but not surfaced to recipe code.
  *
  * @stable v0.2.0
  */
 
+import { kbFetch } from './kbFetch'
 import type { RendererLogger } from './logger'
 import type { CaptureKindValue } from '../../shared/recipe-types'
+import {
+  registerBridge,
+  unregisterBridge,
+  requestRefresh,
+  RestartReloadError,
+  type BridgeHandle,
+} from '../app-host/captureBridgeRegistry'
 
 /**
  * Capture kinds the v0.2.x bridge knows about.
@@ -59,68 +60,61 @@ export type CaptureKind = CaptureKindValue
 /**
  * Public surface of the recipe-scoped capture bridge.
  *
- * `injectKb` calls `issueToken()` from a useEffect at mount time
- * and `revokeToken()` from the matching cleanup. The capture
- * methods (`a11y` / `exposedContext`) are exposed on
- * `window.kb.capture` to recipe code.
+ * Recipe code reaches `a11y` / `exposedContext` on
+ * `window.kb.capture`. `dispose()` is host-only — called from
+ * `injectKb`'s cleanup function.
  */
 export interface CaptureBridge {
   a11y: () => Promise<void>
   exposedContext: () => Promise<void>
   /**
-   * Issue a capture token for the bound `appId`. Resolves once the
-   * mount-time exchange has completed (success, grandfather skip,
-   * or store-full / network failure). Subsequent capture calls
-   * read the cached token.
+   * Unregister from the registry. Idempotent. Called from the
+   * `injectKb` cleanup function.
    */
-  issueToken: () => Promise<void>
-  /**
-   * Revoke the cached token and clear the closure. Idempotent —
-   * safe to call twice during React cleanup races. Resolves
-   * regardless of the server response (network failures only log).
-   */
-  revokeToken: () => Promise<void>
+  dispose: () => void
 }
 
-interface CaptureBridgeOptions {
+export interface CaptureBridgeOptions {
   appId: string
   /**
-   * Optional client-side cache of `manifest.captureRequires`
-   * (v0.2.0 / spec v1.5). Used to short-circuit the declaration
-   * step (`CaptureNotDeclaredError`) before any network round-trip.
-   * Independent of the capture-token mechanism.
+   * Server-issued mount identity from
+   * `POST /api/app/capture-mount/open`. `null` indicates a
+   * grandfather recipe (capture is structurally disabled, every
+   * call short-circuits with `CaptureNotDeclaredError`).
+   */
+  mountId: string | null
+  /**
+   * Initial capture token from `POST /api/app/capture-token/issue`.
+   * `null` when the mount is grandfather / open failed; the bridge
+   * fail-fasts every capture call in that state.
+   */
+  initialToken: string | null
+  /**
+   * Optional client-side cache of `manifest.captureRequires`. Used
+   * to short-circuit the declaration step before any network
+   * round-trip.
    */
   captureRequires?: readonly CaptureKind[]
   /**
-   * Optional client-side cache of `manifest.approvedCaptures`.
-   * Short-circuits the consent step. Server-side verification
-   * remains authoritative (spec v1.3 §10.5.2).
+   * Optional client-side cache of `manifest.approvedCaptures`. Used
+   * to short-circuit the consent step.
    */
   approvedCaptures?: readonly CaptureKind[]
   log: RendererLogger
 }
 
-/**
- * Server response shape for `POST /api/app/capture-token/issue`.
- * Mirrors `http-api-contract.md` v1.4 §10.6.7.1.
- */
-interface IssueResponseBody {
-  token?: string | null
-  expiresAt?: number | null
-  reason?: 'grandfather-no-capture' | null
+interface PendingCall {
+  reject: (err: unknown) => void
 }
 
 /**
  * Build the recipe-scoped `kb.capture` surface.
  *
  * The returned object is consumed by `injectKb` and surfaces on
- * `window.kb.capture` while a recipe page is mounted. The capture
- * methods themselves throw early if the local cache rules out the
- * call; otherwise they POST to `/api/app/capture/<kind>` with the
- * cached token in the `X-KB-Capture-Token` header.
+ * `window.kb.capture` while a recipe page is mounted.
  */
 export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
-  const { appId, captureRequires, approvedCaptures, log } = opts
+  const { appId, mountId, initialToken, captureRequires, approvedCaptures, log } = opts
   const declaredSet =
     captureRequires === undefined ? null : new Set<CaptureKind>(captureRequires)
   const approvedSet =
@@ -128,98 +122,43 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
 
   /**
    * Mount-lifetime closure for the capture token. `null` means
-   * "no token available — fail-fast every capture call". The token
-   * is intentionally NOT placed on `window`, `localStorage`, or any
-   * other DOM-readable surface (I-CR4); only this closure holds it.
+   * "no token available — fail-fast every capture call" (grandfather
+   * recipe or open-mount failure). The token is intentionally NOT
+   * placed on `window`, `localStorage`, or any other DOM-readable
+   * surface (I-CR4).
    */
-  let cachedToken: string | null = null
+  let cachedToken: string | null = initialToken
+
   /**
-   * Tracks the grandfather-skip path so subsequent fail-fast calls
-   * can throw `CaptureNotDeclaredError` (server-side equivalent of
-   * a grandfather recipe). When the issue endpoint replied 503 /
-   * network error instead, we throw `CaptureNotApprovedError`
-   * because the cause is opaque to the recipe code.
+   * Pending capture call rejections so the restart-recovery path
+   * can bounce in-flight Promises with `RestartReloadError` rather
+   * than letting them resolve against a stale internal token.
    */
-  let issueOutcome: 'pending' | 'ok' | 'grandfather' | 'unavailable' = 'pending'
+  const pendingCalls: Set<PendingCall> = new Set()
 
-  async function issueToken(): Promise<void> {
-    let response: Response
-    try {
-      response = await fetch('/api/app/capture-token/issue', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ appId }),
-      })
-    } catch (err) {
-      cachedToken = null
-      issueOutcome = 'unavailable'
-      log.warn({ appId, err }, 'capture-token issue: network error')
-      return
-    }
+  let registered = false
+  let disposed = false
 
-    if (response.status !== 200) {
-      cachedToken = null
-      issueOutcome = 'unavailable'
-      log.warn(
-        { appId, status: response.status },
-        'capture-token issue: non-200 response',
-      )
-      return
+  if (mountId !== null) {
+    const handle: BridgeHandle = {
+      mountId,
+      appId,
+      setToken: (token) => {
+        cachedToken = token
+      },
+      rejectPending: (err) => {
+        for (const pending of pendingCalls) {
+          try {
+            pending.reject(err)
+          } catch {
+            /* noop */
+          }
+        }
+        pendingCalls.clear()
+      },
     }
-
-    let body: IssueResponseBody = {}
-    try {
-      body = (await response.json()) as IssueResponseBody
-    } catch {
-      // Empty / invalid JSON. Treat as unavailable.
-    }
-
-    if (body.reason === 'grandfather-no-capture' || body.token === null) {
-      cachedToken = null
-      issueOutcome = 'grandfather'
-      log.info(
-        { appId },
-        'capture-token issue: grandfather skip (recipe declares no capture)',
-      )
-      return
-    }
-
-    if (typeof body.token === 'string' && body.token.length > 0) {
-      cachedToken = body.token
-      issueOutcome = 'ok'
-      log.info({ appId }, 'capture-token issue: ok')
-      return
-    }
-
-    // Shape we did not expect — defensively fail-fast.
-    cachedToken = null
-    issueOutcome = 'unavailable'
-    log.warn({ appId }, 'capture-token issue: unexpected response shape')
-  }
-
-  async function revokeToken(): Promise<void> {
-    const tokenToRevoke = cachedToken
-    cachedToken = null
-    issueOutcome = 'pending'
-    if (tokenToRevoke === null) {
-      return
-    }
-    try {
-      await fetch('/api/app/capture-token/revoke', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-kb-capture-token': tokenToRevoke,
-        },
-        body: '{}',
-      })
-    } catch (err) {
-      // Revoke is best-effort — the server-side store has a TTL
-      // and the process-exit cleanup will eventually drop the
-      // entry anyway. Log so operators can spot persistent
-      // failures.
-      log.warn({ appId, err }, 'capture-token revoke: network error')
-    }
+    registerBridge(handle)
+    registered = true
   }
 
   async function callServer(kind: CaptureKind): Promise<void> {
@@ -228,66 +167,107 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
     // so recipe authors see the same diagnostic regardless of
     // which side refused.
     if (declaredSet !== null && !declaredSet.has(kind)) {
-      const err = new CaptureNotDeclaredError(kind, appId)
       log.warn({ kind, appId }, `capture ${kind}: refused by client-side guard (not declared)`)
-      throw err
+      throw new CaptureNotDeclaredError(kind, appId)
     }
     if (approvedSet !== null && !approvedSet.has(kind)) {
-      const err = new CaptureNotApprovedError(kind, appId)
       log.warn({ kind, appId }, `capture ${kind}: refused by client-side guard (not approved)`)
-      throw err
+      throw new CaptureNotApprovedError(kind, appId)
     }
 
-    // Token gate. A `null` cache means the issue path either
-    // skipped (grandfather) or failed (store full, network). We
-    // refuse without a network round-trip so the call is cheap
-    // even when capture is structurally disabled for the page.
-    if (cachedToken === null) {
-      if (issueOutcome === 'grandfather') {
-        const err = new CaptureNotDeclaredError(kind, appId)
-        log.warn(
-          { kind, appId },
-          `capture ${kind}: refused by client-side guard (grandfather-no-capture)`,
-        )
-        throw err
-      }
-      const err = new CaptureNotApprovedError(kind, appId)
+    // Grandfather + open-failure short-circuit. `mountId === null`
+    // means the host renderer never even tried to issue a token
+    // (grandfather skip from `/capture-mount/open`); we throw the
+    // declaration error so recipe code sees the same envelope it
+    // would if the recipe simply never declared the kind.
+    if (mountId === null) {
       log.warn(
-        { kind, appId, outcome: issueOutcome },
+        { kind, appId },
+        `capture ${kind}: refused by client-side guard (grandfather-no-capture)`,
+      )
+      throw new CaptureNotDeclaredError(kind, appId)
+    }
+
+    if (cachedToken === null) {
+      log.warn(
+        { kind, appId, mountId },
         `capture ${kind}: refused by client-side guard (no token)`,
       )
-      throw err
+      throw new CaptureNotApprovedError(kind, appId)
     }
 
+    return invokeOnceWithRefresh(kind, cachedToken)
+  }
+
+  async function invokeOnceWithRefresh(
+    kind: CaptureKind,
+    tokenAtCallTime: string,
+  ): Promise<void> {
+    const initialResult = await postCaptureCall(kind, tokenAtCallTime)
+    if (initialResult.kind === 'ok') return
+    if (initialResult.kind === 'fatal') throw initialResult.error
+
+    // 403 capture-token-* → ask the host registry for a refresh.
+    // The registry deduplicates concurrent refreshes for the same
+    // mountId, so even a recipe page that fires many parallel
+    // captures only triggers one server-side `/issue`. We retry the
+    // call exactly once; if the refresh fails or the retry refuses
+    // again, the caller sees `CaptureNotApprovedError`.
+    if (mountId === null) {
+      throw new CaptureNotApprovedError(kind, appId)
+    }
+    const newToken = await requestRefresh(mountId, log)
+    if (newToken === null) {
+      throw new CaptureNotApprovedError(kind, appId)
+    }
+    cachedToken = newToken
+    const retryResult = await postCaptureCall(kind, newToken)
+    if (retryResult.kind === 'ok') return
+    if (retryResult.kind === 'fatal') throw retryResult.error
+    // Still token-shape after one refresh → give up.
+    throw new CaptureNotApprovedError(kind, appId)
+  }
+
+  type CaptureCallResult =
+    | { kind: 'ok' }
+    | { kind: 'token-stale' }
+    | { kind: 'fatal'; error: Error }
+
+  async function postCaptureCall(
+    kind: CaptureKind,
+    token: string,
+  ): Promise<CaptureCallResult> {
     let response: Response
     try {
-      response = await fetch(`/api/app/capture/${encodeURIComponent(kind)}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          // I-CR4: the token is the only field that establishes
-          // app identity on the wire. Do NOT pass `appId` in the
-          // body — `req.body.appId` is ignored on the server side
-          // precisely to prevent cross-app capability theft, but
-          // sending it would be a misleading lie to log readers.
-          'x-kb-capture-token': cachedToken,
+      response = await kbFetch(
+        `/api/app/capture/${encodeURIComponent(kind)}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            // I-CR4: the token is the only field that establishes
+            // app identity on the wire. Do NOT pass `appId` in the
+            // body — `req.body.appId` is ignored on the server side
+            // precisely to prevent cross-app capability theft.
+            'x-kb-capture-token': token,
+          },
+          body: '{}',
         },
-        body: '{}',
-      })
+      )
     } catch (err) {
       log.warn({ kind, appId, err }, `capture ${kind}: network error`)
-      throw new CaptureNetworkError(kind, err)
+      return { kind: 'fatal', error: new CaptureNetworkError(kind, err) }
     }
 
     if (response.status === 204) {
-      return
+      return { kind: 'ok' }
     }
 
     let body: Record<string, unknown> = {}
     try {
       body = (await response.json()) as Record<string, unknown>
     } catch {
-      // Empty / invalid JSON; fall through with empty body.
+      /* empty / invalid JSON */
     }
     const code = typeof body.error === 'string' ? body.error : 'CaptureFailed'
     const message =
@@ -306,28 +286,89 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
       `capture ${kind}: refused by server`,
     )
 
-    // Spec `app-directory-extension.md` v1.3 §10.5.2 "server-side
-    // 403 reception": token-shape failures are remapped to
-    // `CaptureNotApprovedError` on the client so attackers cannot
-    // distinguish "no token" from "token expired" from "token
-    // invalid". The technical reason stays in the warn log above.
+    // Spec `app-directory-extension.md` v1.4.1 §10.5.2 "server-side
+    // 403 reception": token-shape failures are token-stale signals,
+    // not authoritative refusals. Surface them as `token-stale` so
+    // the caller can request a refresh + retry once. Other failures
+    // are fatal.
     if (
       serverReason === 'capture-token-missing' ||
       serverReason === 'capture-token-invalid' ||
       serverReason === 'capture-token-expired' ||
-      serverReason === 'no-matching-manifest'
+      serverReason === 'mount-not-found'
     ) {
-      throw new CaptureNotApprovedError(kind, appId)
+      return { kind: 'token-stale' }
+    }
+    if (serverReason === 'no-matching-manifest') {
+      // The recipe was uninstalled mid-session. There is nothing the
+      // bridge can recover; collapse to the opaque error.
+      return {
+        kind: 'fatal',
+        error: new CaptureNotApprovedError(kind, appId),
+      }
     }
 
-    throw new CaptureRejectedError(code, message, response.status)
+    if (code === 'CaptureNotDeclared') {
+      return {
+        kind: 'fatal',
+        error: new CaptureNotDeclaredError(kind, appId),
+      }
+    }
+    if (code === 'CaptureNotApproved') {
+      return {
+        kind: 'fatal',
+        error: new CaptureNotApprovedError(kind, appId),
+      }
+    }
+    return {
+      kind: 'fatal',
+      error: new CaptureRejectedError(code, message, response.status),
+    }
+  }
+
+  function trackPending<T>(
+    promise: Promise<T>,
+    rejectRef: (err: unknown) => void,
+  ): Promise<T> {
+    const entry: PendingCall = { reject: rejectRef }
+    pendingCalls.add(entry)
+    return promise.finally(() => {
+      pendingCalls.delete(entry)
+    })
+  }
+
+  function wrapCall(kind: CaptureKind): () => Promise<void> {
+    return () => {
+      let captureReject: (err: unknown) => void = () => {}
+      const promise = new Promise<void>((resolve, reject) => {
+        captureReject = reject
+        callServer(kind).then(resolve, (err) => {
+          if (err instanceof RestartReloadError) {
+            reject(err)
+          } else {
+            reject(err)
+          }
+        })
+      })
+      return trackPending(promise, captureReject)
+    }
+  }
+
+  function dispose(): void {
+    if (disposed) return
+    disposed = true
+    if (registered && mountId !== null) {
+      unregisterBridge(mountId)
+    }
+    // Clear any pending refs so a late restart-recovery does not
+    // try to reject again into a dead bridge.
+    pendingCalls.clear()
   }
 
   return {
-    a11y: () => callServer('a11y'),
-    exposedContext: () => callServer('exposed-context'),
-    issueToken,
-    revokeToken,
+    a11y: wrapCall('a11y'),
+    exposedContext: wrapCall('exposed-context'),
+    dispose,
   }
 }
 
@@ -335,10 +376,6 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
  * Thrown when the client-side cache refuses a capture call at the
  * declaration step (step 3, `manifest.captureRequires`) or when
  * the grandfather skip blocks the call before the token round-trip.
- * Surfaces the same `error.code` value as the server's 403 envelope
- * so recipe authors can branch on it without inspecting whether the
- * call reached the network. See `recipe-system.md` v1.5 §6.10.3
- * I-CR3 for the step-3 / step-4 split.
  */
 export class CaptureNotDeclaredError extends Error {
   readonly code = 'CaptureNotDeclared'
@@ -357,10 +394,8 @@ export class CaptureNotDeclaredError extends Error {
  * Thrown when the client-side cache or the server-side gate
  * refuses a capture call at the consent step (step 4,
  * `manifest.approvedCaptures`), or when the token round-trip
- * failed for any reason (token missing / invalid / expired,
- * server-side manifest race, store full, network error). The
- * shared error code keeps the token mechanism from leaking
- * structural information to recipe authors.
+ * failed for any reason. The shared error code keeps the token
+ * mechanism from leaking structural information to recipe authors.
  */
 export class CaptureNotApprovedError extends Error {
   readonly code = 'CaptureNotApproved'
@@ -377,10 +412,7 @@ export class CaptureNotApprovedError extends Error {
 
 /**
  * Thrown when the server-side gate refuses the call with a reason
- * other than the token-shape family. Wraps the structured envelope
- * (`error` + `message` + `details`) the server emitted so recipe
- * authors can branch on `error.code` instead of regex'ing the
- * message.
+ * other than the token-shape / declaration / consent family.
  */
 export class CaptureRejectedError extends Error {
   readonly code: string
@@ -396,9 +428,7 @@ export class CaptureRejectedError extends Error {
 
 /**
  * Thrown when the underlying fetch fails before the server could
- * respond. The `cause` field carries the original error so the
- * caller can introspect it (e.g. distinguish AbortError from a DNS
- * failure).
+ * respond.
  */
 export class CaptureNetworkError extends Error {
   readonly code = 'CaptureNetworkError'
@@ -410,3 +440,8 @@ export class CaptureNetworkError extends Error {
     this.cause = cause
   }
 }
+
+// Re-export RestartReloadError so recipe authors can branch on the
+// error name without importing from `captureBridgeRegistry` (a
+// host-only module they should not depend on directly).
+export { RestartReloadError }

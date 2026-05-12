@@ -38,6 +38,10 @@ import {
   createWsClientVerifier,
   resolveLaunchTokenOrThrow,
 } from './middleware/auth'
+import {
+  createInternalAuthGuard,
+  resolveInternalTokenOrThrow,
+} from './middleware/internal-auth'
 import { createConfigRouter } from './routes/config-routes'
 import { createVersionRouter } from './routes/version-routes'
 import {
@@ -55,6 +59,8 @@ import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
 import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
+import { createCaptureMountRouter } from './routes/capture-mount-routes'
+import { createAuditRouter } from './routes/audit-routes'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -123,7 +129,9 @@ const serverStartTime = Date.now()
 // "no auth" mode, which would silently re-introduce the same-host
 // attack surface the token was added to close.
 const LAUNCH_TOKEN = resolveLaunchTokenOrThrow()
+const INTERNAL_TOKEN = resolveInternalTokenOrThrow()
 const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
+const verifyInternalAuth = createInternalAuthGuard(INTERNAL_TOKEN)
 const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
 
 const app = express()
@@ -338,11 +346,35 @@ app.use('/api/app', createAppRouter(fs))
 // `/api/app/capture` would intercept the `:kind` segment of the
 // token path (e.g. `/api/app/capture/token`) and return a 403
 // `CaptureNotDeclared` instead of the issuance / revoke contract.
+// Mount the capture-mount router BEFORE the capture-token router so
+// the `/api/app/capture-mount/*` paths can be matched before the
+// router below claims the `/api/app/capture-token/*` namespace —
+// Express 5 matches routers in mount order.
+app.use(
+  '/api/app/capture-mount',
+  createCaptureMountRouter({
+    manifestStore,
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
 app.use(
   '/api/app/capture-token',
   createCaptureTokenRouter({
-    manifestStore,
     logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+// Host-side audit endpoints (v0.2.0 / spec v1.7 §6.10.6.13). Mounted
+// at /api/audit to keep the URL separate from per-app /api/app
+// routes — the host-bootstrap sentinel proves a property about host
+// bootstrap, not about any particular recipe.
+app.use(
+  '/api/audit',
+  createAuditRouter({
+    projectRoot,
+    logger: apiLogger,
+    verifyInternalAuth,
   }),
 )
 // Capture endpoints (v0.2.0 Phase 1 prompt-injection ①, opt-in
@@ -1944,10 +1976,15 @@ const distIndexCache: string | null = (() => {
   if (process.env.KOVITOBOARD_MODE !== 'prod') return null
   try {
     const raw = fs.readFileSync(distIndexPath, 'utf-8')
-    return raw.replace(
-      '<!-- KB:LAUNCH_TOKEN_META -->',
-      `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
-    )
+    return raw
+      .replace(
+        '<!-- KB:LAUNCH_TOKEN_META -->',
+        `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
+      )
+      .replace(
+        '<!-- KB:INTERNAL_TOKEN_META -->',
+        `<meta name="kb-internal-token" content="${INTERNAL_TOKEN}">`,
+      )
   } catch {
     // Missing dist is already diagnosed by the explicit check at
     // startup (search for KOVITOBOARD_MODE === 'prod' below); fall

@@ -5,33 +5,27 @@
  */
 /**
  * Tests for the v0.2.0 capture endpoint router
- * (`/api/app/capture/<kind>`) — v1.6 shape with capture-token
- * source authentication.
+ * (`/api/app/capture/<kind>`) — v1.7 shape with mount-identity +
+ * capture-token source authentication.
  *
- * The router runs the 5-step verification flow from
- * `http-api-contract.md` v1.4 §10.6.3 with token-based source
- * authentication (I-CR4):
+ * The router runs the v1.5 §10.6.3 5-step verification flow:
  *
  *   1. unknown literal kind path segment → 403 CaptureNotDeclared
- *      (audit reason: `not-declared`, kind: null, global sink)
- *   2. X-KB-Capture-Token header missing → 403 NoActiveRecipe
- *      (audit reason: `capture-token-missing`, global sink)
- *   3. token malformed / unknown → 403 NoActiveRecipe
- *      (audit reason: `capture-token-invalid`, global sink)
- *   4. token expired → 403 NoActiveRecipe
- *      (audit reason: `capture-token-expired`, global sink)
- *   5. token's appId resolves to no manifest → 403 NoActiveRecipe
- *      (audit reason: `no-matching-manifest`, global sink)
- *   6. kind missing from manifest.captureRequires → 403
- *      CaptureNotDeclared (audit reason: `not-declared`, per-app sink)
- *   7. kind missing from manifest.approvedCaptures → 403
- *      CaptureNotApproved (audit reason: `not-approved`, per-app sink)
- *   8. otherwise 204 (audit reason: `approved`, per-app sink)
+ *   2. X-KB-Capture-Token header missing / malformed / unknown /
+ *      expired → 403 NoActiveRecipe with the matching token-* reason
+ *      (mountStore lookup miss → reason `mount-not-found`)
+ *   3. token + mount resolve cleanly but manifest disappeared → 403
+ *      NoActiveRecipe (audit reason: `no-matching-manifest`)
+ *   4. kind missing from manifest.captureRequires → 403
+ *      CaptureNotDeclared (audit reason: `not-declared`)
+ *   5. kind missing from manifest.approvedCaptures → 403
+ *      CaptureNotApproved (audit reason: `not-approved`)
+ *   6. otherwise 204 (audit reason: `approved`)
  *
- * Crucially this suite covers the **cross-app capability theft
- * regression** that surfaced as the attempt 3 CodeX HIGH finding:
- * a token issued for `app-A` MUST resolve to `app-A` regardless of
- * any `appId` field the caller may send in the body (I-CR4).
+ * The suite covers the **issuance-gate cross-app capability theft
+ * regression** (PR #30 attempt 4 CodeX HIGH): a recipe page A that
+ * holds A's mountId cannot mint a token for app B by forging body
+ * fields.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
@@ -49,11 +43,28 @@ import {
 import type { RecipeManifest } from '../../src/server/recipe/apiTypes'
 import { lazyChildLogger } from '../../src/server/logger'
 import {
-  __resetForTests,
+  __resetForTests as resetTokenStore,
   issueCaptureToken,
 } from '../../src/server/recipe-capture-sessions'
+import {
+  __resetForTests as resetMountStore,
+  openMount,
+} from '../../src/server/recipe-capture-mount-sessions'
 
 const log = lazyChildLogger('capture-routes-test')
+
+/**
+ * Helper to open a mount and immediately issue a bound token. The
+ * `appId` ends up in both the mountStore and the tokenStore, which
+ * is the chain `capture-routes.ts` step 2 walks.
+ */
+function provisionToken(appId: string): { mountId: string; token: string } {
+  const mount = openMount(appId)
+  if (!mount.ok) throw new Error(`openMount failed for ${appId}: ${mount.reason}`)
+  const issued = issueCaptureToken({ mountId: mount.mountId, appId })
+  if (!issued.ok) throw new Error(`issueCaptureToken failed: ${issued.reason}`)
+  return { mountId: mount.mountId, token: issued.token }
+}
 
 function buildManifest(override: Partial<RecipeManifest> = {}): RecipeManifest {
   return {
@@ -75,8 +86,6 @@ function mountRouter(opts: {
   manifests: RecipeManifest[]
   projectRoot: string
 }): Express {
-  // Multi-manifest lookup so cross-app capability theft tests can
-  // register both app-A and app-B in the same store.
   const store: CaptureManifestLookup = {
     get: (appId) => opts.manifests.find((m) => m.appId === appId) ?? null,
   }
@@ -172,26 +181,27 @@ function readUnresolvedAuditEntries(
     .map((line) => JSON.parse(line) as Record<string, unknown>)
 }
 
-describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
+describe('createCaptureRouter (v1.7 mountId + capture-token mechanism)', () => {
   let projectRoot: string
 
   beforeEach(() => {
     projectRoot = mkdtempSync(join(tmpdir(), 'kb-capture-router-'))
-    __resetForTests()
+    resetTokenStore()
+    resetMountStore()
   })
 
   afterEach(() => {
     rmSync(projectRoot, { recursive: true, force: true })
-    __resetForTests()
+    resetTokenStore()
+    resetMountStore()
   })
 
   it('returns 204 with a valid token and approved/declared kind', async () => {
     const manifest = buildManifest()
     const app = mountRouter({ manifests: [manifest], projectRoot })
-    const issued = issueCaptureToken('capture-app')
-    if (!issued.ok) throw new Error('issue failed')
+    const { token } = provisionToken('capture-app')
 
-    const res = await postCapture(app, 'a11y', {}, issued.token)
+    const res = await postCapture(app, 'a11y', {}, token)
     expect(res.status).toBe(204)
     const entries = readPerAppAuditEntries(projectRoot, 'capture-app')
     expect(entries.at(-1)?.reason).toBe('approved')
@@ -235,15 +245,15 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
     ).toBe('capture-token-invalid')
   })
 
-  it('returns 403 no-matching-manifest when the token resolves to no manifest', async () => {
+  it('returns 403 no-matching-manifest when the token resolves to no manifest (uninstall race)', async () => {
     const manifest = buildManifest()
     const app = mountRouter({ manifests: [manifest], projectRoot })
-    // Issue a token bound to an appId that the store does not know
-    // about — simulates uninstall-mid-session race.
-    const ghost = issueCaptureToken('ghost-app')
-    if (!ghost.ok) throw new Error('issue failed')
+    // Provision a token bound to an appId that the manifestStore
+    // does not know about — simulates an uninstall race after
+    // mount-open.
+    const { token } = provisionToken('ghost-app')
 
-    const res = await postCapture(app, 'a11y', {}, ghost.token)
+    const res = await postCapture(app, 'a11y', {}, token)
     expect(res.status).toBe(403)
     expect(
       (res.body?.details as Record<string, unknown>).reason,
@@ -258,10 +268,9 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
       approvedCaptures: [],
     })
     const app = mountRouter({ manifests: [manifest], projectRoot })
-    const issued = issueCaptureToken('capture-app')
-    if (!issued.ok) throw new Error('issue failed')
+    const { token } = provisionToken('capture-app')
 
-    const res = await postCapture(app, 'a11y', {}, issued.token)
+    const res = await postCapture(app, 'a11y', {}, token)
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotDeclared')
     expect(
@@ -277,10 +286,9 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
       approvedCaptures: [],
     })
     const app = mountRouter({ manifests: [manifest], projectRoot })
-    const issued = issueCaptureToken('capture-app')
-    if (!issued.ok) throw new Error('issue failed')
+    const { token } = provisionToken('capture-app')
 
-    const res = await postCapture(app, 'a11y', {}, issued.token)
+    const res = await postCapture(app, 'a11y', {}, token)
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotApproved')
     expect(
@@ -292,8 +300,6 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
     const manifest = buildManifest()
     const app = mountRouter({ manifests: [manifest], projectRoot })
 
-    // Unknown kind short-circuits before any token check, so we
-    // can send any (or no) token here.
     const res = await postCapture(app, 'camera', {}, null)
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotDeclared')
@@ -314,11 +320,6 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
     // Recipe A has a11y approved. Recipe B has nothing.
     // An attacker on recipe A's page mints A's token, then posts
     // `body: { appId: 'recipe-b' }` to try to borrow B's identity.
-    // The server MUST resolve the token to recipe A (its own appId)
-    // and check recipe A's manifest. Recipe B's manifest is never
-    // consulted — so the attempt does not gain B's authorisation,
-    // and it does not even exfiltrate B's `captureRequires` state
-    // because A's check runs in isolation.
     const manifestA = buildManifest({
       appId: 'recipe-a',
       captureRequires: ['a11y'],
@@ -333,23 +334,20 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
       manifests: [manifestA, manifestB],
       projectRoot,
     })
-    const issuedA = issueCaptureToken('recipe-a')
-    if (!issuedA.ok) throw new Error('issue failed')
+    const { token } = provisionToken('recipe-a')
 
     const res = await postCapture(
       app,
       'a11y',
       { appId: 'recipe-b' }, // attacker-controlled lie
-      issuedA.token,
+      token,
     )
     // Expected: 204 because recipe A has a11y approved. The body
     // field is ignored; if the router had honoured `body.appId =
     // 'recipe-b'` we would expect 403 CaptureNotDeclared (recipe B
-    // does not declare a11y), so the **204 result is what proves
-    // the lie was discarded** and authorisation routed through
-    // recipe A's own manifest.
+    // does not declare a11y), so the 204 result proves the lie was
+    // discarded and authorisation routed through recipe A's manifest.
     expect(res.status).toBe(204)
-    // Audit entry is attributed to recipe A's manifest, not B's.
     const aEntries = readPerAppAuditEntries(projectRoot, 'recipe-a')
     expect(aEntries.at(-1)?.recipeId).toBe('capture-recipe')
     expect(aEntries.at(-1)?.reason).toBe('approved')
@@ -358,26 +356,34 @@ describe('createCaptureRouter (v1.6 capture-token mechanism)', () => {
     expect(bEntries).toHaveLength(0)
   })
 
-  it('grandfather recipe (captureRequires empty) — token issuance would skip, but if forged it lands on step 3', async () => {
-    // The legitimate path is for the bridge to never call
-    // /api/app/capture/* without a token, because grandfather
-    // manifests get `{ token: null }` from the issue endpoint.
-    // This test exercises the defensive branch: even if a probe
-    // forges a token bound to a grandfather appId, the manifest's
-    // empty `captureRequires` collapses the call to step 3.
+  it('returns 403 mount-not-found when the token references a mount that was already closed (race)', async () => {
+    // Provision a token, then drop the mount directly to simulate
+    // a `/capture-mount/close` racing with a capture call.
+    const manifest = buildManifest()
+    const app = mountRouter({ manifests: [manifest], projectRoot })
+    const { mountId, token } = provisionToken('capture-app')
+    const { closeMount } = await import('../../src/server/recipe-capture-mount-sessions')
+    expect(closeMount(mountId)).toBe(true)
+
+    const res = await postCapture(app, 'a11y', {}, token)
+    expect(res.status).toBe(403)
+    expect(
+      (res.body?.details as Record<string, unknown>).reason,
+    ).toBe('mount-not-found')
+    const entries = readUnresolvedAuditEntries(projectRoot)
+    expect(entries.at(-1)?.reason).toBe('mount-not-found')
+  })
+
+  it('grandfather recipe (captureRequires empty) — if a forged token reaches step 3 the manifest collapses to not-declared', async () => {
     const manifest = buildManifest({
       captureRequires: [],
       approvedCaptures: [],
       trustLevel: 'unknown',
     })
     const app = mountRouter({ manifests: [manifest], projectRoot })
-    // Mint a token directly via the session store as if a forged
-    // path bypassed the issue endpoint's grandfather skip. This is
-    // the defensive branch the router must still refuse.
-    const forced = issueCaptureToken('capture-app')
-    if (!forced.ok) throw new Error('issue failed')
+    const { token } = provisionToken('capture-app')
 
-    const res = await postCapture(app, 'a11y', {}, forced.token)
+    const res = await postCapture(app, 'a11y', {}, token)
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotDeclared')
     expect(
