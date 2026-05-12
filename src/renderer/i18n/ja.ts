@@ -133,6 +133,25 @@ const ja = {
   'recipe.install.comingSoon':
     'レシピのインストールは v0.2.x で一時停止しています。KovitoHub の署名済み配布モデル経由で v0.3.0 にて再開予定です。',
 
+  // キャプチャ機能の承認（v0.2.0 Phase 1 prompt-injection ①、opt-in 機構）。
+  // v0.2.x では install フローが停止中のためダイアログは描画されないが、
+  // v0.3.0 再開時に placeholder ラベルとなるのを避けるため翻訳キーは
+  // 先行整備する。`app-directory-extension.md` v1.2 §10.5.2 と
+  // 実装委託書 `v02x-phase1-capture-optin-implementation-request.md` を参照。
+  'recipe.capture.title': 'キャプチャ機能の承認',
+  'recipe.capture.description':
+    'このレシピは以下のキャプチャ機能を要求しています。インストール前に項目ごとに承認してください。',
+  'recipe.capture.kind.a11y': 'a11y (UI のアクセシビリティスナップショット)',
+  'recipe.capture.kind.exposed-context': 'exposed-context (window.kb.exposeContext)',
+  'recipe.capture.why.a11y':
+    'サーバーに対して画面構造の要約（要素のロールとアクセシビリティ名）を要求できるようになります。生 HTML は共有しませんが、エージェントは画面上の表示内容を推測可能になります。',
+  'recipe.capture.why.exposed-context':
+    'window.kb.exposeContext で公開した payload をサーバー経由で読み出せるようになります。選択中の ID や active filter などアプリ側で意図的に公開した状態をレシピに渡したい場合のみ承認してください。',
+  'recipe.capture.whyLink': 'なぜ必要?',
+  'recipe.capture.approveButton': '選択した項目を承認',
+  'recipe.capture.error.notApproved':
+    "キャプチャ '{kind}' はこのレシピで承認されていません。",
+
   // アプリ新規作成モーダル（v0.1.0-app-creation-flow.md §7.4）
   'appCreate.modal.title': 'アプリ新規作成',
   'appCreate.field.agent': '依頼先エージェント',

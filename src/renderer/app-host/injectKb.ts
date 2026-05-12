@@ -22,6 +22,8 @@ import { createKbBridge } from '../lib/kbBridge'
 import { setExposedContext } from '../lib/exposeContext'
 import { createLogger } from '../lib/logger'
 import { installAmbientKbBridge } from './installAmbientKbBridge'
+import { createCaptureBridge } from '../lib/captureBridge'
+import type { CaptureKind } from '../lib/captureBridge'
 
 const ownLog = createLogger('injectKb')
 
@@ -34,16 +36,40 @@ const ownLog = createLogger('injectKb')
  * the bootstrap shape so `exposeContext` remains usable from any
  * page even after the recipe unmounts.
  *
+ * `capture` is layered onto the recipe-scoped bridge as well: the
+ * v0.2.0 opt-in mechanism (`app-directory-extension.md` v1.2
+ * §10.5.2) needs an appId to identify the active recipe, and that
+ * id is the same closure captured here. The capture bridge is
+ * dropped on cleanup along with `call` and `log`.
+ *
  * @param appId - KB-local app identifier (captured in a closure)
+ * @param approvedCaptures - Optional client-side cache of the
+ *   recipe's `manifest.approvedCaptures`. When supplied, the
+ *   capture bridge short-circuits obvious rejections without a
+ *   server round-trip. When omitted, every call defers to the
+ *   server-side gate — the server is the authority either way
+ *   (`app-directory-extension.md` §10.5.2: "client side check is
+ *   the auxiliary; server side verification is authoritative").
  * @returns cleanup function (call on unmount)
  */
-export function injectKb(appId: string): () => void {
+export function injectKb(
+  appId: string,
+  approvedCaptures?: readonly CaptureKind[],
+): () => void {
   const bridge = createKbBridge(appId)
   // Recipe-scoped logger. The `app.` prefix is the user-extension
   // namespace required by DEC-017 v1.3 §11; recipe authors don't see
   // it explicitly — we add it here so the recipe id alone is enough
   // identification on the recipe side.
   const recipeLogger = createLogger(`app.${appId}`)
+  const captureBridge = createCaptureBridge({
+    appId,
+    // Forward the optional cache as-is. `undefined` keeps the bridge
+    // in server-only mode (the v0.2.x default), an array opts in to
+    // the local fast-path refusal.
+    approvedCaptures,
+    log: recipeLogger,
+  })
 
   // Preserve the existing exposeContext when present (it is bootstrapped
   // at app start). When missing — e.g. unit tests that skip the
@@ -66,6 +92,7 @@ export function injectKb(appId: string): () => void {
     exposeContext: existingExpose ?? ((payload: Record<string, unknown>) => {
       setExposedContext(payload)
     }),
+    capture: captureBridge,
   }
   window.kb = self
   ownLog.info({ appId }, 'window.kb injected')

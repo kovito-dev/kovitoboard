@@ -136,6 +136,26 @@ const en: Record<MessageKey, string> = {
   'recipe.install.comingSoon':
     'Recipe install is temporarily disabled in v0.2.x. The KovitoHub signed publisher model is planned for v0.3.0.',
 
+  // Capture capability approval (v0.2.0 Phase 1 prompt-injection ①,
+  // opt-in mechanism). The dialog itself does not render in v0.2.x
+  // because recipe install is disabled, but the keys are populated
+  // ahead of the v0.3.0 re-enable so the component does not ship
+  // with placeholder labels. See `app-directory-extension.md` v1.2
+  // §10.5.2 and the implementation handoff.
+  'recipe.capture.title': 'Capture Capability Approval',
+  'recipe.capture.description':
+    'This recipe requests the following capture capabilities. Approve each one individually before installing.',
+  'recipe.capture.kind.a11y': 'a11y (accessibility snapshot of UI)',
+  'recipe.capture.kind.exposed-context': 'exposed-context (window.kb.exposeContext)',
+  'recipe.capture.why.a11y':
+    'Allows the recipe to ask the server for a structured outline of the visible UI. KovitoBoard only shares element roles and accessible names — not raw HTML — but the agent can still infer what is on screen.',
+  'recipe.capture.why.exposed-context':
+    'Allows the recipe to ask the server to read the payload your app published via window.kb.exposeContext. Approve only when the recipe needs the app state your code has chosen to surface (selected ids, active filters, etc.).',
+  'recipe.capture.whyLink': 'Why?',
+  'recipe.capture.approveButton': 'Approve Selected',
+  'recipe.capture.error.notApproved':
+    "Capture '{kind}' is not approved for this recipe.",
+
   // App creation modal (v0.1.0-app-creation-flow.md §7.4)
   'appCreate.modal.title': 'Create new app',
   'appCreate.field.agent': 'Assignee agent',
