@@ -106,21 +106,31 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
 
   /**
    * Local helper that emits a structured audit entry and forwards
-   * to whichever sink the entry's appId resolves to. The pino logger
-   * line goes out alongside so operators see both signals.
+   * to whichever sink the entry's appId resolves to. The pino
+   * logger line goes out alongside so operators see both signals.
+   *
+   * `kind` is `CaptureKind | null` — the latter covers the
+   * unknown-literal-kind probe (path segment outside the closed
+   * enum), so the audit trail captures every decision the
+   * endpoint produced even when the request never carried a valid
+   * `CaptureKind`. `rawKind` always retains the wire-level value
+   * (truncated) so log readers can trace the probe back to its
+   * input.
    */
   function recordDecision(params: {
-    kind: CaptureKind
+    kind: CaptureKind | null
+    rawKind: string
     appId: string | null
     manifest: RecipeManifest | null
     reason: CaptureAuditReason
   }): void {
-    const { kind, appId, manifest, reason } = params
+    const { kind, rawKind, appId, manifest, reason } = params
     const entry: CaptureAuditEntry = {
       timestamp: new Date().toISOString(),
       appId,
       recipeId: manifest ? manifest.recipeId : null,
       kind,
+      rawKind,
       trustLevel: manifest ? manifest.trustLevel : null,
       result: reason === 'approved' ? 'success' : 'rejected',
       reason,
@@ -129,6 +139,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
     logger.info(
       {
         kind,
+        rawKind,
         appId,
         recipeId: manifest?.recipeId ?? null,
         trustLevel: manifest?.trustLevel ?? null,
@@ -140,35 +151,40 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
 
   router.post('/:kind', (req, res) => {
     const kindParam = req.params.kind
+    // `rawKind` is the wire-level path segment, capped to a safe
+    // length so a hostile caller cannot blow up the response body
+    // or the audit-log line. It always lands in the audit entry so
+    // unknown-literal probes stay traceable even when the kind
+    // enum cannot represent them.
+    const rawKind = kindParam.slice(0, 64)
+
     // Step 1: closed-enum check on the path segment. An unknown
     // literal collapses to CaptureNotDeclared because the manifest
-    // cannot declare a kind that v0.2.x doesn't recognise.
+    // cannot declare a kind that v0.2.x doesn't recognise. The
+    // audit-log entry uses `kind: null` + `rawKind: <segment>` so
+    // probe attempts (e.g. `/api/app/capture/camera`) are recorded
+    // in the global sink per spec v1.5 §6.10.5 "all decisions".
     if (!isValidCaptureKind(kindParam)) {
       res.status(403).json({
         error: 'CaptureNotDeclared',
-        message: `Capture '${kindParam}' is not a known capture kind.`,
+        message: `Capture '${rawKind}' is not a known capture kind.`,
         details: {
-          kind: kindParam.slice(0, 64),
+          kind: rawKind,
           reason: 'not-declared',
           remediation:
             'Use one of the kinds declared by the v0.2.x capture surface ' +
             '(a11y, exposed-context).',
         },
       })
-      // We cannot key the audit by a sound CaptureKind (the path
-      // segment is the very thing we just refused), so the global
-      // sink stores the entry with kind="a11y" as a placeholder
-      // would not be honest. Instead we record the attempt via the
-      // logger line only — the operator still sees the refusal in
-      // server.log under reason='not-declared'. Spec §10.6.5
-      // mandates the audit log entry but the schema requires a
-      // valid CaptureKind, so unknown-literal probes are flagged
-      // only in the central log; the per-file capture-audit
-      // becomes incomplete for them by spec construction.
-      logger.info(
-        { kind: kindParam.slice(0, 64), reason: 'not-declared' },
-        'capture: refused (unknown literal kind)',
-      )
+      recordDecision({
+        kind: null,
+        rawKind,
+        // No appId resolved yet — we don't even parse the body for
+        // an unknown kind. The global sink takes the entry.
+        appId: null,
+        manifest: null,
+        reason: 'not-declared',
+      })
       return
     }
     const kind: CaptureKind = kindParam
@@ -194,7 +210,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
             'the bridge forwards the active appId automatically.',
         },
       })
-      recordDecision({ kind, appId: null, manifest: null, reason: 'unresolved-appid' })
+      recordDecision({ kind, rawKind, appId: null, manifest: null, reason: 'unresolved-appid' })
       return
     }
     const appId = rawAppId
@@ -217,7 +233,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
             'or reload the page so the renderer picks up the active manifest.',
         },
       })
-      recordDecision({ kind, appId: null, manifest: null, reason: 'no-active-recipe' })
+      recordDecision({ kind, rawKind, appId: null, manifest: null, reason: 'no-active-recipe' })
       return
     }
 
@@ -246,7 +262,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
               : 'Update the recipe to declare the kind under capture.requires, then re-install via KovitoHub (v0.3.0).',
         },
       })
-      recordDecision({ kind, appId, manifest, reason: 'not-declared' })
+      recordDecision({ kind, rawKind, appId, manifest, reason: 'not-declared' })
       return
     }
 
@@ -270,7 +286,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
             'Re-install via KovitoHub (v0.3.0) and approve the capture in the install warning dialog.',
         },
       })
-      recordDecision({ kind, appId, manifest, reason: 'not-approved' })
+      recordDecision({ kind, rawKind, appId, manifest, reason: 'not-approved' })
       return
     }
 
@@ -279,7 +295,7 @@ export function createCaptureRouter(opts: CreateCaptureRouterOptions): Router {
     // lives in the renderer; the server simply confirms that the
     // caller would have been allowed through. 204 mirrors that
     // contract — there is no body to send back.
-    recordDecision({ kind, appId, manifest, reason: 'approved' })
+    recordDecision({ kind, rawKind, appId, manifest, reason: 'approved' })
     res.status(204).end()
   })
 

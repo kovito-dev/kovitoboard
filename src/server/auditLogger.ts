@@ -170,8 +170,20 @@ export interface CaptureAuditEntry {
    * the request failed before manifest lookup.
    */
   recipeId: string | null
-  /** Capture kind that was requested */
-  kind: CaptureKind
+  /**
+   * Capture kind that was requested. `null` when the path segment
+   * was outside the closed `CaptureKind` enum — the raw value is
+   * carried on `rawKind` instead so the audit trail can still
+   * surface unknown-literal probes without losing the input.
+   */
+  kind: CaptureKind | null
+  /**
+   * Path segment as it arrived on the wire, truncated to a safe
+   * length. Always present so unknown-literal probes
+   * (`reason: 'not-declared'` with `kind: null`) can be traced
+   * back to the offending request.
+   */
+  rawKind: string
   /**
    * Trust level captured from the active manifest at decision time.
    * `null` when no manifest was resolved.

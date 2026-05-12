@@ -283,4 +283,19 @@ describe('createCaptureRouter', () => {
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotDeclared')
   })
+
+  it('writes unknown-literal-kind probes to the global audit sink', async () => {
+    // The audit-log schema represents the unknown kind via
+    // `kind: null` + `rawKind: <segment>` so probe traffic
+    // (`/api/app/capture/<arbitrary>`) stays visible in
+    // `app/_unresolved-capture-audit.log`. Spec v1.5 §6.10.5 says
+    // "all decisions", and an unknown literal kind is a decision.
+    const app = mountRouter({ manifest: buildManifest(), projectRoot })
+    await postJson(app, '/api/app/capture/camera', {})
+    const entries = readUnresolvedAuditEntries(projectRoot)
+    const probeEntry = entries.find((e) => e.rawKind === 'camera')
+    expect(probeEntry).toBeDefined()
+    expect(probeEntry?.kind).toBeNull()
+    expect(probeEntry?.reason).toBe('not-declared')
+  })
 })

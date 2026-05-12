@@ -24,13 +24,20 @@
  */
 
 import type { RendererLogger } from './logger'
+import type { CaptureKindValue } from '../../shared/recipe-types'
 
 /**
- * Capture kinds the v0.2.x bridge knows about. Mirrors the server-
- * side `CaptureKind` enum so both halves of the opt-in check share
- * a single source of truth.
+ * Capture kinds the v0.2.x bridge knows about.
+ *
+ * Aliases the canonical {@link CaptureKindValue} declared in
+ * `src/shared/recipe-types.ts` so the parser, the install
+ * validator, the server-side capture router, and this client-side
+ * runtime guard all reference the same closed enum. Adding a new
+ * kind there propagates here automatically; defining the list a
+ * second time would let the layers drift on a security-sensitive
+ * allowlist.
  */
-export type CaptureKind = 'a11y' | 'exposed-context'
+export type CaptureKind = CaptureKindValue
 
 interface CaptureBridgeOptions {
   appId: string

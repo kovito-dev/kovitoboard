@@ -82,26 +82,34 @@ export interface ApiSection {
 // Install manifest
 // =========================================
 
+// CaptureKind is a security-sensitive enum: the parser, the
+// install validator, the server-side capture router, and the
+// client-side runtime guard must all agree on the same set of
+// values, otherwise a recipe can declare a kind that one layer
+// honours and another silently drops. We keep the canonical
+// definition in `src/shared/recipe-types.ts` (`CAPTURE_KIND_VALUES`)
+// so renderer and server reference the same list, and re-export it
+// here as `CaptureKind` for the server modules that already use
+// the manifest-style name.
+import { CAPTURE_KIND_VALUES, type CaptureKindValue } from '../../shared/recipe-types.js'
+
 /**
- * Capture API kinds the opt-in mechanism currently distinguishes (v0.2.0).
+ * Capture API kinds the opt-in mechanism currently distinguishes
+ * (v0.2.0, spec v1.5). Re-exports the canonical
+ * {@link CaptureKindValue} alias from `src/shared/recipe-types.ts`
+ * so the renderer and the server share a single source of truth.
  *
- * Each kind names a specific class of capability that a recipe may want
- * to use at runtime (e.g. capturing the accessibility tree, reading the
- * exposed context payload). User consent is per-kind, so the manifest
- * remembers exactly which kinds were approved instead of a single
- * boolean.
- *
- * The closed enum is v0.2.x scope; future capture surfaces (camera,
- * clipboard, etc.) extend this list together with the parser and the
- * approval UI.
- *
- * @see recipe-system.md v1.4 §6.10.1
+ * @see recipe-system.md v1.5 §6.10.1
  * @stable v0.2.0
  */
-export type CaptureKind = 'a11y' | 'exposed-context'
+export type CaptureKind = CaptureKindValue
 
-/** All capture kinds the parser / validators accept. */
-export const CAPTURE_KINDS: readonly CaptureKind[] = ['a11y', 'exposed-context'] as const
+/**
+ * All capture kinds the parser / validators accept. Re-exported
+ * under the legacy `CAPTURE_KINDS` name to keep existing server
+ * imports stable.
+ */
+export const CAPTURE_KINDS: readonly CaptureKind[] = CAPTURE_KIND_VALUES
 
 /** Type guard for the closed capture-kind enum. */
 export function isValidCaptureKind(value: unknown): value is CaptureKind {
