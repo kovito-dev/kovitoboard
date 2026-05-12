@@ -27,6 +27,7 @@ import {
 import type { AuditLogEntry } from './handlers/types.js'
 import { AUDIT_LOG_LIMITS } from './handlers/types.js'
 import { lazyChildLogger } from './logger.js'
+import type { CaptureKind, TrustLevel } from './recipe/apiTypes.js'
 
 // `lazyChildLogger` is used so unit tests that import this module
 // without booting the full server (and hence without initLogger())
@@ -116,6 +117,149 @@ export function createAuditEntry(params: {
 }
 
 // =========================================
+// Capture-call audit log (v0.2.0)
+// =========================================
+
+/**
+ * Spec-mandated capture decision reasons (v0.2.0 / spec v1.6
+ * §6.10.5). The endpoint records exactly one of these for every
+ * `/api/app/capture/*` request — both the 200 accept path and the
+ * 403 reject paths.
+ *
+ * v1.6 added the `capture-token-*` family for the per-recipe-page
+ * launch-scoped capture token mechanism
+ * (`recipe-system.md` v1.6 §6.10.6 / `http-api-contract.md` v1.4
+ * §10.6.7). `unresolved-appid` is retained for v1.3.1 backward
+ * compatibility but the v1.4+ runtime no longer routes through it
+ * because `req.body.appId` is ignored end-to-end (I-CR4).
+ *
+ * @see recipe-system.md v1.6 §6.10.5
+ * @see http-api-contract.md v1.4 §10.6.6
+ */
+export type CaptureAuditReason =
+  | 'approved'
+  | 'not-approved'
+  | 'not-declared'
+  | 'capture-token-missing'
+  | 'capture-token-invalid'
+  | 'capture-token-expired'
+  | 'mount-not-found'
+  | 'no-matching-manifest'
+  | 'no-active-recipe'
+  | 'unresolved-appid'
+
+/**
+ * Schema for a single capture-call audit entry.
+ *
+ * Written as JSONL to:
+ *   - `app/data/<appId>/_capture-audit.log` when the request
+ *     resolved to a known appId.
+ *   - `app/_unresolved-capture-audit.log` (global sink) when the
+ *     appId could not be resolved (forged or missing on the wire).
+ *
+ * Both file types share the rotation / directory conventions of
+ * {@link writeAuditLog} so the handler-call audit log
+ * (`_audit.log`, `AuditLogEntry`) stays untouched while we still
+ * record every accept / refuse decision on
+ * `/api/app/capture/<kind>`.
+ *
+ * @see recipe-system.md v1.5 §6.10.5
+ * @see http-api-contract.md v1.3.1 §10.6.6
+ * @stable v0.2.0
+ */
+export interface CaptureAuditEntry {
+  /** ISO 8601 timestamp */
+  timestamp: string
+  /**
+   * KB-local app identifier. `null` for refuse paths that did not
+   * resolve to a manifest (`unresolved-appid` /
+   * `no-active-recipe`); those entries land in the global sink so
+   * forged / probing requests stay visible.
+   */
+  appId: string | null
+  /**
+   * Recipe lineage id (active manifest's `recipeId`). `null` when
+   * the request failed before manifest lookup.
+   */
+  recipeId: string | null
+  /**
+   * Capture kind that was requested. `null` when the path segment
+   * was outside the closed `CaptureKind` enum — the raw value is
+   * carried on `rawKind` instead so the audit trail can still
+   * surface unknown-literal probes without losing the input.
+   */
+  kind: CaptureKind | null
+  /**
+   * Path segment as it arrived on the wire, truncated to a safe
+   * length. Always present so unknown-literal probes
+   * (`reason: 'not-declared'` with `kind: null`) can be traced
+   * back to the offending request.
+   */
+  rawKind: string
+  /**
+   * Trust level captured from the active manifest at decision time.
+   * `null` when no manifest was resolved.
+   */
+  trustLevel: TrustLevel | null
+  /** Decision the endpoint emitted */
+  result: 'success' | 'rejected'
+  /**
+   * Spec-mandated refusal reason. Always present so log readers
+   * can dispatch on the value without parsing free-form text.
+   */
+  reason: CaptureAuditReason
+}
+
+/**
+ * Append one entry to the capture-call audit log.
+ *
+ * On write failure the function records a structured error via the
+ * lazy child logger but does not throw — the capture endpoint must
+ * still respond to the client.
+ *
+ * Routing rules (v1.5 §10.6.5):
+ *   - `entry.appId === null` → write to the global sink
+ *     (`app/_unresolved-capture-audit.log`). Used by
+ *     `unresolved-appid` and `no-active-recipe` paths.
+ *   - `entry.appId === <string>` → write to the per-app file
+ *     (`app/data/<appId>/_capture-audit.log`). Used by every
+ *     decision path that successfully resolved a manifest.
+ */
+export function writeCaptureAuditLog(
+  entry: CaptureAuditEntry,
+  projectRoot: string,
+): void {
+  try {
+    const logPath = getCaptureAuditLogPath(entry.appId, projectRoot)
+    if (entry.appId !== null) {
+      ensureDir(join(projectRoot, 'app', 'data', entry.appId))
+    } else {
+      ensureDir(join(projectRoot, 'app'))
+    }
+
+    rotateIfNeeded(logPath)
+
+    const line = JSON.stringify(entry) + '\n'
+    appendFileSync(logPath, line, 'utf-8')
+  } catch (err) {
+    auditLog.error(
+      { err, appId: entry.appId, recipeId: entry.recipeId, kind: entry.kind },
+      'Failed to write capture-audit log',
+    )
+  }
+}
+
+function getCaptureAuditLogPath(
+  appId: string | null,
+  projectRoot: string,
+): string {
+  if (appId === null) {
+    return join(projectRoot, 'app', '_unresolved-capture-audit.log')
+  }
+  return join(projectRoot, 'app', 'data', appId, '_capture-audit.log')
+}
+
+// =========================================
 // Internal helpers
 // =========================================
 
@@ -133,6 +277,8 @@ function ensureDir(dir: string): void {
  * Rotate the log file when its size exceeds the limit.
  *
  * _audit.log -> _audit.log.1 -> _audit.log.2 -> _audit.log.3 (deleted)
+ * Reused by both `_audit.log` and `_capture-audit.log` so the two
+ * files share generation handling and ceiling.
  */
 function rotateIfNeeded(logPath: string): void {
   if (!existsSync(logPath)) return

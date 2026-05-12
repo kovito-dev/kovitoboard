@@ -13,8 +13,13 @@
  *
  * @see docs/specs/v0.1.0-recipe-install-handover.md §3.3
  */
-import type { ApiSection } from './apiTypes.js'
-import { isValidScope, validateApiSection, parseApiSection } from './apiTypes.js'
+import type { ApiSection, CaptureKind } from './apiTypes.js'
+import {
+  isValidScope,
+  isValidCaptureKind,
+  validateApiSection,
+  parseApiSection,
+} from './apiTypes.js'
 import type { Scope } from '../handlers/types.js'
 import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 
@@ -22,6 +27,33 @@ import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 export interface MarkInstalledBody {
   appId: string
   approvedScopes: Scope[]
+  /**
+   * Capture kinds the recipe declared in `recipe.yaml`'s
+   * `capture.requires` (v0.2.0 / spec v1.5). MUST match the
+   * install session's `captureRequires` field; the handler echoes
+   * it onto the manifest so the runtime gate can run step 3
+   * independently from step 4 (`recipe-system.md` v1.5 §6.10.3
+   * I-CR3).
+   *
+   * Optional on the wire for backward-compatibility with
+   * pre-v0.2.0 callers (L1 fake-claude harness, mostly); a missing
+   * field defaults to `[]` and the manifest persists the same
+   * empty array. The validated value is always populated.
+   */
+  captureRequires: CaptureKind[]
+  /**
+   * Capture kinds the user approved during the install-warning
+   * dialog (v0.2.0). MUST be a subset of `captureRequires`
+   * (I-CR1); the mark-installed handler also compares it against
+   * the install-session store so a tampered body cannot widen the
+   * approved capability surface.
+   *
+   * Optional on the wire: callers that predate v0.2.0 (the L1
+   * fake-claude harness) omit the field, and the validator treats
+   * that as an empty array (capture all-refused). The validated
+   * value on the result is always populated.
+   */
+  approvedCaptures: CaptureKind[]
   recipeVersion: string
   recipeSource: 'sample' | 'import' | 'url'
   recipeHash: string
@@ -93,7 +125,17 @@ export function validateMarkInstalledRequest(
   }
   const obj = body as Record<string, unknown>
 
-  const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } = obj
+  const {
+    appId,
+    approvedScopes,
+    captureRequires,
+    approvedCaptures,
+    recipeVersion,
+    recipeSource,
+    recipeHash,
+    installNonce,
+    api,
+  } = obj
 
   if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
     return {
@@ -108,6 +150,63 @@ export function validateMarkInstalledRequest(
       ok: false,
       status: 400,
       error: 'approvedScopes must be an array of valid scope names',
+    }
+  }
+
+  // captureRequires and approvedCaptures are optional on the wire
+  // in v0.2.0. The install path is disabled in v0.2.x, so the only
+  // callers that reach this validator are:
+  //   - The fake-claude L1 harness, which retains its v0.1.x payload
+  //     shape for grandfather coverage. Both fields default to `[]`,
+  //     which the capture endpoint always refuses (step 3 fires for
+  //     every kind) — the same outcome as the grandfather migration
+  //     on load, so the legacy callers keep working without
+  //     modification.
+  //   - The v0.3.0 install warning dialog (separate handoff), which
+  //     will always send both fields explicitly.
+  //
+  // Reject only on a *malformed* value (non-array, unknown kind) so
+  // a present-but-wrong payload does not silently widen the
+  // declared / approved capability surfaces.
+  let normalisedCaptureRequires: CaptureKind[] = []
+  if (captureRequires !== undefined) {
+    if (!Array.isArray(captureRequires) || !captureRequires.every(isValidCaptureKind)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'captureRequires must be an array of valid capture kinds',
+      }
+    }
+    normalisedCaptureRequires = captureRequires as CaptureKind[]
+  }
+
+  let normalisedApprovedCaptures: CaptureKind[] = []
+  if (approvedCaptures !== undefined) {
+    if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'approvedCaptures must be an array of valid capture kinds',
+      }
+    }
+    normalisedApprovedCaptures = approvedCaptures as CaptureKind[]
+  }
+
+  // I-CR1 (`recipe-system.md` v1.5 §6.10.3): every approved kind
+  // must also be a declared kind. Reject the body 400 with an
+  // explicit error code so callers can detect the violation without
+  // guessing at the message.
+  const declaredSet = new Set<CaptureKind>(normalisedCaptureRequires)
+  for (const approved of normalisedApprovedCaptures) {
+    if (!declaredSet.has(approved)) {
+      return {
+        ok: false,
+        status: 400,
+        error:
+          `I_CR1_VIOLATION: approvedCaptures contains "${approved}" which is not in ` +
+          'captureRequires. The recipe must declare the kind in `capture.requires` ' +
+          'before the user can approve it.',
+      }
     }
   }
 
@@ -155,6 +254,8 @@ export function validateMarkInstalledRequest(
     value: {
       appId,
       approvedScopes: approvedScopes as Scope[],
+      captureRequires: normalisedCaptureRequires,
+      approvedCaptures: normalisedApprovedCaptures,
       recipeVersion,
       recipeSource,
       recipeHash,

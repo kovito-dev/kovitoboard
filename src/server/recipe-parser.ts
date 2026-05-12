@@ -15,11 +15,14 @@ import type {
   ParsedRecipe,
   RecipeMetadata,
   RecipeApiSection,
+  RecipeCaptureSection,
+  CaptureKindValue,
   ArtifactEntry,
   ArtifactWithContent,
   ArtifactType,
   RecipeMenuEntry,
 } from '../shared/recipe-types'
+import { CAPTURE_KIND_VALUES } from '../shared/recipe-types'
 import {
   MAX_RECIPE_YAML_BYTES,
   MAX_RECIPE_TOTAL_BYTES,
@@ -180,6 +183,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
     checkInstructionLength(instruction, metadata.recipeId)
   }
   const api = extractApiSection(data.api, metadata.recipeId)
+  const capture = extractCaptureSection(data.capture, metadata.recipeId)
 
   // Read artifact file contents. We stat each file BEFORE reading
   // so an oversized artifact never gets pulled into memory — the
@@ -236,6 +240,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
     menu,
     instruction,
     api,
+    capture,
     hash: '',
     sourceFormat: 'directory',
     sourcePath: dirPath,
@@ -276,6 +281,7 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
     checkInstructionLength(instruction, metadata.recipeId)
   }
   const api = extractApiSection(data.api, metadata.recipeId)
+  const capture = extractCaptureSection(data.capture, metadata.recipeId)
 
   // Parse artifact contents from markdown body
   const artifactContents = parseArtifactSections(body)
@@ -310,6 +316,7 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
     menu,
     instruction,
     api,
+    capture,
     hash: '',
     sourceFormat: 'markdown',
     sourcePath: filePath,
@@ -526,6 +533,105 @@ function extractMenuEntries(menu: unknown): RecipeMenuEntry[] {
         page: typeof m.page === 'string' ? m.page : '',
       }
     })
+}
+
+/**
+ * Extract and validate the optional `capture:` block from YAML data.
+ *
+ * Returns `undefined` when the recipe does not declare any capture
+ * requirement. When present the block MUST shape as
+ *
+ *   capture:
+ *     requires:
+ *       - a11y
+ *       - exposed-context
+ *
+ * with `requires` being a non-empty array whose entries belong to the
+ * closed {@link CAPTURE_KIND_VALUES} enum. Any deviation throws so the
+ * upload route returns a 400 rather than silently accepting a recipe
+ * the runtime guard cannot honour.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ */
+function extractCaptureSection(
+  captureData: unknown,
+  recipeId?: string,
+): RecipeCaptureSection | undefined {
+  if (captureData === undefined || captureData === null) {
+    return undefined // capture: not specified is allowed (no capture API in use)
+  }
+
+  if (typeof captureData !== 'object' || Array.isArray(captureData)) {
+    throw new Error('Invalid capture section: capture must be an object')
+  }
+
+  const obj = captureData as Record<string, unknown>
+  const rawRequires = obj.requires
+
+  if (rawRequires === undefined || rawRequires === null) {
+    throw new Error('Invalid capture section: capture.requires is required when capture is declared')
+  }
+  if (!Array.isArray(rawRequires)) {
+    throw new Error('Invalid capture section: capture.requires must be an array')
+  }
+
+  // Empty array means "the section is declared but no kinds are
+  // requested". Treat it as a parse error: an empty section conveys no
+  // information and is almost always a recipe-authoring mistake. The
+  // recipe author should omit the `capture:` block entirely instead.
+  if (rawRequires.length === 0) {
+    throw new Error('Invalid capture section: capture.requires must not be empty')
+  }
+
+  // Bound the size of the array so a recipe cannot dump a huge list of
+  // duplicates / invalid strings before the per-entry check runs. The
+  // closed enum has only two members today; 16 leaves comfortable
+  // headroom for the values v0.3.0 might add without admitting an
+  // unbounded list. We keep the ceiling tight rather than reusing
+  // MAX_PERMISSION_ENTRIES (which is sized for scope lists) because
+  // the kind enum and the scope enum evolve independently.
+  const MAX_CAPTURE_ENTRIES = 16
+  if (rawRequires.length > MAX_CAPTURE_ENTRIES) {
+    throw new Error(
+      `Invalid capture section: capture.requires must contain at most ${MAX_CAPTURE_ENTRIES} entries ` +
+        `(got ${rawRequires.length})`,
+    )
+  }
+
+  const seen = new Set<CaptureKindValue>()
+  const requires: CaptureKindValue[] = []
+  for (let i = 0; i < rawRequires.length; i++) {
+    const entry = rawRequires[i]
+    if (typeof entry !== 'string') {
+      throw new Error(
+        `Invalid capture section: capture.requires[${i}] must be a string`,
+      )
+    }
+    if (!(CAPTURE_KIND_VALUES as readonly string[]).includes(entry)) {
+      throw new Error(
+        `Invalid capture section: capture.requires[${i}] "${entry}" is not a valid capture kind ` +
+          `(allowed: ${CAPTURE_KIND_VALUES.join(', ')})`,
+      )
+    }
+    const kind = entry as CaptureKindValue
+    if (seen.has(kind)) {
+      // Duplicates carry no extra meaning at the runtime guard layer
+      // but would inflate the install-warning UI with phantom rows.
+      // Reject so the recipe author has to clean the list up.
+      throw new Error(
+        `Invalid capture section: capture.requires[${i}] "${entry}" is duplicated`,
+      )
+    }
+    seen.add(kind)
+    requires.push(kind)
+  }
+
+  // recipeId is captured here as a parameter so future limit-style
+  // checks (e.g. logging the offending recipe) match the rest of the
+  // parser's error shape. Today no limit-style check applies, but
+  // keeping the signature consistent avoids a churny diff later.
+  void recipeId
+  return { requires }
 }
 
 /**

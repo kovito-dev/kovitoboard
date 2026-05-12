@@ -38,6 +38,10 @@ import {
   createWsClientVerifier,
   resolveLaunchTokenOrThrow,
 } from './middleware/auth'
+import {
+  createInternalAuthGuard,
+  resolveInternalTokenOrThrow,
+} from './middleware/internal-auth'
 import { createConfigRouter } from './routes/config-routes'
 import { createVersionRouter } from './routes/version-routes'
 import {
@@ -53,6 +57,10 @@ import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
+import { createCaptureRouter } from './routes/capture-routes'
+import { createCaptureTokenRouter } from './routes/capture-token-routes'
+import { createCaptureMountRouter } from './routes/capture-mount-routes'
+import { createAuditRouter } from './routes/audit-routes'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -68,6 +76,7 @@ import {
   issueInstallSession,
   consumeInstallSession,
   approvedScopesMatch,
+  approvedCapturesMatch,
   apiSectionMatches,
 } from './recipe-install-sessions'
 import {
@@ -85,7 +94,13 @@ import type {
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
 import { dispatch as dispatchHandler } from './handlerDispatcher'
-import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
+import type {
+  KbCallRequest,
+  KbCallResponse,
+  RecipeManifest,
+  CaptureKind,
+} from './recipe/apiTypes'
+import { isValidCaptureKind } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
 import type { Scope } from './handlers/types'
@@ -114,7 +129,9 @@ const serverStartTime = Date.now()
 // "no auth" mode, which would silently re-introduce the same-host
 // attack surface the token was added to close.
 const LAUNCH_TOKEN = resolveLaunchTokenOrThrow()
+const INTERNAL_TOKEN = resolveInternalTokenOrThrow()
 const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
+const verifyInternalAuth = createInternalAuthGuard(INTERNAL_TOKEN)
 const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
 
 const app = express()
@@ -321,6 +338,59 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
 app.use('/api/app', createAppRouter(fs))
+// Capture-token issuance / revoke endpoints
+// (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
+// MUST be mounted before the `/api/app/capture` router because
+// Express matches `/api/app/capture-token/*` against the more
+// specific prefix here; if the order were reversed,
+// `/api/app/capture` would intercept the `:kind` segment of the
+// token path (e.g. `/api/app/capture/token`) and return a 403
+// `CaptureNotDeclared` instead of the issuance / revoke contract.
+// Mount the capture-mount router BEFORE the capture-token router so
+// the `/api/app/capture-mount/*` paths can be matched before the
+// router below claims the `/api/app/capture-token/*` namespace —
+// Express 5 matches routers in mount order.
+app.use(
+  '/api/app/capture-mount',
+  createCaptureMountRouter({
+    manifestStore,
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+app.use(
+  '/api/app/capture-token',
+  createCaptureTokenRouter({
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+// Host-side audit endpoints (v0.2.0 / spec v1.7 §6.10.6.13). Mounted
+// at /api/audit to keep the URL separate from per-app /api/app
+// routes — the host-bootstrap sentinel proves a property about host
+// bootstrap, not about any particular recipe.
+app.use(
+  '/api/audit',
+  createAuditRouter({
+    projectRoot,
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+// Capture endpoints (v0.2.0 Phase 1 prompt-injection ①, opt-in
+// mechanism). Mounted on top of /api/app so a recipe-app caller
+// invokes it via `window.kb.capture.<kind>` while the surrounding
+// kb-bridge already routes through the same namespace. See
+// `docs/specs/http-api-contract.md` v1.4 §10.6 and
+// `docs/specs/app-directory-extension.md` v1.3 §10.5.2.
+app.use(
+  '/api/app/capture',
+  createCaptureRouter({
+    manifestStore,
+    projectRoot,
+    logger: apiLogger,
+  }),
+)
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
@@ -1324,8 +1394,17 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       res.status(validation.status).json({ error: validation.error })
       return
     }
-    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } =
-      validation.value
+    const {
+      appId,
+      approvedScopes,
+      captureRequires,
+      approvedCaptures,
+      recipeVersion,
+      recipeSource,
+      recipeHash,
+      installNonce,
+      api,
+    } = validation.value
 
     // Idempotency first: if a history record with the same (recipeId,
     // appId, hash, action='install') already exists AND the current
@@ -1461,6 +1540,8 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       session.recipeVersion !== recipeVersion ||
       session.recipeSource !== recipeSource ||
       !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !approvedCapturesMatch(session.captureRequires, captureRequires) ||
+      !approvedCapturesMatch(session.approvedCaptures, approvedCaptures) ||
       !apiSectionMatches(session.apiCanonical, api)
     ) {
       apiLogger.warn(
@@ -1479,6 +1560,23 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     // Persist the recipe-side manifest. The dispatcher's
     // `manifestStore.refresh()` (or `loadAll()`) re-reads this file
     // when it needs to resolve handler calls.
+    //
+    // `trustLevel` is hard-coded to `'unknown'` in v0.2.x: the
+    // KovitoHub signed-publisher path that distinguishes
+    // `'code-trusted'` vs `'code-trusted (sideloaded)'` ships in
+    // v0.3.0 alongside the recipe-install re-enable, so today every
+    // newly-minted manifest matches a grandfather-migrated one. The
+    // trust-marker handoff (`v02x-phase1-trust-marker-preamble-
+    // warning-request.md`) takes ownership of populating richer
+    // values when the install path comes back. See recipe-system.md
+    // v1.5 §6.10.3〜§6.10.4.
+    //
+    // `captureRequires` carries the recipe's declared
+    // `capture.requires` verbatim; `approvedCaptures` carries the
+    // subset the user agreed to (I-CR1: subset relationship is
+    // enforced by `markInstalledValidator`). The runtime gate at
+    // `/api/app/capture/<kind>` keys off both fields independently
+    // (I-CR3).
     const manifest: RecipeManifest = {
       appId,
       recipeId: recipeIdParam,
@@ -1486,6 +1584,9 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       hash: recipeHash,
       installedAt: new Date().toISOString(),
       approvedScopes,
+      captureRequires,
+      approvedCaptures,
+      trustLevel: 'unknown',
       api: api ?? { scopes: [], calls: [] },
     }
     manifestStore.save(manifest)
@@ -1875,10 +1976,15 @@ const distIndexCache: string | null = (() => {
   if (process.env.KOVITOBOARD_MODE !== 'prod') return null
   try {
     const raw = fs.readFileSync(distIndexPath, 'utf-8')
-    return raw.replace(
-      '<!-- KB:LAUNCH_TOKEN_META -->',
-      `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
-    )
+    return raw
+      .replace(
+        '<!-- KB:LAUNCH_TOKEN_META -->',
+        `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
+      )
+      .replace(
+        '<!-- KB:INTERNAL_TOKEN_META -->',
+        `<meta name="kb-internal-token" content="${INTERNAL_TOKEN}">`,
+      )
   } catch {
     // Missing dist is already diagnosed by the explicit check at
     // startup (search for KOVITOBOARD_MODE === 'prod' below); fall
@@ -2066,6 +2172,8 @@ if (process.env.KB_E2E_MODE === '1') {
     const body = (req.body ?? {}) as Record<string, unknown>
     const { recipeId, recipeHash, recipeVersion, recipeSource } = body
     const approvedScopes = body.approvedScopes
+    const captureRequires = body.captureRequires
+    const approvedCaptures = body.approvedCaptures
     const apiSection = body.api
     if (typeof recipeId !== 'string' || recipeId.length === 0) {
       res.status(400).json({ error: 'recipeId must be a non-empty string' })
@@ -2081,12 +2189,40 @@ if (process.env.KB_E2E_MODE === '1') {
         .json({ error: 'approvedScopes must be an array of strings' })
       return
     }
+    // captureRequires / approvedCaptures are optional on this test
+    // harness for backward compatibility — existing L1 specs that
+    // did not declare any capture continue to pass an empty install
+    // nonce binding. New tests that exercise the opt-in surface
+    // send the arrays explicitly so the mark-installed validator
+    // can compare against the stored session.
+    let captureRequiresList: CaptureKind[] = []
+    if (captureRequires !== undefined) {
+      if (!Array.isArray(captureRequires) || !captureRequires.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'captureRequires must be an array of valid capture kinds' })
+        return
+      }
+      captureRequiresList = captureRequires as CaptureKind[]
+    }
+    let approvedCapturesList: CaptureKind[] = []
+    if (approvedCaptures !== undefined) {
+      if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'approvedCaptures must be an array of valid capture kinds' })
+        return
+      }
+      approvedCapturesList = approvedCaptures as CaptureKind[]
+    }
     const issueResult = issueInstallSession({
       recipeId,
       recipeHash,
       recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
       recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
       approvedScopes: approvedScopes as Scope[],
+      captureRequires: captureRequiresList,
+      approvedCaptures: approvedCapturesList,
       api: apiSection ?? null,
     })
     if (!issueResult.ok) {
