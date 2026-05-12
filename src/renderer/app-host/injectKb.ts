@@ -37,24 +37,28 @@ const ownLog = createLogger('injectKb')
  * page even after the recipe unmounts.
  *
  * `capture` is layered onto the recipe-scoped bridge as well: the
- * v0.2.0 opt-in mechanism (`app-directory-extension.md` v1.2
+ * v0.2.0 opt-in mechanism (`app-directory-extension.md` v1.2.1
  * §10.5.2) needs an appId to identify the active recipe, and that
  * id is the same closure captured here. The capture bridge is
  * dropped on cleanup along with `call` and `log`.
  *
  * @param appId - KB-local app identifier (captured in a closure)
- * @param approvedCaptures - Optional client-side cache of the
- *   recipe's `manifest.approvedCaptures`. When supplied, the
- *   capture bridge short-circuits obvious rejections without a
+ * @param manifestCaches - Optional client-side caches that let the
+ *   capture bridge short-circuit obvious rejections without a
  *   server round-trip. When omitted, every call defers to the
  *   server-side gate — the server is the authority either way
  *   (`app-directory-extension.md` §10.5.2: "client side check is
- *   the auxiliary; server side verification is authoritative").
+ *   the auxiliary; server side verification is authoritative"). The
+ *   two caches map directly to the v1.5 manifest fields
+ *   `captureRequires` (step 3) and `approvedCaptures` (step 4).
  * @returns cleanup function (call on unmount)
  */
 export function injectKb(
   appId: string,
-  approvedCaptures?: readonly CaptureKind[],
+  manifestCaches: {
+    captureRequires?: readonly CaptureKind[]
+    approvedCaptures?: readonly CaptureKind[]
+  } = {},
 ): () => void {
   const bridge = createKbBridge(appId)
   // Recipe-scoped logger. The `app.` prefix is the user-extension
@@ -64,10 +68,12 @@ export function injectKb(
   const recipeLogger = createLogger(`app.${appId}`)
   const captureBridge = createCaptureBridge({
     appId,
-    // Forward the optional cache as-is. `undefined` keeps the bridge
-    // in server-only mode (the v0.2.x default), an array opts in to
-    // the local fast-path refusal.
-    approvedCaptures,
+    // Forward the optional caches as-is. `undefined` on either axis
+    // keeps that step in server-only mode (the v0.2.x default
+    // because RecipePageHost has no manifest fetch yet); an array
+    // opts the bridge into the matching local fast-path refusal.
+    captureRequires: manifestCaches.captureRequires,
+    approvedCaptures: manifestCaches.approvedCaptures,
     log: recipeLogger,
   })
 

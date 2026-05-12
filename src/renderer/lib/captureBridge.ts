@@ -35,16 +35,33 @@ export type CaptureKind = 'a11y' | 'exposed-context'
 interface CaptureBridgeOptions {
   appId: string
   /**
+   * Optional client-side cache of `manifest.captureRequires`
+   * (v0.2.0 / spec v1.5). Used to short-circuit the declaration
+   * step (`CaptureNotDeclaredError`) before any network round-trip
+   * — symmetric to {@link approvedCaptures} but for step 3 instead
+   * of step 4. Same omitted-vs-provided semantics:
+   *
+   * - **Omitted** (`undefined`): the bridge does not short-circuit
+   *   declaration locally; every call defers to the server-side
+   *   gate.
+   * - **Provided** (possibly empty): the bridge throws
+   *   `CaptureNotDeclaredError` for any kind missing from the
+   *   array. An empty array therefore refuses every kind locally
+   *   — appropriate for grandfather recipes whose manifest has
+   *   `captureRequires: []`.
+   */
+  captureRequires?: readonly CaptureKind[]
+  /**
    * Optional client-side cache of `manifest.approvedCaptures`.
    *
    * - **Omitted** (`undefined`): the bridge does not short-circuit;
    *   every call defers to the server-side gate. v0.2.x runs in
    *   this mode by default because there is no client-facing
    *   manifest fetch yet — `RecipePageHost` only knows the appId.
-   *   This still satisfies `app-directory-extension.md` v1.2 §10.5.2
-   *   ("client side check is the auxiliary; server side verification
-   *   is authoritative") because the server enforces the gate
-   *   unconditionally.
+   *   This still satisfies `app-directory-extension.md` v1.2.1
+   *   §10.5.2 ("client side check is the auxiliary; server side
+   *   verification is authoritative") because the server enforces
+   *   the gate unconditionally.
    * - **Provided** (possibly empty): the bridge throws
    *   `CaptureNotApprovedError` on the spot for any kind not in the
    *   array, saving a round-trip. An empty array therefore refuses
@@ -74,24 +91,38 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): {
   a11y: () => Promise<void>
   exposedContext: () => Promise<void>
 } {
-  const { appId, approvedCaptures, log } = opts
+  const { appId, captureRequires, approvedCaptures, log } = opts
   // `undefined` means "the caller has no cache; defer everything to
   // the server"; an array (even empty) opts the bridge into the
-  // fast-path refusal.
+  // fast-path refusal. The two axes are independent so the bridge
+  // can run with only one cache populated.
+  const declaredSet =
+    captureRequires === undefined ? null : new Set<CaptureKind>(captureRequires)
   const approvedSet =
     approvedCaptures === undefined ? null : new Set<CaptureKind>(approvedCaptures)
 
   async function callServer(kind: CaptureKind): Promise<void> {
     // Local fast-path. The bridge cache is opportunistic — it lets
-    // recipe code surface "you forgot to ask for this capability"
-    // without paying for a server round-trip — but the server is
-    // still consulted for the success branch so a stale cache cannot
-    // bypass the gate. We mirror the server error shape here so
-    // catch-blocks can branch on `error.code` regardless of whether
-    // the rejection came from the cache or the network.
+    // recipe code surface "you forgot to declare / approve this
+    // capability" without paying for a server round-trip — but the
+    // server is still consulted for the success branch so a stale
+    // cache cannot bypass the gate. We mirror the server error
+    // shape (separate CaptureNotDeclaredError /
+    // CaptureNotApprovedError) here so catch-blocks can branch on
+    // `error.code` regardless of whether the rejection came from
+    // the cache or the network.
+    //
+    // Step order mirrors the server side (declaration first,
+    // consent second) so recipe authors see the same diagnostic
+    // path either way.
+    if (declaredSet !== null && !declaredSet.has(kind)) {
+      const err = new CaptureNotDeclaredError(kind, appId)
+      log.warn({ kind, appId }, `capture ${kind}: refused by client-side guard (not declared)`)
+      throw err
+    }
     if (approvedSet !== null && !approvedSet.has(kind)) {
       const err = new CaptureNotApprovedError(kind, appId)
-      log.warn({ kind, appId }, `capture ${kind}: refused by client-side guard`)
+      log.warn({ kind, appId }, `capture ${kind}: refused by client-side guard (not approved)`)
       throw err
     }
 
@@ -150,10 +181,31 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): {
 }
 
 /**
- * Thrown when the client-side cache refuses a capture call before it
- * reaches the network. The thrown error mirrors the structured 403
- * the server would have emitted so existing catch-blocks need only
- * handle a single error shape.
+ * Thrown when the client-side cache refuses a capture call at the
+ * declaration step (step 3, `manifest.captureRequires`). Surfaces
+ * the same `error.code` value as the server's 403 envelope so
+ * recipe authors can branch on it without inspecting whether the
+ * call reached the network. See `recipe-system.md` v1.5 §6.10.3
+ * I-CR3 for the step-3 / step-4 split.
+ */
+export class CaptureNotDeclaredError extends Error {
+  readonly code = 'CaptureNotDeclared'
+  readonly kind: CaptureKind
+  readonly appId: string
+
+  constructor(kind: CaptureKind, appId: string) {
+    super(`Capture '${kind}' is not declared by this recipe (appId: ${appId}).`)
+    this.name = 'CaptureNotDeclaredError'
+    this.kind = kind
+    this.appId = appId
+  }
+}
+
+/**
+ * Thrown when the client-side cache refuses a capture call at the
+ * consent step (step 4, `manifest.approvedCaptures`). The thrown
+ * error mirrors the structured 403 the server would have emitted so
+ * existing catch-blocks need only handle a single error shape.
  */
 export class CaptureNotApprovedError extends Error {
   readonly code = 'CaptureNotApproved'
