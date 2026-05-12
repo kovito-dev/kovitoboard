@@ -5,18 +5,27 @@
  */
 /**
  * Tests for the v0.2.0 capture endpoint router
- * (`/api/app/capture/<kind>`).
+ * (`/api/app/capture/<kind>`) — v1.5 shape.
  *
  * The router runs the 5-step verification flow from
- * `http-api-contract.md` v1.3 §10.6.3: invalid kind → 403
- * CaptureNotDeclared, missing/unresolvable appId → 403
- * NoActiveRecipe, manifest without the kind in approvedCaptures →
- * 403 CaptureNotApproved, otherwise 204. Each path is exercised
- * here via a hand-rolled Express harness so the asserts stay
- * focused on the router contract.
+ * `http-api-contract.md` v1.3.1 §10.6.3 with independent step 3
+ * (`captureRequires`) and step 4 (`approvedCaptures`) per
+ * invariant I-CR3:
+ *
+ *   - unknown literal kind path segment → 403 CaptureNotDeclared
+ *   - missing / malformed appId → 403 NoActiveRecipe (reason: unresolved-appid)
+ *   - unknown appId → 403 NoActiveRecipe (reason: no-active-recipe)
+ *   - kind missing from manifest.captureRequires → 403 CaptureNotDeclared
+ *   - kind missing from manifest.approvedCaptures → 403 CaptureNotApproved
+ *   - otherwise 204
+ *
+ * Each refusal also emits a capture-audit entry routed to either
+ * the per-app sink or the global sink at
+ * `app/_unresolved-capture-audit.log`. The tests verify the file
+ * contents to ensure the audit trail captures all 5 reasons.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
@@ -42,6 +51,7 @@ function buildManifest(override: Partial<RecipeManifest> = {}): RecipeManifest {
     installedAt: '2026-01-01T00:00:00.000Z',
     approvedScopes: ['own-data'],
     api: { scopes: ['own-data'], calls: [] },
+    captureRequires: ['a11y'],
     approvedCaptures: ['a11y'],
     trustLevel: 'unknown',
     ...override,
@@ -129,6 +139,29 @@ async function postJson(
   }
 }
 
+function readPerAppAuditEntries(
+  projectRoot: string,
+  appId: string,
+): Array<Record<string, unknown>> {
+  const path = join(projectRoot, 'app', 'data', appId, '_capture-audit.log')
+  if (!existsSync(path)) return []
+  return readFileSync(path, 'utf-8')
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
+function readUnresolvedAuditEntries(
+  projectRoot: string,
+): Array<Record<string, unknown>> {
+  const path = join(projectRoot, 'app', '_unresolved-capture-audit.log')
+  if (!existsSync(path)) return []
+  return readFileSync(path, 'utf-8')
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
 describe('createCaptureRouter', () => {
   let projectRoot: string
 
@@ -140,30 +173,42 @@ describe('createCaptureRouter', () => {
     rmSync(projectRoot, { recursive: true, force: true })
   })
 
-  it('returns 204 when the active recipe approved the kind', async () => {
+  it('returns 204 when both captureRequires and approvedCaptures contain the kind', async () => {
     const app = mountRouter({ manifest: buildManifest(), projectRoot })
     const res = await postJson(app, '/api/app/capture/a11y', {
       appId: 'capture-app',
     })
     expect(res.status).toBe(204)
+    const entries = readPerAppAuditEntries(projectRoot, 'capture-app')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].reason).toBe('approved')
+    expect(entries[0].trustLevel).toBe('unknown')
   })
 
-  it('returns 403 CaptureNotApproved when the kind is not in approvedCaptures', async () => {
+  it('returns 403 CaptureNotDeclared when the kind is missing from captureRequires (step 3)', async () => {
     const app = mountRouter({
-      manifest: buildManifest({ approvedCaptures: [] }),
+      manifest: buildManifest({
+        captureRequires: ['exposed-context'],
+        approvedCaptures: [],
+      }),
       projectRoot,
     })
     const res = await postJson(app, '/api/app/capture/a11y', {
       appId: 'capture-app',
     })
     expect(res.status).toBe(403)
-    expect(res.body?.error).toBe('CaptureNotApproved')
+    expect(res.body?.error).toBe('CaptureNotDeclared')
+    expect(
+      (res.body?.details as Record<string, unknown>).reason,
+    ).toBe('not-declared')
+    const entries = readPerAppAuditEntries(projectRoot, 'capture-app')
+    expect(entries.at(-1)?.reason).toBe('not-declared')
   })
 
-  it('treats grandfather (trustLevel=unknown + empty approvedCaptures) as a grandfather refusal', async () => {
+  it('returns 403 CaptureNotApproved when the kind is declared but not approved (step 4)', async () => {
     const app = mountRouter({
       manifest: buildManifest({
-        trustLevel: 'unknown',
+        captureRequires: ['a11y'],
         approvedCaptures: [],
       }),
       projectRoot,
@@ -173,29 +218,64 @@ describe('createCaptureRouter', () => {
     })
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('CaptureNotApproved')
-    expect((res.body?.details as Record<string, unknown>).trustLevel).toBe('unknown')
-    expect(String((res.body?.details as Record<string, unknown>).remediation)).toMatch(
-      /Grandfather recipe/,
-    )
+    expect(
+      (res.body?.details as Record<string, unknown>).reason,
+    ).toBe('not-approved')
+    const entries = readPerAppAuditEntries(projectRoot, 'capture-app')
+    expect(entries.at(-1)?.reason).toBe('not-approved')
   })
 
-  it('returns 403 NoActiveRecipe when appId is missing', async () => {
+  it('treats grandfather (captureRequires empty + approvedCaptures empty) as CaptureNotDeclared', async () => {
+    const app = mountRouter({
+      manifest: buildManifest({
+        trustLevel: 'unknown',
+        captureRequires: [],
+        approvedCaptures: [],
+      }),
+      projectRoot,
+    })
+    const res = await postJson(app, '/api/app/capture/a11y', {
+      appId: 'capture-app',
+    })
+    expect(res.status).toBe(403)
+    expect(res.body?.error).toBe('CaptureNotDeclared')
+    expect((res.body?.details as Record<string, unknown>).trustLevel).toBe('unknown')
+    expect(
+      String((res.body?.details as Record<string, unknown>).remediation),
+    ).toMatch(/Grandfather recipe/)
+  })
+
+  it('returns 403 NoActiveRecipe (unresolved-appid) when appId is missing', async () => {
     const app = mountRouter({ manifest: buildManifest(), projectRoot })
     const res = await postJson(app, '/api/app/capture/a11y', {})
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('NoActiveRecipe')
+    expect(
+      (res.body?.details as Record<string, unknown>).reason,
+    ).toBe('unresolved-appid')
+    // Unresolved entries land in the global sink because no appId
+    // could be tied to the request.
+    const entries = readUnresolvedAuditEntries(projectRoot)
+    expect(entries.at(-1)?.reason).toBe('unresolved-appid')
+    expect(entries.at(-1)?.appId).toBeNull()
   })
 
-  it('returns 403 NoActiveRecipe when the appId does not resolve to a manifest', async () => {
+  it('returns 403 NoActiveRecipe (no-active-recipe) when appId does not resolve to a manifest', async () => {
     const app = mountRouter({ manifest: buildManifest(), projectRoot })
     const res = await postJson(app, '/api/app/capture/a11y', {
       appId: 'unknown-app',
     })
     expect(res.status).toBe(403)
     expect(res.body?.error).toBe('NoActiveRecipe')
+    expect(
+      (res.body?.details as Record<string, unknown>).reason,
+    ).toBe('no-active-recipe')
+    const entries = readUnresolvedAuditEntries(projectRoot)
+    expect(entries.at(-1)?.reason).toBe('no-active-recipe')
+    expect(entries.at(-1)?.appId).toBeNull()
   })
 
-  it('returns 403 CaptureNotDeclared on an unknown kind path segment', async () => {
+  it('returns 403 CaptureNotDeclared on an unknown literal kind path segment', async () => {
     const app = mountRouter({ manifest: buildManifest(), projectRoot })
     const res = await postJson(app, '/api/app/capture/camera', {
       appId: 'capture-app',

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createCaptureBridge,
   CaptureNotApprovedError,
+  CaptureNotDeclaredError,
   CaptureRejectedError,
 } from '../../src/renderer/lib/captureBridge'
 
@@ -34,10 +35,26 @@ describe('captureBridge', () => {
     vi.unstubAllGlobals()
   })
 
-  it('rejects locally when approvedCaptures does not include the kind', async () => {
+  it('rejects locally with CaptureNotDeclaredError when captureRequires omits the kind (step 3)', async () => {
     const bridge = createCaptureBridge({
       appId: 'test-app',
+      captureRequires: ['exposed-context'],
       approvedCaptures: ['exposed-context'],
+      log: noopLog,
+    })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(bridge.a11y()).rejects.toBeInstanceOf(CaptureNotDeclaredError)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('rejects locally with CaptureNotApprovedError when only approvedCaptures omits the kind (step 4)', async () => {
+    // captureRequires contains the kind → step 3 passes locally.
+    // approvedCaptures does not → step 4 short-circuits.
+    const bridge = createCaptureBridge({
+      appId: 'test-app',
+      captureRequires: ['a11y'],
+      approvedCaptures: [],
       log: noopLog,
     })
     const fetchSpy = vi.fn()
@@ -46,9 +63,10 @@ describe('captureBridge', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('round-trips the server when the kind is in the local cache', async () => {
+  it('round-trips the server when both caches contain the kind', async () => {
     const bridge = createCaptureBridge({
       appId: 'test-app',
+      captureRequires: ['a11y'],
       approvedCaptures: ['a11y'],
       log: noopLog,
     })
@@ -82,6 +100,7 @@ describe('captureBridge', () => {
   it('wraps a server 403 body in CaptureRejectedError', async () => {
     const bridge = createCaptureBridge({
       appId: 'test-app',
+      captureRequires: ['a11y'],
       approvedCaptures: ['a11y'],
       log: noopLog,
     })
@@ -105,6 +124,7 @@ describe('captureBridge', () => {
   it('falls back to a generic code when the 403 body is malformed', async () => {
     const bridge = createCaptureBridge({
       appId: 'test-app',
+      captureRequires: ['a11y'],
       approvedCaptures: ['a11y'],
       log: noopLog,
     })
