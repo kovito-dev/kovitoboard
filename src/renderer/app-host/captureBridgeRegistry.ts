@@ -364,6 +364,41 @@ export async function closeMount(
 }
 
 /**
+ * Best-effort close for the `pagehide` / `beforeunload` path
+ * (spec v1.7.2 §6.10.6.3 / v1.5.2 §10.6.7.5).
+ *
+ * Browsers may cancel a normal `fetch` that is still in flight when
+ * the document is unloaded; `keepalive: true` lets the request
+ * survive up to ~64 KB of body, which is plenty for our 32-char
+ * `mountId`. Without this path, repeated reloads of a mounted
+ * recipe will leak `mountStore` and `tokenStore` slots until the
+ * 10-minute TTL elapses, consuming the per-app (8) and global (64)
+ * caps faster than H-CR3 plans for.
+ *
+ * The call is fire-and-forget — we drop the registry entry, then
+ * issue the request without awaiting it so the unload handler does
+ * not block the navigation.
+ */
+export function closeMountSync(mountId: string, log: RendererLogger): void {
+  activeBridges.delete(mountId)
+  try {
+    // `void` to ignore the returned Promise; the response is not
+    // observable from a pagehide handler anyway.
+    void hostFetchImpl('/api/app/capture-mount/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountId }),
+      // The keepalive flag is what makes this path different from
+      // `closeMount` — the browser is allowed to finish the request
+      // after the document unloads.
+      keepalive: true,
+    })
+  } catch (err) {
+    log.warn({ mountId, err }, 'capture-mount close (keepalive): synchronous error')
+  }
+}
+
+/**
  * Refresh the cached token for an active bridge. Called by the
  * recipe-visible bridge when it receives a 403 `capture-token-*`
  * from `/api/app/capture/<kind>`. Returns the new token (which the

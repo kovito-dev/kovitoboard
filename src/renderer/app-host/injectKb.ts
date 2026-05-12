@@ -34,7 +34,7 @@ import { createLogger } from '../lib/logger'
 import { installAmbientKbBridge } from './installAmbientKbBridge'
 import { createCaptureBridge } from '../lib/captureBridge'
 import type { CaptureKind, CaptureBridge } from '../lib/captureBridge'
-import { openMount, closeMount } from './captureBridgeRegistry'
+import { openMount, closeMount, closeMountSync } from './captureBridgeRegistry'
 
 const ownLog = createLogger('injectKb')
 
@@ -67,14 +67,16 @@ export function injectKb(
   // namespace required by DEC-017 v1.3 §11.
   const recipeLogger = createLogger(`app.${appId}`)
 
-  // The capture bridge starts in `mountId: null, initialToken: null`
-  // mode — every capture call fails-fast with the opaque error
-  // envelope. Once the host-mediated open + issue resolves we swap
-  // the cached values into the same bridge instance via a
-  // shared-state ref so recipe code does not need to refetch
+  // The capture bridge starts in the `pending` state — capture
+  // calls that arrive before `openMount()` resolves short-circuit
+  // with the opaque `CaptureNotApprovedError`. Once the
+  // host-mediated open + issue resolves we replace the bridge with
+  // a `live` / `grandfather` / `open-failed` instance via the
+  // closure shuffle below so recipe code does not need to refetch
   // `window.kb`.
   let captureBridge: CaptureBridge = createCaptureBridge({
     appId,
+    state: 'pending',
     mountId: null,
     initialToken: null,
     captureRequires: manifestCaches.captureRequires,
@@ -84,6 +86,33 @@ export function injectKb(
 
   let cleanedUp = false
   let liveMountId: string | null = null
+
+  // Best-effort close on page unload (spec v1.7.2 §6.10.6.3 +
+  // v1.5.2 §10.6.7.5). Without this, browsers may cancel the
+  // close request before the server processes it, leaking mount /
+  // token slots until the 10-minute TTL. `keepalive: true` lets
+  // the request survive page unload. Listeners are removed in the
+  // cleanup function so a sibling-replacement during route
+  // navigation does not duplicate them.
+  function onUnload(): void {
+    if (liveMountId !== null) {
+      closeMountSync(liveMountId, recipeLogger)
+    }
+  }
+  // `pagehide` covers tab close, back/forward cache evictions, and
+  // navigation. `beforeunload` covers the legacy reload path.
+  // Attaching both is intentional — modern browsers fire pagehide,
+  // older ones fire beforeunload, and `keepalive` makes the
+  // duplicate harmless. Guard against non-DOM test environments
+  // (e.g. unit tests that import `injectKb` without jsdom) so the
+  // module stays importable everywhere.
+  const hasWindow =
+    typeof window !== 'undefined' &&
+    typeof window.addEventListener === 'function'
+  if (hasWindow) {
+    window.addEventListener('pagehide', onUnload)
+    window.addEventListener('beforeunload', onUnload)
+  }
 
   // Kick off the host-mediated mount-open + token-issue. If
   // the orchestration succeeds we replace the bridge with a
@@ -99,34 +128,46 @@ export function injectKb(
         }
         return
       }
+      // Translate the `openMount` result into the bridge state.
+      // The three failure branches all map to non-`live` states; we
+      // still create a fresh bridge for `grandfather` and
+      // `open-failed` so the diagnostic envelope tracks the actual
+      // outcome rather than staying in `pending` forever.
+      let nextState: 'live' | 'grandfather' | 'open-failed'
+      let nextMountId: string | null = null
+      let nextToken: string | null = null
       if (result.kind === 'live') {
+        nextState = 'live'
+        nextMountId = result.mountId
+        nextToken = result.token
         liveMountId = result.mountId
-        // Replace the bridge with a mountId-bound instance. The
-        // proxy object on `window.kb.capture` is updated below.
-        const liveBridge = createCaptureBridge({
-          appId,
-          mountId: result.mountId,
-          initialToken: result.token,
-          captureRequires: manifestCaches.captureRequires,
-          approvedCaptures: manifestCaches.approvedCaptures,
-          log: recipeLogger,
-        })
-        captureBridge.dispose()
-        captureBridge = liveBridge
-        if (window.kb !== undefined && window.kb === self) {
-          window.kb = {
-            ...self,
-            capture: {
-              a11y: liveBridge.a11y,
-              exposedContext: liveBridge.exposedContext,
-            },
-          }
-        }
         ownLog.info({ appId, mountId: result.mountId }, 'capture-mount: live')
       } else if (result.kind === 'grandfather') {
+        nextState = 'grandfather'
         ownLog.info({ appId }, 'capture-mount: grandfather (no capture for this recipe)')
       } else {
+        nextState = 'open-failed'
         ownLog.warn({ appId, reason: result.reason }, 'capture-mount: failed')
+      }
+      const nextBridge = createCaptureBridge({
+        appId,
+        state: nextState,
+        mountId: nextMountId,
+        initialToken: nextToken,
+        captureRequires: manifestCaches.captureRequires,
+        approvedCaptures: manifestCaches.approvedCaptures,
+        log: recipeLogger,
+      })
+      captureBridge.dispose()
+      captureBridge = nextBridge
+      if (window.kb !== undefined && window.kb === self) {
+        window.kb = {
+          ...self,
+          capture: {
+            a11y: nextBridge.a11y,
+            exposedContext: nextBridge.exposedContext,
+          },
+        }
       }
     })
     .catch((err) => {
@@ -163,6 +204,14 @@ export function injectKb(
 
   return () => {
     cleanedUp = true
+    // Detach the unload listeners so a route navigation (which
+    // triggers React's effect cleanup but NOT the browser unload)
+    // does not later fire a stale close against an already-closed
+    // mount.
+    if (hasWindow) {
+      window.removeEventListener('pagehide', onUnload)
+      window.removeEventListener('beforeunload', onUnload)
+    }
     // Close the mount unconditionally — even when a sibling bridge
     // has already replaced `window.kb` for the next recipe page. The
     // server-side `/capture-mount/close` atomically drops the mount

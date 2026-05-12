@@ -111,16 +111,53 @@ describe('captureBridge (v1.7 mount-bound capture token)', () => {
     bridge.dispose()
   })
 
-  it('grandfather skip (mountId === null) fails fast with CaptureNotDeclaredError', async () => {
+  it('grandfather state fails fast with CaptureNotDeclaredError', async () => {
     const fetchStub = vi.fn()
     vi.stubGlobal('fetch', fetchStub)
     const bridge = createCaptureBridge({
       appId: 'app-a',
+      state: 'grandfather',
       mountId: null,
       initialToken: null,
       log: noopLog,
     })
     await expect(bridge.a11y()).rejects.toBeInstanceOf(CaptureNotDeclaredError)
+    expect(fetchStub).not.toHaveBeenCalled()
+    bridge.dispose()
+  })
+
+  it('pending state (pre-bootstrap) fails fast with the OPAQUE CaptureNotApprovedError, NOT CaptureNotDeclaredError', async () => {
+    // PR #30 attempt 5 CodeX MEDIUM finding regression: capture
+    // calls that arrive before `openMount()` resolves must NOT be
+    // misclassified as grandfather. The opaque NotApproved envelope
+    // hides the bootstrap timing from recipe code.
+    const fetchStub = vi.fn()
+    vi.stubGlobal('fetch', fetchStub)
+    const bridge = createCaptureBridge({
+      appId: 'app-a',
+      state: 'pending',
+      mountId: null,
+      initialToken: null,
+      log: noopLog,
+    })
+    await expect(bridge.a11y()).rejects.toBeInstanceOf(CaptureNotApprovedError)
+    await expect(bridge.a11y()).rejects.not.toBeInstanceOf(CaptureNotDeclaredError)
+    expect(fetchStub).not.toHaveBeenCalled()
+    bridge.dispose()
+  })
+
+  it('open-failed state fails fast with the opaque CaptureNotApprovedError', async () => {
+    const fetchStub = vi.fn()
+    vi.stubGlobal('fetch', fetchStub)
+    const bridge = createCaptureBridge({
+      appId: 'app-a',
+      state: 'open-failed',
+      mountId: null,
+      initialToken: null,
+      log: noopLog,
+    })
+    await expect(bridge.a11y()).rejects.toBeInstanceOf(CaptureNotApprovedError)
+    await expect(bridge.a11y()).rejects.not.toBeInstanceOf(CaptureNotDeclaredError)
     expect(fetchStub).not.toHaveBeenCalled()
     bridge.dispose()
   })

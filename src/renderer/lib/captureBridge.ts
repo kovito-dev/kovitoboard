@@ -74,19 +74,47 @@ export interface CaptureBridge {
   dispose: () => void
 }
 
+/**
+ * Bridge state at construction time.
+ *   - `pending` — `injectKb` has fired `openMount()` but the result
+ *     has not arrived yet. Capture calls short-circuit to the opaque
+ *     `CaptureNotApprovedError` so a recipe author cannot fingerprint
+ *     the bootstrap timing.
+ *   - `live` — `openMount()` returned `{ kind: 'live' }` and a token
+ *     was issued. Capture calls use the cached token + can refresh
+ *     via the registry.
+ *   - `grandfather` — `openMount()` returned `{ kind: 'grandfather' }`
+ *     because the recipe declared no `captureRequires`. Calls
+ *     short-circuit to `CaptureNotDeclaredError` (the true grandfather
+ *     diagnostic).
+ *   - `open-failed` — `openMount()` returned `{ kind: 'failed', ... }`
+ *     because of a network / quota / auth failure. Calls short-circuit
+ *     to `CaptureNotApprovedError`, same as `pending`, so the opaque
+ *     envelope still hides the failure mode from the recipe.
+ */
+export type CaptureBridgeState =
+  | 'pending'
+  | 'live'
+  | 'grandfather'
+  | 'open-failed'
+
 export interface CaptureBridgeOptions {
   appId: string
   /**
+   * Bridge state at construction time. Defaults to `pending` for
+   * backward compatibility — bridges that supply `mountId` but no
+   * explicit state are treated as `live`.
+   */
+  state?: CaptureBridgeState
+  /**
    * Server-issued mount identity from
-   * `POST /api/app/capture-mount/open`. `null` indicates a
-   * grandfather recipe (capture is structurally disabled, every
-   * call short-circuits with `CaptureNotDeclaredError`).
+   * `POST /api/app/capture-mount/open`. Required when `state` is
+   * `'live'`; ignored otherwise.
    */
   mountId: string | null
   /**
    * Initial capture token from `POST /api/app/capture-token/issue`.
-   * `null` when the mount is grandfather / open failed; the bridge
-   * fail-fasts every capture call in that state.
+   * Required when `state` is `'live'`; ignored otherwise.
    */
   initialToken: string | null
   /**
@@ -115,6 +143,17 @@ interface PendingCall {
  */
 export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
   const { appId, mountId, initialToken, captureRequires, approvedCaptures, log } = opts
+  // Resolve the bridge state. The legacy two-argument form
+  // (`mountId, initialToken`) is preserved so existing call sites
+  // do not break: a non-null `mountId` implies `live`; explicit
+  // `null` defaults to `pending` (the recipe-friendly opaque envelope)
+  // but callers can override with `grandfather` / `open-failed`.
+  const state: CaptureBridgeState =
+    opts.state !== undefined
+      ? opts.state
+      : mountId !== null
+        ? 'live'
+        : 'pending'
   const declaredSet =
     captureRequires === undefined ? null : new Set<CaptureKind>(captureRequires)
   const approvedSet =
@@ -139,7 +178,12 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
   let registered = false
   let disposed = false
 
-  if (mountId !== null) {
+  // Only register live bridges with the host registry. Pending /
+  // grandfather / open-failed bridges have no `mountId` to anchor
+  // refresh callbacks against; the registry would either reject the
+  // registration (no mountId) or silently accept a null key, neither
+  // of which buys anything for those states.
+  if (state === 'live' && mountId !== null) {
     const handle: BridgeHandle = {
       mountId,
       appId,
@@ -175,17 +219,29 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
       throw new CaptureNotApprovedError(kind, appId)
     }
 
-    // Grandfather + open-failure short-circuit. `mountId === null`
-    // means the host renderer never even tried to issue a token
-    // (grandfather skip from `/capture-mount/open`); we throw the
-    // declaration error so recipe code sees the same envelope it
-    // would if the recipe simply never declared the kind.
-    if (mountId === null) {
+    // State-aware short-circuits. Spec v1.7 §6.10.6.11 honest-claim
+    // SSOT + PR #30 attempt 5 CodeX MEDIUM finding: only the true
+    // grandfather state maps to `CaptureNotDeclaredError`. The
+    // `pending` state (capture call landed before the host bootstrap
+    // resolved `openMount()`) and the `open-failed` state (network
+    // / quota / restart) BOTH refuse with the opaque
+    // `CaptureNotApprovedError` so recipe code cannot time-fingerprint
+    // the bootstrap phase. The mount-result mutator in `injectKb` is
+    // responsible for swapping `pending` to `live` / `grandfather` /
+    // `open-failed` once the network call returns.
+    if (state === 'grandfather') {
       log.warn(
         { kind, appId },
         `capture ${kind}: refused by client-side guard (grandfather-no-capture)`,
       )
       throw new CaptureNotDeclaredError(kind, appId)
+    }
+    if (state !== 'live' || mountId === null) {
+      log.warn(
+        { kind, appId, state },
+        `capture ${kind}: refused by client-side guard (${state})`,
+      )
+      throw new CaptureNotApprovedError(kind, appId)
     }
 
     if (cachedToken === null) {
@@ -213,7 +269,7 @@ export function createCaptureBridge(opts: CaptureBridgeOptions): CaptureBridge {
     // captures only triggers one server-side `/issue`. We retry the
     // call exactly once; if the refresh fails or the retry refuses
     // again, the caller sees `CaptureNotApprovedError`.
-    if (mountId === null) {
+    if (mountId === null || state !== 'live') {
       throw new CaptureNotApprovedError(kind, appId)
     }
     const newToken = await requestRefresh(mountId, log)
