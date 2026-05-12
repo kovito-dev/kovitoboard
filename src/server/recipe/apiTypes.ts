@@ -181,15 +181,39 @@ export interface RecipeManifest {
   /** Recipe API declarations (transcribed from recipe.yaml) */
   api: ApiSection
   /**
+   * Capture API kinds the recipe declared in `recipe.yaml`'s
+   * `capture.requires` (v0.2.0 / spec v1.5).
+   *
+   * Persisted from the parser at install time and treated as
+   * **immutable** afterwards (I-CR2 — `recipe-system.md` v1.5
+   * §6.10.3). Grandfather manifests (installed under v0.1.x or
+   * v0.2.0 before this field existed) migrate to `[]` on load,
+   * which causes the capture endpoint to always answer
+   * `CaptureNotDeclared` (`recipe-system.md` v1.5 §6.10.4).
+   *
+   * Invariant I-CR1: `approvedCaptures ⊆ captureRequires`. A
+   * manifest that violates this constraint is treated as malformed
+   * by both `recipeManifestStore.load` and `markInstalledValidator`.
+   *
+   * @see recipe-system.md v1.5 §6.10.3〜§6.10.4
+   * @stable v0.2.0
+   */
+  captureRequires: CaptureKind[]
+  /**
    * Capture API kinds the user approved at install time (v0.2.0).
    *
-   * Subset of the recipe's `capture.requires` declaration. Empty array
-   * means the user declined every capture capability the recipe asked
-   * for, or the recipe did not declare any. Grandfather manifests
-   * (installed under v0.1.x or v0.2.0 before this field existed)
-   * migrate to `[]` on load (recipe-system.md §6.10.4).
+   * Subset of the recipe's `captureRequires` (I-CR1). Empty array
+   * means the user declined every capture capability the recipe
+   * asked for, or the recipe did not declare any. Grandfather
+   * manifests migrate to `[]` on load (recipe-system.md v1.5
+   * §6.10.4).
    *
-   * @see recipe-system.md v1.4 §6.10.1〜§6.10.4
+   * The capture endpoint enforces step 3 (`captureRequires`) and
+   * step 4 (`approvedCaptures`) independently — collapsing them
+   * undermines defence against installer / migration tampering
+   * (I-CR3, `recipe-system.md` v1.5 §6.10.3).
+   *
+   * @see recipe-system.md v1.5 §6.10.3〜§6.10.4
    * @stable v0.2.0
    */
   approvedCaptures: CaptureKind[]

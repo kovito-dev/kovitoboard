@@ -97,13 +97,23 @@ interface InstallSession {
   recipeSource: string
   approvedScopes: Scope[]
   /**
+   * Capture kinds the recipe declared in `recipe.yaml`'s
+   * `capture.requires` (v0.2.0 / spec v1.5). The mark-installed
+   * handler compares the body's `captureRequires` against this set
+   * so a caller who reuses a captured nonce cannot widen the
+   * declared surface beyond what the parser actually inspected.
+   *
+   * @see recipe-system.md v1.5 §6.10.3 (I-CR2)
+   */
+  captureRequires: CaptureKind[]
+  /**
    * Capture kinds the user agreed to at install time (v0.2.0). The
    * mark-installed handler compares the body's `approvedCaptures`
    * against this set so a caller who reuses a captured nonce cannot
    * widen the approved capture surface beyond what the install
    * warning dialog actually showed the user.
    *
-   * @see recipe-system.md v1.4 §6.10.2〜§6.10.3
+   * @see recipe-system.md v1.5 §6.10.2〜§6.10.3
    */
   approvedCaptures: CaptureKind[]
   /**
@@ -125,10 +135,20 @@ export interface InstallSessionInput {
   recipeSource: string
   approvedScopes: Scope[]
   /**
+   * Capture kinds the recipe declared in `recipe.yaml`'s
+   * `capture.requires` (v0.2.0 / spec v1.5). Optional only for
+   * backward compatibility with pre-v0.2.0 callers; the opt-in
+   * surface always sends the array explicitly.
+   *
+   * @see recipe-system.md v1.5 §6.10.3 (I-CR2)
+   */
+  captureRequires?: CaptureKind[]
+  /**
    * Capture kinds the user approved while inspecting the install
    * warning dialog (v0.2.0). Subset of the recipe's
-   * `capture.requires`. May be an empty array — that just means the
-   * recipe declared no capture or the user declined every capability.
+   * `captureRequires` (I-CR1). May be an empty array — that just
+   * means the recipe declared no capture or the user declined
+   * every capability.
    *
    * Optional only for backward compatibility with pre-v0.2.0
    * callers (notably the existing install-sessions test suite). Code
@@ -136,7 +156,7 @@ export interface InstallSessionInput {
    * array explicitly so the consume-time multiset check stays
    * meaningful.
    *
-   * @see recipe-system.md v1.4 §6.10.2
+   * @see recipe-system.md v1.5 §6.10.2
    */
   approvedCaptures?: CaptureKind[]
   api: unknown
@@ -238,18 +258,19 @@ export function issueInstallSession(input: InstallSessionInput): IssueInstallSes
   // characters. Same shape as the launch token so the renderer-side
   // assumptions about safe-to-interpolate hex stay valid.
   const nonce = randomBytes(16).toString('hex')
-  // `approvedCaptures` is optional on the call signature for
-  // backward-compatibility with pre-v0.2.0 callers (the legacy unit
-  // suite, in particular). A missing field is treated as "no
-  // capture approved" — the same semantics the validator applies on
-  // the mark-installed side, so the multiset check at consume time
-  // still lines up.
+  // `captureRequires` and `approvedCaptures` are optional on the
+  // call signature for backward-compatibility with pre-v0.2.0
+  // callers (the legacy unit suite, in particular). A missing
+  // field is treated as "no captures declared / approved" — the
+  // same semantics the validator applies on the mark-installed
+  // side, so the multiset check at consume time still lines up.
   sessions.set(nonce, {
     recipeId: input.recipeId,
     recipeHash: input.recipeHash,
     recipeVersion: input.recipeVersion,
     recipeSource: input.recipeSource,
     approvedScopes: [...input.approvedScopes],
+    captureRequires: input.captureRequires ? [...input.captureRequires] : [],
     approvedCaptures: input.approvedCaptures ? [...input.approvedCaptures] : [],
     apiCanonical,
     expiresAt: now + SESSION_TTL_MS,
@@ -317,14 +338,19 @@ export function approvedScopesMatch(a: Scope[], b: Scope[]): boolean {
 }
 
 /**
- * Multiset-equality comparison on the approvedCaptures array (v0.2.0).
+ * Multiset-equality comparison on a capture-kinds array (v0.2.0).
  *
  * Mirrors {@link approvedScopesMatch}: the install-warning dialog
- * sends `approvedCaptures` to `mark-installed`, and the handler must
- * confirm it matches what the install-session store remembers from
- * the agent handover. We treat the array as a multiset so a caller
- * cannot widen the approved capability surface by reordering or
- * duplicating entries.
+ * sends `approvedCaptures` (and v1.5: the recipe-declared
+ * `captureRequires`) to `mark-installed`, and the handler must
+ * confirm both match what the install-session store remembers
+ * from the agent handover. We treat each array as a multiset so a
+ * caller cannot widen the approved / declared surface by
+ * reordering or duplicating entries.
+ *
+ * Exported under the legacy name `approvedCapturesMatch` for
+ * backward compatibility — the function is shape-agnostic and the
+ * v1.5 mark-installed handler calls it twice (once per axis).
  */
 export function approvedCapturesMatch(a: CaptureKind[], b: CaptureKind[]): boolean {
   if (!Array.isArray(a) || !Array.isArray(b)) return false

@@ -1349,6 +1349,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     const {
       appId,
       approvedScopes,
+      captureRequires,
       approvedCaptures,
       recipeVersion,
       recipeSource,
@@ -1491,6 +1492,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       session.recipeVersion !== recipeVersion ||
       session.recipeSource !== recipeSource ||
       !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !approvedCapturesMatch(session.captureRequires, captureRequires) ||
       !approvedCapturesMatch(session.approvedCaptures, approvedCaptures) ||
       !apiSectionMatches(session.apiCanonical, api)
     ) {
@@ -1519,7 +1521,14 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     // trust-marker handoff (`v02x-phase1-trust-marker-preamble-
     // warning-request.md`) takes ownership of populating richer
     // values when the install path comes back. See recipe-system.md
-    // v1.4 §6.10.3〜§6.10.4.
+    // v1.5 §6.10.3〜§6.10.4.
+    //
+    // `captureRequires` carries the recipe's declared
+    // `capture.requires` verbatim; `approvedCaptures` carries the
+    // subset the user agreed to (I-CR1: subset relationship is
+    // enforced by `markInstalledValidator`). The runtime gate at
+    // `/api/app/capture/<kind>` keys off both fields independently
+    // (I-CR3).
     const manifest: RecipeManifest = {
       appId,
       recipeId: recipeIdParam,
@@ -1527,6 +1536,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       hash: recipeHash,
       installedAt: new Date().toISOString(),
       approvedScopes,
+      captureRequires,
       approvedCaptures,
       trustLevel: 'unknown',
       api: api ?? { scopes: [], calls: [] },
@@ -2109,6 +2119,7 @@ if (process.env.KB_E2E_MODE === '1') {
     const body = (req.body ?? {}) as Record<string, unknown>
     const { recipeId, recipeHash, recipeVersion, recipeSource } = body
     const approvedScopes = body.approvedScopes
+    const captureRequires = body.captureRequires
     const approvedCaptures = body.approvedCaptures
     const apiSection = body.api
     if (typeof recipeId !== 'string' || recipeId.length === 0) {
@@ -2125,12 +2136,22 @@ if (process.env.KB_E2E_MODE === '1') {
         .json({ error: 'approvedScopes must be an array of strings' })
       return
     }
-    // approvedCaptures is optional on this test harness for backward
-    // compatibility — existing L1 specs that did not declare any
-    // capture continue to pass an empty installNonce binding. New
-    // tests that exercise the opt-in surface send the array
-    // explicitly so the mark-installed validator can compare against
-    // the stored session.
+    // captureRequires / approvedCaptures are optional on this test
+    // harness for backward compatibility — existing L1 specs that
+    // did not declare any capture continue to pass an empty install
+    // nonce binding. New tests that exercise the opt-in surface
+    // send the arrays explicitly so the mark-installed validator
+    // can compare against the stored session.
+    let captureRequiresList: CaptureKind[] = []
+    if (captureRequires !== undefined) {
+      if (!Array.isArray(captureRequires) || !captureRequires.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'captureRequires must be an array of valid capture kinds' })
+        return
+      }
+      captureRequiresList = captureRequires as CaptureKind[]
+    }
     let approvedCapturesList: CaptureKind[] = []
     if (approvedCaptures !== undefined) {
       if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
@@ -2147,6 +2168,7 @@ if (process.env.KB_E2E_MODE === '1') {
       recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
       recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
       approvedScopes: approvedScopes as Scope[],
+      captureRequires: captureRequiresList,
       approvedCaptures: approvedCapturesList,
       api: apiSection ?? null,
     })
