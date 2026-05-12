@@ -27,6 +27,7 @@ import {
 import type { AuditLogEntry } from './handlers/types.js'
 import { AUDIT_LOG_LIMITS } from './handlers/types.js'
 import { lazyChildLogger } from './logger.js'
+import type { CaptureKind, TrustLevel } from './recipe/apiTypes.js'
 
 // `lazyChildLogger` is used so unit tests that import this module
 // without booting the full server (and hence without initLogger())
@@ -116,6 +117,85 @@ export function createAuditEntry(params: {
 }
 
 // =========================================
+// Capture-call audit log (v0.2.0)
+// =========================================
+
+/**
+ * Schema for a single capture-call audit entry.
+ *
+ * Written as JSONL to `app/data/<appId>/_capture-audit.log` so the
+ * handler-call audit log (`_audit.log`, `AuditLogEntry`) stays
+ * untouched while we still record every accept / refuse decision on
+ * `/api/app/capture/<kind>`. The two files share the rotation /
+ * directory conventions of {@link writeAuditLog}.
+ *
+ * @see recipe-system.md v1.4 §6.10.5
+ * @see http-api-contract.md v1.3 §10.6.6
+ * @stable v0.2.0
+ */
+export interface CaptureAuditEntry {
+  /** ISO 8601 timestamp */
+  timestamp: string
+  /** KB-local app identifier (same axis as `_audit.log`'s `appId`) */
+  appId: string
+  /** Recipe lineage id (active manifest's `recipeId`) */
+  recipeId: string
+  /** Capture kind that was requested */
+  kind: CaptureKind
+  /**
+   * Trust level captured from the active manifest at decision time.
+   * Always present even on rejects so the audit trail can surface
+   * "grandfather (unknown) recipe attempted capture" without a join
+   * back to the manifest store.
+   */
+  trustLevel: TrustLevel
+  /** Decision the endpoint emitted */
+  result: 'success' | 'rejected'
+  /**
+   * Machine-readable refusal reason. Mirrors the `error` field of
+   * the 403 response body so log readers can correlate the two
+   * without parsing free-form text.
+   */
+  reason?: 'CaptureNotDeclared' | 'CaptureNotApproved' | 'NoActiveRecipe'
+}
+
+/**
+ * Append one entry to the capture-call audit log.
+ *
+ * On write failure the function records a structured error via the
+ * lazy child logger but does not throw — the capture endpoint must
+ * still respond to the client.
+ *
+ * Refuse paths that have no resolved `appId` (the `NoActiveRecipe`
+ * case) skip the file write entirely so we never have to invent a
+ * placeholder directory. The endpoint records those events through
+ * the central logger instead.
+ */
+export function writeCaptureAuditLog(
+  entry: CaptureAuditEntry,
+  projectRoot: string,
+): void {
+  try {
+    const logPath = getCaptureAuditLogPath(entry.appId, projectRoot)
+    ensureDir(join(projectRoot, 'app', 'data', entry.appId))
+
+    rotateIfNeeded(logPath)
+
+    const line = JSON.stringify(entry) + '\n'
+    appendFileSync(logPath, line, 'utf-8')
+  } catch (err) {
+    auditLog.error(
+      { err, appId: entry.appId, recipeId: entry.recipeId, kind: entry.kind },
+      'Failed to write capture-audit log',
+    )
+  }
+}
+
+function getCaptureAuditLogPath(appId: string, projectRoot: string): string {
+  return join(projectRoot, 'app', 'data', appId, '_capture-audit.log')
+}
+
+// =========================================
 // Internal helpers
 // =========================================
 
@@ -133,6 +213,8 @@ function ensureDir(dir: string): void {
  * Rotate the log file when its size exceeds the limit.
  *
  * _audit.log -> _audit.log.1 -> _audit.log.2 -> _audit.log.3 (deleted)
+ * Reused by both `_audit.log` and `_capture-audit.log` so the two
+ * files share generation handling and ceiling.
  */
 function rotateIfNeeded(logPath: string): void {
   if (!existsSync(logPath)) return

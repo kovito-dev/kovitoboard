@@ -13,8 +13,13 @@
  *
  * @see docs/specs/v0.1.0-recipe-install-handover.md §3.3
  */
-import type { ApiSection } from './apiTypes.js'
-import { isValidScope, validateApiSection, parseApiSection } from './apiTypes.js'
+import type { ApiSection, CaptureKind } from './apiTypes.js'
+import {
+  isValidScope,
+  isValidCaptureKind,
+  validateApiSection,
+  parseApiSection,
+} from './apiTypes.js'
 import type { Scope } from '../handlers/types.js'
 import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 
@@ -22,6 +27,19 @@ import { MAX_APP_ID_LENGTH } from '../../shared/security-limits'
 export interface MarkInstalledBody {
   appId: string
   approvedScopes: Scope[]
+  /**
+   * Capture kinds the user approved during the install-warning
+   * dialog (v0.2.0). MUST be a subset of the recipe's
+   * `capture.requires`; the mark-installed handler compares it
+   * against the install-session store so a tampered body cannot
+   * widen the approved capability surface.
+   *
+   * Optional on the wire: callers that predate v0.2.0 (the L1
+   * fake-claude harness) omit the field, and the validator treats
+   * that as an empty array (capture all-refused). The validated
+   * value on the result is always populated.
+   */
+  approvedCaptures: CaptureKind[]
   recipeVersion: string
   recipeSource: 'sample' | 'import' | 'url'
   recipeHash: string
@@ -93,7 +111,16 @@ export function validateMarkInstalledRequest(
   }
   const obj = body as Record<string, unknown>
 
-  const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } = obj
+  const {
+    appId,
+    approvedScopes,
+    approvedCaptures,
+    recipeVersion,
+    recipeSource,
+    recipeHash,
+    installNonce,
+    api,
+  } = obj
 
   if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
     return {
@@ -109,6 +136,32 @@ export function validateMarkInstalledRequest(
       status: 400,
       error: 'approvedScopes must be an array of valid scope names',
     }
+  }
+
+  // approvedCaptures is optional in v0.2.0. The install path is
+  // disabled in v0.2.x, so the only callers that reach this
+  // validator are:
+  //   - The fake-claude L1 harness, which retains its v0.1.x payload
+  //     shape for grandfather coverage. A missing field here defaults
+  //     to "no captures approved" (capture endpoint always refuses),
+  //     which is the same outcome as the grandfather migration on
+  //     load — so the legacy callers keep working without modification.
+  //   - The v0.3.0 install warning dialog (separate handoff), which
+  //     will always send the field explicitly.
+  //
+  // Reject only on a *malformed* value (non-array, unknown kind) so
+  // a present-but-wrong payload does not silently widen the approved
+  // capability surface.
+  let normalisedApprovedCaptures: CaptureKind[] = []
+  if (approvedCaptures !== undefined) {
+    if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'approvedCaptures must be an array of valid capture kinds',
+      }
+    }
+    normalisedApprovedCaptures = approvedCaptures as CaptureKind[]
   }
 
   if (typeof recipeVersion !== 'string' || recipeVersion.length === 0) {
@@ -155,6 +208,7 @@ export function validateMarkInstalledRequest(
     value: {
       appId,
       approvedScopes: approvedScopes as Scope[],
+      approvedCaptures: normalisedApprovedCaptures,
       recipeVersion,
       recipeSource,
       recipeHash,

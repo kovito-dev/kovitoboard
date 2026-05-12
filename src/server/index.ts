@@ -53,6 +53,7 @@ import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
+import { createCaptureRouter } from './routes/capture-routes'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -68,6 +69,7 @@ import {
   issueInstallSession,
   consumeInstallSession,
   approvedScopesMatch,
+  approvedCapturesMatch,
   apiSectionMatches,
 } from './recipe-install-sessions'
 import {
@@ -85,7 +87,13 @@ import type {
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
 import { dispatch as dispatchHandler } from './handlerDispatcher'
-import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
+import type {
+  KbCallRequest,
+  KbCallResponse,
+  RecipeManifest,
+  CaptureKind,
+} from './recipe/apiTypes'
+import { isValidCaptureKind } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
 import type { Scope } from './handlers/types'
@@ -321,6 +329,20 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
 app.use('/api/app', createAppRouter(fs))
+// Capture endpoints (v0.2.0 Phase 1 prompt-injection ①, opt-in
+// mechanism). Mounted on top of /api/app so a recipe-app caller
+// invokes it via `window.kb.capture.<kind>` while the surrounding
+// kb-bridge already routes through the same namespace. See
+// `docs/specs/http-api-contract.md` v1.3 §10.6 and
+// `docs/specs/app-directory-extension.md` v1.2 §10.5.2.
+app.use(
+  '/api/app/capture',
+  createCaptureRouter({
+    manifestStore,
+    projectRoot,
+    logger: apiLogger,
+  }),
+)
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
@@ -1324,8 +1346,16 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       res.status(validation.status).json({ error: validation.error })
       return
     }
-    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, installNonce, api } =
-      validation.value
+    const {
+      appId,
+      approvedScopes,
+      approvedCaptures,
+      recipeVersion,
+      recipeSource,
+      recipeHash,
+      installNonce,
+      api,
+    } = validation.value
 
     // Idempotency first: if a history record with the same (recipeId,
     // appId, hash, action='install') already exists AND the current
@@ -1461,6 +1491,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       session.recipeVersion !== recipeVersion ||
       session.recipeSource !== recipeSource ||
       !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !approvedCapturesMatch(session.approvedCaptures, approvedCaptures) ||
       !apiSectionMatches(session.apiCanonical, api)
     ) {
       apiLogger.warn(
@@ -1479,6 +1510,16 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
     // Persist the recipe-side manifest. The dispatcher's
     // `manifestStore.refresh()` (or `loadAll()`) re-reads this file
     // when it needs to resolve handler calls.
+    //
+    // `trustLevel` is hard-coded to `'unknown'` in v0.2.x: the
+    // KovitoHub signed-publisher path that distinguishes
+    // `'code-trusted'` vs `'code-trusted (sideloaded)'` ships in
+    // v0.3.0 alongside the recipe-install re-enable, so today every
+    // newly-minted manifest matches a grandfather-migrated one. The
+    // trust-marker handoff (`v02x-phase1-trust-marker-preamble-
+    // warning-request.md`) takes ownership of populating richer
+    // values when the install path comes back. See recipe-system.md
+    // v1.4 §6.10.3〜§6.10.4.
     const manifest: RecipeManifest = {
       appId,
       recipeId: recipeIdParam,
@@ -1486,6 +1527,8 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       hash: recipeHash,
       installedAt: new Date().toISOString(),
       approvedScopes,
+      approvedCaptures,
+      trustLevel: 'unknown',
       api: api ?? { scopes: [], calls: [] },
     }
     manifestStore.save(manifest)
@@ -2066,6 +2109,7 @@ if (process.env.KB_E2E_MODE === '1') {
     const body = (req.body ?? {}) as Record<string, unknown>
     const { recipeId, recipeHash, recipeVersion, recipeSource } = body
     const approvedScopes = body.approvedScopes
+    const approvedCaptures = body.approvedCaptures
     const apiSection = body.api
     if (typeof recipeId !== 'string' || recipeId.length === 0) {
       res.status(400).json({ error: 'recipeId must be a non-empty string' })
@@ -2081,12 +2125,29 @@ if (process.env.KB_E2E_MODE === '1') {
         .json({ error: 'approvedScopes must be an array of strings' })
       return
     }
+    // approvedCaptures is optional on this test harness for backward
+    // compatibility — existing L1 specs that did not declare any
+    // capture continue to pass an empty installNonce binding. New
+    // tests that exercise the opt-in surface send the array
+    // explicitly so the mark-installed validator can compare against
+    // the stored session.
+    let approvedCapturesList: CaptureKind[] = []
+    if (approvedCaptures !== undefined) {
+      if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'approvedCaptures must be an array of valid capture kinds' })
+        return
+      }
+      approvedCapturesList = approvedCaptures as CaptureKind[]
+    }
     const issueResult = issueInstallSession({
       recipeId,
       recipeHash,
       recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
       recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
       approvedScopes: approvedScopes as Scope[],
+      approvedCaptures: approvedCapturesList,
       api: apiSection ?? null,
     })
     if (!issueResult.ok) {

@@ -83,6 +83,61 @@ export interface ApiSection {
 // =========================================
 
 /**
+ * Capture API kinds the opt-in mechanism currently distinguishes (v0.2.0).
+ *
+ * Each kind names a specific class of capability that a recipe may want
+ * to use at runtime (e.g. capturing the accessibility tree, reading the
+ * exposed context payload). User consent is per-kind, so the manifest
+ * remembers exactly which kinds were approved instead of a single
+ * boolean.
+ *
+ * The closed enum is v0.2.x scope; future capture surfaces (camera,
+ * clipboard, etc.) extend this list together with the parser and the
+ * approval UI.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ * @stable v0.2.0
+ */
+export type CaptureKind = 'a11y' | 'exposed-context'
+
+/** All capture kinds the parser / validators accept. */
+export const CAPTURE_KINDS: readonly CaptureKind[] = ['a11y', 'exposed-context'] as const
+
+/** Type guard for the closed capture-kind enum. */
+export function isValidCaptureKind(value: unknown): value is CaptureKind {
+  return typeof value === 'string' && (CAPTURE_KINDS as readonly string[]).includes(value)
+}
+
+/**
+ * Trust level for an installed recipe (v0.2.0).
+ *
+ * v0.2.x retains only `'unknown'` as a runtime value: the install path
+ * is temporarily disabled (recipe-system.md §10.6) and every legacy
+ * manifest migrates to `'unknown'` to keep the field non-optional.
+ * The remaining values are reserved for the v0.3.0 KovitoHub signed
+ * publisher path and the developer sideload path; setting them is
+ * out of scope here (see the trust-marker / preamble-warning handoff).
+ *
+ * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export type TrustLevel = 'KB-trusted' | 'code-trusted' | 'code-trusted (sideloaded)' | 'unknown'
+
+/** All trust-level enum values, exported for validation helpers. */
+export const TRUST_LEVELS: readonly TrustLevel[] = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+
+/** Type guard for the trust-level enum. */
+export function isValidTrustLevel(value: unknown): value is TrustLevel {
+  return typeof value === 'string' && (TRUST_LEVELS as readonly string[]).includes(value)
+}
+
+/**
  * Manifest for an installed recipe.
  * Stored at: `.kovitoboard/recipes-installed/{appId}/manifest.json`.
  *
@@ -125,6 +180,34 @@ export interface RecipeManifest {
   approvedScopes: Scope[]
   /** Recipe API declarations (transcribed from recipe.yaml) */
   api: ApiSection
+  /**
+   * Capture API kinds the user approved at install time (v0.2.0).
+   *
+   * Subset of the recipe's `capture.requires` declaration. Empty array
+   * means the user declined every capture capability the recipe asked
+   * for, or the recipe did not declare any. Grandfather manifests
+   * (installed under v0.1.x or v0.2.0 before this field existed)
+   * migrate to `[]` on load (recipe-system.md §6.10.4).
+   *
+   * @see recipe-system.md v1.4 §6.10.1〜§6.10.4
+   * @stable v0.2.0
+   */
+  approvedCaptures: CaptureKind[]
+  /**
+   * Trust level for this recipe install (v0.2.0).
+   *
+   * v0.2.x always persists `'unknown'`: grandfather migrations set it
+   * explicitly, and the install path is disabled so no new manifest is
+   * minted with a different value. The remaining enum members are
+   * reserved for v0.3.0 (KovitoHub signed publisher → `'code-trusted'`,
+   * developer sideload → `'code-trusted (sideloaded)'`). See the
+   * separate trust-marker handoff for the v0.3.0 wiring.
+   *
+   * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+   * @see prompt-injection-threat-model.md v1.0 §2
+   * @stable v0.2.0
+   */
+  trustLevel: TrustLevel
 }
 
 // =========================================
