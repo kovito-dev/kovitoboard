@@ -121,18 +121,29 @@ export function createAuditEntry(params: {
 // =========================================
 
 /**
- * Spec-mandated capture decision reasons (v0.2.0 / spec v1.5
+ * Spec-mandated capture decision reasons (v0.2.0 / spec v1.6
  * §6.10.5). The endpoint records exactly one of these for every
  * `/api/app/capture/*` request — both the 200 accept path and the
- * four 403 reject paths.
+ * 403 reject paths.
  *
- * @see recipe-system.md v1.5 §6.10.5
- * @see http-api-contract.md v1.3.1 §10.6.6
+ * v1.6 added the `capture-token-*` family for the per-recipe-page
+ * launch-scoped capture token mechanism
+ * (`recipe-system.md` v1.6 §6.10.6 / `http-api-contract.md` v1.4
+ * §10.6.7). `unresolved-appid` is retained for v1.3.1 backward
+ * compatibility but the v1.4+ runtime no longer routes through it
+ * because `req.body.appId` is ignored end-to-end (I-CR4).
+ *
+ * @see recipe-system.md v1.6 §6.10.5
+ * @see http-api-contract.md v1.4 §10.6.6
  */
 export type CaptureAuditReason =
   | 'approved'
   | 'not-approved'
   | 'not-declared'
+  | 'capture-token-missing'
+  | 'capture-token-invalid'
+  | 'capture-token-expired'
+  | 'no-matching-manifest'
   | 'no-active-recipe'
   | 'unresolved-appid'
 

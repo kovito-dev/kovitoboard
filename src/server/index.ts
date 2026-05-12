@@ -54,6 +54,7 @@ import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
 import { createCaptureRouter } from './routes/capture-routes'
+import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -329,12 +330,27 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
 app.use('/api/app', createAppRouter(fs))
+// Capture-token issuance / revoke endpoints
+// (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
+// MUST be mounted before the `/api/app/capture` router because
+// Express matches `/api/app/capture-token/*` against the more
+// specific prefix here; if the order were reversed,
+// `/api/app/capture` would intercept the `:kind` segment of the
+// token path (e.g. `/api/app/capture/token`) and return a 403
+// `CaptureNotDeclared` instead of the issuance / revoke contract.
+app.use(
+  '/api/app/capture-token',
+  createCaptureTokenRouter({
+    manifestStore,
+    logger: apiLogger,
+  }),
+)
 // Capture endpoints (v0.2.0 Phase 1 prompt-injection ①, opt-in
 // mechanism). Mounted on top of /api/app so a recipe-app caller
 // invokes it via `window.kb.capture.<kind>` while the surrounding
 // kb-bridge already routes through the same namespace. See
-// `docs/specs/http-api-contract.md` v1.3 §10.6 and
-// `docs/specs/app-directory-extension.md` v1.2 §10.5.2.
+// `docs/specs/http-api-contract.md` v1.4 §10.6 and
+// `docs/specs/app-directory-extension.md` v1.3 §10.5.2.
 app.use(
   '/api/app/capture',
   createCaptureRouter({
