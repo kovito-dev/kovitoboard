@@ -85,6 +85,7 @@ export function injectKb(
   })
 
   let cleanedUp = false
+  let unloading = false
   let liveMountId: string | null = null
 
   // Best-effort close on page unload (spec v1.7.2 §6.10.6.3 +
@@ -94,7 +95,16 @@ export function injectKb(
   // the request survive page unload. Listeners are removed in the
   // cleanup function so a sibling-replacement during route
   // navigation does not duplicate them.
+  //
+  // `unloading` is sticky: once the browser has signalled pagehide
+  // or beforeunload, any late `openMount()` resolution must also
+  // use the keepalive close path because the document is on its
+  // way out and a normal `fetch` will be cancelled mid-flight.
+  // (PR #30 attempt 6 CodeX MEDIUM finding: a recipe that fires
+  // `openMount()` and unloads before it resolves would otherwise
+  // leak the mount/token entries until TTL.)
   function onUnload(): void {
+    unloading = true
     if (liveMountId !== null) {
       closeMountSync(liveMountId, recipeLogger)
     }
@@ -120,11 +130,22 @@ export function injectKb(
   // accessible via the `window.kb.capture` proxy we set below).
   void openMount(appId, recipeLogger)
     .then((result) => {
-      if (cleanedUp) {
+      if (cleanedUp || unloading) {
         if (result.kind === 'live') {
-          // Late response — unmount already fired. Close the mount
-          // on the server to release the slot.
-          void closeMount(result.mountId, recipeLogger)
+          // Late response. Two flavours:
+          //  - `cleanedUp` (route navigation already detached the
+          //    bridge): a normal async close is fine because the
+          //    document is still alive.
+          //  - `unloading` (browser unload already fired): the
+          //    document is on its way out; a normal `fetch` will be
+          //    cancelled before the server sees it, so we MUST take
+          //    the `keepalive` path to actually free the mount slot
+          //    (PR #30 attempt 6 fix).
+          if (unloading) {
+            closeMountSync(result.mountId, recipeLogger)
+          } else {
+            void closeMount(result.mountId, recipeLogger)
+          }
         }
         return
       }
@@ -216,9 +237,17 @@ export function injectKb(
     // has already replaced `window.kb` for the next recipe page. The
     // server-side `/capture-mount/close` atomically drops the mount
     // + bound token in a single synchronous slice (H-CR4), so a
-    // double-close during a React cleanup race is harmless.
+    // double-close during a React cleanup race is harmless. When
+    // `unloading` is set the document is on its way out, so we use
+    // the keepalive path here as well — the onUnload handler may
+    // have already fired with `liveMountId === null` if the bridge
+    // was still pending.
     if (liveMountId !== null) {
-      void closeMount(liveMountId, recipeLogger)
+      if (unloading) {
+        closeMountSync(liveMountId, recipeLogger)
+      } else {
+        void closeMount(liveMountId, recipeLogger)
+      }
     }
     captureBridge.dispose()
     if (window.kb !== self) {
