@@ -23,8 +23,13 @@
 import { recipeLogger } from './logger'
 import { join } from 'path'
 import type { FileAccessLayer } from './fs-layer.js'
-import type { RecipeManifest } from './recipe/apiTypes.js'
-import { isValidScope, isValidHandlerName } from './recipe/apiTypes.js'
+import type { RecipeManifest, CaptureKind, TrustLevel } from './recipe/apiTypes.js'
+import {
+  isValidScope,
+  isValidHandlerName,
+  isValidCaptureKind,
+  isValidTrustLevel,
+} from './recipe/apiTypes.js'
 
 // =========================================
 // Store class
@@ -48,6 +53,22 @@ export class RecipeManifestStore {
   /**
    * Scan and load all manifests into the cache at startup.
    * Invalid manifests are logged as warnings and skipped.
+   *
+   * v0.2.0 grandfather migration: manifests written before the
+   * v0.2.0 fields existed are coerced into the new shape on load.
+   * `captureRequires` (v1.5) and `approvedCaptures` default to empty
+   * arrays — so the capture endpoint step 3 always answers
+   * `CaptureNotDeclared` for grandfather installs — and `trustLevel`
+   * defaults to `'unknown'`. The cache then sees a fully-populated
+   * manifest regardless of how old the on-disk file is, and the
+   * migrated shape is persisted back on the next `save()` call. See
+   * recipe-system.md v1.5 §6.10.4.
+   *
+   * Invariant I-CR1 (`approvedCaptures ⊆ captureRequires`) is also
+   * verified here: a manifest that satisfies the legacy validator
+   * but violates I-CR1 (e.g. a tampered file written by hand) is
+   * skipped with a warn-level log so a stale manifest cannot widen
+   * the capture surface at runtime (recipe-system.md v1.5 §6.10.3).
    */
   loadAll(): void {
     this.cache.clear()
@@ -57,6 +78,7 @@ export class RecipeManifestStore {
     }
 
     const entries = this.fs.readdirSync(this.baseDir)
+    let migratedCount = 0
     for (const entry of entries) {
       const manifestPath = join(this.baseDir, entry, 'manifest.json')
       if (!this.fs.existsSync(manifestPath)) {
@@ -71,13 +93,48 @@ export class RecipeManifestStore {
           recipeLogger.warn(`[manifest-store] Skipping invalid manifest: ${manifestPath} — ${validationError}`)
           continue
         }
-        const manifest = parsed as RecipeManifest
+        // Migrate the on-disk shape to the v0.2.0 manifest. The
+        // function returns the same reference when nothing changed,
+        // so a fully-current manifest does not allocate.
+        const { manifest, migrated } = applyGrandfatherMigration(parsed as Record<string, unknown>)
+        if (migrated) {
+          migratedCount += 1
+        }
+
+        // I-CR1 enforcement at load time. The validator above
+        // guarantees both fields are well-typed arrays of capture
+        // kinds; here we additionally guarantee the subset
+        // relationship so the runtime gate can trust the manifest
+        // shape end-to-end.
+        const declaredSet = new Set<CaptureKind>(manifest.captureRequires)
+        const offender = manifest.approvedCaptures.find((kind) => !declaredSet.has(kind))
+        if (offender !== undefined) {
+          recipeLogger.warn(
+            {
+              appId: manifest.appId,
+              recipeId: manifest.recipeId,
+              offender,
+            },
+            `[manifest-store] Skipping I-CR1 violating manifest at ${manifestPath} ` +
+              `(approvedCaptures contains "${offender}" which is not in captureRequires).`,
+          )
+          continue
+        }
+
         this.cache.set(manifest.appId, manifest)
       } catch (err) {
         recipeLogger.warn({ err }, `[manifest-store] Failed to load manifest: ${manifestPath}`)
       }
     }
 
+    if (migratedCount > 0) {
+      recipeLogger.info(
+        { migratedCount },
+        `[manifest-store] Migrated ${migratedCount} grandfather manifest(s) to v0.2.0 shape ` +
+          `(captureRequires=[], approvedCaptures=[], trustLevel='unknown'). ` +
+          'The on-disk shape is rewritten on the next save().',
+      )
+    }
     recipeLogger.info(`[manifest-store] Loaded ${this.cache.size} manifest(s)`)
   }
 
@@ -140,6 +197,13 @@ export class RecipeManifestStore {
 
 /**
  * Validate a manifest.json object.
+ *
+ * The v0.2.0 fields (`approvedCaptures`, `trustLevel`) are validated
+ * **only when present**: legacy manifests written before the v0.2.0
+ * upgrade omit them and {@link applyGrandfatherMigration} fills the
+ * defaults on load. New manifests written by the post-v0.2.0
+ * mark-installed handler always include the fields.
+ *
  * @returns null if valid, error message string if invalid
  */
 function validateManifest(raw: unknown): string | null {
@@ -199,5 +263,84 @@ function validateManifest(raw: unknown): string | null {
     }
   }
 
+  // v0.2.0 fields — validated only when present so a legacy manifest
+  // still loads (the migration helper fills in the defaults).
+  if (obj.captureRequires !== undefined) {
+    if (!Array.isArray(obj.captureRequires)) {
+      return '"captureRequires" must be an array'
+    }
+    for (const kind of obj.captureRequires) {
+      if (!isValidCaptureKind(kind)) {
+        return `captureRequires contains invalid capture kind: "${String(kind)}"`
+      }
+    }
+  }
+  if (obj.approvedCaptures !== undefined) {
+    if (!Array.isArray(obj.approvedCaptures)) {
+      return '"approvedCaptures" must be an array'
+    }
+    for (const kind of obj.approvedCaptures) {
+      if (!isValidCaptureKind(kind)) {
+        return `approvedCaptures contains invalid capture kind: "${String(kind)}"`
+      }
+    }
+  }
+
+  if (obj.trustLevel !== undefined && !isValidTrustLevel(obj.trustLevel)) {
+    return `"trustLevel" is not a valid trust-level: "${String(obj.trustLevel)}"`
+  }
+
   return null
+}
+
+/**
+ * Coerce a `validateManifest`-checked record into a `RecipeManifest`
+ * with the v0.2.0 fields filled in.
+ *
+ * - Manifests that already carry `captureRequires` /
+ *   `approvedCaptures` / `trustLevel` pass through unchanged (the
+ *   returned `migrated` flag is `false`).
+ * - Legacy manifests without any of these fields gain
+ *   `captureRequires: []` (capture endpoint step 3 always refuses) +
+ *   `approvedCaptures: []` (capture endpoint step 4 would refuse
+ *   anyway via I-CR1) + `trustLevel: 'unknown'` (trust-marker UI
+ *   shows the user that the install predates the trust axis). The
+ *   flag is `true` so the loader can log a single info line
+ *   summarising the migration.
+ *
+ * The function intentionally clones only when it has to so a
+ * fully-current manifest does not pay a copy cost on every restart.
+ *
+ * @see recipe-system.md v1.5 §6.10.4 (grandfather migration)
+ */
+export function applyGrandfatherMigration(
+  raw: Record<string, unknown>,
+): { manifest: RecipeManifest; migrated: boolean } {
+  const hasRequires = 'captureRequires' in raw && Array.isArray(raw.captureRequires)
+  const hasCaptures = 'approvedCaptures' in raw && Array.isArray(raw.approvedCaptures)
+  const hasTrust = 'trustLevel' in raw && typeof raw.trustLevel === 'string'
+
+  if (hasRequires && hasCaptures && hasTrust) {
+    return { manifest: raw as unknown as RecipeManifest, migrated: false }
+  }
+
+  // Build a shallow copy with the v0.2.0 defaults patched in. We
+  // avoid mutating `raw` so the caller's reference (e.g. the
+  // JSON.parse result the loader still holds) stays stable for the
+  // error path.
+  const captureRequires: CaptureKind[] = hasRequires
+    ? (raw.captureRequires as CaptureKind[])
+    : []
+  const approvedCaptures: CaptureKind[] = hasCaptures
+    ? (raw.approvedCaptures as CaptureKind[])
+    : []
+  const trustLevel: TrustLevel = hasTrust ? (raw.trustLevel as TrustLevel) : 'unknown'
+
+  const migrated: RecipeManifest = {
+    ...(raw as unknown as RecipeManifest),
+    captureRequires,
+    approvedCaptures,
+    trustLevel,
+  }
+  return { manifest: migrated, migrated: true }
 }

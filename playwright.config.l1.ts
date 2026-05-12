@@ -176,6 +176,14 @@ process.env.KB_E2E_PROJECT_ROOT_RICH = PROJECT_ROOT_RICH
 // so the renderer's kbFetch helper picks it up like in real life.
 const E2E_LAUNCH_TOKEN = '0123456789abcdef0123456789abcdef'
 process.env.KB_LAUNCH_TOKEN = E2E_LAUNCH_TOKEN
+// Internal auth token (v0.2.0 / spec v1.7 §6.10.6.9). Host-only EPs
+// (`/api/app/capture-mount/*`, `/api/app/capture-token/*`,
+// `/api/audit/host-bootstrap`) require `X-KB-Internal-Auth`. L1
+// tests need the same value as the server, so we hard-code another
+// deterministic 32-char hex token here. Production mints this per
+// launch the same way KB_LAUNCH_TOKEN is minted.
+const E2E_INTERNAL_TOKEN = 'fedcba9876543210fedcba9876543210'
+process.env.KB_INTERNAL_TOKEN = E2E_INTERNAL_TOKEN
 
 export default defineConfig({
   testDir: './tests/e2e',

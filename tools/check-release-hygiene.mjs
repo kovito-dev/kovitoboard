@@ -302,6 +302,7 @@ export function parseArgs(argv) {
   const japaneseOnly = args.includes('--japanese-only')
   const metaOnly = args.includes('--meta-only')
   const internalIdOnly = args.includes('--internal-id-only')
+  const postBuildOnly = args.includes('--post-build-only')
   const strict = args.includes('--strict')
 
   const modeArg = args.find((a) => a.startsWith('--internal-id-mode='))
@@ -314,13 +315,15 @@ export function parseArgs(argv) {
     )
   }
 
-  const runAll = !piiOnly && !japaneseOnly && !metaOnly && !internalIdOnly
+  const runAll =
+    !piiOnly && !japaneseOnly && !metaOnly && !internalIdOnly && !postBuildOnly
 
   return {
     piiOnly,
     japaneseOnly,
     metaOnly,
     internalIdOnly,
+    postBuildOnly,
     strict,
     internalIdMode,
     runAll,
@@ -1159,6 +1162,450 @@ function runConsoleCheck(warn) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Section [8]: Post-build hygiene (v0.2.0 / spec v1.7 §6.10.6.17 H-CR5-A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Source files in the host bootstrap chain. Top-level `await` is
+ * forbidden in any of these files (H-CR2). Vite's
+ * `dist/.vite/manifest.json` collapses several of these into the
+ * single entry chunk so we cannot derive the list from the
+ * manifest alone; we therefore enumerate the chain explicitly and
+ * scan each source file directly. The list is short and stable —
+ * recipe code does not extend it because recipe modules are loaded
+ * via dynamic `import()`, not static imports from `main.tsx`.
+ */
+export const HYGIENE_BOOTSTRAP_ROOTS = [
+  'src/renderer/main.tsx',
+  'src/renderer/app-host/hostBootstrap.ts',
+  'src/renderer/app-host/injectKb.ts',
+  'src/renderer/app-host/RecipePageHost.tsx',
+  'src/renderer/app-host/captureBridgeRegistry.ts',
+  'src/renderer/app-host/installAmbientKbBridge.ts',
+  'src/renderer/lib/captureBridge.ts',
+  'src/renderer/lib/kbBridge.ts',
+  'src/renderer/lib/kbFetch.ts',
+  'src/renderer/lib/exposeContext.ts',
+  'src/renderer/lib/logger.ts',
+  'src/renderer/lib/global-errors.ts',
+  'src/renderer/lib/locale-bootstrap.ts',
+]
+
+/**
+ * Critical-section handler files whose handler bodies must execute
+ * inside a single synchronous JS execution slice (H-CR4). The check
+ * scans for `await` / `.then` / `setImmediate` / `process.nextTick`
+ * inside each critical-section invocation marker
+ * (`withCriticalSection('<scope>', () => { ... })`).
+ */
+export const HYGIENE_CRITICAL_SECTION_FILES = [
+  'src/server/recipe-capture-sessions.ts',
+  'src/server/recipe-capture-mount-sessions.ts',
+  'src/server/routes/capture-mount-routes.ts',
+  'src/server/routes/capture-token-routes.ts',
+]
+
+/**
+ * Locate the Vite production manifest. Vite emits it at
+ * `<outDir>/.vite/manifest.json` by default; older configurations
+ * placed it directly under `outDir`. We probe both so the check
+ * keeps working across Vite versions.
+ */
+export function findViteManifest(distDir) {
+  const candidates = [
+    join(distDir, '.vite', 'manifest.json'),
+    join(distDir, 'manifest.json'),
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
+/**
+ * Schema validation for the Vite manifest. Returns the validated
+ * object or throws — the caller treats either branch as fail-closed
+ * (`H-CR5-A` SSOT).
+ */
+export function validateManifestSchema(manifest) {
+  if (typeof manifest !== 'object' || manifest === null) {
+    throw new Error('manifest schema validation failed: not an object')
+  }
+  for (const [key, entry] of Object.entries(manifest)) {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error(
+        `manifest schema validation failed: entry "${key}" is not an object`,
+      )
+    }
+    if (typeof entry.file !== 'string') {
+      throw new Error(
+        `manifest schema validation failed: entry "${key}" has no string "file"`,
+      )
+    }
+    if (entry.imports !== undefined && !Array.isArray(entry.imports)) {
+      throw new Error(
+        `manifest schema validation failed: entry "${key}".imports is not an array`,
+      )
+    }
+  }
+}
+
+/**
+ * Walk the static-import graph starting from each `bootstrap root`
+ * key. Returns the set of source paths the bootstrap chain reaches.
+ *
+ * The walk relies on Vite's `manifest.imports` array, which records
+ * the manifest-key form of each transitively-imported module. We
+ * deliberately do not follow `dynamicImports` — those are
+ * recipe-side loads gated by `RecipePageHost`, so they live outside
+ * the host bootstrap fence.
+ */
+export function walkBootstrapChain(manifest, roots) {
+  const reachable = new Set()
+  const stack = [...roots]
+  while (stack.length > 0) {
+    const key = stack.pop()
+    if (reachable.has(key)) continue
+    reachable.add(key)
+    const entry = manifest[key]
+    if (entry === undefined) continue
+    if (Array.isArray(entry.imports)) {
+      for (const next of entry.imports) {
+        if (!reachable.has(next)) stack.push(next)
+      }
+    }
+  }
+  return reachable
+}
+
+/**
+ * Strip line comments and string literals from a source line so the
+ * regex scanners do not match documentation or string contents.
+ */
+function stripCommentsAndStrings(line) {
+  // Drop // line comments first.
+  const commentIdx = line.indexOf('//')
+  let stripped = commentIdx >= 0 ? line.slice(0, commentIdx) : line
+  // Drop string contents (single, double, template). Keeps quotes
+  // so the regex still sees structurally-recognisable code.
+  stripped = stripped.replace(/'(?:\\.|[^'\\])*'/g, "''")
+  stripped = stripped.replace(/"(?:\\.|[^"\\])*"/g, '""')
+  stripped = stripped.replace(/`(?:\\.|[^`\\])*`/g, '``')
+  return stripped
+}
+
+/**
+ * Heuristic top-level await detector. Returns the line numbers
+ * where a module-scope `await` appears (1-indexed). Tracks brace /
+ * paren / bracket depth + arrow-function bodies to skip awaits
+ * inside function bodies.
+ *
+ * The check is intentionally conservative: a TS/TSX file mixes
+ * declarations and statements at module scope, but `await` outside
+ * any function body counts as top-level. We do not need a full AST
+ * — the bootstrap chain is small and well-controlled.
+ */
+export function detectTopLevelAwait(source) {
+  const hits = []
+  const lines = source.split(/\r?\n/)
+  let braceDepth = 0
+  let parenDepth = 0
+  let bracketDepth = 0
+  let inBlockComment = false
+  let inLineComment = false
+  for (let i = 0; i < lines.length; i += 1) {
+    let line = lines[i]
+    let j = 0
+    let lineSawAwaitAtTop = false
+    while (j < line.length) {
+      const c = line[j]
+      const next2 = line.slice(j, j + 2)
+      if (inLineComment) {
+        break
+      }
+      if (inBlockComment) {
+        if (next2 === '*/') {
+          inBlockComment = false
+          j += 2
+          continue
+        }
+        j += 1
+        continue
+      }
+      if (next2 === '//') {
+        inLineComment = true
+        break
+      }
+      if (next2 === '/*') {
+        inBlockComment = true
+        j += 2
+        continue
+      }
+      // String literal handling — collapse to a single char.
+      if (c === '"' || c === "'" || c === '`') {
+        const quote = c
+        j += 1
+        while (j < line.length) {
+          if (line[j] === '\\') {
+            j += 2
+            continue
+          }
+          if (line[j] === quote) {
+            j += 1
+            break
+          }
+          j += 1
+        }
+        continue
+      }
+      if (c === '{') braceDepth += 1
+      else if (c === '}') braceDepth = Math.max(0, braceDepth - 1)
+      else if (c === '(') parenDepth += 1
+      else if (c === ')') parenDepth = Math.max(0, parenDepth - 1)
+      else if (c === '[') bracketDepth += 1
+      else if (c === ']') bracketDepth = Math.max(0, bracketDepth - 1)
+      else if (
+        braceDepth === 0 &&
+        parenDepth === 0 &&
+        bracketDepth === 0 &&
+        line.slice(j, j + 5) === 'await' &&
+        /[\s(]/.test(line[j + 5] ?? ' ')
+      ) {
+        // Quick filter: skip `async function ... { await ... }` —
+        // we already know braceDepth is 0 here, but the previous
+        // tokens on the same line might be e.g. `=> await ...`. We
+        // accept that as a top-level statement because in practice
+        // the bootstrap chain does not contain top-level arrow IIFE
+        // expressions with awaits; the regex catches the bare
+        // module-level case which is the H-CR2 violation.
+        lineSawAwaitAtTop = true
+      }
+      j += 1
+    }
+    if (inLineComment) {
+      inLineComment = false
+    }
+    if (lineSawAwaitAtTop) {
+      hits.push(i + 1)
+    }
+  }
+  return hits
+}
+
+/**
+ * Atomicity lint (H-CR4). Scans the source for
+ * `withCriticalSection('<scope>', () => { ... })` blocks and
+ * refuses any of the forbidden constructs inside the arrow body:
+ *
+ *   - `await`
+ *   - `.then(`, `.catch(`, `.finally(`
+ *   - `setImmediate(`
+ *   - `process.nextTick(`
+ *
+ * Returns an array of `{ line, hit }` records (line is 1-indexed).
+ * The scope name is parsed for richer error messages.
+ */
+export function detectAtomicityViolations(source) {
+  const hits = []
+  const lines = source.split(/\r?\n/)
+  // Locate the start of every `withCriticalSection('<scope>',` block.
+  const re = /withCriticalSection\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\(\)\s*=>\s*\{/g
+  // Easier: walk text + find matches with offsets.
+  const text = source
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const scope = m[1]
+    const startIdx = m.index + m[0].length
+    // Brace-balance walk from startIdx (we are now just past `{`).
+    let depth = 1
+    let i = startIdx
+    while (i < text.length && depth > 0) {
+      const c = text[i]
+      if (c === '{') depth += 1
+      else if (c === '}') depth -= 1
+      // String literal handling.
+      else if (c === '"' || c === "'" || c === '`') {
+        i += 1
+        while (i < text.length) {
+          if (text[i] === '\\') {
+            i += 2
+            continue
+          }
+          if (text[i] === c) {
+            i += 1
+            break
+          }
+          i += 1
+        }
+        continue
+      }
+      i += 1
+    }
+    const blockText = text.slice(startIdx, Math.max(startIdx, i - 1))
+    // Re-derive starting line so the hit line numbers are useful.
+    const startLine = text.slice(0, startIdx).split(/\r?\n/).length
+    const blockLines = blockText.split(/\r?\n/)
+    for (let l = 0; l < blockLines.length; l += 1) {
+      const stripped = stripCommentsAndStrings(blockLines[l])
+      if (/\bawait\b/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: 'await',
+          excerpt: blockLines[l].trim(),
+        })
+      } else if (/\.then\s*\(/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: '.then(',
+          excerpt: blockLines[l].trim(),
+        })
+      } else if (/\.catch\s*\(/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: '.catch(',
+          excerpt: blockLines[l].trim(),
+        })
+      } else if (/\.finally\s*\(/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: '.finally(',
+          excerpt: blockLines[l].trim(),
+        })
+      } else if (/\bsetImmediate\s*\(/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: 'setImmediate(',
+          excerpt: blockLines[l].trim(),
+        })
+      } else if (/process\.nextTick\s*\(/.test(stripped)) {
+        hits.push({
+          scope,
+          line: startLine + l,
+          construct: 'process.nextTick(',
+          excerpt: blockLines[l].trim(),
+        })
+      }
+    }
+    // Discard the regex's internal lastIndex back to just before the
+    // matched `withCriticalSection(` so nested calls inside the
+    // outer scope are also scanned. (`re.exec` already advances past
+    // the regex match.)
+    re.lastIndex = m.index + 1
+  }
+  return hits
+}
+
+/**
+ * Run the post-build hygiene gate (H-CR5-A). Fail-closed on:
+ *   - dist build artifacts missing
+ *   - manifest absent / schema mismatch
+ *   - top-level await detected anywhere in the bootstrap chain
+ *   - atomicity violations in any of the four critical-section
+ *     handler files
+ *
+ * @param {(label: string, file: string) => void} error - aggregator
+ */
+function runPostBuildHygieneCheck(error) {
+  console.log('\n\x1b[1m[8/8]\x1b[0m Post-build hygiene (H-CR5-A)...')
+  const distDir = join(ROOT, 'dist')
+  if (!existsSync(distDir)) {
+    error('post-build: dist/ missing — run `npm run build` first', 'dist/')
+    return
+  }
+  const manifestPath = findViteManifest(distDir)
+  if (manifestPath === null) {
+    error(
+      'post-build: Vite manifest missing (looked for dist/.vite/manifest.json and dist/manifest.json) — set `build.manifest: true` in vite.config.ts',
+      distDir,
+    )
+    return
+  }
+  let manifest
+  try {
+    const raw = readFileSync(manifestPath, 'utf-8')
+    manifest = JSON.parse(raw)
+  } catch (e) {
+    error(
+      `post-build: manifest parse error — ${e instanceof Error ? e.message : String(e)}`,
+      manifestPath,
+    )
+    return
+  }
+  try {
+    validateManifestSchema(manifest)
+  } catch (e) {
+    error(
+      `post-build: ${e instanceof Error ? e.message : String(e)}`,
+      manifestPath,
+    )
+    return
+  }
+
+  // Scan each declared bootstrap source for top-level await
+  // (H-CR2). The manifest above is consumed only as a build-output
+  // sanity check; the actual source scan walks the well-known chain
+  // directly because Vite collapses several of these into a single
+  // entry chunk and the resulting manifest entry no longer carries
+  // the per-source path.
+  for (const key of HYGIENE_BOOTSTRAP_ROOTS) {
+    const fullPath = join(ROOT, key)
+    if (!existsSync(fullPath)) {
+      // Source dropped from the chain (refactor moved it). Skip
+      // rather than fail-closed — the file list is curated and we
+      // do not want CI to break on a benign rename. New entries
+      // should be added to HYGIENE_BOOTSTRAP_ROOTS explicitly.
+      continue
+    }
+    let source
+    try {
+      source = readFileSync(fullPath, 'utf-8')
+    } catch (e) {
+      error(
+        `post-build: failed to read bootstrap source — ${e instanceof Error ? e.message : String(e)}`,
+        key,
+      )
+      continue
+    }
+    const hits = detectTopLevelAwait(source)
+    for (const lineNo of hits) {
+      error(`post-build: H-CR2-VIOLATION top-level await detected at line ${lineNo}`, key)
+    }
+  }
+
+  // Atomicity lint on the four critical-section handler files.
+  for (const relPath of HYGIENE_CRITICAL_SECTION_FILES) {
+    const fullPath = join(ROOT, relPath)
+    if (!existsSync(fullPath)) {
+      // Missing source = build configuration drift; flag it but do
+      // not crash so other files still get scanned.
+      error(`post-build: H-CR4 source file missing`, relPath)
+      continue
+    }
+    let source
+    try {
+      source = readFileSync(fullPath, 'utf-8')
+    } catch (e) {
+      error(
+        `post-build: H-CR4 source read failed — ${e instanceof Error ? e.message : String(e)}`,
+        relPath,
+      )
+      continue
+    }
+    const violations = detectAtomicityViolations(source)
+    for (const v of violations) {
+      error(
+        `post-build: H-CR4-VIOLATION inside withCriticalSection('${v.scope}') — found ${v.construct} at line ${v.line}: ${v.excerpt}`,
+        relPath,
+      )
+    }
+  }
+}
+
 function main() {
   let opts
   try {
@@ -1180,6 +1627,16 @@ function main() {
   if (opts.runAll) runLicenseCheck(error)
   if (opts.runAll || opts.internalIdOnly) runInternalIdCheck(internalIdReport, opts.internalIdMode)
   if (opts.runAll) runConsoleCheck(warn)
+  // Post-build hygiene runs only when explicitly requested (via
+  // `--post-build-only` or as part of the `runAll` after a build).
+  // The `runAll` path additionally tolerates a missing `dist/` so
+  // pre-build checks (lint-style runs, IDE hooks) do not fail just
+  // because the build artifacts have not been produced yet.
+  if (opts.postBuildOnly) {
+    runPostBuildHygieneCheck(error)
+  } else if (opts.runAll && existsSync(join(ROOT, 'dist'))) {
+    runPostBuildHygieneCheck(error)
+  }
 
   console.log('\n\x1b[1m--- Summary ---\x1b[0m')
   if (counters.errors > 0) {

@@ -47,6 +47,43 @@ interface KbLogger {
   error(msgOrData: string | object, msg?: string): void
 }
 
+/**
+ * Capture-bridge surface published as `window.kb.capture` while a
+ * recipe page is mounted (v0.2.0 opt-in mechanism). Each method
+ * hits `/api/app/capture/<kind>` so the server-side gate enforces
+ * the manifest's `approvedCaptures` set; the client-side checks
+ * implemented in `injectKb` short-circuit obvious rejections to
+ * give recipe authors a synchronous error rather than a round-trip.
+ *
+ * The methods are exposed only inside a mounted recipe page (just
+ * like `call` and `log`) so unmounted screens cannot invoke them.
+ * KB-trusted core code keeps using the existing
+ * `captureAccessibilitySnapshot` / `setExposedContext` helpers
+ * directly; the opt-in gate exists for the `code-trusted` and
+ * `code-trusted (sideloaded)` recipes that arrive via KovitoHub or
+ * developer sideload.
+ *
+ * @see app-directory-extension.md v1.2 §10.5.2
+ * @stable v0.2.0
+ */
+interface KbCaptureBridge {
+  /**
+   * Request an accessibility snapshot. Resolves once the server
+   * accepts the call; throws on opt-in / contract refusals so
+   * recipe authors can catch `CaptureNotApproved` / `CaptureNotDeclared`
+   * paths explicitly. The actual snapshot body still travels
+   * through `captureAccessibilitySnapshot`; this entry point is
+   * the consent gate for the v0.3.0 server-side capture surface.
+   */
+  a11y: () => Promise<void>
+  /**
+   * Request access to the exposed-context payload (v0.2.x: the
+   * server-side gate only — the runtime read still happens via
+   * `window.kb.exposeContext`). Throws on refusal.
+   */
+  exposedContext: () => Promise<void>
+}
+
 declare global {
   interface Window {
     /**
@@ -88,6 +125,13 @@ declare global {
        * `call` and `log`, which are scoped to recipe page mount).
        */
       exposeContext: (payload: Record<string, unknown>) => void
+      /**
+       * Capture-bridge surface (v0.2.0 opt-in). Only available while
+       * a recipe page is mounted — same lifecycle as `call` and `log`.
+       *
+       * @see KbCaptureBridge
+       */
+      capture?: KbCaptureBridge
     }
   }
 }

@@ -82,6 +82,69 @@ export interface ApiSection {
 // Install manifest
 // =========================================
 
+// CaptureKind is a security-sensitive enum: the parser, the
+// install validator, the server-side capture router, and the
+// client-side runtime guard must all agree on the same set of
+// values, otherwise a recipe can declare a kind that one layer
+// honours and another silently drops. We keep the canonical
+// definition in `src/shared/recipe-types.ts` (`CAPTURE_KIND_VALUES`)
+// so renderer and server reference the same list, and re-export it
+// here as `CaptureKind` for the server modules that already use
+// the manifest-style name.
+import { CAPTURE_KIND_VALUES, type CaptureKindValue } from '../../shared/recipe-types.js'
+
+/**
+ * Capture API kinds the opt-in mechanism currently distinguishes
+ * (v0.2.0, spec v1.5). Re-exports the canonical
+ * {@link CaptureKindValue} alias from `src/shared/recipe-types.ts`
+ * so the renderer and the server share a single source of truth.
+ *
+ * @see recipe-system.md v1.5 §6.10.1
+ * @stable v0.2.0
+ */
+export type CaptureKind = CaptureKindValue
+
+/**
+ * All capture kinds the parser / validators accept. Re-exported
+ * under the legacy `CAPTURE_KINDS` name to keep existing server
+ * imports stable.
+ */
+export const CAPTURE_KINDS: readonly CaptureKind[] = CAPTURE_KIND_VALUES
+
+/** Type guard for the closed capture-kind enum. */
+export function isValidCaptureKind(value: unknown): value is CaptureKind {
+  return typeof value === 'string' && (CAPTURE_KINDS as readonly string[]).includes(value)
+}
+
+/**
+ * Trust level for an installed recipe (v0.2.0).
+ *
+ * v0.2.x retains only `'unknown'` as a runtime value: the install path
+ * is temporarily disabled (recipe-system.md §10.6) and every legacy
+ * manifest migrates to `'unknown'` to keep the field non-optional.
+ * The remaining values are reserved for the v0.3.0 KovitoHub signed
+ * publisher path and the developer sideload path; setting them is
+ * out of scope here (see the trust-marker / preamble-warning handoff).
+ *
+ * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export type TrustLevel = 'KB-trusted' | 'code-trusted' | 'code-trusted (sideloaded)' | 'unknown'
+
+/** All trust-level enum values, exported for validation helpers. */
+export const TRUST_LEVELS: readonly TrustLevel[] = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+
+/** Type guard for the trust-level enum. */
+export function isValidTrustLevel(value: unknown): value is TrustLevel {
+  return typeof value === 'string' && (TRUST_LEVELS as readonly string[]).includes(value)
+}
+
 /**
  * Manifest for an installed recipe.
  * Stored at: `.kovitoboard/recipes-installed/{appId}/manifest.json`.
@@ -125,6 +188,58 @@ export interface RecipeManifest {
   approvedScopes: Scope[]
   /** Recipe API declarations (transcribed from recipe.yaml) */
   api: ApiSection
+  /**
+   * Capture API kinds the recipe declared in `recipe.yaml`'s
+   * `capture.requires` (v0.2.0 / spec v1.5).
+   *
+   * Persisted from the parser at install time and treated as
+   * **immutable** afterwards (I-CR2 — `recipe-system.md` v1.5
+   * §6.10.3). Grandfather manifests (installed under v0.1.x or
+   * v0.2.0 before this field existed) migrate to `[]` on load,
+   * which causes the capture endpoint to always answer
+   * `CaptureNotDeclared` (`recipe-system.md` v1.5 §6.10.4).
+   *
+   * Invariant I-CR1: `approvedCaptures ⊆ captureRequires`. A
+   * manifest that violates this constraint is treated as malformed
+   * by both `recipeManifestStore.load` and `markInstalledValidator`.
+   *
+   * @see recipe-system.md v1.5 §6.10.3〜§6.10.4
+   * @stable v0.2.0
+   */
+  captureRequires: CaptureKind[]
+  /**
+   * Capture API kinds the user approved at install time (v0.2.0).
+   *
+   * Subset of the recipe's `captureRequires` (I-CR1). Empty array
+   * means the user declined every capture capability the recipe
+   * asked for, or the recipe did not declare any. Grandfather
+   * manifests migrate to `[]` on load (recipe-system.md v1.5
+   * §6.10.4).
+   *
+   * The capture endpoint enforces step 3 (`captureRequires`) and
+   * step 4 (`approvedCaptures`) independently — collapsing them
+   * undermines defence against installer / migration tampering
+   * (I-CR3, `recipe-system.md` v1.5 §6.10.3).
+   *
+   * @see recipe-system.md v1.5 §6.10.3〜§6.10.4
+   * @stable v0.2.0
+   */
+  approvedCaptures: CaptureKind[]
+  /**
+   * Trust level for this recipe install (v0.2.0).
+   *
+   * v0.2.x always persists `'unknown'`: grandfather migrations set it
+   * explicitly, and the install path is disabled so no new manifest is
+   * minted with a different value. The remaining enum members are
+   * reserved for v0.3.0 (KovitoHub signed publisher → `'code-trusted'`,
+   * developer sideload → `'code-trusted (sideloaded)'`). See the
+   * separate trust-marker handoff for the v0.3.0 wiring.
+   *
+   * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+   * @see prompt-injection-threat-model.md v1.0 §2
+   * @stable v0.2.0
+   */
+  trustLevel: TrustLevel
 }
 
 // =========================================

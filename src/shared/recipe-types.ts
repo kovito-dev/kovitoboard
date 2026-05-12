@@ -105,9 +105,50 @@ export interface ParsedRecipe {
    * @see recipe-system.md §12-2, §12-3
    */
   api?: RecipeApiSection
+  /**
+   * Declarative capture-capability requirement (v0.2.0 opt-in mechanism).
+   *
+   * Only set when the recipe's `recipe.yaml` declares a `capture:`
+   * section. The parser validates each entry against
+   * {@link CAPTURE_KIND_VALUES} so the install warning UI and the
+   * server-side endpoint guard share a single source of truth.
+   *
+   * @see recipe-system.md v1.4 §6.10.1
+   */
+  capture?: RecipeCaptureSection
   hash: string
   sourceFormat: 'directory' | 'markdown'
   sourcePath: string
+}
+
+/**
+ * Capture kinds a recipe is allowed to request from `capture.requires`
+ * in `recipe.yaml` (v0.2.x). Mirrored on the server in
+ * `src/server/recipe/apiTypes.ts` as the closed `CaptureKind` enum.
+ *
+ * Authors who want to extend this list (camera, clipboard, etc.) need
+ * to update both halves together — the install warning UI and the
+ * server-side capture endpoint key off the same membership check.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ * @stable v0.2.0
+ */
+export const CAPTURE_KIND_VALUES = ['a11y', 'exposed-context'] as const
+export type CaptureKindValue = (typeof CAPTURE_KIND_VALUES)[number]
+
+/**
+ * Parsed shape of the optional `capture:` block in `recipe.yaml`.
+ *
+ * Currently only the `requires` list is meaningful; the surrounding
+ * object exists so future capture-related options (e.g. throttling
+ * hints, opt-out signalling) can ride alongside without breaking the
+ * schema.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ * @stable v0.2.0
+ */
+export interface RecipeCaptureSection {
+  requires: CaptureKindValue[]
 }
 
 /**
