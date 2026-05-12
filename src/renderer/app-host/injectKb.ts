@@ -125,18 +125,23 @@ export function injectKb(
   ownLog.info({ appId }, 'window.kb injected')
 
   return () => {
-    if (window.kb !== self) {
-      ownLog.debug({ appId }, 'window.kb cleanup skipped (sibling replaced us)')
-      return
-    }
-    // Revoke the capture token before tearing down the bridge so
-    // the server-side store stays in sync with the mount lifecycle
-    // (spec v1.6 §6.10.6.4). Fire-and-forget — `revokeToken`
-    // swallows network failures internally and is idempotent, so a
+    // Revoke the capture token unconditionally — even when a
+    // sibling bridge has already replaced `window.kb` for the next
+    // recipe page. The sibling-replacement guard protects only the
+    // global-object mutation (we must not clobber the sibling's
+    // bridge), but the OLD recipe's token is still bound to its
+    // OLD appId on the server, so leaving it live would let the
+    // bridge-replacement race exfiltrate the old token's lifetime
+    // up to TTL_MS. Fire-and-forget: `revokeToken` swallows
+    // network failures internally and is idempotent, so a
     // double-cleanup during React useEffect races is safe.
     captureBridge.revokeToken().catch(() => {
       /* unreachable; revokeToken always resolves */
     })
+    if (window.kb !== self) {
+      ownLog.debug({ appId }, 'window.kb cleanup skipped (sibling replaced us)')
+      return
+    }
     // Reset to the ambient bridge shape (noop `call` / fallback `log`
     // / always-on `exposeContext`) so non-recipe screens keep working
     // after the recipe page unmounts. We clear `window.kb` first
