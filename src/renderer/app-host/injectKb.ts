@@ -77,6 +77,20 @@ export function injectKb(
     log: recipeLogger,
   })
 
+  // Kick off the capture-token issuance as soon as the bridge is
+  // installed. We deliberately fire-and-forget: subsequent
+  // `window.kb.capture.*` calls observe the cached token (or `null`
+  // on grandfather / failure paths) and fail-fast appropriately, so
+  // an awaited issue here would only delay page mount without
+  // changing the observable contract. Promise rejections are
+  // impossible — `issueToken` always resolves and routes failures
+  // through the closure-state machine + warn log. The defensive
+  // `.catch` exists only as a future-proofing seam against accidental
+  // surface changes.
+  captureBridge.issueToken().catch(() => {
+    /* unreachable in current implementation; see issueToken contract */
+  })
+
   // Preserve the existing exposeContext when present (it is bootstrapped
   // at app start). When missing — e.g. unit tests that skip the
   // bootstrap — fall back to the same store binding.
@@ -98,7 +112,14 @@ export function injectKb(
     exposeContext: existingExpose ?? ((payload: Record<string, unknown>) => {
       setExposedContext(payload)
     }),
-    capture: captureBridge,
+    // Expose only the capture methods recipe code is allowed to
+    // call. `issueToken` / `revokeToken` stay on the closure-side
+    // bridge object so recipe authors cannot mint or revoke tokens
+    // outside the mount lifecycle.
+    capture: {
+      a11y: captureBridge.a11y,
+      exposedContext: captureBridge.exposedContext,
+    },
   }
   window.kb = self
   ownLog.info({ appId }, 'window.kb injected')
@@ -108,6 +129,14 @@ export function injectKb(
       ownLog.debug({ appId }, 'window.kb cleanup skipped (sibling replaced us)')
       return
     }
+    // Revoke the capture token before tearing down the bridge so
+    // the server-side store stays in sync with the mount lifecycle
+    // (spec v1.6 §6.10.6.4). Fire-and-forget — `revokeToken`
+    // swallows network failures internally and is idempotent, so a
+    // double-cleanup during React useEffect races is safe.
+    captureBridge.revokeToken().catch(() => {
+      /* unreachable; revokeToken always resolves */
+    })
     // Reset to the ambient bridge shape (noop `call` / fallback `log`
     // / always-on `exposeContext`) so non-recipe screens keep working
     // after the recipe page unmounts. We clear `window.kb` first
