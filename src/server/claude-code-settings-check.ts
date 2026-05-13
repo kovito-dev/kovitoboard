@@ -254,13 +254,23 @@ function resolveUserSettingsPath(
   } catch {
     return classifyRealpathFailure(fs, candidate)
   }
-  // CodeX attempt 13 — narrow the user-level whitelist to the
-  // canonical Claude Code settings path. Previously any realpath
-  // under `$HOME` was accepted, which let a `~/.claude/settings.json`
-  // symlink redirect KB to an unrelated JSON file in the home
-  // directory (e.g. `~/configs/some-other-app.json`). Only the
-  // canonical destination matches the documented Claude Code surface.
-  if (resolved !== candidate) {
+  // Canonicalize the home directory BEFORE deriving the expected
+  // canonical Claude Code settings path. Without this step a setup
+  // where `$HOME` itself contains a symlinked segment (e.g.
+  // `/home/alice` → `/usr/people/alice`) would compute
+  // `resolved = '/usr/people/alice/.claude/settings.json'` but
+  // compare against the un-canonicalized
+  // `candidate = '/home/alice/.claude/settings.json'`, which would
+  // wrongly reject every legitimate user-level config (CodeX
+  // attempt 23 — path normalization).
+  let canonicalHome: string
+  try {
+    canonicalHome = fs.realpathSync(home)
+  } catch {
+    canonicalHome = home
+  }
+  const expected = join(canonicalHome, '.claude', 'settings.json')
+  if (resolved !== expected) {
     return { path: null, rejected: true }
   }
   // Regular-file gate is enforced inside `readFileBoundedSync` on
@@ -570,9 +580,18 @@ export function checkClaudeCodeSettings(
 
   const overallOk = permissionModeOk && hasKovitoboardDeny && !bypassActive
 
-  // Surface the project-level path when both exist (it is the more
-  // specific override surface); fall back to the user-level path.
-  const effectivePath = projectResolved.path ?? userResolved.path
+  // When both sources contribute we cannot pin the warning down to
+  // a single file with certainty — the non-recommended value may
+  // have come from either, or the union may be at fault — so we
+  // omit `settingsFilePath` and let consumers fall back to a generic
+  // "review your Claude Code settings" remediation message instead
+  // of misleading the operator (CodeX attempt 23 — misleading
+  // warning provenance). When only one source exists we surface
+  // that path verbatim.
+  const effectivePath =
+    projectResolved.path && userResolved.path
+      ? null
+      : projectResolved.path ?? userResolved.path
 
   return {
     permissionMode: {
