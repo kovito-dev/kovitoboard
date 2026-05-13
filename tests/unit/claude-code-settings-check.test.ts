@@ -988,88 +988,23 @@ describe('T-2-4: watchSettingsDirectories supplements file-level watching', () =
     expect(handle).toBeNull()
   })
 
-  it('falls back to watching the anchor itself when .claude does not exist yet', async () => {
+  it('skips the watcher when .claude directories do not exist yet (CodeX attempt 26)', async () => {
+    // The anchor-level fallback was removed to avoid long-lived
+    // CPU churn on busy home / project trees. The watcher returns
+    // null when neither `.claude/` directory exists at startup;
+    // newly-created settings files are picked up by the next API
+    // request via `checkClaudeCodeSettings`.
     const { watchSettingsDirectories } = await import(
       '../../src/server/claude-code-settings-check'
     )
     const watchers = new Map<string, WatchHandler>()
-    // Existence: home and project exist, but their .claude
-    // subdirectories do not. The fallback should watch the
-    // anchors so a later .claude/ creation still triggers the
-    // mutation handler.
     const fs = {
       ...makeFs({ watchers }),
       existsSync: (path: string) => path === HOME || path === PROJECT,
     } as unknown as FileAccessLayer
-    let fired = 0
-    const handle = watchSettingsDirectories(fs, PROJECT, () => {
-      fired += 1
-    }, HOME)
-    expect(handle).not.toBeNull()
-    expect(watchers.size).toBe(2)
-    expect(Array.from(watchers.keys())).toEqual([HOME, PROJECT])
-    // CodeX attempt 3 — only the `.claude` child should fire the
-    // mutation callback; unrelated siblings must be filtered out so
-    // the anchor watcher does not churn on every home/project
-    // mutation.
-    const homeHandler = watchers.get(HOME)
-    const projectHandler = watchers.get(PROJECT)
-    homeHandler?.({ type: 'addDir', path: `${HOME}/Downloads` }) // ignored
-    projectHandler?.({ type: 'add', path: `${PROJECT}/README.md` }) // ignored
-    expect(fired).toBe(0)
-    homeHandler?.({ type: 'addDir', path: `${HOME}/.claude` })
-    projectHandler?.({ type: 'addDir', path: `${PROJECT}/.claude` })
-    expect(fired).toBe(2)
-    handle?.close()
-  })
-
-  it('upgrades to a .claude-rooted watcher after the directory is created (CodeX attempt 6)', async () => {
-    const { watchSettingsDirectories } = await import(
-      '../../src/server/claude-code-settings-check'
-    )
-    const watchers = new Map<string, WatchHandler>()
-    // Stage 1: only the anchors exist, the .claude directories do
-    // NOT — so the helper attaches anchor-only fallback watchers.
-    const presence = new Set<string>([HOME, PROJECT])
-    const fs = {
-      ...makeFs({ watchers }),
-      existsSync: (path: string) => presence.has(path),
-    } as unknown as FileAccessLayer
-    let fired = 0
-    const handle = watchSettingsDirectories(fs, PROJECT, () => {
-      fired += 1
-    }, HOME)
-    expect(handle).not.toBeNull()
-    expect(watchers.size).toBe(2)
-    expect(Array.from(watchers.keys()).sort()).toEqual([HOME, PROJECT].sort())
-
-    // Stage 2: simulate `.claude` directory creation on the home
-    // side. The anchor watcher should detect it AND attach a
-    // follow-up watcher rooted at `${HOME}/.claude`.
-    presence.add(`${HOME}/.claude`)
-    watchers.get(HOME)?.({ type: 'addDir', path: `${HOME}/.claude` })
-    expect(fired).toBe(1)
-    expect(watchers.has(`${HOME}/.claude`)).toBe(true)
-
-    // Stage 3: a subsequent `settings.json` mutation inside the new
-    // `.claude/` triggers the follow-up watcher (this is the case
-    // CodeX flagged as missed without the upgrade path).
-    watchers.get(`${HOME}/.claude`)?.({
-      type: 'add',
-      path: `${HOME}/.claude/settings.json`,
-    })
-    expect(fired).toBe(2)
-
-    // Re-firing the original anchor addDir does NOT re-attach a
-    // duplicate watcher (the upgrade is one-shot).
-    watchers.get(HOME)?.({ type: 'addDir', path: `${HOME}/.claude` })
-    expect(fired).toBe(3) // anchor handler still notifies
-    // Still only one `.claude` watcher attached.
-    expect(
-      Array.from(watchers.keys()).filter((k) => k === `${HOME}/.claude`).length,
-    ).toBe(1)
-
-    handle?.close()
+    const handle = watchSettingsDirectories(fs, PROJECT, () => {}, HOME)
+    expect(handle).toBeNull()
+    expect(watchers.size).toBe(0)
   })
 })
 

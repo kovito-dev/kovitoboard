@@ -890,24 +890,29 @@ export function watchSettingsFile(
 }
 
 /**
- * Watch the user-level and project-level surfaces so a settings file
- * that appears after KB startup is picked up the next time the check
- * runs.
+ * Watch the user-level and project-level `.claude/` directories so a
+ * settings file mutation is captured by the structured-log channel
+ * (`logCheckResult` via the supervisor `rerun()`).
  *
- * For each anchor (home, project root) we prefer to watch the
- * existing `.claude/` directory directly. When the `.claude` directory
- * does not exist yet — which is the typical state on a fresh box —
- * we fall back to watching the anchor itself at `depth: 0` and apply
- * a path filter so only the relevant `.claude` creation event triggers
- * the re-check (CodeX attempt 3 — resource exhaustion watcher scope).
+ * The watcher's role is intentionally narrow: it only fires when the
+ * `.claude/` directory already exists at startup. An earlier revision
+ * also attached a fallback watcher on the parent anchor (`$HOME` /
+ * project root) so a later `.claude/` creation could fire the
+ * re-check, but that anchor watcher keeps doing work for every
+ * unrelated child mutation under those large directories. Even with
+ * a callback-side filter that discards the events, chokidar's
+ * internal watch set adds CPU wakeups proportional to how busy the
+ * home / project tree is — and a noisy local process can amplify
+ * that into avoidable churn (CodeX attempt 26 — resource
+ * exhaustion).
  *
- * When the anchor-only watcher observes a `.claude` creation event, it
- * immediately attaches a follow-up watcher rooted at the new
- * `.claude/` directory. This is the runtime upgrade path that CodeX
- * attempt 6 required: without it, a `settings.json` created inside the
- * just-materialized `.claude/` directory would never trigger a
- * re-check until the next KB restart. The follow-up watcher uses the
- * same `settings.json`-only basename filter as the eager path.
+ * The toast and the wizard already detect a newly-created settings
+ * file on demand (the GET endpoint runs `checkClaudeCodeSettings`
+ * per request, and the toast refetches on focus / visibility), so
+ * skipping the anchor fallback only delays the structured-log entry
+ * — never the user-facing surface — until either the next KB
+ * restart or the next `/api/security/settings-check` request after
+ * the directory appears.
  */
 export function watchSettingsDirectories(
   fs: FileAccessLayer,
@@ -972,66 +977,14 @@ export function watchSettingsDirectories(
     }
   }
 
-  function attachAnchorWatcher(anchor: string, expectedChild: string): void {
-    let upgraded = false
-    try {
-      const handle = fs.watch(
-        anchor,
-        (event) => {
-          if (event.type === 'error') {
-            log.warn({ err: event.error }, 'Settings anchor watcher reported error')
-            return
-          }
-          if (
-            event.type !== 'add' &&
-            event.type !== 'change' &&
-            event.type !== 'unlink' &&
-            event.type !== 'addDir'
-          ) {
-            return
-          }
-          const path = typeof event.path === 'string' ? event.path : ''
-          const basename = path.split(/[/\\]/).pop() ?? ''
-          if (basename !== expectedChild) return
-
-          // Anchor-level events are settings-relevant by definition
-          // here, so always notify before considering the upgrade.
-          try {
-            onMutation()
-          } catch (err) {
-            log.error(
-              { err, event: event.type },
-              'Settings anchor handler threw; ignoring'
-            )
-          }
-
-          // Upgrade path: when `.claude` is first created (addDir /
-          // add), attach a per-`.claude` watcher so subsequent
-          // `settings.json` mutations inside it are observed without
-          // requiring a KB restart. We only upgrade once to keep the
-          // watcher set bounded even if chokidar replays the event.
-          if (upgraded) return
-          if (event.type !== 'addDir' && event.type !== 'add') return
-          const claudeDir = join(anchor, expectedChild)
-          if (!fs.existsSync(claudeDir)) return
-          upgraded = true
-          attachClaudeDirWatcher(claudeDir)
-        },
-        { depth: 0 }
-      )
-      handles.push(handle)
-    } catch (err) {
-      log.warn({ err, dir: anchor }, 'Failed to install settings anchor watcher')
-    }
-  }
-
   for (const anchor of [home, projectAbs]) {
     const claudeDir = join(anchor, '.claude')
     if (fs.existsSync(claudeDir)) {
       attachClaudeDirWatcher(claudeDir)
-    } else if (fs.existsSync(anchor)) {
-      attachAnchorWatcher(anchor, '.claude')
     }
+    // No anchor-level fallback by design (CodeX attempt 26). When
+    // `.claude/` materializes later, the next API request or KB
+    // restart picks up the new state via `checkClaudeCodeSettings`.
   }
 
   if (handles.length === 0) return null
