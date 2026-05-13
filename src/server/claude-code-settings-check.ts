@@ -686,9 +686,15 @@ export function watchSettingsFile(
  * does not exist yet — which is the typical state on a fresh box —
  * we fall back to watching the anchor itself at `depth: 0` and apply
  * a path filter so only the relevant `.claude` creation event triggers
- * the re-check. Without the filter the anchor watcher would react to
- * every unrelated home/project mutation and create avoidable CPU /
- * log churn (CodeX attempt 3 — resource exhaustion watcher scope).
+ * the re-check (CodeX attempt 3 — resource exhaustion watcher scope).
+ *
+ * When the anchor-only watcher observes a `.claude` creation event, it
+ * immediately attaches a follow-up watcher rooted at the new
+ * `.claude/` directory. This is the runtime upgrade path that CodeX
+ * attempt 6 required: without it, a `settings.json` created inside the
+ * just-materialized `.claude/` directory would never trigger a
+ * re-check until the next KB restart. The follow-up watcher uses the
+ * same `settings.json`-only basename filter as the eager path.
  */
 export function watchSettingsDirectories(
   fs: FileAccessLayer,
@@ -699,36 +705,52 @@ export function watchSettingsDirectories(
   const home = homeOverride ?? homedir()
   const projectAbs = resolve(projectRoot)
 
-  interface Target {
-    dir: string
-    /**
-     * When true, this watcher is monitoring the anchor itself (because
-     * `.claude` does not exist yet) and must drop events for unrelated
-     * siblings. When false, the watcher is rooted at `.claude/` so all
-     * events are settings-relevant.
-     */
-    anchorOnly: boolean
-    expectedChildName: string
-  }
+  // Collect handles in one array so the consumer can close them all
+  // through a single composite handle, including watchers that were
+  // attached lazily after the initial pass.
+  const handles: WatchHandle[] = []
 
-  const targets: Target[] = []
-  for (const anchor of [home, projectAbs]) {
-    const claudeDir = join(anchor, '.claude')
-    if (fs.existsSync(claudeDir)) {
-      targets.push({ dir: claudeDir, anchorOnly: false, expectedChildName: '.claude' })
-    } else if (fs.existsSync(anchor)) {
-      targets.push({ dir: anchor, anchorOnly: true, expectedChildName: '.claude' })
+  function attachClaudeDirWatcher(claudeDir: string): void {
+    try {
+      const handle = fs.watch(claudeDir, (event) => {
+        if (event.type === 'error') {
+          log.warn({ err: event.error }, 'Settings directory watcher reported error')
+          return
+        }
+        if (
+          event.type !== 'add' &&
+          event.type !== 'change' &&
+          event.type !== 'unlink' &&
+          event.type !== 'addDir'
+        ) {
+          return
+        }
+        const path = typeof event.path === 'string' ? event.path : ''
+        const basename = path.split(/[/\\]/).pop() ?? ''
+        if (basename !== 'settings.json') return
+        try {
+          onMutation()
+        } catch (err) {
+          log.error(
+            { err, event: event.type },
+            'Settings directory mutation handler threw; ignoring'
+          )
+        }
+      })
+      handles.push(handle)
+    } catch (err) {
+      log.warn({ err, dir: claudeDir }, 'Failed to install .claude/ watcher')
     }
   }
 
-  const handles: WatchHandle[] = []
-  for (const target of targets) {
+  function attachAnchorWatcher(anchor: string, expectedChild: string): void {
+    let upgraded = false
     try {
       const handle = fs.watch(
-        target.dir,
+        anchor,
         (event) => {
           if (event.type === 'error') {
-            log.warn({ err: event.error }, 'Settings directory watcher reported error')
+            log.warn({ err: event.error }, 'Settings anchor watcher reported error')
             return
           }
           if (
@@ -741,42 +763,48 @@ export function watchSettingsDirectories(
           }
           const path = typeof event.path === 'string' ? event.path : ''
           const basename = path.split(/[/\\]/).pop() ?? ''
-          if (target.anchorOnly) {
-            // Anchor-only watchers see every direct child of the home /
-            // project directory; restrict the callback to the
-            // `.claude` entry to avoid churning on unrelated mutations.
-            if (basename !== target.expectedChildName) return
-          } else {
-            // `.claude/`-rooted watchers see every entry inside the
-            // directory; restrict the callback to `settings.json`
-            // mutations so noisy or attacker-controlled siblings (for
-            // example `.claude/projects/*.jsonl`) do not trigger
-            // repeated re-checks + log emission (CodeX attempt 4 —
-            // watcher-triggered log churn). `addDir` events without
-            // a basename match are ignored for the same reason.
-            if (basename !== 'settings.json') return
-          }
+          if (basename !== expectedChild) return
+
+          // Anchor-level events are settings-relevant by definition
+          // here, so always notify before considering the upgrade.
           try {
             onMutation()
           } catch (err) {
             log.error(
               { err, event: event.type },
-              'Settings directory mutation handler threw; ignoring'
+              'Settings anchor handler threw; ignoring'
             )
           }
+
+          // Upgrade path: when `.claude` is first created (addDir /
+          // add), attach a per-`.claude` watcher so subsequent
+          // `settings.json` mutations inside it are observed without
+          // requiring a KB restart. We only upgrade once to keep the
+          // watcher set bounded even if chokidar replays the event.
+          if (upgraded) return
+          if (event.type !== 'addDir' && event.type !== 'add') return
+          const claudeDir = join(anchor, expectedChild)
+          if (!fs.existsSync(claudeDir)) return
+          upgraded = true
+          attachClaudeDirWatcher(claudeDir)
         },
-        // Limit anchor-level watchers to the immediate children of the
-        // anchor (depth 0 = `path` itself + first-level entries). This
-        // is the chokidar contract; the `.claude`-rooted watcher
-        // intentionally omits the option so per-file mutations inside
-        // it still fire.
-        target.anchorOnly ? { depth: 0 } : undefined
+        { depth: 0 }
       )
       handles.push(handle)
     } catch (err) {
-      log.warn({ err, dir: target.dir }, 'Failed to install settings directory watcher')
+      log.warn({ err, dir: anchor }, 'Failed to install settings anchor watcher')
     }
   }
+
+  for (const anchor of [home, projectAbs]) {
+    const claudeDir = join(anchor, '.claude')
+    if (fs.existsSync(claudeDir)) {
+      attachClaudeDirWatcher(claudeDir)
+    } else if (fs.existsSync(anchor)) {
+      attachAnchorWatcher(anchor, '.claude')
+    }
+  }
+
   if (handles.length === 0) return null
   return {
     close: () => {

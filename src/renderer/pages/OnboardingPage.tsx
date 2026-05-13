@@ -133,7 +133,22 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
           result: SettingsCheckResult
         }
         const result = data.result
-        if (result && !result.overallOk && !result.bypassMode.active) {
+        // Only seed a dismiss record for a *real* recommendation
+        // mismatch — fail-closed reasons (read-error / parse-error /
+        // schema-mismatch / path-resolution-rejected / file-too-large)
+        // describe a structural inability to read the Claude Code
+        // settings, and the dismiss endpoint already refuses to
+        // persist a dismiss in those states server-side. Seeding here
+        // would let onboarding acknowledgement quietly suppress the
+        // 24h cooldown even though every other surface treats
+        // fail-closed as non-dismissible (CodeX attempt 6 —
+        // fail-closed suppression bypass).
+        if (
+          result &&
+          !result.overallOk &&
+          !result.bypassMode.active &&
+          result.reason === 'ok'
+        ) {
           securityWarning = {
             dismissedAt: new Date().toISOString(),
             dismissedResult: { ...result, settingsFilePath: null },

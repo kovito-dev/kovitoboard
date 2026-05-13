@@ -761,6 +761,55 @@ describe('T-2-4: watchSettingsDirectories supplements file-level watching', () =
     expect(fired).toBe(2)
     handle?.close()
   })
+
+  it('upgrades to a .claude-rooted watcher after the directory is created (CodeX attempt 6)', async () => {
+    const { watchSettingsDirectories } = await import(
+      '../../src/server/claude-code-settings-check'
+    )
+    const watchers = new Map<string, WatchHandler>()
+    // Stage 1: only the anchors exist, the .claude directories do
+    // NOT — so the helper attaches anchor-only fallback watchers.
+    const presence = new Set<string>([HOME, PROJECT])
+    const fs = {
+      ...makeFs({ watchers }),
+      existsSync: (path: string) => presence.has(path),
+    } as unknown as FileAccessLayer
+    let fired = 0
+    const handle = watchSettingsDirectories(fs, PROJECT, () => {
+      fired += 1
+    }, HOME)
+    expect(handle).not.toBeNull()
+    expect(watchers.size).toBe(2)
+    expect(Array.from(watchers.keys()).sort()).toEqual([HOME, PROJECT].sort())
+
+    // Stage 2: simulate `.claude` directory creation on the home
+    // side. The anchor watcher should detect it AND attach a
+    // follow-up watcher rooted at `${HOME}/.claude`.
+    presence.add(`${HOME}/.claude`)
+    watchers.get(HOME)?.({ type: 'addDir', path: `${HOME}/.claude` })
+    expect(fired).toBe(1)
+    expect(watchers.has(`${HOME}/.claude`)).toBe(true)
+
+    // Stage 3: a subsequent `settings.json` mutation inside the new
+    // `.claude/` triggers the follow-up watcher (this is the case
+    // CodeX flagged as missed without the upgrade path).
+    watchers.get(`${HOME}/.claude`)?.({
+      type: 'add',
+      path: `${HOME}/.claude/settings.json`,
+    })
+    expect(fired).toBe(2)
+
+    // Re-firing the original anchor addDir does NOT re-attach a
+    // duplicate watcher (the upgrade is one-shot).
+    watchers.get(HOME)?.({ type: 'addDir', path: `${HOME}/.claude` })
+    expect(fired).toBe(3) // anchor handler still notifies
+    // Still only one `.claude` watcher attached.
+    expect(
+      Array.from(watchers.keys()).filter((k) => k === `${HOME}/.claude`).length,
+    ).toBe(1)
+
+    handle?.close()
+  })
 })
 
 describe('T-2-4: watchSettingsFile runtime mutation detection', () => {
