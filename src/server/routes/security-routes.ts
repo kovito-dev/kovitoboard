@@ -30,8 +30,24 @@ import {
 } from '../claude-code-settings-check'
 import { readSetting, writeSetting } from '../setting-manager'
 import { lazyChildLogger } from '../logger'
+import type { SettingsCheckResult } from '../../shared/setting-types'
 
 const log = lazyChildLogger('security-routes')
+
+/**
+ * Strip `settingsFilePath` before returning a result to the renderer.
+ * The renderer does not need the absolute path (it only renders the
+ * three recommendation rows + the dismiss button), and the same PR
+ * already treats the path as sensitive enough to strip from the
+ * persisted `claudeCodeSettingsWarning.dismissedResult`. Returning
+ * the path through the API would leak the user's home directory /
+ * username to any caller of /api/security/settings-check, which
+ * defeats the redaction posture (CodeX attempt 7 — information
+ * disclosure).
+ */
+function publicResult(result: SettingsCheckResult): SettingsCheckResult {
+  return { ...result, settingsFilePath: null }
+}
 
 export function createSecurityRouter(
   fs: FileAccessLayer,
@@ -54,7 +70,7 @@ export function createSecurityRouter(
       { setting },
     )
     res.json({
-      result,
+      result: publicResult(result),
       suppressToast: evaluation.suppressToast,
       dismissExpiresAt: evaluation.effectiveExpiresAt,
     })

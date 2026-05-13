@@ -2618,10 +2618,37 @@ server.listen(PORT, '127.0.0.1', () => {
     // existing settings files (file watcher) and the case where a
     // settings file appears after startup or moves between user- and
     // project-level (directory watcher). Both watchers feed the same
-    // re-check + log callback so duplicate events collapse naturally.
+    // re-check + log callback; the callback de-duplicates so a noisy
+    // writer (or both watchers firing for the same save) does not
+    // amplify into repeated log entries (CodeX attempt 7 — log
+    // amplification / resource exhaustion).
     const installedHandles: Array<{ close: () => void }> = []
+    let lastEmittedSignature: string | null = null
+    function rerunSignature(r: ReturnType<typeof checkClaudeCodeSettings>): string {
+      return [
+        r.overallOk ? '1' : '0',
+        r.reason,
+        r.permissionMode.current,
+        r.permissionMode.ok ? '1' : '0',
+        r.denyPattern.ok ? '1' : '0',
+        r.bypassMode.active ? '1' : '0',
+      ].join('|')
+    }
     const rerun = () => {
       const next = checkClaudeCodeSettings(fs, projectRoot)
+      const signature = rerunSignature(next)
+      if (signature === lastEmittedSignature) {
+        return // no observable change — suppress the duplicate log entry
+      }
+      // Honor the dismiss state: when the user has already
+      // acknowledged the same warning state we do not need to write
+      // another entry on every fs blip.
+      const setting = readSetting(fs)
+      if (!shouldLogStartupWarning(next, setting)) {
+        lastEmittedSignature = signature
+        return
+      }
+      lastEmittedSignature = signature
       logCheckResult(next)
     }
     if (checkResult.settingsFilePath) {
