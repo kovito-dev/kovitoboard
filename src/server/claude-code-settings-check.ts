@@ -208,8 +208,17 @@ function validateNestedShape(value: ClaudeCodeRawSettings): boolean {
     if (value.permissions === null || typeof value.permissions !== 'object') {
       return false
     }
-    if (value.permissions.deny !== undefined && !Array.isArray(value.permissions.deny)) {
-      return false
+    if (value.permissions.deny !== undefined) {
+      if (!Array.isArray(value.permissions.deny)) return false
+      // Every entry must be a string. Mixed-type arrays such as
+      // `[".kovitoboard/", {}]` previously slipped through and were
+      // silently filtered by `mergeSettings()`, which could surface
+      // as `overallOk: true` instead of the intended fail-closed
+      // schema mismatch (CodeX attempt 9 — incomplete schema
+      // validation).
+      for (const entry of value.permissions.deny) {
+        if (typeof entry !== 'string') return false
+      }
     }
   }
   return true
@@ -360,16 +369,13 @@ export function checkClaudeCodeSettings(
   const projectResolved = resolveProjectSettingsPath(fs, projectAbs, homeAbs)
 
   // T-2-1: any symlink escape rejects the entire check, fail-closed.
+  // The helper itself is intentionally side-effect free with respect
+  // to logging — failure logging is owned by `logCheckResult()` so
+  // GET /api/security/settings-check (which calls this helper per
+  // request) cannot grow server.log unboundedly when the user has a
+  // persistent fail-closed config (CodeX attempt 9 — log
+  // amplification / resource exhaustion).
   if (userResolved.rejected || projectResolved.rejected) {
-    log.warn(
-      {
-        event: 'claude-code-settings-check-failed',
-        reason: 'path-resolution-rejected',
-        userRejected: userResolved.rejected,
-        projectRejected: projectResolved.rejected,
-      },
-      'Claude Code settings path resolution rejected (symlink escape or broken link)'
-    )
     return failClosedResult(
       'path-resolution-rejected',
       projectResolved.path ?? userResolved.path
@@ -385,14 +391,6 @@ export function checkClaudeCodeSettings(
   if (userResolved.path !== null) {
     const r = readAndParse(fs, userResolved.path)
     if (!r.ok) {
-      log.warn(
-        {
-          event: 'claude-code-settings-check-failed',
-          reason: r.reason,
-          settingsFilePath: userResolved.path,
-        },
-        'Claude Code user settings could not be loaded'
-      )
       return failClosedResult(r.reason, userResolved.path)
     }
     userSettings = r.value
@@ -400,14 +398,8 @@ export function checkClaudeCodeSettings(
   if (projectResolved.path !== null) {
     const r = readAndParse(fs, projectResolved.path)
     if (!r.ok) {
-      log.warn(
-        {
-          event: 'claude-code-settings-check-failed',
-          reason: r.reason,
-          settingsFilePath: projectResolved.path,
-        },
-        'Claude Code project settings could not be loaded'
-      )
+      // Intentionally no log here — failure logging is centralized
+      // in logCheckResult() (CodeX attempt 9 — log amplification).
       return failClosedResult(r.reason, projectResolved.path)
     }
     projectSettings = r.value
@@ -468,7 +460,19 @@ export function logCheckResult(result: SettingsCheckResult): void {
     return
   }
   if (result.reason !== 'ok') {
-    // Already logged by `checkClaudeCodeSettings()`.
+    // Fail-closed reason — emit a single structural-failure entry
+    // here so logging stays centralized (CodeX attempt 9 — log
+    // amplification). The supervisor call sites (`index.ts` startup +
+    // watcher rerun) dedupe via signature comparison, so a steady-
+    // state fail-closed config no longer hot-loops the log.
+    log.warn(
+      {
+        event: 'claude-code-settings-check-failed',
+        reason: result.reason,
+        settingsFilePath: result.settingsFilePath,
+      },
+      'Claude Code settings could not be loaded'
+    )
     return
   }
   const surfaces: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = []

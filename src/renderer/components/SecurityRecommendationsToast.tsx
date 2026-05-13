@@ -50,22 +50,48 @@ export function SecurityRecommendationsToast({
   useEffect(() => {
     if (!onboardingComplete) return
     let cancelled = false
-    kbFetch('/api/security/settings-check')
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`)
-        return r.json()
-      })
-      .then((data: SecurityCheckResponse) => {
-        if (!cancelled) setState(data)
-      })
-      .catch(() => {
-        // Fail-closed: surface the warning UX even when /api/security/*
-        // is unreachable so an outage cannot silently dismiss the
-        // recommendation channel. (CodeX review attempt 1.)
-        if (!cancelled) setState(buildFetchFailureResponse())
-      })
+    const load = () => {
+      kbFetch('/api/security/settings-check')
+        .then((r) => {
+          if (!r.ok) throw new Error(`status ${r.status}`)
+          return r.json()
+        })
+        .then((data: SecurityCheckResponse) => {
+          if (!cancelled) setState(data)
+        })
+        .catch(() => {
+          // Fail-closed: surface the warning UX even when
+          // /api/security/* is unreachable so an outage cannot
+          // silently dismiss the recommendation channel.
+          if (!cancelled) setState(buildFetchFailureResponse())
+        })
+    }
+    load()
+    // Refetch when the user returns to the tab / window so a
+    // settings mutation made outside KB (the runtime watcher case)
+    // is reflected without requiring a full reload (CodeX attempt 9
+    // — stale security warning state).
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      // Don't clobber a freshly-dismissed local hide; the suppress
+      // logic on the server side reflects the dismiss persistence,
+      // so re-running the fetch is safe.
+      load()
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility)
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onVisibility)
+    }
     return () => {
       cancelled = true
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility)
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onVisibility)
+      }
     }
   }, [onboardingComplete])
 
