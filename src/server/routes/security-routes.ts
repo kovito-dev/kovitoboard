@@ -43,7 +43,16 @@ export function createSecurityRouter(
   router.get('/settings-check', (_req, res) => {
     const result = checkClaudeCodeSettings(fs, projectRoot)
     const setting = readSetting(fs)
-    const evaluation = evaluateDismiss(result, setting?.claudeCodeSettingsWarning)
+    // Pass the latest setting so `onboarding.securityRecommendationsReviewedAt`
+    // also counts toward the dismiss cooldown — without it a user who
+    // just acknowledged the inline Security step would be re-greeted
+    // by the toast on `/agents` (CodeX attempt 2).
+    const evaluation = evaluateDismiss(
+      result,
+      setting?.claudeCodeSettingsWarning,
+      Date.now(),
+      { setting },
+    )
     res.json({
       result,
       suppressToast: evaluation.suppressToast,
@@ -87,7 +96,12 @@ export function createSecurityRouter(
       res.status(500).json({ error: 'Failed to persist dismiss state' })
       return
     }
-    const evaluation = evaluateDismiss(current, updated.claudeCodeSettingsWarning)
+    const evaluation = evaluateDismiss(
+      current,
+      updated.claudeCodeSettingsWarning,
+      Date.now(),
+      { setting: updated },
+    )
     res.json({
       ok: true,
       suppressToast: evaluation.suppressToast,

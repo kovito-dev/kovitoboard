@@ -76,6 +76,7 @@ export type SettingsCheckReason =
   | 'parse-error'
   | 'schema-mismatch'
   | 'path-resolution-rejected'
+  | 'file-too-large'
 
 export interface SettingsCheckResult {
   /** `permissionMode` recommendation check (T-2-1 / T-2-2 covered) */

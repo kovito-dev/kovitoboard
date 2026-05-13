@@ -52,6 +52,16 @@ const log = lazyChildLogger('claude-code-settings-check')
 const DISMISS_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
 /**
+ * Hard cap on the size of a Claude Code settings file we are willing
+ * to read in one shot. CodeX attempt 2 flagged that an unbounded
+ * `readFileSync` + `JSON.parse` on an attacker-controlled path can
+ * stall the event loop or exhaust memory. 1 MiB is well above any
+ * realistic settings file (the bundled Claude Code defaults are
+ * < 10 KiB) and keeps the parse window cheap.
+ */
+const SETTINGS_FILE_SIZE_LIMIT_BYTES = 1024 * 1024
+
+/**
  * Sentinel returned when the inspected settings file cannot be read,
  * parsed, or normalized. Surfaces in `permissionMode.current` so the
  * UI / log layer can distinguish a structural failure from a real
@@ -166,11 +176,27 @@ interface ClaudeCodeRawSettings {
   }
 }
 
-/** Read + JSON.parse a settings file with a fail-closed posture. */
+/**
+ * Read + JSON.parse a settings file with a fail-closed posture.
+ *
+ * Enforces a 1 MiB size cap before the read so an attacker-controlled
+ * path cannot stall the event loop or exhaust memory with a multi-MiB
+ * JSON payload (CodeX attempt 2 — resource exhaustion). When `statSync`
+ * itself throws we treat it as a generic read error so the caller
+ * still surfaces the fail-closed warning surface.
+ */
 function readAndParse(
   fs: FileAccessLayer,
   path: string
 ): { ok: true; value: ClaudeCodeRawSettings } | { ok: false; reason: SettingsCheckReason } {
+  try {
+    const stat = fs.statSync(path)
+    if (stat.size > SETTINGS_FILE_SIZE_LIMIT_BYTES) {
+      return { ok: false, reason: 'file-too-large' }
+    }
+  } catch {
+    return { ok: false, reason: 'read-error' }
+  }
   let raw: string
   try {
     raw = fs.readFileSync(path, 'utf-8')
@@ -435,6 +461,18 @@ export interface DismissEvaluation {
 }
 
 /**
+ * Optional ambient cooldown signals beyond the explicit dismiss state.
+ * Currently honors `onboarding.securityRecommendationsReviewedAt` so a
+ * user who just reviewed the Security recommendations step in the
+ * wizard does not immediately re-encounter the same toast on
+ * `/agents` (CodeX attempt 2 — cooldown regression).
+ */
+export interface DismissContext {
+  warning?: ClaudeCodeSettingsWarning
+  setting?: KovitoboardSetting | null
+}
+
+/**
  * Evaluate whether a persisted dismiss state suppresses the toast for
  * the current check result.
  *
@@ -442,11 +480,18 @@ export interface DismissEvaluation {
  * I-8), when the snapshot does not match, when the cooldown window has
  * elapsed, or when the raw `dismissedAt` is invalid / future-dated
  * beyond `now + 24h`.
+ *
+ * The optional `context.setting` lets the caller hand in the latest
+ * KovitoBoard setting so `onboarding.securityRecommendationsReviewedAt`
+ * can also suppress the toast — this avoids a fresh wizard completion
+ * being immediately greeted by the same warning on `/agents` (CodeX
+ * attempt 2 — cooldown regression).
  */
 export function evaluateDismiss(
   current: SettingsCheckResult,
   warning: ClaudeCodeSettingsWarning | undefined,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  context: Pick<DismissContext, 'setting'> = {}
 ): DismissEvaluation {
   if (current.overallOk) {
     return { suppressToast: true, effectiveExpiresAt: null }
@@ -455,6 +500,26 @@ export function evaluateDismiss(
     // I-8: bypass mode active re-surfaces unconditionally.
     return { suppressToast: false, effectiveExpiresAt: null }
   }
+
+  // Honor the onboarding-time review cooldown before the explicit
+  // dismiss record. The wizard surface and the toast are two
+  // projections of the same recommendation channel, so review on
+  // either side should count toward the cooldown.
+  const reviewedAt = context.setting?.onboarding?.securityRecommendationsReviewedAt
+  if (reviewedAt) {
+    const reviewedMs = Date.parse(reviewedAt)
+    if (Number.isFinite(reviewedMs)) {
+      const effectiveReviewedAt = Math.min(reviewedMs, nowMs)
+      const expiresAt = effectiveReviewedAt + DISMISS_COOLDOWN_MS
+      if (expiresAt > nowMs) {
+        return {
+          suppressToast: true,
+          effectiveExpiresAt: new Date(expiresAt).toISOString(),
+        }
+      }
+    }
+  }
+
   if (!warning) return { suppressToast: false, effectiveExpiresAt: null }
   const dismissedAt = Date.parse(warning.dismissedAt)
   if (!Number.isFinite(dismissedAt)) {
@@ -479,14 +544,25 @@ export function evaluateDismiss(
   }
 }
 
-/** Convenience: build a dismiss record from a current check + clock. */
+/**
+ * Build a dismiss record from a current check + clock.
+ *
+ * Strips `settingsFilePath` from the persisted snapshot — the path is
+ * not used by `evaluateDismiss` matching and writing the user's
+ * absolute home path into project-local `.kovitoboard/setting.json`
+ * is an unnecessary information disclosure (CodeX attempt 2 —
+ * sensitive path persistence).
+ */
 export function buildDismissRecord(
   current: SettingsCheckResult,
   nowMs: number = Date.now()
 ): ClaudeCodeSettingsWarning {
   return {
     dismissedAt: new Date(nowMs).toISOString(),
-    dismissedResult: current,
+    dismissedResult: {
+      ...current,
+      settingsFilePath: null,
+    },
   }
 }
 
@@ -550,13 +626,20 @@ export function watchSettingsFile(
 }
 
 /**
- * Watch the user-level and project-level `.claude/` directories so a
- * settings file that appears after KB startup (or moves between user-
- * and project-level) is picked up the next time the check runs.
+ * Watch the user-level and project-level surfaces so a settings file
+ * that appears after KB startup is picked up the next time the check
+ * runs.
  *
- * This complements `watchSettingsFile` when the initial check could
- * not pin down an effective path. Callers receive a single `close`
- * handle that tears down every underlying directory watcher.
+ * For each anchor (home, project root) we prefer to watch the
+ * existing `.claude/` directory directly. When the `.claude` directory
+ * does not exist yet — which is the typical state on a fresh box —
+ * we fall back to watching the anchor itself so that creating the
+ * `.claude` directory later still fires a mutation event. The
+ * fallback expects the underlying watcher (chokidar via the fs-layer)
+ * to recurse into newly-created subdirectories; the re-check itself
+ * is idempotent, so even if the watcher emits multiple events while
+ * a writer creates `.claude/settings.json` we only see redundant work,
+ * not a missed update (CodeX attempt 2 — stale watcher coverage).
  */
 export function watchSettingsDirectories(
   fs: FileAccessLayer,
@@ -565,13 +648,21 @@ export function watchSettingsDirectories(
   homeOverride?: string
 ): WatchHandle | null {
   const home = homeOverride ?? homedir()
-  const targets = [
-    join(home, '.claude'),
-    join(resolve(projectRoot), '.claude'),
-  ]
+  const projectAbs = resolve(projectRoot)
+  // For each anchor, pick the most-specific existing directory we can
+  // reach so the watcher fires on `.claude` directory creation as well
+  // as file-level mutations inside it.
+  const targets: string[] = []
+  for (const anchor of [home, projectAbs]) {
+    const claudeDir = join(anchor, '.claude')
+    if (fs.existsSync(claudeDir)) {
+      targets.push(claudeDir)
+    } else if (fs.existsSync(anchor)) {
+      targets.push(anchor)
+    }
+  }
   const handles: WatchHandle[] = []
   for (const dir of targets) {
-    if (!fs.existsSync(dir)) continue
     try {
       const handle = fs.watch(dir, (event) => {
         if (

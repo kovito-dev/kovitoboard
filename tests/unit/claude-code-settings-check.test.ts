@@ -51,6 +51,8 @@ interface MockFsOptions {
   brokenLinks?: Set<string>
   /** Watcher hooks the test suite can drive. */
   watchers?: Map<string, WatchHandler>
+  /** Override stat size (defaults to the matching file's UTF-8 byte length). */
+  statSizes?: Record<string, number>
 }
 
 function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
@@ -59,6 +61,7 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
   const unreadable = opts.unreadable ?? new Set<string>()
   const brokenLinks = opts.brokenLinks ?? new Set<string>()
   const watchers = opts.watchers ?? new Map<string, WatchHandler>()
+  const statSizes = opts.statSizes ?? {}
   const fs: Partial<FileAccessLayer> = {
     existsSync: (path: string) => {
       if (brokenLinks.has(path)) return true
@@ -69,6 +72,19 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
         throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
       }
       if (path in files) return files[path]
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    },
+    statSync: (path: string) => {
+      if (path in statSizes) {
+        return { size: statSizes[path], mtime: new Date(0), mtimeMs: 0 }
+      }
+      if (path in files) {
+        return {
+          size: Buffer.byteLength(files[path], 'utf-8'),
+          mtime: new Date(0),
+          mtimeMs: 0,
+        }
+      }
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     },
     realpathSync: (path: string) => {
@@ -327,6 +343,16 @@ describe('T-2-2: fail-closed on read / parse / schema failure', () => {
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.reason).toBe('schema-mismatch')
   })
+
+  it('returns reason=file-too-large when stat reports >1MiB', () => {
+    const fs = makeFs({
+      files: { [userPath()]: JSON.stringify({ permissionMode: 'default' }) },
+      statSizes: { [userPath()]: 2 * 1024 * 1024 },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('file-too-large')
+    expect(result.overallOk).toBe(false)
+  })
 })
 
 const baseResult: SettingsCheckResult = {
@@ -420,10 +446,76 @@ describe('T-2-3: dismiss state evaluation', () => {
 })
 
 describe('buildDismissRecord', () => {
-  it('emits an ISO timestamp + snapshot copy', () => {
+  it('emits an ISO timestamp + snapshot copy with settingsFilePath stripped', () => {
     const record = buildDismissRecord(baseResult, Date.parse('2026-05-13T12:00:00Z'))
     expect(record.dismissedAt).toBe('2026-05-13T12:00:00.000Z')
-    expect(record.dismissedResult).toEqual(baseResult)
+    // settingsFilePath is intentionally stripped from the persisted
+    // snapshot (CodeX attempt 2 — sensitive path persistence) since
+    // the matching logic does not consult it.
+    expect(record.dismissedResult.settingsFilePath).toBeNull()
+    expect(record.dismissedResult.permissionMode).toEqual(baseResult.permissionMode)
+    expect(record.dismissedResult.denyPattern).toEqual(baseResult.denyPattern)
+    expect(record.dismissedResult.bypassMode).toEqual(baseResult.bypassMode)
+    expect(record.dismissedResult.reason).toBe(baseResult.reason)
+    expect(record.dismissedResult.overallOk).toBe(baseResult.overallOk)
+  })
+})
+
+describe('evaluateDismiss — onboarding review cooldown', () => {
+  it('suppresses toast within 24h of the onboarding review timestamp', async () => {
+    const now = Date.parse('2026-05-13T12:00:00Z')
+    const setting: KovitoboardSetting = {
+      version: '1.1',
+      user: { displayName: 'u', avatar: null },
+      project: { name: 'p', description: '', path: PROJECT },
+      locale: 'en',
+      onboarding: {
+        completedAt: '2026-05-13T11:00:00Z',
+        wizardVersion: '0.1.0',
+        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
+      },
+    }
+    const evaluation = evaluateDismiss(baseResult, undefined, now, { setting })
+    expect(evaluation.suppressToast).toBe(true)
+    expect(evaluation.effectiveExpiresAt).not.toBeNull()
+  })
+
+  it('does NOT suppress when bypass mode is active even with a fresh review', () => {
+    const now = Date.parse('2026-05-13T12:00:00Z')
+    const setting: KovitoboardSetting = {
+      version: '1.1',
+      user: { displayName: 'u', avatar: null },
+      project: { name: 'p', description: '', path: PROJECT },
+      locale: 'en',
+      onboarding: {
+        completedAt: '2026-05-13T11:00:00Z',
+        wizardVersion: '0.1.0',
+        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
+      },
+    }
+    const bypass: SettingsCheckResult = {
+      ...baseResult,
+      bypassMode: { active: true, ok: false },
+    }
+    const evaluation = evaluateDismiss(bypass, undefined, now, { setting })
+    expect(evaluation.suppressToast).toBe(false)
+  })
+
+  it('does NOT suppress when review timestamp is older than 24h', () => {
+    const now = Date.parse('2026-05-15T12:00:00Z')
+    const setting: KovitoboardSetting = {
+      version: '1.1',
+      user: { displayName: 'u', avatar: null },
+      project: { name: 'p', description: '', path: PROJECT },
+      locale: 'en',
+      onboarding: {
+        completedAt: '2026-05-13T11:00:00Z',
+        wizardVersion: '0.1.0',
+        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
+      },
+    }
+    const evaluation = evaluateDismiss(baseResult, undefined, now, { setting })
+    expect(evaluation.suppressToast).toBe(false)
   })
 })
 
@@ -524,13 +616,40 @@ describe('T-2-4: watchSettingsDirectories supplements file-level watching', () =
     handle?.close()
   })
 
-  it('returns null when no .claude directory exists yet', async () => {
+  it('returns null when neither home nor project anchor exists', async () => {
     const { watchSettingsDirectories } = await import(
       '../../src/server/claude-code-settings-check'
     )
     const fs = makeFs() // no files, no realpaths → existsSync returns false
     const handle = watchSettingsDirectories(fs, PROJECT, () => {}, HOME)
     expect(handle).toBeNull()
+  })
+
+  it('falls back to watching the anchor itself when .claude does not exist yet', async () => {
+    const { watchSettingsDirectories } = await import(
+      '../../src/server/claude-code-settings-check'
+    )
+    const watchers = new Map<string, WatchHandler>()
+    // Existence: home and project exist, but their .claude
+    // subdirectories do not. The fallback should watch the
+    // anchors so a later .claude/ creation still triggers the
+    // mutation handler.
+    const fs = {
+      ...makeFs({ watchers }),
+      existsSync: (path: string) => path === HOME || path === PROJECT,
+    } as unknown as FileAccessLayer
+    let fired = 0
+    const handle = watchSettingsDirectories(fs, PROJECT, () => {
+      fired += 1
+    }, HOME)
+    expect(handle).not.toBeNull()
+    expect(watchers.size).toBe(2)
+    expect(Array.from(watchers.keys())).toEqual([HOME, PROJECT])
+    for (const h of watchers.values()) {
+      h({ type: 'addDir', path: '/x' })
+    }
+    expect(fired).toBe(2)
+    handle?.close()
   })
 })
 
