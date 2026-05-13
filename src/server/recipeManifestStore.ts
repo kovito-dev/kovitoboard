@@ -299,6 +299,25 @@ function validateManifest(raw: unknown): string | null {
     if (obj.trustLevel === 'KB-trusted') {
       return '"trustLevel" must not be "KB-trusted" for a recipe manifest (reserved for KB-core surfaces)'
     }
+    // v0.2.x integrity-gap fail-closed: the install path is
+    // temporarily disabled (recipe-system.md v1.7.3 §10.6) and v0.2.x
+    // has no signing or sideload verification flow that can
+    // legitimately mint `'code-trusted'` / `'code-trusted (sideloaded)'`
+    // — those literals only become valid when KovitoHub signature
+    // verification ships in v0.3.0 (§6.10.6.12). Until then a
+    // persisted non-`'unknown'` literal can only come from a
+    // hand-edited manifest, a corrupted JSON, or a v0.3.0 record
+    // restored into a v0.2.x runtime, none of which the renderer
+    // can verify. Reject the manifest so the recipe disappears
+    // rather than letting the disk literal drive the audit log and
+    // badge UI. The v0.3.0 install path will remove this guard
+    // when verification arrives.
+    if (obj.trustLevel === 'code-trusted' || obj.trustLevel === 'code-trusted (sideloaded)') {
+      return (
+        `"trustLevel" "${obj.trustLevel}" is not verifiable in v0.2.x; ` +
+        'expected "unknown" until KovitoHub signature verification ships in v0.3.0'
+      )
+    }
   }
 
   return null

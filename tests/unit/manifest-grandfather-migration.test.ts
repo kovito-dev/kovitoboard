@@ -171,4 +171,45 @@ describe('RecipeManifestStore.loadAll — KB-trusted ingress refusal (defence-in
     expect(m).not.toBeNull()
     expect(m!.trustLevel).toBe('unknown')
   })
+
+  it('skips a manifest that declares trustLevel "code-trusted" in v0.2.x (no verification path)', () => {
+    // v0.2.x has no signature / sideload flow that can mint a
+    // non-`'unknown'` recipe manifest, so a persisted `code-trusted`
+    // record can only have come from a hand-edit, a corruption, or
+    // a v0.3.0 manifest restored into a v0.2.x runtime — none of
+    // which the renderer can verify. Fail closed.
+    writeManifest('inflated-app', {
+      appId: 'inflated-app',
+      recipeId: 'inflated-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    expect(store.get('inflated-app')).toBeNull()
+  })
+
+  it('skips a manifest that declares trustLevel "code-trusted (sideloaded)" in v0.2.x', () => {
+    writeManifest('side-app', {
+      appId: 'side-app',
+      recipeId: 'side-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (sideloaded)',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    expect(store.get('side-app')).toBeNull()
+  })
 })
