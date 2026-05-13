@@ -489,6 +489,24 @@ function denyCoversKovitoboard(deny: string[]): boolean {
  *
  * Threat coverage: T-2-1 (path traversal / symlink), T-2-2 (fail-closed).
  */
+/**
+ * Canonicalize the project root with `realpathSync` so a workspace
+ * that is itself accessed through a symlink (e.g. `/home/user/work`
+ * → `/mnt/proj/work`) still matches its own `.claude/settings.json`
+ * after the bounded reader's realpath normalization. Falls back to
+ * `resolve(...)` when realpath fails — that is the same fail-soft
+ * the rest of the helper uses for projectRoot lookups (CodeX
+ * attempt 21 — path normalization).
+ */
+function canonicalProjectRoot(fs: FileAccessLayer, projectRoot: string): string {
+  const abs = resolve(projectRoot)
+  try {
+    return fs.realpathSync(abs)
+  } catch {
+    return abs
+  }
+}
+
 export function checkClaudeCodeSettings(
   fs: FileAccessLayer,
   projectRoot: string,
@@ -496,7 +514,7 @@ export function checkClaudeCodeSettings(
 ): SettingsCheckResult {
   const home = homeOverride ?? homedir()
   const homeAbs = resolve(home)
-  const projectAbs = resolve(projectRoot)
+  const projectAbs = canonicalProjectRoot(fs, projectRoot)
 
   const userResolved = resolveUserSettingsPath(fs, homeAbs)
   const projectResolved = resolveProjectSettingsPath(fs, projectAbs, homeAbs)

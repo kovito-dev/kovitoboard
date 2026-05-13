@@ -75,10 +75,16 @@ export function SecurityRecommendationsToast({
           setOptimisticHidden(false)
         })
         .catch(() => {
+          if (cancelled) return
           // Fail-closed: surface the warning UX even when
           // /api/security/* is unreachable so an outage cannot
           // silently dismiss the recommendation channel.
-          if (!cancelled) setState(buildFetchFailureResponse())
+          setState(buildFetchFailureResponse())
+          // Also clear the optimistic hide so a transient fetch
+          // failure cannot keep the warning suppressed for the rest
+          // of the session (CodeX attempt 21 — fail-closed warning
+          // suppression).
+          setOptimisticHidden(false)
         })
     }
     load()
