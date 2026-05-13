@@ -6,15 +6,24 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { t, setLocale } from '../i18n'
 import type { Locale } from '../i18n'
-import type { KovitoboardSetting } from '../../shared/setting-types'
+import type {
+  KovitoboardSetting,
+  ClaudeCodeSettingsWarning,
+  SettingsCheckResult,
+} from '../../shared/setting-types'
 import { StepWelcome } from './onboarding/StepWelcome'
 import { StepUser } from './onboarding/StepUser'
 import { StepProject } from './onboarding/StepProject'
 import { StepConcierge } from './onboarding/StepConcierge'
+import { StepSecurity } from './onboarding/StepSecurity'
 import { StepComplete } from './onboarding/StepComplete'
 import { kbFetch } from '../lib/kbFetch'
 
-const TOTAL_STEPS = 5
+// Spec onboarding-scenarios.md v1.2 §9.5 inserts a Security
+// recommendations step between Concierge (Step 4) and Complete
+// (Step 6). Total step count grows from 5 to 6 — older fixtures
+// that hardcode `5` should be updated alongside.
+const TOTAL_STEPS = 6
 
 interface OnboardingPageProps {
   /**
@@ -46,6 +55,12 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   const [projectDescription, setProjectDescription] = useState('')
   const [conciergeAdded, setConciergeAdded] = useState(false)
   const [projectRoot, setProjectRoot] = useState('')
+  // Captures the exact `SettingsCheckResult` the user acknowledged in
+  // StepSecurity so handleComplete can persist that snapshot — not a
+  // fresh re-fetch that might disagree with what the user actually
+  // saw (CodeX attempt 11 — stale acknowledgement snapshot).
+  const [reviewedSecurityResult, setReviewedSecurityResult] =
+    useState<SettingsCheckResult | null>(null)
   // Tracks whether handleComplete is in flight so the final button can
   // show a spinner and stay disabled until the full-page reload fires.
   const [isCompleting, setIsCompleting] = useState(false)
@@ -101,9 +116,39 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     setStep(5)
   }, [])
 
+  const handleSecurityNext = useCallback(
+    (reviewedResult: SettingsCheckResult | null) => {
+      setReviewedSecurityResult(reviewedResult)
+      setStep(6)
+    },
+    [],
+  )
+
   const handleComplete = useCallback(async () => {
     if (isCompleting) return
     setIsCompleting(true)
+
+    // Seed `claudeCodeSettingsWarning` with the EXACT snapshot the
+    // user just acknowledged in StepSecurity, instead of re-fetching
+    // at completion time and risking divergence from the reviewed
+    // state. The dismiss endpoint already refuses to persist
+    // fail-closed dismiss records server-side, so StepSecurity hands
+    // off `null` for those states and we simply omit the field.
+    // (CodeX attempt 3 — stale security suppression; attempt 6 —
+    // fail-closed suppression bypass; attempt 11 — stale
+    // acknowledgement snapshot.)
+    let securityWarning: ClaudeCodeSettingsWarning | undefined
+    if (
+      reviewedSecurityResult &&
+      !reviewedSecurityResult.overallOk &&
+      !reviewedSecurityResult.bypassMode.active &&
+      reviewedSecurityResult.reason === 'ok'
+    ) {
+      securityWarning = {
+        dismissedAt: new Date().toISOString(),
+        dismissedResult: { ...reviewedSecurityResult, settingsFilePath: null },
+      }
+    }
 
     // Save setting via API
     const setting: KovitoboardSetting = {
@@ -111,7 +156,31 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       user: { displayName, avatar: null },
       project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,
-      onboarding: { completedAt: new Date().toISOString(), wizardVersion: '0.1.0' },
+      onboarding: {
+        completedAt: new Date().toISOString(),
+        // Bumped from "0.1.0" to "0.2.0" to mark records produced by
+        // the 6-step wizard (Welcome / User / Project / Concierge /
+        // **Security** / Complete). Downstream consumers that key
+        // off `wizardVersion` for migrations or analytics can now
+        // distinguish the original v0.1.0 5-step flow from the
+        // Phase 1 ② 6-step flow (CodeX attempt 16 — versioning
+        // inconsistency).
+        wizardVersion: '0.2.0',
+        // `securityRecommendationsReviewedAt` is intentionally
+        // omitted: the dismiss-cooldown logic now consumes the
+        // seeded `claudeCodeSettingsWarning` record, which carries
+        // the reviewed snapshot for drift detection (CodeX attempt
+        // 13 — dead state). Older `setting.json` files that still
+        // hold the legacy field continue to validate.
+      },
+      // When the wizard surfaced a real violation, seed the dismiss
+      // record so the post-onboarding toast respects the same 24h
+      // cooldown WITH drift detection. When everything was already
+      // OK (no violation surfaced) we omit the field — there is
+      // nothing to dismiss and a stale snapshot would create
+      // surprising re-surfacing if the user later regresses their
+      // settings.
+      ...(securityWarning ? { claudeCodeSettingsWarning: securityWarning } : {}),
       // Persist the opt-out choice as `claudeMdGuidance.disabled`
       // when set; otherwise omit the struct entirely so older
       // tooling that does not know about the field is not surprised
@@ -215,7 +284,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       ? '/agents/kovito-concierge?openLatestSession=1'
       : '/'
     window.location.assign(target)
-  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance])
+  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance, reviewedSecurityResult])
 
   const renderStep = () => {
     switch (step) {
@@ -259,6 +328,13 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
           />
         )
       case 5:
+        return (
+          <StepSecurity
+            onNext={handleSecurityNext}
+            onBack={() => setStep(4)}
+          />
+        )
+      case 6:
         return (
           <StepComplete
             conciergeAdded={conciergeAdded}

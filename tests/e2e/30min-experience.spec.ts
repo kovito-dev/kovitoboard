@@ -286,8 +286,8 @@ test.describe('S5: Bash request -> Bash-type prompt', () => {
 // ---------------------------------------------------------------------------
 // S1: Onboarding completion flow (preonboarding project)
 // ---------------------------------------------------------------------------
-test.describe('S1: Onboarding 5-step completion @preonboarding', () => {
-  test('S1-a: Complete the 5-step wizard with Kobi skipped', async ({ page, kbFixture: _kbFixture }) => {
+test.describe('S1: Onboarding 6-step completion @preonboarding', () => {
+  test('S1-a: Complete the 6-step wizard with Kobi skipped', async ({ page, kbFixture: _kbFixture }) => {
     void _kbFixture // bind the fixture so snapshot/restore covers this test
     // Start at root; React navigates to /onboarding after checking setting API
     await page.goto('/')
@@ -321,7 +321,29 @@ test.describe('S1: Onboarding 5-step completion @preonboarding', () => {
     await expect(stepConcierge).toBeVisible()
     await page.getByRole('button', { name: 'あとで追加する' }).click()
 
-    // Step 5: Complete — click "Go to agents"
+    // Step 5: Security recommendations (handoff v1.1 §3.4 /
+    // onboarding-scenarios v1.2 §9.5). Acknowledge the warning when
+    // violations surface; the L1 fixture project root is outside
+    // ~/.claude so the check helper returns the fail-closed surface
+    // and a banner is shown — accept the banner and proceed.
+    const stepSecurity = page.getByTestId('onboarding-step-security')
+    await expect(stepSecurity).toBeVisible()
+    // CodeX attempt 19 — per-item acknowledgement. Tick whichever
+    // row checkboxes are visible, plus the shared fail-closed box
+    // when present, before advancing.
+    const sharedAck = page.getByTestId('security-acknowledge')
+    if (await sharedAck.isVisible().catch(() => false)) {
+      await sharedAck.check()
+    }
+    for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
+      const box = page.getByTestId(`row-${row}-acknowledge`)
+      if (await box.isVisible().catch(() => false)) {
+        await box.check()
+      }
+    }
+    await page.getByTestId('security-next').click()
+
+    // Step 6: Complete — click "Go to agents"
     // (i18n key: onboarding.complete.goToAgents = 'エージェント一覧へ',
     // shown when concierge is skipped on Step 4. The earlier label
     // 'ダッシュボードへ' was renamed during the dashboard -> agents

@@ -52,6 +52,35 @@ const ja = {
   'onboarding.next': '次へ',
   'onboarding.back': '戻る',
   'onboarding.step': 'ステップ {current} / {total}',
+  // Phase 1 prompt injection ② Claude Code 推奨設定告知
+  // (handoff v1.1 §3.4 / §3.7、onboarding-scenarios §9.5.2)
+  'onboarding.security.title': 'セキュリティ推奨設定',
+  'onboarding.security.subtitle': '安全に KovitoBoard を使うため、Claude Code の推奨設定を確認します。',
+  'onboarding.security.intro': 'プロンプトインジェクション対策として、Claude Code 側で以下の設定を有効にすることを推奨します。',
+  'onboarding.security.acknowledge': '内容を確認しました',
+  'onboarding.security.allOk': 'すべての推奨設定が満たされています。',
+  'onboarding.security.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。設定を手動で確認してください。',
+  'onboarding.security.permissionMode.label': 'permissionMode = default',
+  'onboarding.security.permissionMode.description': 'Claude Code の権限モードを default に設定します。bypassPermissions は HITL (Human in the Loop) なしで全アクションを許可するため、Rule of Two 違反となり推奨されません。',
+  'onboarding.security.denyPattern.label': '.kovitoboard/ を deny pattern に追加',
+  'onboarding.security.denyPattern.description': 'Claude Code の permissions.deny に ".kovitoboard/" を追加し、Claude Code 側から KovitoBoard 内部状態への書き込みをブロックします。',
+  'onboarding.security.bypassMode.label': 'bypass モードを無効化',
+  'onboarding.security.bypassMode.description': 'bypassPermissions モードが有効な場合、Rule of Two 違反 (3/3 揃い) のため HITL が必須となります。可能な限り無効化してください。',
+  'onboarding.security.why': 'なぜ必要？',
+  'onboarding.security.whyModal.heading': '推奨設定の背景',
+  'onboarding.security.whyModal.responsibility': 'プロンプトインジェクションの検知・ブロックは Anthropic (Claude Code) 側の責務です。KovitoBoard は推奨設定が満たされているかを確認し、通知するのみで、deny pattern の実装は行いません。',
+  'onboarding.security.whyModal.ruleOfTwo': 'Rule of Two: untrusted input + sensitive data access + external state change の 3 つすべてが揃うと、人手による確認 (HITL) が必須になります。',
+  'onboarding.security.whyModal.close': '閉じる',
+  // Phase 1 prompt injection ② 起動時 warn toast
+  // (handoff v1.1 §3.3、trust-prompt-relay §10.5.4)
+  'security.toast.title': 'セキュリティ推奨設定',
+  'security.toast.intro': 'Claude Code の設定に推奨されない値が含まれています:',
+  'security.toast.permissionMode.violation': 'permissionMode が {current} に設定されています (推奨: default)',
+  'security.toast.denyPattern.violation': '.kovitoboard/ が Claude Code の deny pattern に含まれていません',
+  'security.toast.bypassMode.violation': 'bypass モードが有効です (Rule of Two 違反、HITL 必須)',
+  'security.toast.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。設定を手動で確認してください。',
+  'security.toast.learnMore': '詳細を見る',
+  'security.toast.dismiss': '閉じる (24 時間)',
 
   // ナビゲーション
   'nav.titleBar.settings': '設定',

@@ -40,6 +40,32 @@ function ensureNoClaudeMd(projectRoot: string): string {
   return path
 }
 
+/** Skip past the Security recommendations onboarding step (handoff
+ *  v1.1 §3.4 / spec onboarding-scenarios v1.2 §9.5). The L1 fixture
+ *  project root lives in /tmp so the check helper returns a fail-
+ *  closed surface; check the acknowledge box when it surfaces, then
+ *  proceed. */
+async function skipSecurityStep(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+): Promise<void> {
+  const securityStep = page.getByTestId('onboarding-step-security')
+  await expect(securityStep).toBeVisible({ timeout: 5000 })
+  // CodeX attempt 19 — per-item acknowledgement. Tick every visible
+  // row checkbox so the Next button enables.
+  const sharedAck = page.getByTestId('security-acknowledge')
+  if (await sharedAck.isVisible().catch(() => false)) {
+    await sharedAck.check()
+  }
+  for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
+    const box = page.getByTestId(`row-${row}-acknowledge`)
+    if (await box.isVisible().catch(() => false)) {
+      await box.check()
+    }
+  }
+  await page.getByTestId('security-next').click()
+}
+
 test.describe('CLAUDE.md guidance injection — onboarding trigger @preonboarding', () => {
   test('writes the marker block to a fresh CLAUDE.md when the wizard completes', async ({ page, kbFixture }) => {
     const claudeMdPath = ensureNoClaudeMd(kbFixture.projectRoot)
@@ -62,7 +88,10 @@ test.describe('CLAUDE.md guidance injection — onboarding trigger @preonboardin
     // Step 4: Concierge — skip Kobi for a deterministic flow
     await page.getByRole('button', { name: 'あとで追加する' }).click()
 
-    // Step 5: Complete — leave the opt-out checkbox unchecked, click
+    // Step 5: Security (handoff v1.1) — acknowledge when shown
+    await skipSecurityStep(page)
+
+    // Step 6: Complete — leave the opt-out checkbox unchecked, click
     // through. Verify the checkbox is rendered and checkable so the
     // i18n key + plumbing actually surfaced.
     const optOut = page.getByTestId('onboarding-skip-claude-md-guidance').locator('input[type="checkbox"]')
@@ -112,6 +141,7 @@ test.describe('CLAUDE.md guidance injection — onboarding trigger @preonboardin
     await page.getByRole('button', { name: '次へ' }).click()
 
     await page.getByRole('button', { name: 'あとで追加する' }).click()
+    await skipSecurityStep(page)
 
     // Opt out of the guidance injection before completing. Use the
     // semantic role+name path so future i18n tweaks of the visible
@@ -166,6 +196,7 @@ test.describe('CLAUDE.md guidance injection — onboarding trigger @preonboardin
     await page.locator('#projectName').fill('claude-md-guidance-test')
     await page.getByRole('button', { name: '次へ' }).click()
     await page.getByRole('button', { name: 'あとで追加する' }).click()
+    await skipSecurityStep(page)
     await page.getByRole('button', { name: 'エージェント一覧へ' }).click()
 
     // Capture the post-onboarding state so we know what

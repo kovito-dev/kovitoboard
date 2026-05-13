@@ -11,6 +11,7 @@ import { useTheme } from './hooks/useTheme'
 import { useAdminStatus } from './hooks/useAdminStatus'
 import { TitleBar, type AgentStatus } from './components/TitleBar'
 import { Layout } from './components/Layout'
+import { SecurityRecommendationsToast } from './components/SecurityRecommendationsToast'
 import { ProjectRootBanner } from './components/ProjectRootBanner'
 import { AmbientSidebar } from './components/AmbientSidebar'
 import { NavMenu, Icons, getIcon, type MenuEntry } from './components/NavMenu'
@@ -403,6 +404,10 @@ export function App() {
         >
           <Routes>
             <Route path="/" element={<Navigate to="/agents" replace />} />
+            {/* Onboarding-complete users see the toast surface as a
+                portal at the top-right; the inline <StepSecurity>
+                step covers the not-yet-onboarded path so the toast
+                is gated on `onboardingComplete`. */}
             <Route path="/agents" element={
               <AgentsPage
                 agents={agents}
@@ -491,6 +496,18 @@ export function App() {
             <Route path="*" element={<Navigate to="/agents" replace />} />
           </Routes>
         </Layout>
+
+        {/* Phase 1 prompt injection ② Claude Code recommended-settings
+            startup warn (spec trust-prompt-relay v1.3 §10.5; handoff
+            v1.1 §3.3). The toast is self-contained: it fetches
+            /api/security/settings-check on mount, hides itself when
+            suppressed by the 24h dismiss cooldown, and offers a
+            dismiss action that POSTs to /api/security/dismiss.
+            The `onboardingComplete` prop gates the toast off during
+            the onboarding wizard so it does not double up with the
+            inline StepSecurity surface (CodeX review attempt 1). */}
+        <SecurityRecommendationsToast onboardingComplete={onboardingComplete === true} />
+
 
         {/* Mobile bottom nav */}
         <div className="md:hidden shrink-0 bg-[var(--bg-nav)] border-t border-[var(--border)] flex items-center justify-around py-1.5 px-2">
