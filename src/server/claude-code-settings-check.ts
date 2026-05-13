@@ -237,7 +237,13 @@ function resolveUserSettingsPath(
   } catch {
     return classifyRealpathFailure(fs, candidate)
   }
-  if (!isWithin(resolved, home)) {
+  // CodeX attempt 13 — narrow the user-level whitelist to the
+  // canonical Claude Code settings path. Previously any realpath
+  // under `$HOME` was accepted, which let a `~/.claude/settings.json`
+  // symlink redirect KB to an unrelated JSON file in the home
+  // directory (e.g. `~/configs/some-other-app.json`). Only the
+  // canonical destination matches the documented Claude Code surface.
+  if (resolved !== candidate) {
     return { path: null, rejected: true }
   }
   return { path: resolved, rejected: false }
@@ -333,11 +339,30 @@ function readAndParse(
 }
 
 /**
- * Merge the project-level over user-level Claude Code settings. Mirrors
- * the Claude Code precedence: project values override user values for
- * scalars (`permissionMode`); array-valued fields (`permissions.deny`)
- * take the union so a project-level deny list does not silently shrink
- * the effective deny set.
+ * Merge the project-level over user-level Claude Code settings.
+ *
+ * Mirrors the Anthropic-documented Claude Code precedence contract
+ * (https://docs.anthropic.com/en/docs/claude-code/settings):
+ *
+ *   - **Scalar fields** (`permissionMode`): project-level overrides
+ *     user-level. When the project file omits the key, the user-level
+ *     value is consulted; when neither is set, KB falls back to the
+ *     documented default `'default'`. A present-but-blank string is
+ *     NOT treated as "unset" — it propagates and is then normalized
+ *     to `__invalid__` (CodeX attempt 12 / 13). The result is
+ *     subsequently fed through `normalizePermissionMode()` so an
+ *     unknown literal cannot widen the surface that reaches the
+ *     toast / `server.log`.
+ *   - **Array-valued fields** (`permissions.deny`): user-level and
+ *     project-level entries are merged into a **union** (set
+ *     semantics). A project-level deny list never silently shrinks
+ *     the user-level deny set. The union is then matched against
+ *     the whole-`.kovitoboard/` form whitelist in
+ *     `denyCoversKovitoboard()`.
+ *
+ * Pattern compilation / enforcement of the deny entries themselves
+ * is Claude Code's responsibility (handoff §4 responsibility
+ * boundary); KB only checks structural intent, not effective match.
  */
 function mergeSettings(
   user: ClaudeCodeRawSettings | null,

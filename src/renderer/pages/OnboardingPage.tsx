@@ -159,13 +159,12 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       onboarding: {
         completedAt: new Date().toISOString(),
         wizardVersion: '0.1.0',
-        // Kept as an audit / observability field even though the
-        // dismiss-cooldown logic now relies on the seeded
-        // claudeCodeSettingsWarning record (CodeX attempt 3). A
-        // future migration may consolidate the two — for now both are
-        // populated atomically so server-side readers can pick
-        // whichever is more convenient.
-        securityRecommendationsReviewedAt: new Date().toISOString(),
+        // `securityRecommendationsReviewedAt` is intentionally
+        // omitted: the dismiss-cooldown logic now consumes the
+        // seeded `claudeCodeSettingsWarning` record, which carries
+        // the reviewed snapshot for drift detection (CodeX attempt
+        // 13 — dead state). Older `setting.json` files that still
+        // hold the legacy field continue to validate.
       },
       // When the wizard surfaced a real violation, seed the dismiss
       // record so the post-onboarding toast respects the same 24h

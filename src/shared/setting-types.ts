@@ -191,10 +191,15 @@ export interface KovitoboardSetting {
     completedAt: string | null
     wizardVersion: string
     /**
-     * ISO 8601 timestamp recorded when the user reviewed the Security
-     * recommendations step during the onboarding wizard (handoff v1.1
-     * §3.4.3). Optional for backward compatibility — older
-     * `setting.json` files predate this field and remain valid.
+     * Historical: an earlier revision of the Phase 1 ② wizard
+     * recorded the time at which the user reviewed the Security
+     * recommendations step. The dismiss-cooldown logic now consumes
+     * `claudeCodeSettingsWarning` directly (it carries the reviewed
+     * snapshot for drift detection) and `securityRecommendationsReviewedAt`
+     * is no longer read anywhere. The validator still accepts the
+     * field for backward compatibility with older `setting.json`
+     * files written before the migration, but new writes omit it
+     * (CodeX attempt 13 — dead state).
      */
     securityRecommendationsReviewedAt?: string
   }
