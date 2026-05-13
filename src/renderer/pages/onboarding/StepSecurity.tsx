@@ -26,6 +26,7 @@ import type { SettingsCheckResult } from '../../../shared/setting-types'
 import {
   type SecurityCheckResponse,
   buildFetchFailureResponse,
+  isSecurityCheckResponse,
 } from '../../lib/securityCheckResponse'
 
 interface StepSecurityProps {
@@ -65,8 +66,17 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
         if (!r.ok) throw new Error(`status ${r.status}`)
         return r.json()
       })
-      .then((data: SecurityCheckResponse) => {
-        if (!cancelled) setState(data)
+      .then((data: unknown) => {
+        if (cancelled) return
+        // Runtime guard against shape-drifted payloads (CodeX
+        // attempt 27 — runtime type safety). Mismatched shapes
+        // collapse into the fail-closed banner so the wizard never
+        // crashes on a malformed response.
+        if (!isSecurityCheckResponse(data)) {
+          setState(buildFetchFailureResponse())
+          return
+        }
+        setState(data)
       })
       .catch(() => {
         // Fail-closed: when the server-side check itself failed to

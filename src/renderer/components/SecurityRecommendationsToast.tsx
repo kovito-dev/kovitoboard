@@ -28,6 +28,7 @@ import { t } from '../i18n'
 import {
   type SecurityCheckResponse,
   buildFetchFailureResponse,
+  isSecurityCheckResponse,
 } from '../lib/securityCheckResponse'
 
 interface SecurityRecommendationsToastProps {
@@ -64,8 +65,18 @@ export function SecurityRecommendationsToast({
           if (!r.ok) throw new Error(`status ${r.status}`)
           return r.json()
         })
-        .then((data: SecurityCheckResponse) => {
+        .then((data: unknown) => {
           if (cancelled) return
+          // Runtime guard against shape-drifted payloads (CodeX
+          // attempt 27 — runtime type safety). A response that does
+          // not match `SecurityCheckResponse` falls back to the
+          // fail-closed banner instead of crashing on a missing
+          // field.
+          if (!isSecurityCheckResponse(data)) {
+            setState(buildFetchFailureResponse())
+            setOptimisticHidden(false)
+            return
+          }
           setState(data)
           // Clear the optimistic dismiss flag once a fresh server
           // response is in hand — the server's `suppressToast`

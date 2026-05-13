@@ -2605,9 +2605,17 @@ server.listen(PORT, '127.0.0.1', () => {
   // Runs once at startup so the warn surface is computed early. The
   // result is fetched lazily by the renderer via /api/security/settings-check
   // so we do not need to push it via WS here. A `fs.watch` is attached
-  // to the effective settings file so runtime mutations (T-2-4) re-run
-  // the check; the log entry on mutation lets the renderer rely on the
-  // GET endpoint to refresh its toast on next focus.
+  // to the effective settings file when it already exists at startup so
+  // runtime mutations re-run the check and emit a `server.log` entry.
+  //
+  // SCOPE NOTE (CodeX attempt 26): the watcher does NOT cover the case
+  // where `~/.claude/` or `<project>/.claude/` is created *after* KB
+  // startup — an anchor-level fallback was removed to avoid avoidable
+  // CPU churn on busy home / project trees. When the directory
+  // materializes later, the toast's focus / visibility refetch and the
+  // per-request `/api/security/settings-check` evaluation pick up the
+  // new state on demand; a server.log entry for that transition is
+  // only emitted on the next KB restart.
   try {
     const checkResult = checkClaudeCodeSettings(fs, projectRoot)
     const setting = readSetting(fs)
