@@ -223,7 +223,12 @@ function resolveProjectSettingsPath(
   } catch {
     return classifyRealpathFailure(fs, candidate)
   }
-  const userClaudePath = join(home, '.claude', 'settings.json')
+  // Canonicalize home so the user-shared-config exemption works on
+  // setups where `$HOME` itself contains a symlinked segment (CodeX
+  // attempt 24 — path canonicalization mismatch). Keeps this
+  // resolver in lockstep with `resolveUserSettingsPath`.
+  const canonicalHome = canonicalHomeDir(fs, home)
+  const userClaudePath = join(canonicalHome, '.claude', 'settings.json')
   const withinScope =
     isWithin(resolved, projectRoot) || resolved === userClaudePath
   if (!withinScope) {
@@ -254,22 +259,10 @@ function resolveUserSettingsPath(
   } catch {
     return classifyRealpathFailure(fs, candidate)
   }
-  // Canonicalize the home directory BEFORE deriving the expected
-  // canonical Claude Code settings path. Without this step a setup
-  // where `$HOME` itself contains a symlinked segment (e.g.
-  // `/home/alice` → `/usr/people/alice`) would compute
-  // `resolved = '/usr/people/alice/.claude/settings.json'` but
-  // compare against the un-canonicalized
-  // `candidate = '/home/alice/.claude/settings.json'`, which would
-  // wrongly reject every legitimate user-level config (CodeX
-  // attempt 23 — path normalization).
-  let canonicalHome: string
-  try {
-    canonicalHome = fs.realpathSync(home)
-  } catch {
-    canonicalHome = home
-  }
-  const expected = join(canonicalHome, '.claude', 'settings.json')
+  // Canonicalize home before deriving the expected target so a
+  // symlinked-home setup (e.g. `/home/alice` → `/usr/people/alice`)
+  // does not produce a phantom mismatch (CodeX attempt 23).
+  const expected = join(canonicalHomeDir(fs, home), '.claude', 'settings.json')
   if (resolved !== expected) {
     return { path: null, rejected: true }
   }
@@ -514,6 +507,22 @@ function canonicalProjectRoot(fs: FileAccessLayer, projectRoot: string): string 
     return fs.realpathSync(abs)
   } catch {
     return abs
+  }
+}
+
+/**
+ * Canonicalize `$HOME` with `realpathSync`, falling back to the
+ * literal path on failure. Mirrors `canonicalProjectRoot` so every
+ * `home`-derived check (user settings whitelist, project-symlink
+ * acceptance, watcher anchor) agrees on the canonical home tree
+ * even when the OS exposes the home directory through a symlinked
+ * segment (CodeX attempts 23 / 24 — home path canonicalization).
+ */
+function canonicalHomeDir(fs: FileAccessLayer, home: string): string {
+  try {
+    return fs.realpathSync(home)
+  } catch {
+    return home
   }
 }
 
@@ -904,11 +913,12 @@ export function watchSettingsDirectories(
   onMutation: () => void,
   homeOverride?: string
 ): WatchHandle | null {
-  const home = homeOverride ?? homedir()
-  // Apply the same canonicalization the checker uses so the watch
-  // path and the read path agree on which `.claude` tree is
-  // authoritative when the workspace is opened through a symlink
-  // (CodeX attempt 22 — watcher path normalization drift).
+  // Canonicalize BOTH anchors with the same helpers the checker
+  // uses so the watch path and the read path agree on the
+  // authoritative `.claude` tree even when the workspace or `$HOME`
+  // is opened through a symlinked segment (CodeX attempts 22 / 24 —
+  // watcher path drift).
+  const home = canonicalHomeDir(fs, homeOverride ?? homedir())
   const projectAbs = canonicalProjectRoot(fs, projectRoot)
 
   // Collect handles in one array so the consumer can close them all
