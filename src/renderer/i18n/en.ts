@@ -54,6 +54,35 @@ const en: Record<MessageKey, string> = {
   'onboarding.next': 'Next',
   'onboarding.back': 'Back',
   'onboarding.step': 'Step {current} / {total}',
+  // Phase 1 prompt injection ② Claude Code recommended settings
+  // (handoff v1.1 §3.4 / §3.7, onboarding-scenarios §9.5.2)
+  'onboarding.security.title': 'Security recommendations',
+  'onboarding.security.subtitle': 'Review the recommended Claude Code settings before you continue.',
+  'onboarding.security.intro': 'As a prompt-injection mitigation we recommend the following Claude Code configuration.',
+  'onboarding.security.acknowledge': 'I have reviewed these recommendations',
+  'onboarding.security.allOk': 'All recommended settings are satisfied.',
+  'onboarding.security.failClosed': 'Could not read your Claude Code settings file. Please review the settings manually.',
+  'onboarding.security.permissionMode.label': 'permissionMode = default',
+  'onboarding.security.permissionMode.description': 'Keep Claude Code in default permission mode. bypassPermissions skips the human-in-the-loop confirmation and violates the Rule of Two, so we discourage it.',
+  'onboarding.security.denyPattern.label': 'Add .kovitoboard/ to deny pattern',
+  'onboarding.security.denyPattern.description': 'Add ".kovitoboard/" to Claude Code permissions.deny so Claude Code itself cannot write into KovitoBoard internal state.',
+  'onboarding.security.bypassMode.label': 'Disable bypass mode',
+  'onboarding.security.bypassMode.description': 'When bypassPermissions is active, the Rule of Two (untrusted input + sensitive data + external state) is violated 3 of 3 and HITL is required.',
+  'onboarding.security.why': 'Why?',
+  'onboarding.security.whyModal.heading': 'Background',
+  'onboarding.security.whyModal.responsibility': 'Detecting and blocking prompt injection is the responsibility of Anthropic (Claude Code). KovitoBoard only checks whether the recommended settings are in place; it does not implement deny pattern matching itself.',
+  'onboarding.security.whyModal.ruleOfTwo': 'Rule of Two: when untrusted input + sensitive data access + external state change all line up, a human in the loop must approve the action.',
+  'onboarding.security.whyModal.close': 'Close',
+  // Phase 1 prompt injection ② startup warn toast
+  // (handoff v1.1 §3.3, trust-prompt-relay §10.5.4)
+  'security.toast.title': 'Security recommendations',
+  'security.toast.intro': 'Your Claude Code settings have non-recommended values:',
+  'security.toast.permissionMode.violation': 'permissionMode is {current} (recommended: default)',
+  'security.toast.denyPattern.violation': '.kovitoboard/ is not in Claude Code deny pattern',
+  'security.toast.bypassMode.violation': 'bypass mode is active (Rule of Two violation, HITL required)',
+  'security.toast.failClosed': 'Could not read your Claude Code settings file. Please review the settings manually.',
+  'security.toast.learnMore': 'Learn More',
+  'security.toast.dismiss': 'Dismiss (24h)',
 
   // Navigation
   'nav.titleBar.settings': 'Settings',

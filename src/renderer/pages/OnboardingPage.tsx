@@ -11,10 +11,15 @@ import { StepWelcome } from './onboarding/StepWelcome'
 import { StepUser } from './onboarding/StepUser'
 import { StepProject } from './onboarding/StepProject'
 import { StepConcierge } from './onboarding/StepConcierge'
+import { StepSecurity } from './onboarding/StepSecurity'
 import { StepComplete } from './onboarding/StepComplete'
 import { kbFetch } from '../lib/kbFetch'
 
-const TOTAL_STEPS = 5
+// Spec onboarding-scenarios.md v1.2 §9.5 inserts a Security
+// recommendations step between Concierge (Step 4) and Complete
+// (Step 6). Total step count grows from 5 to 6 — older fixtures
+// that hardcode `5` should be updated alongside.
+const TOTAL_STEPS = 6
 
 interface OnboardingPageProps {
   /**
@@ -101,6 +106,10 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     setStep(5)
   }, [])
 
+  const handleSecurityNext = useCallback(() => {
+    setStep(6)
+  }, [])
+
   const handleComplete = useCallback(async () => {
     if (isCompleting) return
     setIsCompleting(true)
@@ -111,7 +120,15 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       user: { displayName, avatar: null },
       project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,
-      onboarding: { completedAt: new Date().toISOString(), wizardVersion: '0.1.0' },
+      onboarding: {
+        completedAt: new Date().toISOString(),
+        wizardVersion: '0.1.0',
+        // Record that the user reviewed the Security recommendations
+        // step (handoff v1.1 §3.4.3 / spec onboarding-scenarios §9.5)
+        // so the post-onboarding toast respects the same cooldown
+        // window without an extra dismiss action.
+        securityRecommendationsReviewedAt: new Date().toISOString(),
+      },
       // Persist the opt-out choice as `claudeMdGuidance.disabled`
       // when set; otherwise omit the struct entirely so older
       // tooling that does not know about the field is not surprised
@@ -259,6 +276,13 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
           />
         )
       case 5:
+        return (
+          <StepSecurity
+            onNext={handleSecurityNext}
+            onBack={() => setStep(4)}
+          />
+        )
+      case 6:
         return (
           <StepComplete
             conciergeAdded={conciergeAdded}

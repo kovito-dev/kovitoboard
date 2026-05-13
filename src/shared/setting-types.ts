@@ -52,6 +52,100 @@ export interface VersionCheckSetting {
 }
 
 /**
+ * Result of the Claude Code recommended-settings check
+ * (`claude-code-settings-check.ts`, spec
+ * `trust-prompt-relay.md` v1.3 §10.5 / `onboarding-scenarios.md`
+ * v1.2 §9.5 / `logging-baseline.md` v1.4 §12.7).
+ *
+ * Reused as the runtime check output, the toast UI prop, and the
+ * `claudeCodeSettingsWarning.dismissedResult` snapshot so that diff
+ * detection can compare apples to apples.
+ *
+ * Threat coverage (handoff v1.1 §8):
+ *   - T-2-1: `permissionMode.current` may carry a sentinel string
+ *     `'__unreadable__'` when the file path resolved outside the
+ *     user's home directory; the `reason` field on the surrounding
+ *     result captures the structural fail-closed cause.
+ *   - T-2-2: `reason` enumerates the structural failure mode so
+ *     downstream redaction / UI can distinguish read-error from a
+ *     genuine non-recommended value (fail-closed posture).
+ */
+export type SettingsCheckReason =
+  | 'ok'
+  | 'read-error'
+  | 'parse-error'
+  | 'schema-mismatch'
+  | 'path-resolution-rejected'
+
+export interface SettingsCheckResult {
+  /** `permissionMode` recommendation check (T-2-1 / T-2-2 covered) */
+  permissionMode: {
+    current: string
+    recommended: 'default'
+    ok: boolean
+  }
+  /** `.kovitoboard/` deny pattern check */
+  denyPattern: {
+    hasKovitoboardDeny: boolean
+    ok: boolean
+    remediation: string
+  }
+  /** `bypassPermissions` mode check */
+  bypassMode: {
+    active: boolean
+    ok: boolean
+  }
+  /**
+   * Aggregate verdict. `false` when any check item is non-recommended
+   * OR when `reason !== 'ok'` (fail-closed for T-2-2).
+   */
+  overallOk: boolean
+  /**
+   * Structural cause when `overallOk` is false because of a read/parse
+   * failure rather than a non-recommended setting value. Always `'ok'`
+   * when the check completed normally (regardless of whether items are
+   * recommended).
+   */
+  reason: SettingsCheckReason
+  /**
+   * Path that was inspected (after `fs.realpath` normalization for
+   * T-2-1). Redacted via `buildLogRedactor()` when written to
+   * `server.log` per spec `logging-baseline.md` v1.4 §12.7.
+   */
+  settingsFilePath: string | null
+}
+
+/**
+ * Optional persistence of the Claude Code recommended-settings warning
+ * dismiss state (handoff
+ * `v02x-phase1-claude-code-recommended-settings-check-request.md`
+ * v1.1 §3.5 / §8.2 T-2-3).
+ *
+ * Threat model (T-2-3):
+ *   - `dismissedAt` is bounded server-side to `now + 24h` on read; any
+ *     larger value (e.g. attacker-injected `'2099-01-01T00:00:00Z'`)
+ *     is truncated by `claude-code-settings-check.ts` before being
+ *     honored, so a forged future timestamp cannot permanently
+ *     suppress the warning.
+ *   - `dismissedResult` is matched against the *current* check result
+ *     when deciding whether to re-surface the toast (any setting drift
+ *     invalidates the dismiss state).
+ *   - `bypassMode.active === true` is excluded from the dismiss
+ *     contract: a user who is in bypass mode is re-surfaced every
+ *     startup regardless of dismiss state (Invariant I-8).
+ */
+export interface ClaudeCodeSettingsWarning {
+  /** ISO 8601 timestamp when the user dismissed the toast. */
+  dismissedAt: string
+  /**
+   * Snapshot of the check result at dismiss time so that drift
+   * detection can re-surface the toast when the user changes their
+   * Claude Code settings between sessions.
+   */
+  dismissedResult: SettingsCheckResult
+}
+
+/**
  * Optional CLAUDE.md guidance-injection settings
  * (spec `claude-md-guidance-injection.md` v1.2 §7.1 SSOT).
  *
@@ -95,6 +189,13 @@ export interface KovitoboardSetting {
   onboarding: {
     completedAt: string | null
     wizardVersion: string
+    /**
+     * ISO 8601 timestamp recorded when the user reviewed the Security
+     * recommendations step during the onboarding wizard (handoff v1.1
+     * §3.4.3). Optional for backward compatibility — older
+     * `setting.json` files predate this field and remain valid.
+     */
+    securityRecommendationsReviewedAt?: string
   }
   /**
    * Optional logging settings (DEC-017). When omitted, KovitoBoard
@@ -120,4 +221,11 @@ export interface KovitoboardSetting {
    * server applies defaults (`disabled = false`, no `lastInjectedAt`).
    */
   claudeMdGuidance?: ClaudeMdGuidanceSetting
+  /**
+   * Optional persisted dismiss state for the Claude Code recommended-
+   * settings warning (handoff
+   * `v02x-phase1-claude-code-recommended-settings-check-request.md`
+   * v1.1 §3.5). Omitted when the user has never dismissed the toast.
+   */
+  claudeCodeSettingsWarning?: ClaudeCodeSettingsWarning
 }

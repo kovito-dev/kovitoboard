@@ -61,6 +61,13 @@ import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
 import { createAuditRouter } from './routes/audit-routes'
+import { createSecurityRouter } from './routes/security-routes'
+import {
+  checkClaudeCodeSettings,
+  logCheckResult,
+  watchSettingsFile,
+  shouldLogStartupWarning,
+} from './claude-code-settings-check'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -391,6 +398,12 @@ app.use(
     logger: apiLogger,
   }),
 )
+
+// --- Phase 1 prompt injection ② — Claude Code recommended-settings
+// check + dismiss. Handoff v1.1; specs trust-prompt-relay §10.5,
+// onboarding-scenarios §9.5, logging-baseline §12.7.
+// Mounted before the SPA fallback so /api/security/* resolves here.
+app.use('/api/security', createSecurityRouter(fs, projectRoot))
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
@@ -2583,4 +2596,49 @@ server.listen(PORT, '127.0.0.1', () => {
   serverLogger.info({ url: `ws://127.0.0.1:${PORT}` }, 'WebSocket listening')
   serverLogger.info({ projectRoot, projectRootSource }, 'Project root resolved')
   serverLogger.info({ claudeDir: `${config.claudeDir}/projects/` }, 'Watching Claude Code session directory')
+
+  // Phase 1 prompt injection ② — Claude Code recommended-settings check
+  // (spec trust-prompt-relay §10.5, onboarding-scenarios §9.5,
+  // logging-baseline §12.7; handoff v1.1).
+  //
+  // Runs once at startup so the warn surface is computed early. The
+  // result is fetched lazily by the renderer via /api/security/settings-check
+  // so we do not need to push it via WS here. A `fs.watch` is attached
+  // to the effective settings file so runtime mutations (T-2-4) re-run
+  // the check; the log entry on mutation lets the renderer rely on the
+  // GET endpoint to refresh its toast on next focus.
+  try {
+    const checkResult = checkClaudeCodeSettings(fs, projectRoot)
+    const setting = readSetting(fs)
+    if (shouldLogStartupWarning(checkResult, setting)) {
+      logCheckResult(checkResult)
+    }
+    if (checkResult.settingsFilePath) {
+      const handle = watchSettingsFile(fs, checkResult.settingsFilePath, () => {
+        const rerun = checkClaudeCodeSettings(fs, projectRoot)
+        // Always log mutations; the runtime change is a security event
+        // regardless of dismiss state because it represents user (or
+        // attacker) modifying the recommended-settings posture.
+        logCheckResult(rerun)
+      })
+      if (handle) {
+        // Close the watcher on shutdown so tests that boot/teardown the
+        // server in a loop do not leak chokidar instances.
+        process.once('beforeExit', () => {
+          try {
+            handle.close()
+          } catch {
+            // best-effort cleanup
+          }
+        })
+      }
+    }
+  } catch (err) {
+    // Never let the settings check abort startup. Surface the failure
+    // so observability captures it, then continue.
+    serverLogger.warn(
+      { err },
+      'Claude Code recommended-settings startup check threw; continuing',
+    )
+  }
 })
