@@ -17,7 +17,7 @@
  * logged as warnings without throwing.
  */
 import { serverLogger } from '../logger'
-import { join } from 'path'
+import { join, normalize, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
@@ -166,15 +166,15 @@ export function readUserMenuEntries(
     }
     if (trustLookup) {
       // Only attach the manifest's trust level when the menu row is
-      // bound to the canonical artifact directory for its `appId`
-      // (`recipe-applicator.ts` always emits `component: () =>
-      // import('./<appId>/...')`). A hand-edited `app/menu.ts` row
-      // that reuses an installed `appId` but points `component` at
-      // some other path would otherwise inherit the trusted badge of
-      // the legitimate manifest. Guarding on the page prefix keeps
-      // the badge bound to the directory the install flow wrote.
-      const canonicalPrefix = `${entry.id}/`
-      if (entry.page === entry.id || entry.page.startsWith(canonicalPrefix)) {
+      // bound to the canonical artifact directory for its `appId`.
+      // `recipe-applicator.ts` always emits `component: () =>
+      // import('./<appId>/...')` — anything else is either an honest
+      // hand-edit that should not inherit the badge or a forgery
+      // attempt that reuses an installed `appId` while pointing at
+      // foreign code. We normalize the raw page string first so a
+      // path-traversal segment (`doc-viewer/../evil-app/...`) cannot
+      // satisfy a naive `startsWith(`${id}/`)` check.
+      if (isCanonicalAppIdPath(entry.page, entry.id)) {
         entry.trustLevel = trustLookup(entry.id)
       } else {
         entry.trustLevel = null
@@ -183,6 +183,43 @@ export function readUserMenuEntries(
   }
 
   return entries
+}
+
+/**
+ * Returns true when `page` (as parsed out of `import('./<page>')`)
+ * resolves to a location strictly inside the canonical
+ * `app/<appId>/` directory — i.e. the canonical recipe-applicator
+ * layout. Path-traversal segments (`../`), absolute paths, and
+ * Windows-style `\` separators are all rejected up front.
+ *
+ * Defends against the hand-edited `app/menu.ts` row that reuses an
+ * installed `appId` while pointing `component` at a different
+ * directory: such a row would otherwise inherit the manifest's
+ * trust badge and let attacker-authored UI borrow a trusted signal.
+ */
+function isCanonicalAppIdPath(page: string, appId: string): boolean {
+  // Cheap structural rejections first: forward slash is the only
+  // separator the recipe layout uses on disk and the only separator
+  // the parser's regex emits, so any backslash or leading slash is
+  // already non-canonical (and avoids quirks on Windows hosts).
+  if (page.length === 0) return false
+  if (page.startsWith('/') || page.startsWith('\\')) return false
+  if (page.includes('\\')) return false
+
+  // Normalize collapses `./` and `../` segments — `doc-viewer/../evil-app`
+  // becomes `evil-app`. We then re-check the canonical prefix on the
+  // normalized form so a traversal cannot dress an attacker path up
+  // to look like it lives under `<appId>/`.
+  const normalized = normalize(page)
+  if (normalized.startsWith('..') || normalized.includes(`${sep}..${sep}`)) {
+    return false
+  }
+  // POSIX path normalization (the parser regex emits forward slashes
+  // only) — convert any Windows back-slashes that `normalize` might
+  // emit on Win32 hosts so the canonical-prefix comparison stays
+  // platform-independent.
+  const posix = normalized.split(sep).join('/')
+  return posix === appId || posix.startsWith(`${appId}/`)
 }
 
 /** Absolute path to `app/menu.ts` (used by the file watcher). */
