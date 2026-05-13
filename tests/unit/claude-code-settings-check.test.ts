@@ -53,6 +53,12 @@ interface MockFsOptions {
   watchers?: Map<string, WatchHandler>
   /** Override stat size (defaults to the matching file's UTF-8 byte length). */
   statSizes?: Record<string, number>
+  /**
+   * Paths that the bounded reader should treat as non-regular files
+   * (FIFOs, devices, sockets, directories) so the `notRegular: true`
+   * branch is exercised (CodeX attempt 18).
+   */
+  nonRegularPaths?: Set<string>
 }
 
 function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
@@ -62,6 +68,7 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
   const brokenLinks = opts.brokenLinks ?? new Set<string>()
   const watchers = opts.watchers ?? new Map<string, WatchHandler>()
   const statSizes = opts.statSizes ?? {}
+  const nonRegularPaths = opts.nonRegularPaths ?? new Set<string>()
   const fs: Partial<FileAccessLayer> = {
     existsSync: (path: string) => {
       if (brokenLinks.has(path)) return true
@@ -81,10 +88,18 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
       if (!(path in files)) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
+      // The mock reads `nonRegularPaths` to simulate FIFO/device
+      // targets observable on the open fd (CodeX attempt 18). When
+      // a path appears in this set, the bounded reader returns
+      // `notRegular: true` so callers can verify the fail-closed
+      // surface.
+      if (nonRegularPaths.has(path)) {
+        return { oversized: false, notRegular: true }
+      }
       const content = files[path]
       const size = Buffer.byteLength(content, 'utf-8')
-      if (size > maxBytes) return { oversized: true, size }
-      return { oversized: false, content }
+      if (size > maxBytes) return { oversized: true, notRegular: false, size }
+      return { oversized: false, notRegular: false, content }
     },
     statSync: (path: string) => {
       if (path in statSizes) {
@@ -284,31 +299,16 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     expect(result.reason).toBe('path-resolution-rejected')
   })
 
-  it('rejects when the resolved settings target is not a regular file (CodeX attempt 15)', () => {
-    // Drive the production code through a FIFO/device/socket target:
-    // realpathSync resolves cleanly, but lstatSync on the resolved
-    // path reports `isFile: false`. Without the new isRegularFile
-    // gate, the subsequent readFileSync would block.
-    const baseFs = makeFs({
+  it('rejects when the resolved settings target is not a regular file (CodeX attempts 15 / 18)', () => {
+    // The fd-based bounded reader now reports `notRegular: true` for
+    // FIFO / device / socket / directory targets. Per CodeX attempt
+    // 18 the check is bound to the SAME fd as the read, so a
+    // TOCTOU swap between an earlier `lstat` and the open cannot
+    // unflag the rejection.
+    const fs = makeFs({
       files: { [projectPath()]: '{}' },
+      nonRegularPaths: new Set([projectPath()]),
     })
-    const fifoLstat = {
-      size: 0,
-      mtime: new Date(0),
-      mtimeMs: 0,
-      isSymbolicLink: false,
-      isFile: false,
-    }
-    const fs = {
-      ...baseFs,
-      lstatSync: (path: string) => {
-        if (path === projectPath()) return fifoLstat
-        // Fall back to baseFs default behavior for everything else.
-        return (
-          (baseFs.lstatSync as (p: string) => typeof fifoLstat)(path)
-        )
-      },
-    } as unknown as FileAccessLayer
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.reason).toBe('path-resolution-rejected')
     expect(result.overallOk).toBe(false)

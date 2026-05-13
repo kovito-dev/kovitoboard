@@ -206,22 +206,6 @@ function isNodeError(value: unknown): value is { code?: string } {
   return typeof value === 'object' && value !== null && 'code' in value
 }
 
-/**
- * Confirm that the resolved settings target is a regular file. A
- * FIFO / device / socket / directory would otherwise block the
- * synchronous `readFileSync` below indefinitely (CodeX attempt 15 —
- * special file DoS). `lstatSync` runs against the post-realpath
- * canonical target, so symlinks have already been followed.
- */
-function isRegularFile(fs: FileAccessLayer, resolved: string): boolean {
-  try {
-    const lst = fs.lstatSync(resolved)
-    return lst.isFile && !lst.isSymbolicLink
-  } catch {
-    return false
-  }
-}
-
 function resolveProjectSettingsPath(
   fs: FileAccessLayer,
   projectRoot: string,
@@ -245,11 +229,10 @@ function resolveProjectSettingsPath(
   if (!withinScope) {
     return { path: null, rejected: true }
   }
-  if (!isRegularFile(fs, resolved)) {
-    // CodeX attempt 15 — non-regular targets (FIFOs, devices,
-    // sockets, directories) would block the synchronous read.
-    return { path: null, rejected: true }
-  }
+  // The regular-file gate is enforced inside `readFileBoundedSync()`
+  // against the open fd (CodeX attempt 18). Path-level lstat is no
+  // longer used here so a TOCTOU swap between `lstat` and `open`
+  // cannot turn a regular file into a FIFO mid-flight.
   return { path: resolved, rejected: false }
 }
 
@@ -280,10 +263,8 @@ function resolveUserSettingsPath(
   if (resolved !== candidate) {
     return { path: null, rejected: true }
   }
-  if (!isRegularFile(fs, resolved)) {
-    // CodeX attempt 15 — non-regular targets must fail closed.
-    return { path: null, rejected: true }
-  }
+  // Regular-file gate is enforced inside `readFileBoundedSync` on
+  // the open fd (CodeX attempt 18).
   return { path: resolved, rejected: false }
 }
 
@@ -364,6 +345,13 @@ function readAndParse(
   }
   if (read.oversized) {
     return { ok: false, reason: 'file-too-large' }
+  }
+  if (read.notRegular) {
+    // Same `path-resolution-rejected` surface as a symlink escape:
+    // structurally we could not interpret the entry, so the toast
+    // shows the fail-closed banner (CodeX attempt 18 — TOCTOU file
+    // validation).
+    return { ok: false, reason: 'path-resolution-rejected' }
   }
   let parsed: unknown
   try {

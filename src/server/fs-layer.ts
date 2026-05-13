@@ -138,26 +138,34 @@ export interface FileAccessLayer {
   /** Low-level byte-range read (for watcher.ts JSONL differential parsing) */
   readBytesSync(path: string, offset: number, length: number): Buffer
   /**
-   * Read a file with a hard byte cap enforced via `fstat` on the open
-   * file descriptor — no separate `statSync` precheck, so an attacker
-   * cannot swap or grow the file between a size check and the read
-   * (CodeX attempt 16 / 17 — resource exhaustion). Returns the file
-   * contents decoded as UTF-8 when `size <= maxBytes`. Returns an
-   * `oversized: true` result when the file exceeds the cap; in that
-   * case no content is loaded into memory.
+   * Read a file with two guarantees enforced via `fstat` on the open
+   * file descriptor:
    *
-   * Implementations MUST call `fstatSync` on the open fd BEFORE
-   * loading content so an oversized file is rejected without ever
-   * buffering it. Implementations MUST close the fd in a `finally`
-   * branch so a thrown read does not leak descriptors.
+   *   1. **regular-file gate**: `fstat.isFile()` must hold. FIFOs,
+   *      devices, directories, and sockets are rejected with
+   *      `{ notRegular: true }` so the caller's prior `lstat` check
+   *      cannot be undone by a TOCTOU swap (CodeX attempt 18 —
+   *      validate-then-open race).
+   *   2. **size cap**: `fstat.size` must be within `maxBytes`. An
+   *      oversized file is rejected with `{ oversized: true }` and no
+   *      content is buffered (CodeX attempt 16 / 17 — resource
+   *      exhaustion).
    *
-   * Throws on `open`/`stat`/`read` failures other than the size cap
-   * — the caller treats those as `read-error`.
+   * Both checks run against the SAME file descriptor as the read, so
+   * an attacker cannot swap or grow the file between validation and
+   * load. Implementations MUST close the fd in a `finally` branch so
+   * a thrown read does not leak descriptors.
+   *
+   * Throws on `open`/`stat`/`read` failures other than the gates —
+   * the caller treats those as `read-error`.
    */
   readFileBoundedSync(
     path: string,
     maxBytes: number,
-  ): { oversized: false; content: string } | { oversized: true; size: number }
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true }
 
   // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
@@ -270,12 +278,18 @@ export class DirectFsLayer implements FileAccessLayer {
   readFileBoundedSync(
     path: string,
     maxBytes: number,
-  ): { oversized: false; content: string } | { oversized: true; size: number } {
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true } {
     const fd = fsOpenSync(path, 'r')
     try {
       const stat = fsFstatSync(fd)
+      if (!stat.isFile()) {
+        return { oversized: false, notRegular: true }
+      }
       if (stat.size > maxBytes) {
-        return { oversized: true, size: stat.size }
+        return { oversized: true, notRegular: false, size: stat.size }
       }
       const buffer = Buffer.alloc(stat.size)
       let totalRead = 0
@@ -290,7 +304,11 @@ export class DirectFsLayer implements FileAccessLayer {
         if (bytesRead <= 0) break
         totalRead += bytesRead
       }
-      return { oversized: false, content: buffer.subarray(0, totalRead).toString('utf-8') }
+      return {
+        oversized: false,
+        notRegular: false,
+        content: buffer.subarray(0, totalRead).toString('utf-8'),
+      }
     } finally {
       fsCloseSync(fd)
     }
