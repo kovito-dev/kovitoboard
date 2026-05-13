@@ -286,8 +286,19 @@ function validateManifest(raw: unknown): string | null {
     }
   }
 
-  if (obj.trustLevel !== undefined && !isValidTrustLevel(obj.trustLevel)) {
-    return `"trustLevel" is not a valid trust-level: "${String(obj.trustLevel)}"`
+  if (obj.trustLevel !== undefined) {
+    if (!isValidTrustLevel(obj.trustLevel)) {
+      return `"trustLevel" is not a valid trust-level: "${String(obj.trustLevel)}"`
+    }
+    // `'KB-trusted'` is the reserved KB-core literal and must never
+    // accompany a recipe manifest (prompt-injection-threat-model.md
+    // v1.0 §2). A corrupted on-disk record or a future server bug
+    // could still land here; treat the value as a hard validation
+    // failure so `loadAll` skips the manifest (the dispatcher then
+    // refuses the recipe entirely, instead of inflating the badge).
+    if (obj.trustLevel === 'KB-trusted') {
+      return '"trustLevel" must not be "KB-trusted" for a recipe manifest (reserved for KB-core surfaces)'
+    }
   }
 
   return null

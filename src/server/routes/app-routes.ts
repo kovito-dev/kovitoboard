@@ -27,6 +27,7 @@ import {
   type TrustLevelLookup,
 } from '../services/menu-extractor'
 import type { RecipeManifestStore } from '../recipeManifestStore'
+import { serverLogger } from '../logger'
 
 /**
  * Build the app extension router.
@@ -43,8 +44,25 @@ export function createAppRouter(
 ): Router {
   const router = Router()
 
-  const trustLookup: TrustLevelLookup = (appId) =>
-    manifestStore.get(appId)?.trustLevel ?? null
+  // Defence-in-depth: `recipeManifestStore.validateManifest` already
+  // refuses to load a recipe manifest that carries the reserved
+  // `'KB-trusted'` literal, but the wire boundary fails closed too —
+  // any value that slips through (e.g. a manifest minted by an older
+  // version, or an in-memory mutation after load) becomes `null`
+  // here so the renderer's TrustMarker hides the badge instead of
+  // inflating the recipe to the first-party signal.
+  const trustLookup: TrustLevelLookup = (appId) => {
+    const value = manifestStore.get(appId)?.trustLevel ?? null
+    if (value === 'KB-trusted') {
+      serverLogger.warn(
+        { appId },
+        'Refusing to serve KB-trusted on a recipe-page menu entry; coercing to null. ' +
+          'KB-trusted is reserved for KB-core surfaces — investigate the manifest source.',
+      )
+      return null
+    }
+    return value
+  }
 
   router.get('/menu-entries', (_req, res) => {
     const entries: MenuEntryWithPage[] = readUserMenuEntries(fs, trustLookup)

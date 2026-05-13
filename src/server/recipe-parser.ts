@@ -348,9 +348,14 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
  */
 function rejectAuthorTrustLevel(data: Record<string, unknown>, sourcePath: string): void {
   if (!Object.prototype.hasOwnProperty.call(data, 'trustLevel')) return
+  // The forbidden field is fully attacker-controlled (it came out of
+  // `gray-matter`'s YAML decode of the recipe file). Logging the raw
+  // value would let a hostile recipe smuggle arbitrary content into
+  // operator log files or inflate the log line itself; the violation
+  // itself is the diagnostic signal, not the chosen literal.
   recipeLogger.warn(
-    { sourcePath, declared: String(data.trustLevel) },
-    'recipe.yaml declared a trustLevel field; rejecting (T-3-1: trust marker forgery defence). ' +
+    { sourcePath, declaredType: typeof data.trustLevel },
+    'recipe.yaml declared a trustLevel field; rejecting (trust marker forgery defence). ' +
       'trustLevel is server-assigned (KovitoHub signature / sideload / grandfather migration) — ' +
       'authors must not declare it in recipe.yaml.',
   )

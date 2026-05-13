@@ -140,6 +140,9 @@ import {
   TRUST_LEVEL_VALUES,
   type TrustLevelValue,
   isTrustLevelValue,
+  RECIPE_PAGE_TRUST_LEVELS,
+  type RecipePageTrustLevel,
+  isRecipePageTrustLevel,
 } from '../../shared/recipe-types.js'
 
 export type TrustLevel = TrustLevelValue
@@ -151,6 +154,23 @@ export const TRUST_LEVELS: readonly TrustLevel[] = TRUST_LEVEL_VALUES
 export function isValidTrustLevel(value: unknown): value is TrustLevel {
   return isTrustLevelValue(value)
 }
+
+/**
+ * Server-side re-exports of the recipe-page-only trust subset
+ * (`'code-trusted'` / `'code-trusted (sideloaded)'` / `'unknown'`,
+ * excluding the KB-core-only `'KB-trusted'` literal). Manifest
+ * ingress (`recipeManifestStore.validateManifest`) and the
+ * `/api/app/menu-entries` boundary use these to fail closed when an
+ * older / corrupted / forged manifest declares `'KB-trusted'`.
+ *
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export {
+  RECIPE_PAGE_TRUST_LEVELS,
+  isRecipePageTrustLevel,
+}
+export type { RecipePageTrustLevel }
 
 /**
  * Manifest for an installed recipe.
