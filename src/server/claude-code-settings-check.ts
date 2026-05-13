@@ -70,6 +70,39 @@ const SETTINGS_FILE_SIZE_LIMIT_BYTES = 1024 * 1024
 const UNREADABLE = '__unreadable__'
 
 /**
+ * Sentinel returned when `permissionMode` is a string Claude Code does
+ * not document. Substituting a fixed token before the value is echoed
+ * into the toast / `server.log` keeps a hostile settings file from
+ * injecting an arbitrarily large unsupported value into the DOM or
+ * the log stream (CodeX attempt 10 — input validation / resource
+ * exhaustion).
+ */
+const PERMISSION_MODE_INVALID = '__invalid__'
+
+/**
+ * Documented Claude Code permission modes. Mirrors the Anthropic
+ * upstream contract (`docs.anthropic.com/en/docs/claude-code/settings`).
+ * Any other string is normalized to `PERMISSION_MODE_INVALID` before
+ * being returned in `SettingsCheckResult.permissionMode.current`.
+ */
+const SUPPORTED_PERMISSION_MODES = new Set<string>([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+])
+
+/**
+ * Normalize a raw permissionMode string into a value that is safe to
+ * render and log. Known modes pass through; anything else collapses
+ * to the `__invalid__` sentinel (CodeX attempt 10).
+ */
+function normalizePermissionMode(raw: string): string {
+  if (SUPPORTED_PERMISSION_MODES.has(raw)) return raw
+  return PERMISSION_MODE_INVALID
+}
+
+/**
  * Build a fail-closed `SettingsCheckResult` for a structural failure
  * (T-2-2 mitigation). All check items report `ok: false` so the caller
  * surfaces the warning, and the `reason` field carries the structural
@@ -298,16 +331,15 @@ function mergeSettings(
 }
 
 /**
- * Decide whether a Claude Code deny entry actually covers this KB
- * instance's project-local `.kovitoboard/` directory.
+ * Decide whether a Claude Code deny entry actually covers the *entire*
+ * `.kovitoboard/` directory tree.
  *
- * Accepts only the recommended forms documented for project-relative
- * patterns:
+ * Accepts only the whole-tree forms documented in the user-facing
+ * recommendation:
  *
- *   - `.kovitoboard`             (bare directory)
+ *   - `.kovitoboard`             (bare directory — deny the whole dir)
  *   - `.kovitoboard/`            (trailing slash variant)
  *   - `.kovitoboard/**`          (recursive glob)
- *   - `.kovitoboard/<...>`       (any subpath inside)
  *
  * Each form may be wrapped in a Claude Code action prefix such as
  * `Read(...)`, `Bash(...)`, or `Edit(...)`; the wrapper is stripped
@@ -317,13 +349,18 @@ function mergeSettings(
  *   - absolute-path rules like `/tmp/.kovitoboard/**` (CodeX
  *     attempt 4 — overly permissive deny matching),
  *   - parent-traversal rules (`../.kovitoboard/...`),
- *   - and unrelated entries that merely contain the substring
- *     `.kovitoboard` (e.g. `apps/cool.kovitoboard-helper`).
+ *   - unrelated entries that merely contain the substring
+ *     `.kovitoboard` (e.g. `apps/cool.kovitoboard-helper`),
+ *   - **and any descendant-only pattern** such as
+ *     `.kovitoboard/cache/**` or `.kovitoboard/state.json`. Those
+ *     leave the rest of `.kovitoboard/` writable and therefore do
+ *     not satisfy the recommendation copy in the toast / wizard
+ *     (CodeX attempt 10 — scope validation).
  *
  * Pattern compilation / actual enforcement remains Claude Code's
  * responsibility (spec §4 responsibility boundary); this function
- * only verifies that the user has expressed an intent that names
- * the KB state directory specifically.
+ * only verifies that the user has expressed an intent to deny the
+ * whole `.kovitoboard/` tree.
  */
 function denyCoversKovitoboard(deny: string[]): boolean {
   // Strip a single optional action wrapper like `Read(...)`.
@@ -340,8 +377,7 @@ function denyCoversKovitoboard(deny: string[]): boolean {
     if (
       stripped === '.kovitoboard' ||
       stripped === '.kovitoboard/' ||
-      stripped === '.kovitoboard/**' ||
-      stripped.startsWith('.kovitoboard/')
+      stripped === '.kovitoboard/**'
     ) {
       return true
     }
@@ -406,8 +442,15 @@ export function checkClaudeCodeSettings(
   }
 
   const merged = mergeSettings(userSettings, projectSettings)
-  const permissionModeOk = merged.permissionMode === 'default'
-  const bypassActive = merged.permissionMode === 'bypassPermissions'
+  // Normalize the raw permissionMode against the documented Claude
+  // Code whitelist BEFORE deriving the OK / bypass flags or
+  // surfacing the value back to the renderer. Unknown values collapse
+  // to the `__invalid__` sentinel so a hostile (or simply stale)
+  // settings file cannot inject an arbitrarily large unsupported
+  // string into the toast / server.log (CodeX attempt 10).
+  const normalizedPermissionMode = normalizePermissionMode(merged.permissionMode)
+  const permissionModeOk = normalizedPermissionMode === 'default'
+  const bypassActive = normalizedPermissionMode === 'bypassPermissions'
   const hasKovitoboardDeny = denyCoversKovitoboard(merged.deny)
 
   const overallOk = permissionModeOk && hasKovitoboardDeny && !bypassActive
@@ -418,7 +461,7 @@ export function checkClaudeCodeSettings(
 
   return {
     permissionMode: {
-      current: merged.permissionMode,
+      current: normalizedPermissionMode,
       recommended: 'default',
       ok: permissionModeOk,
     },

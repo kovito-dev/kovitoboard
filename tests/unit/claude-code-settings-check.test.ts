@@ -480,6 +480,87 @@ describe('denyCoversKovitoboard precision (CodeX attempt 4)', () => {
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
   })
+
+  it('rejects descendant-only patterns like .kovitoboard/cache/** (CodeX attempt 10)', () => {
+    // The recommendation copy in the toast / wizard talks about
+    // denying the *whole* .kovitoboard/ directory. A pattern that
+    // only covers a subdirectory leaves the rest writable, so the
+    // checker must NOT report `hasKovitoboardDeny: true` for it.
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['.kovitoboard/cache/**'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+  })
+
+  it('rejects a single descendant file pattern like .kovitoboard/state.json', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['.kovitoboard/state.json'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+  })
+})
+
+describe('permissionMode whitelist (CodeX attempt 10)', () => {
+  it('normalizes unknown permissionMode strings to __invalid__', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'totallyMadeUpModeValue',
+          permissions: { deny: ['.kovitoboard/'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.permissionMode.current).toBe('__invalid__')
+    expect(result.permissionMode.ok).toBe(false)
+    // Unknown mode is not treated as bypassPermissions either.
+    expect(result.bypassMode.active).toBe(false)
+    expect(result.overallOk).toBe(false)
+  })
+
+  it('passes documented modes through verbatim', () => {
+    for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions']) {
+      const fs = makeFs({
+        files: {
+          [userPath()]: JSON.stringify({
+            permissionMode: mode,
+            permissions: { deny: ['.kovitoboard/'] },
+          }),
+        },
+      })
+      const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+      expect(result.permissionMode.current).toBe(mode)
+    }
+  })
+
+  it('caps the worst-case logged/rendered length of unknown values', () => {
+    // A multi-kilobyte permissionMode value MUST not propagate into
+    // the rendered result. The normalization collapses it to a short
+    // sentinel regardless of input length.
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'x'.repeat(50_000),
+          permissions: { deny: ['.kovitoboard/'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.permissionMode.current).toBe('__invalid__')
+    expect(result.permissionMode.current.length).toBeLessThan(32)
+  })
 })
 
 const baseResult: SettingsCheckResult = {
