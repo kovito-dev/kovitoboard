@@ -33,6 +33,33 @@ interface CheckResponse {
   dismissExpiresAt: string | null
 }
 
+/**
+ * Build a synthetic fail-closed CheckResponse so a fetch failure
+ * surfaces the same "settings could not be read" warning UX as a
+ * server-reported fail-closed result. Keeping a separate response
+ * (rather than hiding the toast) preserves the structural intent of
+ * the security-recommendations channel: an outage of /api/security/*
+ * must NOT silently dismiss the warning for already-onboarded users.
+ */
+function buildFetchFailureResponse(): CheckResponse {
+  return {
+    result: {
+      permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
+      denyPattern: {
+        hasKovitoboardDeny: false,
+        ok: false,
+        remediation: 'Review your Claude Code settings manually.',
+      },
+      bypassMode: { active: false, ok: false },
+      overallOk: false,
+      reason: 'read-error',
+      settingsFilePath: null,
+    },
+    suppressToast: false,
+    dismissExpiresAt: null,
+  }
+}
+
 interface SecurityRecommendationsToastProps {
   /**
    * Whether the user has finished onboarding. Defaults to true so the
@@ -54,13 +81,18 @@ export function SecurityRecommendationsToast({
     if (!onboardingComplete) return
     let cancelled = false
     kbFetch('/api/security/settings-check')
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`status ${r.status}`)
+        return r.json()
+      })
       .then((data: CheckResponse) => {
         if (!cancelled) setState(data)
       })
       .catch(() => {
-        // Best-effort: a fetch failure should not crash the layout.
-        if (!cancelled) setState(null)
+        // Fail-closed: surface the warning UX even when /api/security/*
+        // is unreachable so an outage cannot silently dismiss the
+        // recommendation channel. (CodeX review attempt 1.)
+        if (!cancelled) setState(buildFetchFailureResponse())
       })
     return () => {
       cancelled = true

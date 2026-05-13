@@ -502,8 +502,11 @@ export function App() {
             v1.1 §3.3). The toast is self-contained: it fetches
             /api/security/settings-check on mount, hides itself when
             suppressed by the 24h dismiss cooldown, and offers a
-            dismiss action that POSTs to /api/security/dismiss. */}
-        <SecurityRecommendationsToast onboardingComplete={true} />
+            dismiss action that POSTs to /api/security/dismiss.
+            The `onboardingComplete` prop gates the toast off during
+            the onboarding wizard so it does not double up with the
+            inline StepSecurity surface (CodeX review attempt 1). */}
+        <SecurityRecommendationsToast onboardingComplete={onboardingComplete === true} />
 
 
         {/* Mobile bottom nav */}

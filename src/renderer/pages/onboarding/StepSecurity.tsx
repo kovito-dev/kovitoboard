@@ -30,6 +30,32 @@ interface CheckResponse {
   dismissExpiresAt: string | null
 }
 
+/**
+ * Build a synthetic fail-closed CheckResponse so a fetch failure
+ * surfaces the same fail-closed banner instead of leaving the wizard
+ * stuck in a perpetual loading state with Next disabled. Without
+ * this fall-through the onboarding flow would deadlock on a
+ * transient /api/security/* outage. (CodeX review attempt 1.)
+ */
+function buildFetchFailureResponse(): CheckResponse {
+  return {
+    result: {
+      permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
+      denyPattern: {
+        hasKovitoboardDeny: false,
+        ok: false,
+        remediation: 'Review your Claude Code settings manually.',
+      },
+      bypassMode: { active: false, ok: false },
+      overallOk: false,
+      reason: 'read-error',
+      settingsFilePath: null,
+    },
+    suppressToast: false,
+    dismissExpiresAt: null,
+  }
+}
+
 interface StepSecurityProps {
   onNext: () => void
   onBack: () => void
@@ -45,15 +71,21 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   useEffect(() => {
     let cancelled = false
     kbFetch('/api/security/settings-check')
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`status ${r.status}`)
+        return r.json()
+      })
       .then((data: CheckResponse) => {
         if (!cancelled) setState(data)
       })
       .catch(() => {
         // Fail-closed: when the server-side check itself failed to
-        // reach us, render the fail-closed surface so the user still
-        // sees a warning rather than a phantom "all clear".
-        if (!cancelled) setState(null)
+        // reach us, render the fail-closed banner + acknowledge flow
+        // so the user can still proceed once they confirm they will
+        // review the settings manually. Previously a fetch error
+        // kept the wizard in a perpetual loading state with Next
+        // disabled (CodeX review attempt 1).
+        if (!cancelled) setState(buildFetchFailureResponse())
       })
     return () => {
       cancelled = true

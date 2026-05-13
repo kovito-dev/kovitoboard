@@ -247,6 +247,25 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     expect(result.overallOk).toBe(true)
   })
 
+  it('accepts a project .claude whose realpath stays inside the project tree (outside home)', () => {
+    // Mirrors the L1 fixture: project root lives in /tmp, which is
+    // outside the user's home directory but is still a legitimate
+    // installation. As long as the realpath stays inside the project
+    // tree we should NOT reject.
+    const externalProject = '/tmp/kb-e2e/projects/demo'
+    const candidate = `${externalProject}/.claude/settings.json`
+    const contents = JSON.stringify({
+      permissionMode: 'default',
+      permissions: { deny: ['.kovitoboard/'] },
+    })
+    const fs = makeFs({
+      files: { [candidate]: contents },
+    })
+    const result = checkClaudeCodeSettings(fs, externalProject, HOME)
+    expect(result.reason).toBe('ok')
+    expect(result.overallOk).toBe(true)
+  })
+
   it('rejects sibling-prefix attack on home directory', () => {
     // A path like `/home/user-evil/...` must not match `/home/user`
     // by raw startsWith — separator-aware check is what the helper
@@ -465,6 +484,53 @@ describe('shouldLogStartupWarning', () => {
 
   it('logs when no setting record exists', () => {
     expect(shouldLogStartupWarning(baseResult, null)).toBe(true)
+  })
+})
+
+describe('T-2-4: watchSettingsDirectories supplements file-level watching', () => {
+  it('watches both home and project .claude directories when they exist', async () => {
+    const { watchSettingsDirectories } = await import(
+      '../../src/server/claude-code-settings-check'
+    )
+    const watchers = new Map<string, WatchHandler>()
+    const fs = makeFs({
+      watchers,
+      files: {
+        [`${HOME}/.claude/dummy`]: 'x',
+        [`${PROJECT}/.claude/dummy`]: 'x',
+      },
+    })
+    // existsSync returns true only when the path appears in `files` or
+    // `realpaths`; add the directory paths so the helper finds them.
+    const fsAug = {
+      ...fs,
+      existsSync: (path: string) => {
+        if (path === `${HOME}/.claude`) return true
+        if (path === `${PROJECT}/.claude`) return true
+        return (fs.existsSync as (p: string) => boolean)(path)
+      },
+    } as unknown as FileAccessLayer
+    let fired = 0
+    const handle = watchSettingsDirectories(fsAug, PROJECT, () => {
+      fired += 1
+    }, HOME)
+    expect(handle).not.toBeNull()
+    // Two directory watchers attached
+    expect(watchers.size).toBe(2)
+    for (const h of watchers.values()) {
+      h({ type: 'add', path: '/x' })
+    }
+    expect(fired).toBe(2)
+    handle?.close()
+  })
+
+  it('returns null when no .claude directory exists yet', async () => {
+    const { watchSettingsDirectories } = await import(
+      '../../src/server/claude-code-settings-check'
+    )
+    const fs = makeFs() // no files, no realpaths → existsSync returns false
+    const handle = watchSettingsDirectories(fs, PROJECT, () => {}, HOME)
+    expect(handle).toBeNull()
   })
 })
 

@@ -66,6 +66,7 @@ import {
   checkClaudeCodeSettings,
   logCheckResult,
   watchSettingsFile,
+  watchSettingsDirectories,
   shouldLogStartupWarning,
 } from './claude-code-settings-check'
 import { getMenuTsPath } from './services/menu-extractor'
@@ -2613,25 +2614,32 @@ server.listen(PORT, '127.0.0.1', () => {
     if (shouldLogStartupWarning(checkResult, setting)) {
       logCheckResult(checkResult)
     }
+    // Install file-level + directory-level watchers so we cover both
+    // existing settings files (file watcher) and the case where a
+    // settings file appears after startup or moves between user- and
+    // project-level (directory watcher). Both watchers feed the same
+    // re-check + log callback so duplicate events collapse naturally.
+    const installedHandles: Array<{ close: () => void }> = []
+    const rerun = () => {
+      const next = checkClaudeCodeSettings(fs, projectRoot)
+      logCheckResult(next)
+    }
     if (checkResult.settingsFilePath) {
-      const handle = watchSettingsFile(fs, checkResult.settingsFilePath, () => {
-        const rerun = checkClaudeCodeSettings(fs, projectRoot)
-        // Always log mutations; the runtime change is a security event
-        // regardless of dismiss state because it represents user (or
-        // attacker) modifying the recommended-settings posture.
-        logCheckResult(rerun)
-      })
-      if (handle) {
-        // Close the watcher on shutdown so tests that boot/teardown the
-        // server in a loop do not leak chokidar instances.
-        process.once('beforeExit', () => {
+      const fileHandle = watchSettingsFile(fs, checkResult.settingsFilePath, rerun)
+      if (fileHandle) installedHandles.push(fileHandle)
+    }
+    const dirHandle = watchSettingsDirectories(fs, projectRoot, rerun)
+    if (dirHandle) installedHandles.push(dirHandle)
+    if (installedHandles.length > 0) {
+      process.once('beforeExit', () => {
+        for (const handle of installedHandles) {
           try {
             handle.close()
           } catch {
             // best-effort cleanup
           }
-        })
-      }
+        }
+      })
     }
   } catch (err) {
     // Never let the settings check abort startup. Surface the failure

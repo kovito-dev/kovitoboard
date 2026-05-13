@@ -84,13 +84,26 @@ function failClosedResult(
   }
 }
 
+/** Check whether `child` is `parent` itself or a path inside `parent`. */
+function isWithin(child: string, parent: string): boolean {
+  if (child === parent) return true
+  const parentWithSep = parent.endsWith(sep) ? parent : parent + sep
+  return child.startsWith(parentWithSep)
+}
+
 /**
  * Resolve the project-level Claude Code settings file path, applying
- * `fs.realpathSync` so a `.claude` directory symlink that escapes the
- * user's home directory is rejected (T-2-1 mitigation).
+ * `fs.realpathSync` so a `.claude` directory symlink that redirects
+ * outside the project tree is rejected (T-2-1 mitigation).
  *
- * Returns `null` when the file does not exist or when realpath escapes
- * the home directory.
+ * Returns `null` when the file does not exist. Sets `rejected: true`
+ * when the realpath resolution escapes the project root *and* the
+ * user's home directory — both anchors are valid origins for a real
+ * `.claude` file (test fixtures live under `/tmp`, CI workspaces live
+ * under `/runner/_work`, etc.), so the previous "must be under ~"
+ * rule was too strict and broke legitimate installations. We still
+ * reject when a symlink redirects to a third-party location that is
+ * neither the project tree nor the user's home tree.
  */
 function resolveProjectSettingsPath(
   fs: FileAccessLayer,
@@ -109,12 +122,11 @@ function resolveProjectSettingsPath(
     // resolution failure rather than fail-open.
     return { path: null, rejected: true }
   }
-  // T-2-1: require the resolved canonical path to remain under the
-  // user's home directory. Trailing separator on both sides prevents
-  // an unrelated `~user-evil/...` path from looking like a prefix
-  // match of `~user`.
-  const homeWithSep = home.endsWith(sep) ? home : home + sep
-  if (resolved !== home && !resolved.startsWith(homeWithSep)) {
+  // T-2-1: accept when the resolved path stays inside the project
+  // tree (the common case, including symlinks within the project)
+  // OR when it lands inside the user's home directory (a deliberate
+  // user-level shared config). Reject any other redirection.
+  if (!isWithin(resolved, projectRoot) && !isWithin(resolved, home)) {
     return { path: null, rejected: true }
   }
   return { path: resolved, rejected: false }
@@ -141,8 +153,7 @@ function resolveUserSettingsPath(
   } catch {
     return { path: null, rejected: true }
   }
-  const homeWithSep = home.endsWith(sep) ? home : home + sep
-  if (resolved !== home && !resolved.startsWith(homeWithSep)) {
+  if (!isWithin(resolved, home)) {
     return { path: null, rejected: true }
   }
   return { path: resolved, rejected: false }
@@ -506,9 +517,11 @@ export function shouldLogStartupWarning(
  * Convenience: install a watcher on the effective settings file so a
  * runtime mutation (T-2-4) re-runs the check and notifies callers.
  *
- * Returns `null` when there is no path to watch (no settings file at
- * either location yet). Callers should re-attach the watcher after a
- * subsequent check finds a path.
+ * Returns `null` when the watcher could not be installed (e.g. the
+ * underlying `fs.watch` threw). When the settings file does not yet
+ * exist, callers should use `watchSettingsDirectories` to monitor
+ * both `~/.claude/` and `<projectRoot>/.claude/` so a settings file
+ * that appears after startup is picked up without a restart.
  */
 export function watchSettingsFile(
   fs: FileAccessLayer,
@@ -533,6 +546,68 @@ export function watchSettingsFile(
   } catch (err) {
     log.warn({ err, path }, 'Failed to install settings file watcher')
     return null
+  }
+}
+
+/**
+ * Watch the user-level and project-level `.claude/` directories so a
+ * settings file that appears after KB startup (or moves between user-
+ * and project-level) is picked up the next time the check runs.
+ *
+ * This complements `watchSettingsFile` when the initial check could
+ * not pin down an effective path. Callers receive a single `close`
+ * handle that tears down every underlying directory watcher.
+ */
+export function watchSettingsDirectories(
+  fs: FileAccessLayer,
+  projectRoot: string,
+  onMutation: () => void,
+  homeOverride?: string
+): WatchHandle | null {
+  const home = homeOverride ?? homedir()
+  const targets = [
+    join(home, '.claude'),
+    join(resolve(projectRoot), '.claude'),
+  ]
+  const handles: WatchHandle[] = []
+  for (const dir of targets) {
+    if (!fs.existsSync(dir)) continue
+    try {
+      const handle = fs.watch(dir, (event) => {
+        if (
+          event.type === 'add' ||
+          event.type === 'change' ||
+          event.type === 'unlink' ||
+          event.type === 'addDir'
+        ) {
+          try {
+            onMutation()
+          } catch (err) {
+            log.error(
+              { err, event: event.type },
+              'Settings directory mutation handler threw; ignoring'
+            )
+          }
+        } else if (event.type === 'error') {
+          log.warn({ err: event.error }, 'Settings directory watcher reported error')
+        }
+      })
+      handles.push(handle)
+    } catch (err) {
+      log.warn({ err, dir }, 'Failed to install settings directory watcher')
+    }
+  }
+  if (handles.length === 0) return null
+  return {
+    close: () => {
+      for (const h of handles) {
+        try {
+          h.close()
+        } catch {
+          // best-effort
+        }
+      }
+    },
   }
 }
 
