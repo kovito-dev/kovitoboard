@@ -87,11 +87,44 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
       }
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     },
+    // `lstatSync` mirrors `existsSync` semantics so the
+    // `classifyRealpathFailure()` helper can tell a broken symlink
+    // (lstat returns isSymbolicLink) from an absent entry (lstat
+    // throws ENOENT). Broken links register through `brokenLinks`.
+    lstatSync: (path: string) => {
+      if (brokenLinks.has(path)) {
+        return {
+          size: 0,
+          mtime: new Date(0),
+          mtimeMs: 0,
+          isSymbolicLink: true,
+          isFile: false,
+        }
+      }
+      if (path in files || path in realpaths) {
+        return {
+          size: path in files ? Buffer.byteLength(files[path], 'utf-8') : 0,
+          mtime: new Date(0),
+          mtimeMs: 0,
+          isSymbolicLink: false,
+          isFile: true,
+        }
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    },
     realpathSync: (path: string) => {
       if (brokenLinks.has(path)) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
-      return realpaths[path] ?? path
+      if (path in realpaths) return realpaths[path]
+      // Mirror Node's real semantics: realpath on a non-existent path
+      // throws ENOENT. With the production code now driving resolution
+      // through realpath directly (CodeX attempt 12 — path validation
+      // gap), the mock must report ENOENT for absent files so the
+      // `classifyRealpathFailure()` helper takes the missing-entry
+      // branch.
+      if (path in files) return path
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     },
     watch: (path: string, handler: WatchHandler): WatchHandle => {
       watchers.set(path, handler)
@@ -411,6 +444,24 @@ describe('T-2-2: fail-closed on read / parse / schema failure', () => {
     })
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.reason).toBe('schema-mismatch')
+  })
+
+  it('normalizes empty-string permissionMode to __invalid__ (CodeX attempt 12)', () => {
+    // A blank `permissionMode` is NOT equivalent to "unset"; treating
+    // it as the documented default would let a malformed config look
+    // compliant.
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: '',
+          permissions: { deny: ['.kovitoboard/'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.permissionMode.current).toBe('__invalid__')
+    expect(result.permissionMode.ok).toBe(false)
+    expect(result.overallOk).toBe(false)
   })
 })
 

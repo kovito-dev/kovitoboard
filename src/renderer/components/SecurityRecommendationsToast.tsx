@@ -44,7 +44,15 @@ export function SecurityRecommendationsToast({
   onboardingComplete = true,
 }: SecurityRecommendationsToastProps) {
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
-  const [hidden, setHidden] = useState(false)
+  // After a successful dismiss we optimistically suppress the toast
+  // until the next `/api/security/settings-check` response arrives.
+  // The server response is the source of truth for visibility — the
+  // server already evaluates the 24h cooldown + drift comparison —
+  // so we clear this flag as soon as a new state lands, ensuring
+  // the toast resurfaces when the cooldown expires or the user
+  // changes their settings (CodeX attempt 12 — warning suppression
+  // drift).
+  const [optimisticHidden, setOptimisticHidden] = useState(false)
   const [dismissing, setDismissing] = useState(false)
 
   useEffect(() => {
@@ -57,7 +65,14 @@ export function SecurityRecommendationsToast({
           return r.json()
         })
         .then((data: SecurityCheckResponse) => {
-          if (!cancelled) setState(data)
+          if (cancelled) return
+          setState(data)
+          // Clear the optimistic dismiss flag once a fresh server
+          // response is in hand — the server's `suppressToast`
+          // verdict already reflects the cooldown / drift state,
+          // so honoring the local flag any longer would prevent
+          // legitimate re-surfacing (CodeX attempt 12).
+          setOptimisticHidden(false)
         })
         .catch(() => {
           // Fail-closed: surface the warning UX even when
@@ -105,7 +120,7 @@ export function SecurityRecommendationsToast({
         body: JSON.stringify({}),
       })
       if (response.ok) {
-        setHidden(true)
+        setOptimisticHidden(true)
       }
     } catch {
       // best-effort
@@ -115,7 +130,7 @@ export function SecurityRecommendationsToast({
   }, [dismissing])
 
   if (!onboardingComplete) return null
-  if (hidden) return null
+  if (optimisticHidden) return null
   if (!state) return null
   if (state.suppressToast) return null
   if (state.result.overallOk) return null

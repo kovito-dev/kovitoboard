@@ -157,22 +157,57 @@ function isWithin(child: string, parent: string): boolean {
  * preserves the legitimate use case while restoring the T-2-1
  * boundary.
  */
+/**
+ * When `realpathSync()` throws (typically `ENOENT`), we must
+ * distinguish two cases:
+ *
+ *   (a) the candidate directory entry does NOT exist at all → the
+ *       settings file is simply missing; not a fail-closed
+ *       condition.
+ *   (b) the candidate IS a symlink but the target is broken → this
+ *       is a structural path-resolution failure and must be
+ *       reported as `rejected: true` so the rest of the check
+ *       fail-closes (CodeX attempt 12 — path validation gap).
+ *
+ * We use `lstatSync()` (which does NOT follow symlinks) to make
+ * this distinction. An `ENOENT` from `lstatSync()` means the entry
+ * really is absent; a successful `lstatSync()` with
+ * `isSymbolicLink === true` means we are looking at a broken link.
+ */
+function classifyRealpathFailure(
+  fs: FileAccessLayer,
+  candidate: string
+): { path: null; rejected: boolean } {
+  try {
+    const lst = fs.lstatSync(candidate)
+    if (lst.isSymbolicLink) {
+      return { path: null, rejected: true }
+    }
+    // Non-symlink entry exists but realpath still failed — treat as
+    // rejected (something else is wrong with the path).
+    return { path: null, rejected: true }
+  } catch {
+    // The candidate entry does not exist at all.
+    return { path: null, rejected: false }
+  }
+}
+
 function resolveProjectSettingsPath(
   fs: FileAccessLayer,
   projectRoot: string,
   home: string
 ): { path: string | null; rejected: boolean } {
   const candidate = join(projectRoot, '.claude', 'settings.json')
-  if (!fs.existsSync(candidate)) {
-    return { path: null, rejected: false }
-  }
+  // CodeX attempt 12 — drive resolution directly through
+  // `realpathSync` so a broken symlink fails closed instead of
+  // silently masquerading as "no settings file". The `lstat`-based
+  // classifier below distinguishes a missing entry from a broken
+  // link.
   let resolved: string
   try {
     resolved = fs.realpathSync(candidate)
   } catch {
-    // ENOENT (broken symlink) or permission denied — treat as path
-    // resolution failure rather than fail-open.
-    return { path: null, rejected: true }
+    return classifyRealpathFailure(fs, candidate)
   }
   const userClaudePath = join(home, '.claude', 'settings.json')
   if (isWithin(resolved, projectRoot)) {
@@ -196,14 +231,11 @@ function resolveUserSettingsPath(
   home: string
 ): { path: string | null; rejected: boolean } {
   const candidate = join(home, '.claude', 'settings.json')
-  if (!fs.existsSync(candidate)) {
-    return { path: null, rejected: false }
-  }
   let resolved: string
   try {
     resolved = fs.realpathSync(candidate)
   } catch {
-    return { path: null, rejected: true }
+    return classifyRealpathFailure(fs, candidate)
   }
   if (!isWithin(resolved, home)) {
     return { path: null, rejected: true }
@@ -312,11 +344,20 @@ function mergeSettings(
   project: ClaudeCodeRawSettings | null
 ): { permissionMode: string; deny: string[] } {
   const permissionMode = (() => {
+    // CodeX attempt 12 — a present-but-blank `permissionMode` (e.g.
+    // `""` or whitespace only) is NOT equivalent to "unset". Claude
+    // Code may interpret a blank string differently from omitting
+    // the key entirely, and silently falling back to the documented
+    // `'default'` would let a malformed config look compliant. Pass
+    // any present string through to `normalizePermissionMode`, which
+    // collapses unknown values (including blanks) to the
+    // `__invalid__` sentinel before they reach the UI / log layer.
     const projectMode = project?.permissionMode
-    if (typeof projectMode === 'string' && projectMode.length > 0) return projectMode
+    if (typeof projectMode === 'string') return projectMode
     const userMode = user?.permissionMode
-    if (typeof userMode === 'string' && userMode.length > 0) return userMode
-    // Claude Code's documented default is "default" when unspecified.
+    if (typeof userMode === 'string') return userMode
+    // Truly unset (no key in either file) → Claude Code's documented
+    // default is `"default"`.
     return 'default'
   })()
   const denySet = new Set<string>()
