@@ -35,6 +35,7 @@ import {
   readSync as fsReadSync,
   closeSync as fsCloseSync,
   fsyncSync as fsFsyncSync,
+  fstatSync as fsFstatSync,
   fchmodSync as fsFchmodSync,
   fchownSync as fsFchownSync,
 } from 'fs'
@@ -136,6 +137,27 @@ export interface FileAccessLayer {
   readFileSync(path: string, encoding?: BufferEncoding): string
   /** Low-level byte-range read (for watcher.ts JSONL differential parsing) */
   readBytesSync(path: string, offset: number, length: number): Buffer
+  /**
+   * Read a file with a hard byte cap enforced via `fstat` on the open
+   * file descriptor — no separate `statSync` precheck, so an attacker
+   * cannot swap or grow the file between a size check and the read
+   * (CodeX attempt 16 / 17 — resource exhaustion). Returns the file
+   * contents decoded as UTF-8 when `size <= maxBytes`. Returns an
+   * `oversized: true` result when the file exceeds the cap; in that
+   * case no content is loaded into memory.
+   *
+   * Implementations MUST call `fstatSync` on the open fd BEFORE
+   * loading content so an oversized file is rejected without ever
+   * buffering it. Implementations MUST close the fd in a `finally`
+   * branch so a thrown read does not leak descriptors.
+   *
+   * Throws on `open`/`stat`/`read` failures other than the size cap
+   * — the caller treats those as `read-error`.
+   */
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ): { oversized: false; content: string } | { oversized: true; size: number }
 
   // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
@@ -243,6 +265,35 @@ export class DirectFsLayer implements FileAccessLayer {
       fsCloseSync(fd)
     }
     return buffer
+  }
+
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ): { oversized: false; content: string } | { oversized: true; size: number } {
+    const fd = fsOpenSync(path, 'r')
+    try {
+      const stat = fsFstatSync(fd)
+      if (stat.size > maxBytes) {
+        return { oversized: true, size: stat.size }
+      }
+      const buffer = Buffer.alloc(stat.size)
+      let totalRead = 0
+      while (totalRead < stat.size) {
+        const bytesRead = fsReadSync(
+          fd,
+          buffer,
+          totalRead,
+          stat.size - totalRead,
+          totalRead,
+        )
+        if (bytesRead <= 0) break
+        totalRead += bytesRead
+      }
+      return { oversized: false, content: buffer.subarray(0, totalRead).toString('utf-8') }
+    } finally {
+      fsCloseSync(fd)
+    }
   }
 
   writeFileSync(

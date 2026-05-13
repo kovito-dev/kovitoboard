@@ -336,38 +336,38 @@ function validateNestedShape(value: ClaudeCodeRawSettings): boolean {
 /**
  * Read + JSON.parse a settings file with a fail-closed posture.
  *
- * Enforces a 1 MiB size cap *after* the read against the actual byte
- * length of the loaded content. A previous revision performed a
- * separate `statSync(path)` check before `readFileSync(path)` — that
- * gave a TOCTOU window where a project-controlled file could be
- * swapped or grown between the two syscalls (CodeX attempt 16 —
- * resource exhaustion race). By collapsing the check onto the read
- * result we close that window: whatever bytes the read returned are
- * the bytes that get measured and either accepted or rejected.
+ * Uses `fs.readFileBoundedSync` so the 1 MiB cap is enforced against
+ * the actual file size on the open file descriptor BEFORE any bytes
+ * are buffered. This fixes two earlier weaknesses noted by CodeX
+ * reviews:
  *
- * NOTE: `fs.readFileSync` buffers the entire file in memory before
- * returning, so a malicious multi-gigabyte target can still cost RAM
- * during the failed read. We accept that residual exposure here
- * (an attacker must already control project-local file contents to
- * reach this path) and would require a chunked / fd-based reader to
- * close it fully — that lives outside the v0.2.x ② scope.
+ *   - **TOCTOU race** (attempt 16): an earlier revision called
+ *     `statSync(path)` and then `readFileSync(path)` on the same
+ *     path, leaving a window where a repo-controlled file could be
+ *     swapped or grown between the two syscalls. The bounded reader
+ *     opens once and stats the same fd, so no second lookup happens.
+ *   - **Memory bound DoS** (attempt 17): an alternative revision
+ *     read the entire file first and only checked size afterwards,
+ *     which still let a multi-gigabyte target consume RAM before
+ *     rejection. The bounded reader returns `{ oversized: true }`
+ *     after `fstat` and never loads the body.
  */
 function readAndParse(
   fs: FileAccessLayer,
   path: string
 ): { ok: true; value: ClaudeCodeRawSettings } | { ok: false; reason: SettingsCheckReason } {
-  let raw: string
+  let read: ReturnType<FileAccessLayer['readFileBoundedSync']>
   try {
-    raw = fs.readFileSync(path, 'utf-8')
+    read = fs.readFileBoundedSync(path, SETTINGS_FILE_SIZE_LIMIT_BYTES)
   } catch {
     return { ok: false, reason: 'read-error' }
   }
-  if (Buffer.byteLength(raw, 'utf-8') > SETTINGS_FILE_SIZE_LIMIT_BYTES) {
+  if (read.oversized) {
     return { ok: false, reason: 'file-too-large' }
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(read.content)
   } catch {
     return { ok: false, reason: 'parse-error' }
   }

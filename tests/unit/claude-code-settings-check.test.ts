@@ -74,6 +74,18 @@ function makeFs(opts: MockFsOptions = {}): FileAccessLayer {
       if (path in files) return files[path]
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     },
+    readFileBoundedSync: (path: string, maxBytes: number) => {
+      if (unreadable.has(path)) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+      }
+      if (!(path in files)) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      }
+      const content = files[path]
+      const size = Buffer.byteLength(content, 'utf-8')
+      if (size > maxBytes) return { oversized: true, size }
+      return { oversized: false, content }
+    },
     statSync: (path: string) => {
       if (path in statSizes) {
         return { size: statSizes[path], mtime: new Date(0), mtimeMs: 0 }
