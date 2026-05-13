@@ -49,10 +49,27 @@ import { useEffect, useRef, type ComponentType } from 'react'
 import { injectKb } from './injectKb'
 import { hostFetchWithInternalAuth } from './hostBootstrap'
 import { createLogger } from '../lib/logger'
+import { TrustProvider } from './TrustContext'
+import { TrustMarker } from '../components/TrustMarker'
+import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 
 interface Props {
   appId: string
   Page: ComponentType
+  /**
+   * Trust-axis value resolved from the active recipe manifest,
+   * narrowed to {@link RecipePageTrustLevel} so `'KB-trusted'` is
+   * statically excluded at the recipe-page boundary. `null` is the
+   * legitimate "no manifest registered yet" state — the trust
+   * marker hides itself rather than rendering a misleading badge.
+   *
+   * Propagated to children via the trust context so any KB-provided
+   * widget rendered inside the recipe page can read the value
+   * without prop drilling.
+   *
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
+   */
+  trustLevel: RecipePageTrustLevel | null
 }
 
 const sentinelLog = createLogger('host-bootstrap-sentinel')
@@ -99,7 +116,7 @@ function emitHostBootstrapSentinel(
   })
 }
 
-export function RecipePageHost({ appId, Page }: Props) {
+export function RecipePageHost({ appId, Page, trustLevel }: Props) {
   // `current` holds the recipe id we last bound `window.kb` to and the
   // cleanup returned by that injectKb call.
   const ref = useRef<{ appId: string; cleanup: () => void } | null>(null)
@@ -139,5 +156,35 @@ export function RecipePageHost({ appId, Page }: Props) {
     }
   }, [])
 
-  return <Page />
+  // The `/ext/<appId>` router contract is that every recipe page
+  // route is wrapped in `RecipePageHost`. The trust marker + context
+  // are rendered from the host wrapper so the renderer guarantees
+  // they are *attempted* on every recipe mount.
+  //
+  // Honest claim (recipe-system.md v1.7.3 §6.10.6.11
+  // "v0.2.x-known-limitation: same-realm transport interception"):
+  // this is a visibility signal, not a structural boundary. Recipe
+  // code runs in the same DOM / JS / CSS scope, so a hostile recipe
+  // can hide or remove `[data-testid="recipe-trust-header"]` via
+  // global CSS, direct DOM mutation, or runtime patching of
+  // `React.createElement`. v0.3.0 isolation work
+  // (recipe-system.md v1.7.3 §6.10.6.12) is where the structural
+  // version of this defence will live; until then the marker
+  // reduces forgeability for honest-but-mistaken recipes and
+  // surfaces the trust level to attentive users.
+  return (
+    <TrustProvider value={trustLevel}>
+      <div className="flex flex-1 flex-col">
+        <header
+          data-testid="recipe-trust-header"
+          className="flex items-center justify-start gap-2 px-4 pt-2"
+        >
+          <TrustMarker level={trustLevel} />
+        </header>
+        <div className="flex-1">
+          <Page />
+        </div>
+      </div>
+    </TrustProvider>
+  )
 }

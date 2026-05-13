@@ -487,7 +487,11 @@ export function App() {
                         {t('common.loading')}
                       </div>
                     }>
-                      <RecipePageHost appId={entry.id} Page={LazyPage} />
+                      <RecipePageHost
+                        appId={entry.id}
+                        Page={LazyPage}
+                        trustLevel={entry.trustLevel}
+                      />
                     </Suspense>
                   }
                 />

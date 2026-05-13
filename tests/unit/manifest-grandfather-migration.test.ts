@@ -14,8 +14,16 @@
  * grandfather installs land on step 3 (`CaptureNotDeclared`) of the
  * capture-route flow rather than step 4 (`CaptureNotApproved`).
  */
-import { describe, expect, it } from 'vitest'
-import { applyGrandfatherMigration } from '../../src/server/recipeManifestStore'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import {
+  applyGrandfatherMigration,
+  RecipeManifestStore,
+} from '../../src/server/recipeManifestStore'
+import { DirectFsLayer } from '../../src/server/fs-layer'
+import { initLogger } from '../../src/server/logger'
 
 function legacyManifest(): Record<string, unknown> {
   return {
@@ -91,5 +99,117 @@ describe('applyGrandfatherMigration', () => {
     expect(manifest.captureRequires).toEqual([])
     expect(manifest.approvedCaptures).toEqual([])
     expect(manifest.trustLevel).toBe('unknown')
+  })
+})
+
+describe('RecipeManifestStore.loadAll — KB-trusted ingress refusal (defence-in-depth)', () => {
+  let tmp: string
+
+  beforeAll(async () => {
+    // `recipeLogger.warn` reaches the lazy proxy on the rejection
+    // path; without the root logger init the proxy throws on access.
+    const root = mkdtempSync(join(tmpdir(), 'kb-manifest-kbtrust-logroot-'))
+    mkdirSync(join(root, '.kovitoboard', 'logs'), { recursive: true })
+    await initLogger(root, null)
+  })
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'kb-manifest-kbtrust-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  function writeManifest(appId: string, body: Record<string, unknown>): void {
+    // The store keys off `<kovitoboardDir>/recipes-installed/<appId>/manifest.json`,
+    // so we materialise the same shape on disk for the test.
+    const dir = join(tmp, 'recipes-installed', appId)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(body, null, 2), 'utf-8')
+  }
+
+  it('skips a manifest that declares trustLevel "KB-trusted" (recipe ingress fails closed)', () => {
+    // `KB-trusted` passes the enum check (it lives in the broader
+    // trust-axis union) but must never accompany a recipe manifest.
+    // The validator marks this as malformed and `loadAll` drops the
+    // manifest from the cache — the dispatcher then refuses the
+    // recipe entirely instead of inflating the badge.
+    writeManifest('forged-app', {
+      appId: 'forged-app',
+      recipeId: 'forged-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'KB-trusted',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    expect(store.get('forged-app')).toBeNull()
+  })
+
+  it('accepts a manifest that declares trustLevel "unknown" (positive control)', () => {
+    writeManifest('clean-app', {
+      appId: 'clean-app',
+      recipeId: 'clean-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'unknown',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    const m = store.get('clean-app')
+    expect(m).not.toBeNull()
+    expect(m!.trustLevel).toBe('unknown')
+  })
+
+  it('skips a manifest that declares trustLevel "code-trusted" in v0.2.x (no verification path)', () => {
+    // v0.2.x has no signature / sideload flow that can mint a
+    // non-`'unknown'` recipe manifest, so a persisted `code-trusted`
+    // record can only have come from a hand-edit, a corruption, or
+    // a v0.3.0 manifest restored into a v0.2.x runtime — none of
+    // which the renderer can verify. Fail closed.
+    writeManifest('inflated-app', {
+      appId: 'inflated-app',
+      recipeId: 'inflated-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    expect(store.get('inflated-app')).toBeNull()
+  })
+
+  it('skips a manifest that declares trustLevel "code-trusted (sideloaded)" in v0.2.x', () => {
+    writeManifest('side-app', {
+      appId: 'side-app',
+      recipeId: 'side-recipe',
+      recipeVersion: '1.0.0',
+      hash: 'deadbeef',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (sideloaded)',
+    })
+    const store = new RecipeManifestStore(tmp, new DirectFsLayer())
+    store.loadAll()
+    expect(store.get('side-app')).toBeNull()
   })
 })

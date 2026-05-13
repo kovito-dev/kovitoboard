@@ -15,6 +15,8 @@
  * @stable v0.1.0
  */
 
+import type { TrustLevel } from '../recipe/apiTypes'
+
 // =========================================
 // Error codes
 // =========================================
@@ -394,6 +396,30 @@ export const HARDCODED_EXCLUSIONS = [
 // =========================================
 
 /**
+ * Trust-axis value persisted on every handler-call audit entry.
+ *
+ * Superset of {@link TrustLevel} with an extra `'context-missing'`
+ * sentinel for the manifest-load-failure / context-bypass paths.
+ * Conflating those failure modes with the grandfather `'unknown'`
+ * value would lose attack-vector detection during forensic analysis
+ * (T-3-4 in the v1.1 trust-marker handoff supplement).
+ *
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis)
+ * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §8.4 (I-8)
+ * @stable v0.2.0
+ */
+export type AuditTrustLevel = TrustLevel | 'context-missing'
+
+/** All audit-trust enum values, exported for validation helpers. */
+export const AUDIT_TRUST_LEVELS: readonly AuditTrustLevel[] = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+  'context-missing',
+] as const
+
+/**
  * Schema for a single audit log entry.
  * Written in JSONL format to `app/data/{appId}/_audit.log`.
  * @see recipe-system.md §12-6 (future)
@@ -422,6 +448,22 @@ export interface AuditLogEntry {
   errorCode?: HandlerErrorCode
   /** Processing duration (ms) */
   durationMs: number
+  /**
+   * Trust-axis value captured at handler dispatch time (v0.2.0).
+   *
+   * Required field — TypeScript compile-time enforcement guarantees
+   * every dispatch path threads the active manifest's `trustLevel`
+   * (or the `'context-missing'` sentinel when no manifest could be
+   * resolved) into the audit trail. Forensic analysis depends on the
+   * distinction between `'unknown'` (grandfather recipe ran as
+   * expected) and `'context-missing'` (manifest lookup failed, the
+   * audit entry exists but no trust signal is available).
+   *
+   * @see recipe-system.md v1.4 §6.10.5 (audit log trust injection)
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §8 (T-3-4)
+   * @stable v0.2.0
+   */
+  trust: AuditTrustLevel
 }
 
 /**

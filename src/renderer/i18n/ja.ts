@@ -525,6 +525,17 @@ const ja = {
   'trust.tmux.copied': '✓ コピー済み',
   'trust.rawBuffer.title': '実メッセージ（末尾）',
 
+  // Trust marker + preamble warning（レシピの信頼軸、v0.2.0）
+  'trust.level.kbTrusted': 'KB 信頼済',
+  'trust.level.codeTrusted': 'コード信頼済（署名）',
+  'trust.level.codeTrustedSideloaded': 'コード信頼済（サイドロード）',
+  'trust.level.unknown': '不明（グランドファーザー）',
+  'trust.marker.ariaLabel': 'レシピの信頼レベル: {label}',
+  'trust.unknown.reinstall': 'KovitoHub (v0.3.0) 経由で再インストールして検証',
+  'trust.preamble.fromApp': 'このコンテンツは app から: {appId}',
+  'trust.preamble.fromUserPaste': 'このコンテンツはユーザーの貼り付けから',
+  'trust.preamble.fromUnknown': 'このコンテンツは検証されていない情報源から',
+
   // エージェント詳細
   'agent.detail.tab.profile': 'プロフィール',
   'agent.detail.tab.sessions': 'セッション履歴',

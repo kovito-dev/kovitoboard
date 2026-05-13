@@ -526,6 +526,17 @@ const en: Record<MessageKey, string> = {
   'trust.tmux.copied': 'Copied',
   'trust.rawBuffer.title': 'Actual message (tail)',
 
+  // Trust marker + preamble warning (recipe trust axis, v0.2.0)
+  'trust.level.kbTrusted': 'KB-trusted',
+  'trust.level.codeTrusted': 'Code-trusted (signed)',
+  'trust.level.codeTrustedSideloaded': 'Code-trusted (sideloaded)',
+  'trust.level.unknown': 'Unknown (grandfather)',
+  'trust.marker.ariaLabel': 'Recipe trust level: {label}',
+  'trust.unknown.reinstall': 'Re-install via KovitoHub (v0.3.0) to verify',
+  'trust.preamble.fromApp': 'This content originated from app: {appId}',
+  'trust.preamble.fromUserPaste': 'This content originated from user paste',
+  'trust.preamble.fromUnknown': 'This content originated from an unverified source',
+
   // Agent detail
   'agent.detail.tab.profile': 'Profile',
   'agent.detail.tab.sessions': 'Session history',
