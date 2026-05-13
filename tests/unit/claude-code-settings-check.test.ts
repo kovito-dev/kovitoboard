@@ -651,6 +651,26 @@ describe('T-2-3: dismiss state evaluation', () => {
     const evaluation = evaluateDismiss(baseResult, dismissed)
     expect(evaluation.suppressToast).toBe(false)
   })
+
+  it('does NOT suppress when the current check is fail-closed (CodeX attempt 11)', () => {
+    // Even when a perfectly-crafted dismiss record exists, a
+    // fail-closed `reason` (read-error / parse-error /
+    // path-resolution-rejected / etc) must always re-surface the
+    // warning — otherwise an attacker that can write
+    // `.kovitoboard/setting.json` could silence "unreadable
+    // settings" warnings.
+    const failClosed: SettingsCheckResult = {
+      ...baseResult,
+      reason: 'read-error',
+      permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
+    }
+    const dismissed: ClaudeCodeSettingsWarning = {
+      dismissedAt: new Date().toISOString(),
+      dismissedResult: failClosed,
+    }
+    const evaluation = evaluateDismiss(failClosed, dismissed)
+    expect(evaluation.suppressToast).toBe(false)
+  })
 })
 
 describe('buildDismissRecord', () => {

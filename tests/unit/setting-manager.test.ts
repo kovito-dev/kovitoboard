@@ -121,4 +121,43 @@ describe('validateSetting', () => {
     }
     expect(validateSetting(bad)).toBe(false)
   })
+
+  // CodeX attempt 11 — defense-in-depth: a persisted dismiss snapshot
+  // must capture a non-fail-closed check result. Otherwise an
+  // on-disk edit can silence "unreadable settings" warnings.
+  it('rejects claudeCodeSettingsWarning whose dismissedResult.reason is not "ok"', () => {
+    const bad = {
+      ...validSetting,
+      claudeCodeSettingsWarning: {
+        dismissedAt: '2026-05-13T11:00:00Z',
+        dismissedResult: {
+          permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
+          denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
+          bypassMode: { active: false, ok: false },
+          overallOk: false,
+          reason: 'read-error',
+          settingsFilePath: null,
+        },
+      },
+    }
+    expect(validateSetting(bad)).toBe(false)
+  })
+
+  it('accepts claudeCodeSettingsWarning with reason="ok"', () => {
+    const good = {
+      ...validSetting,
+      claudeCodeSettingsWarning: {
+        dismissedAt: '2026-05-13T11:00:00Z',
+        dismissedResult: {
+          permissionMode: { current: 'default', recommended: 'default', ok: true },
+          denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
+          bypassMode: { active: false, ok: true },
+          overallOk: false,
+          reason: 'ok',
+          settingsFilePath: null,
+        },
+      },
+    }
+    expect(validateSetting(good)).toBe(true)
+  })
 })

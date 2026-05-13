@@ -22,13 +22,23 @@
 import { useEffect, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
 import { t } from '../../i18n'
+import type { SettingsCheckResult } from '../../../shared/setting-types'
 import {
   type SecurityCheckResponse,
   buildFetchFailureResponse,
 } from '../../lib/securityCheckResponse'
 
 interface StepSecurityProps {
-  onNext: () => void
+  /**
+   * Called when the user advances out of the Security step. The
+   * `reviewedResult` argument carries the EXACT check result the user
+   * acknowledged so the caller can persist it as the dismiss
+   * snapshot. `null` is passed when the fetch failed (fail-closed
+   * banner branch) — the caller should NOT seed a dismiss record in
+   * that case because fail-closed states are non-dismissible by
+   * design (CodeX attempt 11 — stale acknowledgement snapshot).
+   */
+  onNext: (reviewedResult: SettingsCheckResult | null) => void
   onBack: () => void
 }
 
@@ -65,7 +75,15 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
 
   const handleNext = useCallback(() => {
     if (!acknowledged && state && !state.result.overallOk) return
-    onNext()
+    // Hand off the exact snapshot the user just acknowledged so the
+    // dismiss record reflects the reviewed state, not whatever the
+    // settings file happens to look like at completion time (CodeX
+    // attempt 11 — stale acknowledgement snapshot). Fail-closed
+    // results bypass the dismiss seed by passing `null`.
+    const reviewed: SettingsCheckResult | null = state?.result.reason === 'ok'
+      ? state.result
+      : null
+    onNext(reviewed)
   }, [acknowledged, state, onNext])
 
   // Allow Next without an explicit acknowledge when everything is OK

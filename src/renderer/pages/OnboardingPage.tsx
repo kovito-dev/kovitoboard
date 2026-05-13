@@ -55,6 +55,12 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   const [projectDescription, setProjectDescription] = useState('')
   const [conciergeAdded, setConciergeAdded] = useState(false)
   const [projectRoot, setProjectRoot] = useState('')
+  // Captures the exact `SettingsCheckResult` the user acknowledged in
+  // StepSecurity so handleComplete can persist that snapshot — not a
+  // fresh re-fetch that might disagree with what the user actually
+  // saw (CodeX attempt 11 — stale acknowledgement snapshot).
+  const [reviewedSecurityResult, setReviewedSecurityResult] =
+    useState<SettingsCheckResult | null>(null)
   // Tracks whether handleComplete is in flight so the final button can
   // show a spinner and stay disabled until the full-page reload fires.
   const [isCompleting, setIsCompleting] = useState(false)
@@ -110,54 +116,38 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     setStep(5)
   }, [])
 
-  const handleSecurityNext = useCallback(() => {
-    setStep(6)
-  }, [])
+  const handleSecurityNext = useCallback(
+    (reviewedResult: SettingsCheckResult | null) => {
+      setReviewedSecurityResult(reviewedResult)
+      setStep(6)
+    },
+    [],
+  )
 
   const handleComplete = useCallback(async () => {
     if (isCompleting) return
     setIsCompleting(true)
 
-    // Fetch the current Claude Code recommended-settings check so we
-    // can seed `claudeCodeSettingsWarning` with the reviewed snapshot.
-    // Persisting a real dismiss record (vs a bare reviewedAt
-    // timestamp) means the standard drift comparison applies: if the
-    // user changes their Claude Code settings after onboarding, the
-    // toast re-surfaces because the snapshot no longer matches
-    // (CodeX attempt 3 — stale security suppression).
+    // Seed `claudeCodeSettingsWarning` with the EXACT snapshot the
+    // user just acknowledged in StepSecurity, instead of re-fetching
+    // at completion time and risking divergence from the reviewed
+    // state. The dismiss endpoint already refuses to persist
+    // fail-closed dismiss records server-side, so StepSecurity hands
+    // off `null` for those states and we simply omit the field.
+    // (CodeX attempt 3 — stale security suppression; attempt 6 —
+    // fail-closed suppression bypass; attempt 11 — stale
+    // acknowledgement snapshot.)
     let securityWarning: ClaudeCodeSettingsWarning | undefined
-    try {
-      const res = await kbFetch('/api/security/settings-check')
-      if (res.ok) {
-        const data = (await res.json()) as {
-          result: SettingsCheckResult
-        }
-        const result = data.result
-        // Only seed a dismiss record for a *real* recommendation
-        // mismatch — fail-closed reasons (read-error / parse-error /
-        // schema-mismatch / path-resolution-rejected / file-too-large)
-        // describe a structural inability to read the Claude Code
-        // settings, and the dismiss endpoint already refuses to
-        // persist a dismiss in those states server-side. Seeding here
-        // would let onboarding acknowledgement quietly suppress the
-        // 24h cooldown even though every other surface treats
-        // fail-closed as non-dismissible (CodeX attempt 6 —
-        // fail-closed suppression bypass).
-        if (
-          result &&
-          !result.overallOk &&
-          !result.bypassMode.active &&
-          result.reason === 'ok'
-        ) {
-          securityWarning = {
-            dismissedAt: new Date().toISOString(),
-            dismissedResult: { ...result, settingsFilePath: null },
-          }
-        }
+    if (
+      reviewedSecurityResult &&
+      !reviewedSecurityResult.overallOk &&
+      !reviewedSecurityResult.bypassMode.active &&
+      reviewedSecurityResult.reason === 'ok'
+    ) {
+      securityWarning = {
+        dismissedAt: new Date().toISOString(),
+        dismissedResult: { ...reviewedSecurityResult, settingsFilePath: null },
       }
-    } catch {
-      // Best-effort: a fetch failure simply means the toast will
-      // surface on /agents until the user dismisses it manually.
     }
 
     // Save setting via API
@@ -288,7 +278,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       ? '/agents/kovito-concierge?openLatestSession=1'
       : '/'
     window.location.assign(target)
-  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance])
+  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance, reviewedSecurityResult])
 
   const renderStep = () => {
     switch (step) {

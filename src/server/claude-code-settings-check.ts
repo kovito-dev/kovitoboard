@@ -626,6 +626,18 @@ export function evaluateDismiss(
     // I-8: bypass mode active re-surfaces unconditionally.
     return { suppressToast: false, effectiveExpiresAt: null }
   }
+  // Fail-closed states must never be dismissable, regardless of what
+  // is recorded in `claudeCodeSettingsWarning`. The HTTP dismiss
+  // route already refuses to *create* such a record server-side, but
+  // a locally crafted `.kovitoboard/setting.json` (for example a
+  // recipe with write access that injects a matching snapshot) could
+  // otherwise still suppress the warning here. Short-circuit before
+  // the snapshot comparison so the "unreadable settings cannot be
+  // dismissed" guarantee holds end-to-end (CodeX attempt 11 —
+  // warning suppression bypass).
+  if (current.reason !== 'ok') {
+    return { suppressToast: false, effectiveExpiresAt: null }
+  }
 
   if (!warning) return { suppressToast: false, effectiveExpiresAt: null }
   const dismissedAt = Date.parse(warning.dismissedAt)

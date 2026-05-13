@@ -182,6 +182,14 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
     if (dr.permissionMode === null || typeof dr.permissionMode !== 'object') return false
     if (dr.denyPattern === null || typeof dr.denyPattern !== 'object') return false
     if (dr.bypassMode === null || typeof dr.bypassMode !== 'object') return false
+    // CodeX attempt 11 — defense-in-depth: a persisted dismiss
+    // snapshot is only meaningful when it captures a non-fail-closed
+    // check result. Reject saved records whose `reason !== 'ok'` so a
+    // crafted file cannot keep an "unreadable settings" warning
+    // suppressed across reads. The HTTP dismiss endpoint already
+    // refuses to write such a record server-side; this validator
+    // closes the equivalent loophole for direct on-disk edits.
+    if (dr.reason !== 'ok') return false
   }
 
   return true
