@@ -2623,7 +2623,6 @@ server.listen(PORT, '127.0.0.1', () => {
     // amplify into repeated log entries (CodeX attempt 7 — log
     // amplification / resource exhaustion).
     const installedHandles: Array<{ close: () => void }> = []
-    let lastEmittedSignature: string | null = null
     function rerunSignature(r: ReturnType<typeof checkClaudeCodeSettings>): string {
       return [
         r.overallOk ? '1' : '0',
@@ -2634,6 +2633,12 @@ server.listen(PORT, '127.0.0.1', () => {
         r.bypassMode.active ? '1' : '0',
       ].join('|')
     }
+    // Seed the dedupe signature from the startup state so the first
+    // watcher-triggered rerun does not re-log the same warning when
+    // the state has not actually changed (CodeX attempt 15 — log
+    // deduplication). Must be initialized AFTER the helper is
+    // hoisted but BEFORE the watchers are installed.
+    let lastEmittedSignature: string | null = rerunSignature(checkResult)
     const rerun = () => {
       const next = checkClaudeCodeSettings(fs, projectRoot)
       const signature = rerunSignature(next)

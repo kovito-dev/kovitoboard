@@ -206,6 +206,22 @@ function isNodeError(value: unknown): value is { code?: string } {
   return typeof value === 'object' && value !== null && 'code' in value
 }
 
+/**
+ * Confirm that the resolved settings target is a regular file. A
+ * FIFO / device / socket / directory would otherwise block the
+ * synchronous `readFileSync` below indefinitely (CodeX attempt 15 —
+ * special file DoS). `lstatSync` runs against the post-realpath
+ * canonical target, so symlinks have already been followed.
+ */
+function isRegularFile(fs: FileAccessLayer, resolved: string): boolean {
+  try {
+    const lst = fs.lstatSync(resolved)
+    return lst.isFile && !lst.isSymbolicLink
+  } catch {
+    return false
+  }
+}
+
 function resolveProjectSettingsPath(
   fs: FileAccessLayer,
   projectRoot: string,
@@ -224,13 +240,17 @@ function resolveProjectSettingsPath(
     return classifyRealpathFailure(fs, candidate)
   }
   const userClaudePath = join(home, '.claude', 'settings.json')
-  if (isWithin(resolved, projectRoot)) {
-    return { path: resolved, rejected: false }
+  const withinScope =
+    isWithin(resolved, projectRoot) || resolved === userClaudePath
+  if (!withinScope) {
+    return { path: null, rejected: true }
   }
-  if (resolved === userClaudePath) {
-    return { path: resolved, rejected: false }
+  if (!isRegularFile(fs, resolved)) {
+    // CodeX attempt 15 — non-regular targets (FIFOs, devices,
+    // sockets, directories) would block the synchronous read.
+    return { path: null, rejected: true }
   }
-  return { path: null, rejected: true }
+  return { path: resolved, rejected: false }
 }
 
 /**
@@ -258,6 +278,10 @@ function resolveUserSettingsPath(
   // directory (e.g. `~/configs/some-other-app.json`). Only the
   // canonical destination matches the documented Claude Code surface.
   if (resolved !== candidate) {
+    return { path: null, rejected: true }
+  }
+  if (!isRegularFile(fs, resolved)) {
+    // CodeX attempt 15 — non-regular targets must fail closed.
     return { path: null, rejected: true }
   }
   return { path: resolved, rejected: false }

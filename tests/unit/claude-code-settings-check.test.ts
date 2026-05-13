@@ -272,6 +272,36 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     expect(result.reason).toBe('path-resolution-rejected')
   })
 
+  it('rejects when the resolved settings target is not a regular file (CodeX attempt 15)', () => {
+    // Drive the production code through a FIFO/device/socket target:
+    // realpathSync resolves cleanly, but lstatSync on the resolved
+    // path reports `isFile: false`. Without the new isRegularFile
+    // gate, the subsequent readFileSync would block.
+    const baseFs = makeFs({
+      files: { [projectPath()]: '{}' },
+    })
+    const fifoLstat = {
+      size: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      isSymbolicLink: false,
+      isFile: false,
+    }
+    const fs = {
+      ...baseFs,
+      lstatSync: (path: string) => {
+        if (path === projectPath()) return fifoLstat
+        // Fall back to baseFs default behavior for everything else.
+        return (
+          (baseFs.lstatSync as (p: string) => typeof fifoLstat)(path)
+        )
+      },
+    } as unknown as FileAccessLayer
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('path-resolution-rejected')
+    expect(result.overallOk).toBe(false)
+  })
+
   it('rejects when realpath fails with a non-ENOENT errno like EACCES (CodeX attempt 14)', () => {
     // Drive the production code through a permission-denied path:
     // realpathSync throws EACCES, and the lstatSync fallback also
