@@ -44,9 +44,31 @@ export function isSecurityCheckResponse(value: unknown): value is SecurityCheckR
   const r = result as Record<string, unknown>
   if (typeof r.overallOk !== 'boolean') return false
   if (typeof r.reason !== 'string') return false
+
+  // CodeX attempt 28 — extend the guard to the leaf fields the UI
+  // actually reads. A partial payload that ships only `permissionMode:
+  // {}` would otherwise slip past the object check and crash the
+  // renderer when it reaches `result.permissionMode.current`.
   if (r.permissionMode === null || typeof r.permissionMode !== 'object') return false
+  const pm = r.permissionMode as Record<string, unknown>
+  if (typeof pm.current !== 'string') return false
+  if (typeof pm.recommended !== 'string') return false
+  if (typeof pm.ok !== 'boolean') return false
+
   if (r.denyPattern === null || typeof r.denyPattern !== 'object') return false
+  const dp = r.denyPattern as Record<string, unknown>
+  if (typeof dp.hasKovitoboardDeny !== 'boolean') return false
+  if (typeof dp.ok !== 'boolean') return false
+  if (typeof dp.remediation !== 'string') return false
+
   if (r.bypassMode === null || typeof r.bypassMode !== 'object') return false
+  const bm = r.bypassMode as Record<string, unknown>
+  if (typeof bm.active !== 'boolean') return false
+  if (typeof bm.ok !== 'boolean') return false
+
+  if (r.settingsFilePath !== null && typeof r.settingsFilePath !== 'string') {
+    return false
+  }
   return true
 }
 
