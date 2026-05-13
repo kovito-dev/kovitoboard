@@ -49,7 +49,7 @@ import { useEffect, useRef, type ComponentType } from 'react'
 import { injectKb } from './injectKb'
 import { hostFetchWithInternalAuth } from './hostBootstrap'
 import { createLogger } from '../lib/logger'
-import { TrustContext } from './TrustContext'
+import { TrustProvider } from './TrustContext'
 import { TrustMarker } from '../components/TrustMarker'
 import type { TrustLevelValue } from '../../shared/recipe-types'
 
@@ -172,7 +172,7 @@ export function RecipePageHost({ appId, Page, trustLevel }: Props) {
   // reduces forgeability for honest-but-mistaken recipes and
   // surfaces the trust level to attentive users.
   return (
-    <TrustContext.Provider value={trustLevel}>
+    <TrustProvider value={trustLevel}>
       <div className="flex flex-1 flex-col">
         <header
           data-testid="recipe-trust-header"
@@ -184,6 +184,6 @@ export function RecipePageHost({ appId, Page, trustLevel }: Props) {
           <Page />
         </div>
       </div>
-    </TrustContext.Provider>
+    </TrustProvider>
   )
 }

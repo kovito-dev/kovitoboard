@@ -196,8 +196,15 @@ export function readUserMenuEntries(
  * installed `appId` while pointing `component` at a different
  * directory: such a row would otherwise inherit the manifest's
  * trust badge and let attacker-authored UI borrow a trusted signal.
+ *
+ * Exported so unit tests can exercise the bypass cases directly
+ * (absolute paths, backslash separators, nested traversal) without
+ * having to drive the regex through `parseMenuTs` first — the
+ * parser regex already filters most of these shapes out, but the
+ * canonical-path check is the SSOT and should be testable on its
+ * own.
  */
-function isCanonicalAppIdPath(page: string, appId: string): boolean {
+export function isCanonicalAppIdPath(page: string, appId: string): boolean {
   // Cheap structural rejections first: forward slash is the only
   // separator the recipe layout uses on disk and the only separator
   // the parser's regex emits, so any backslash or leading slash is

@@ -21,7 +21,10 @@
  * production path without writing to the host disk.
  */
 import { describe, it, expect } from 'vitest'
-import { readUserMenuEntries } from '../../src/server/services/menu-extractor'
+import {
+  isCanonicalAppIdPath,
+  readUserMenuEntries,
+} from '../../src/server/services/menu-extractor'
 import type { FileAccessLayer } from '../../src/server/fs-layer'
 
 const MENU_TS_BODY = [
@@ -161,27 +164,6 @@ describe('readUserMenuEntries — trustLevel lookup', () => {
     expect(entries[0].trustLevel).toBeNull()
   })
 
-  it('refuses absolute-path imports (defence-in-depth)', () => {
-    // Even though the parser regex requires `./` prefix and would
-    // not match `/etc/evil`, defend in depth: if a future parser
-    // change passed through an absolute or backslash-prefixed
-    // string, the canonical check must still reject it.
-    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    const fs = makeMockFs(projectRoot, {
-      [menuPath]: MENU_TS_BODY,
-    })
-    const entries = readUserMenuEntries(fs, (appId) =>
-      appId === 'doc-viewer' ? 'code-trusted' : null,
-    )
-    // Manually rewrite the parsed page to simulate the bypass case;
-    // the lookup happens in the same loop so editing in-place would
-    // race the assertion. Instead we verify the regex output stays
-    // canonical for the legitimate input above.
-    expect(entries[0].id).toBe('doc-viewer')
-    expect(entries[0].page).toBe('doc-viewer/pages/Index')
-    expect(entries[0].trustLevel).toBe('code-trusted')
-  })
-
   it('accepts entries whose page is the entry id itself (single-file recipe convention)', () => {
     // `recipe-applicator.ts` can emit a page that is exactly the
     // appId for single-page recipes (e.g. `component: () =>
@@ -200,5 +182,55 @@ describe('readUserMenuEntries — trustLevel lookup', () => {
       appId === 'foo' ? 'unknown' : null,
     )
     expect(entries[0].trustLevel).toBe('unknown')
+  })
+})
+
+describe('isCanonicalAppIdPath — direct coverage of the spoof guard', () => {
+  // Exercise bypass shapes the regex-driven `parseMenuTs` filters
+  // out before they reach `readUserMenuEntries`. The canonical-path
+  // helper is the SSOT for "is this menu row bound to the install
+  // directory we hand the trust badge to?" — it must reject these
+  // explicitly even if the parser changes upstream.
+
+  it('rejects an absolute POSIX path that happens to start with the appId', () => {
+    expect(isCanonicalAppIdPath('/doc-viewer/pages/Index', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects a Windows-style backslash separator', () => {
+    expect(isCanonicalAppIdPath('doc-viewer\\pages\\Index', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects a leading backslash', () => {
+    expect(isCanonicalAppIdPath('\\doc-viewer\\pages', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects parent-directory traversal segments that re-prefix the canonical id', () => {
+    expect(isCanonicalAppIdPath('doc-viewer/../evil-app/pages/Index', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects nested traversal that still lands outside <appId>/', () => {
+    expect(isCanonicalAppIdPath('doc-viewer/sub/../../evil-app/Index', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects an empty page string', () => {
+    expect(isCanonicalAppIdPath('', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects a foreign-directory page that shares no prefix', () => {
+    expect(isCanonicalAppIdPath('evil-app/pages/Index', 'doc-viewer')).toBe(false)
+  })
+
+  it('rejects a near-miss prefix (`doc-viewer-extra/...`)', () => {
+    // Prefix string-match without the separator boundary would let
+    // `doc-viewer-extra` borrow the doc-viewer badge.
+    expect(isCanonicalAppIdPath('doc-viewer-extra/pages', 'doc-viewer')).toBe(false)
+  })
+
+  it('accepts the canonical nested page layout', () => {
+    expect(isCanonicalAppIdPath('doc-viewer/pages/Index', 'doc-viewer')).toBe(true)
+  })
+
+  it('accepts the single-file convention where page equals appId', () => {
+    expect(isCanonicalAppIdPath('doc-viewer', 'doc-viewer')).toBe(true)
   })
 })
