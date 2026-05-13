@@ -461,48 +461,15 @@ describe('buildDismissRecord', () => {
   })
 })
 
-describe('evaluateDismiss — onboarding review cooldown', () => {
-  it('suppresses toast within 24h of the onboarding review timestamp', async () => {
+describe('evaluateDismiss — securityRecommendationsReviewedAt no longer auto-suppresses', () => {
+  // CodeX attempt 3 noted that a bare review timestamp suppressed
+  // subsequent drift for 24h. The current implementation seeds
+  // `claudeCodeSettingsWarning` from onboarding instead, so the
+  // drift-aware comparison applies uniformly. These tests pin the
+  // new behavior: a setting that carries only `reviewedAt` (but no
+  // `claudeCodeSettingsWarning`) does NOT suppress.
+  it('does NOT suppress on reviewedAt alone (drift-unsafe)', () => {
     const now = Date.parse('2026-05-13T12:00:00Z')
-    const setting: KovitoboardSetting = {
-      version: '1.1',
-      user: { displayName: 'u', avatar: null },
-      project: { name: 'p', description: '', path: PROJECT },
-      locale: 'en',
-      onboarding: {
-        completedAt: '2026-05-13T11:00:00Z',
-        wizardVersion: '0.1.0',
-        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
-      },
-    }
-    const evaluation = evaluateDismiss(baseResult, undefined, now, { setting })
-    expect(evaluation.suppressToast).toBe(true)
-    expect(evaluation.effectiveExpiresAt).not.toBeNull()
-  })
-
-  it('does NOT suppress when bypass mode is active even with a fresh review', () => {
-    const now = Date.parse('2026-05-13T12:00:00Z')
-    const setting: KovitoboardSetting = {
-      version: '1.1',
-      user: { displayName: 'u', avatar: null },
-      project: { name: 'p', description: '', path: PROJECT },
-      locale: 'en',
-      onboarding: {
-        completedAt: '2026-05-13T11:00:00Z',
-        wizardVersion: '0.1.0',
-        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
-      },
-    }
-    const bypass: SettingsCheckResult = {
-      ...baseResult,
-      bypassMode: { active: true, ok: false },
-    }
-    const evaluation = evaluateDismiss(bypass, undefined, now, { setting })
-    expect(evaluation.suppressToast).toBe(false)
-  })
-
-  it('does NOT suppress when review timestamp is older than 24h', () => {
-    const now = Date.parse('2026-05-15T12:00:00Z')
     const setting: KovitoboardSetting = {
       version: '1.1',
       user: { displayName: 'u', avatar: null },
@@ -525,7 +492,7 @@ describe('shouldLogStartupWarning', () => {
     expect(shouldLogStartupWarning(ok, null)).toBe(false)
   })
 
-  it('logs when bypass mode is active even if reviewed recently', () => {
+  it('logs when bypass mode is active even if dismissed recently', () => {
     const setting: KovitoboardSetting = {
       version: '1.1',
       user: { displayName: 'u', avatar: null },
@@ -534,7 +501,10 @@ describe('shouldLogStartupWarning', () => {
       onboarding: {
         completedAt: '2026-05-13T11:00:00Z',
         wizardVersion: '0.1.0',
-        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
+      },
+      claudeCodeSettingsWarning: {
+        dismissedAt: '2026-05-13T11:00:00Z',
+        dismissedResult: baseResult,
       },
     }
     const bypass: SettingsCheckResult = {
@@ -544,7 +514,7 @@ describe('shouldLogStartupWarning', () => {
     expect(shouldLogStartupWarning(bypass, setting, Date.parse('2026-05-13T12:00:00Z'))).toBe(true)
   })
 
-  it('skips logging when reviewedAt is recent (within 24h)', () => {
+  it('skips logging when claudeCodeSettingsWarning suppresses (in cooldown + matching)', () => {
     const setting: KovitoboardSetting = {
       version: '1.1',
       user: { displayName: 'u', avatar: null },
@@ -553,22 +523,35 @@ describe('shouldLogStartupWarning', () => {
       onboarding: {
         completedAt: '2026-05-13T11:00:00Z',
         wizardVersion: '0.1.0',
-        securityRecommendationsReviewedAt: '2026-05-13T11:00:00Z',
+      },
+      claudeCodeSettingsWarning: {
+        dismissedAt: '2026-05-13T11:00:00Z',
+        dismissedResult: baseResult,
       },
     }
     expect(shouldLogStartupWarning(baseResult, setting, Date.parse('2026-05-13T12:00:00Z'))).toBe(false)
   })
 
-  it('logs when reviewedAt is older than 24h', () => {
+  it('logs when dismiss snapshot drifted from current result', () => {
     const setting: KovitoboardSetting = {
       version: '1.1',
       user: { displayName: 'u', avatar: null },
       project: { name: 'p', description: '', path: PROJECT },
       locale: 'en',
       onboarding: {
-        completedAt: '2026-05-10T11:00:00Z',
+        completedAt: '2026-05-13T11:00:00Z',
         wizardVersion: '0.1.0',
-        securityRecommendationsReviewedAt: '2026-05-10T11:00:00Z',
+      },
+      claudeCodeSettingsWarning: {
+        dismissedAt: '2026-05-13T11:00:00Z',
+        dismissedResult: {
+          ...baseResult,
+          permissionMode: {
+            current: 'acceptEdits',
+            recommended: 'default',
+            ok: false,
+          },
+        },
       },
     }
     expect(shouldLogStartupWarning(baseResult, setting, Date.parse('2026-05-13T12:00:00Z'))).toBe(true)
@@ -645,9 +628,17 @@ describe('T-2-4: watchSettingsDirectories supplements file-level watching', () =
     expect(handle).not.toBeNull()
     expect(watchers.size).toBe(2)
     expect(Array.from(watchers.keys())).toEqual([HOME, PROJECT])
-    for (const h of watchers.values()) {
-      h({ type: 'addDir', path: '/x' })
-    }
+    // CodeX attempt 3 — only the `.claude` child should fire the
+    // mutation callback; unrelated siblings must be filtered out so
+    // the anchor watcher does not churn on every home/project
+    // mutation.
+    const homeHandler = watchers.get(HOME)
+    const projectHandler = watchers.get(PROJECT)
+    homeHandler?.({ type: 'addDir', path: `${HOME}/Downloads` }) // ignored
+    projectHandler?.({ type: 'add', path: `${PROJECT}/README.md` }) // ignored
+    expect(fired).toBe(0)
+    homeHandler?.({ type: 'addDir', path: `${HOME}/.claude` })
+    projectHandler?.({ type: 'addDir', path: `${PROJECT}/.claude` })
     expect(fired).toBe(2)
     handle?.close()
   })

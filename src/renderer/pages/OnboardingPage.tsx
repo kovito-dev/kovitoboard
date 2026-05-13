@@ -6,7 +6,11 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { t, setLocale } from '../i18n'
 import type { Locale } from '../i18n'
-import type { KovitoboardSetting } from '../../shared/setting-types'
+import type {
+  KovitoboardSetting,
+  ClaudeCodeSettingsWarning,
+  SettingsCheckResult,
+} from '../../shared/setting-types'
 import { StepWelcome } from './onboarding/StepWelcome'
 import { StepUser } from './onboarding/StepUser'
 import { StepProject } from './onboarding/StepProject'
@@ -114,6 +118,33 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     if (isCompleting) return
     setIsCompleting(true)
 
+    // Fetch the current Claude Code recommended-settings check so we
+    // can seed `claudeCodeSettingsWarning` with the reviewed snapshot.
+    // Persisting a real dismiss record (vs a bare reviewedAt
+    // timestamp) means the standard drift comparison applies: if the
+    // user changes their Claude Code settings after onboarding, the
+    // toast re-surfaces because the snapshot no longer matches
+    // (CodeX attempt 3 — stale security suppression).
+    let securityWarning: ClaudeCodeSettingsWarning | undefined
+    try {
+      const res = await kbFetch('/api/security/settings-check')
+      if (res.ok) {
+        const data = (await res.json()) as {
+          result: SettingsCheckResult
+        }
+        const result = data.result
+        if (result && !result.overallOk && !result.bypassMode.active) {
+          securityWarning = {
+            dismissedAt: new Date().toISOString(),
+            dismissedResult: { ...result, settingsFilePath: null },
+          }
+        }
+      }
+    } catch {
+      // Best-effort: a fetch failure simply means the toast will
+      // surface on /agents until the user dismisses it manually.
+    }
+
     // Save setting via API
     const setting: KovitoboardSetting = {
       version: '1.1',
@@ -123,12 +154,22 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       onboarding: {
         completedAt: new Date().toISOString(),
         wizardVersion: '0.1.0',
-        // Record that the user reviewed the Security recommendations
-        // step (handoff v1.1 §3.4.3 / spec onboarding-scenarios §9.5)
-        // so the post-onboarding toast respects the same cooldown
-        // window without an extra dismiss action.
+        // Kept as an audit / observability field even though the
+        // dismiss-cooldown logic now relies on the seeded
+        // claudeCodeSettingsWarning record (CodeX attempt 3). A
+        // future migration may consolidate the two — for now both are
+        // populated atomically so server-side readers can pick
+        // whichever is more convenient.
         securityRecommendationsReviewedAt: new Date().toISOString(),
       },
+      // When the wizard surfaced a real violation, seed the dismiss
+      // record so the post-onboarding toast respects the same 24h
+      // cooldown WITH drift detection. When everything was already
+      // OK (no violation surfaced) we omit the field — there is
+      // nothing to dismiss and a stale snapshot would create
+      // surprising re-surfacing if the user later regresses their
+      // settings.
+      ...(securityWarning ? { claudeCodeSettingsWarning: securityWarning } : {}),
       // Persist the opt-out choice as `claudeMdGuidance.disabled`
       // when set; otherwise omit the struct entirely so older
       // tooling that does not know about the field is not surprised

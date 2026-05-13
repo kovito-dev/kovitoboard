@@ -481,16 +481,20 @@ export interface DismissContext {
  * elapsed, or when the raw `dismissedAt` is invalid / future-dated
  * beyond `now + 24h`.
  *
- * The optional `context.setting` lets the caller hand in the latest
- * KovitoBoard setting so `onboarding.securityRecommendationsReviewedAt`
- * can also suppress the toast — this avoids a fresh wizard completion
- * being immediately greeted by the same warning on `/agents` (CodeX
- * attempt 2 — cooldown regression).
+ * The optional `context.setting` is accepted for API parity with the
+ * route layer but is no longer used to short-circuit the dismiss
+ * check via `securityRecommendationsReviewedAt`. The onboarding
+ * acknowledgement now seeds a real `claudeCodeSettingsWarning`
+ * dismiss record on completion (see `OnboardingPage.handleComplete`),
+ * so the drift comparison below applies uniformly whether the
+ * cooldown was started from the wizard or from the post-onboarding
+ * toast (CodeX attempt 3 — stale security suppression).
  */
 export function evaluateDismiss(
   current: SettingsCheckResult,
   warning: ClaudeCodeSettingsWarning | undefined,
   nowMs: number = Date.now(),
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   context: Pick<DismissContext, 'setting'> = {}
 ): DismissEvaluation {
   if (current.overallOk) {
@@ -499,25 +503,6 @@ export function evaluateDismiss(
   if (current.bypassMode.active) {
     // I-8: bypass mode active re-surfaces unconditionally.
     return { suppressToast: false, effectiveExpiresAt: null }
-  }
-
-  // Honor the onboarding-time review cooldown before the explicit
-  // dismiss record. The wizard surface and the toast are two
-  // projections of the same recommendation channel, so review on
-  // either side should count toward the cooldown.
-  const reviewedAt = context.setting?.onboarding?.securityRecommendationsReviewedAt
-  if (reviewedAt) {
-    const reviewedMs = Date.parse(reviewedAt)
-    if (Number.isFinite(reviewedMs)) {
-      const effectiveReviewedAt = Math.min(reviewedMs, nowMs)
-      const expiresAt = effectiveReviewedAt + DISMISS_COOLDOWN_MS
-      if (expiresAt > nowMs) {
-        return {
-          suppressToast: true,
-          effectiveExpiresAt: new Date(expiresAt).toISOString(),
-        }
-      }
-    }
   }
 
   if (!warning) return { suppressToast: false, effectiveExpiresAt: null }
@@ -568,9 +553,10 @@ export function buildDismissRecord(
 
 /**
  * Decide whether the supervisor should record the warning in
- * `server.log`. Skipped when the user already reviewed the warning
- * during onboarding within the cooldown window so we do not duplicate
- * the surface in the noisy startup log on every restart.
+ * `server.log`. Skipped when the user already dismissed the warning
+ * (within the cooldown window AND with no drift versus the recorded
+ * snapshot) so we do not duplicate the surface in the startup log on
+ * every restart. Bypass mode active always surfaces (I-8).
  */
 export function shouldLogStartupWarning(
   result: SettingsCheckResult,
@@ -579,14 +565,13 @@ export function shouldLogStartupWarning(
 ): boolean {
   if (result.overallOk) return false
   if (result.bypassMode.active) return true // I-8 — always surface bypass
-  const reviewedAt = setting?.onboarding?.securityRecommendationsReviewedAt
-  if (reviewedAt) {
-    const reviewedMs = Date.parse(reviewedAt)
-    if (Number.isFinite(reviewedMs) && nowMs - reviewedMs < DISMISS_COOLDOWN_MS) {
-      return false
-    }
-  }
-  return true
+  const evaluation = evaluateDismiss(
+    result,
+    setting?.claudeCodeSettingsWarning,
+    nowMs,
+    { setting: setting ?? null },
+  )
+  return !evaluation.suppressToast
 }
 
 /**
@@ -633,13 +618,11 @@ export function watchSettingsFile(
  * For each anchor (home, project root) we prefer to watch the
  * existing `.claude/` directory directly. When the `.claude` directory
  * does not exist yet — which is the typical state on a fresh box —
- * we fall back to watching the anchor itself so that creating the
- * `.claude` directory later still fires a mutation event. The
- * fallback expects the underlying watcher (chokidar via the fs-layer)
- * to recurse into newly-created subdirectories; the re-check itself
- * is idempotent, so even if the watcher emits multiple events while
- * a writer creates `.claude/settings.json` we only see redundant work,
- * not a missed update (CodeX attempt 2 — stale watcher coverage).
+ * we fall back to watching the anchor itself at `depth: 0` and apply
+ * a path filter so only the relevant `.claude` creation event triggers
+ * the re-check. Without the filter the anchor watcher would react to
+ * every unrelated home/project mutation and create avoidable CPU /
+ * log churn (CodeX attempt 3 — resource exhaustion watcher scope).
  */
 export function watchSettingsDirectories(
   fs: FileAccessLayer,
@@ -649,28 +632,55 @@ export function watchSettingsDirectories(
 ): WatchHandle | null {
   const home = homeOverride ?? homedir()
   const projectAbs = resolve(projectRoot)
-  // For each anchor, pick the most-specific existing directory we can
-  // reach so the watcher fires on `.claude` directory creation as well
-  // as file-level mutations inside it.
-  const targets: string[] = []
+
+  interface Target {
+    dir: string
+    /**
+     * When true, this watcher is monitoring the anchor itself (because
+     * `.claude` does not exist yet) and must drop events for unrelated
+     * siblings. When false, the watcher is rooted at `.claude/` so all
+     * events are settings-relevant.
+     */
+    anchorOnly: boolean
+    expectedChildName: string
+  }
+
+  const targets: Target[] = []
   for (const anchor of [home, projectAbs]) {
     const claudeDir = join(anchor, '.claude')
     if (fs.existsSync(claudeDir)) {
-      targets.push(claudeDir)
+      targets.push({ dir: claudeDir, anchorOnly: false, expectedChildName: '.claude' })
     } else if (fs.existsSync(anchor)) {
-      targets.push(anchor)
+      targets.push({ dir: anchor, anchorOnly: true, expectedChildName: '.claude' })
     }
   }
+
   const handles: WatchHandle[] = []
-  for (const dir of targets) {
+  for (const target of targets) {
     try {
-      const handle = fs.watch(dir, (event) => {
-        if (
-          event.type === 'add' ||
-          event.type === 'change' ||
-          event.type === 'unlink' ||
-          event.type === 'addDir'
-        ) {
+      const handle = fs.watch(
+        target.dir,
+        (event) => {
+          if (event.type === 'error') {
+            log.warn({ err: event.error }, 'Settings directory watcher reported error')
+            return
+          }
+          if (
+            event.type !== 'add' &&
+            event.type !== 'change' &&
+            event.type !== 'unlink' &&
+            event.type !== 'addDir'
+          ) {
+            return
+          }
+          // Anchor-only watchers see every direct child of the home /
+          // project directory; restrict the callback to the `.claude`
+          // entry to avoid churning on unrelated mutations.
+          if (target.anchorOnly) {
+            const path = typeof event.path === 'string' ? event.path : ''
+            const basename = path.split(/[/\\]/).pop() ?? ''
+            if (basename !== target.expectedChildName) return
+          }
           try {
             onMutation()
           } catch (err) {
@@ -679,13 +689,17 @@ export function watchSettingsDirectories(
               'Settings directory mutation handler threw; ignoring'
             )
           }
-        } else if (event.type === 'error') {
-          log.warn({ err: event.error }, 'Settings directory watcher reported error')
-        }
-      })
+        },
+        // Limit anchor-level watchers to the immediate children of the
+        // anchor (depth 0 = `path` itself + first-level entries). This
+        // is the chokidar contract; the `.claude`-rooted watcher
+        // intentionally omits the option so per-file mutations inside
+        // it still fire.
+        target.anchorOnly ? { depth: 0 } : undefined
+      )
       handles.push(handle)
     } catch (err) {
-      log.warn({ err, dir }, 'Failed to install settings directory watcher')
+      log.warn({ err, dir: target.dir }, 'Failed to install settings directory watcher')
     }
   }
   if (handles.length === 0) return null
