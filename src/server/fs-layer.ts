@@ -17,6 +17,7 @@
  * For detailed design rationale, see kovitoboard-dev docs/design/v0.1.0-fs-layer-notes.md.
  */
 
+import { constants as fsConstants } from 'fs'
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
@@ -282,7 +283,12 @@ export class DirectFsLayer implements FileAccessLayer {
     | { oversized: false; notRegular: false; content: string }
     | { oversized: true; notRegular: false; size: number }
     | { oversized: false; notRegular: true } {
-    const fd = fsOpenSync(path, 'r')
+    // Open with O_NONBLOCK so a FIFO target does not stall the
+    // event loop waiting for a writer (CodeX attempt 20 —
+    // blocking I/O). Once we observe `isFile() === false` we
+    // bail; otherwise the non-blocking flag has no effect on a
+    // regular file read.
+    const fd = fsOpenSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK)
     try {
       const stat = fsFstatSync(fd)
       if (!stat.isFile()) {
