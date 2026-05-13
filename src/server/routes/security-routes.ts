@@ -85,6 +85,21 @@ export function createSecurityRouter(
       })
       return
     }
+    // Fail-closed warnings (read-error / parse-error / schema-mismatch
+    // / path-resolution-rejected / file-too-large) describe a
+    // structural inability to read the user's Claude Code settings.
+    // A dismiss in that state would suppress the "Settings could not
+    // be read — please review manually" banner without the underlying
+    // condition being addressed, which contradicts the UI affordance
+    // that already disables the Dismiss button for this case. Refuse
+    // server-side too so a custom client cannot bypass the gate
+    // (CodeX attempt 5 — server-side enforcement gap).
+    if (current.reason !== 'ok') {
+      res.status(409).json({
+        error: `dismiss refused: settings check is in fail-closed state (${current.reason})`,
+      })
+      return
+    }
     const updated = {
       ...setting,
       claudeCodeSettingsWarning: buildDismissRecord(current),
