@@ -186,10 +186,24 @@ function classifyRealpathFailure(
     // Non-symlink entry exists but realpath still failed — treat as
     // rejected (something else is wrong with the path).
     return { path: null, rejected: true }
-  } catch {
-    // The candidate entry does not exist at all.
-    return { path: null, rejected: false }
+  } catch (err) {
+    // CodeX attempt 14 — only a strict `ENOENT` means "no such
+    // entry"; anything else (EACCES / EPERM / EIO / EMFILE etc) is
+    // a real I/O failure that must fail closed. A blanket catch
+    // would let a permission-denied home directory degrade into the
+    // dismissible "missing settings" branch and weaken the T-2-2
+    // posture.
+    const code = isNodeError(err) ? err.code : undefined
+    if (code === 'ENOENT') {
+      return { path: null, rejected: false }
+    }
+    return { path: null, rejected: true }
   }
+}
+
+/** Narrow an unknown thrown value to a Node.js errno-style error. */
+function isNodeError(value: unknown): value is { code?: string } {
+  return typeof value === 'object' && value !== null && 'code' in value
 }
 
 function resolveProjectSettingsPath(

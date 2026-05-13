@@ -272,6 +272,27 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     expect(result.reason).toBe('path-resolution-rejected')
   })
 
+  it('rejects when realpath fails with a non-ENOENT errno like EACCES (CodeX attempt 14)', () => {
+    // Drive the production code through a permission-denied path:
+    // realpathSync throws EACCES, and the lstatSync fallback also
+    // throws EACCES. The fail-closed branch must trigger.
+    const errAcces = Object.assign(new Error('EACCES'), { code: 'EACCES' })
+    const baseFs = makeFs()
+    const fs = {
+      ...baseFs,
+      existsSync: () => true,
+      realpathSync: () => {
+        throw errAcces
+      },
+      lstatSync: () => {
+        throw errAcces
+      },
+    } as unknown as FileAccessLayer
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('path-resolution-rejected')
+    expect(result.overallOk).toBe(false)
+  })
+
   it('accepts a project .claude symlink that resolves to the user-level shared config', () => {
     // CodeX attempt 8 — the only home-directory location that is
     // still trusted as a project-level redirect target is the
