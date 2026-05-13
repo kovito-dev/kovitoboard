@@ -37,7 +37,7 @@
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 import type { AppMenuEntryMeta } from '../shared/app-types'
 import type { TrustLevelValue } from '../shared/recipe-types'
-import { isTrustLevelValue } from '../shared/recipe-types'
+import { isRecipePageTrustLevel } from '../shared/recipe-types'
 import { createLogger } from './lib/logger'
 import { kbFetch } from './lib/kbFetch'
 
@@ -130,11 +130,24 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
 function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
   const absPath = meta.pageAbsolutePath
   // The wire payload may omit `trustLevel` (legacy server / test
-  // doubles). Validate when present so an unexpected literal coming
-  // off the wire never reaches the renderer-side TrustMarker.
-  const trustLevel: TrustLevelValue | null = isTrustLevelValue(meta.trustLevel)
+  // doubles). Validate against `RecipePageTrustLevel` so an
+  // unexpected literal — including the reserved `'KB-trusted'` value
+  // which the spec marks as illegal for recipe-page entries — is
+  // forced to `null` before it reaches the renderer-side
+  // TrustMarker. A server bug or corrupted manifest that leaks
+  // `'KB-trusted'` over the wire therefore hides the badge instead
+  // of inflating a recipe install to the first-party signal.
+  const trustLevel: TrustLevelValue | null = isRecipePageTrustLevel(meta.trustLevel)
     ? meta.trustLevel
     : null
+  if (meta.trustLevel === 'KB-trusted') {
+    log.warn(
+      { entryId: meta.id },
+      'Refusing to render KB-trusted badge on a recipe-page menu entry; treating as null. ' +
+        'KB-trusted is reserved for KB-core surfaces and must never accompany a recipe install — ' +
+        'investigate the manifest source if this fires.',
+    )
+  }
   return {
     id: meta.id,
     label: meta.label,
