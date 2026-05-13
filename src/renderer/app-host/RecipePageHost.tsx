@@ -155,12 +155,22 @@ export function RecipePageHost({ appId, Page, trustLevel }: Props) {
     }
   }, [])
 
-  // T-3-3 defence (handoff v1.1 §8.2): the `/ext/<appId>` router
-  // contract is that every recipe page route is wrapped in
-  // RecipePageHost. The trust marker + context are emitted from
-  // here so a recipe cannot suppress them by manipulating its own
-  // DOM — they live on the host-controlled wrapper, not inside the
-  // recipe-owned `<Page />`.
+  // The `/ext/<appId>` router contract is that every recipe page
+  // route is wrapped in `RecipePageHost`. The trust marker + context
+  // are rendered from the host wrapper so the renderer guarantees
+  // they are *attempted* on every recipe mount.
+  //
+  // Honest claim (recipe-system.md v1.7.3 §6.10.6.11
+  // "v0.2.x-known-limitation: same-realm transport interception"):
+  // this is a visibility signal, not a structural boundary. Recipe
+  // code runs in the same DOM / JS / CSS scope, so a hostile recipe
+  // can hide or remove `[data-testid="recipe-trust-header"]` via
+  // global CSS, direct DOM mutation, or runtime patching of
+  // `React.createElement`. v0.3.0 isolation work
+  // (recipe-system.md v1.7.3 §6.10.6.12) is where the structural
+  // version of this defence will live; until then the marker
+  // reduces forgeability for honest-but-mistaken recipes and
+  // surfaces the trust level to attentive users.
   return (
     <TrustContext.Provider value={trustLevel}>
       <div className="flex flex-1 flex-col">

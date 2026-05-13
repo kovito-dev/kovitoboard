@@ -101,10 +101,28 @@ test.describe('Trust marker on recipe pages (v0.2.0 / handoff v1.1 §3.2)', () =
     expect(target!.trustLevel).toBe('unknown')
   })
 
+  /**
+   * Navigate to `/ext/l1-fixture-app` via the NavMenu so the route is
+   * registered by the time the test runs. A direct `page.goto('/ext/...')`
+   * causes a full reload — `userMenuEntries` starts at `[]` and the
+   * catch-all Route bounces to `/agents` before the menu-entries fetch
+   * settles. Mirrors the pattern used in `s12-ambient-sidebar.spec.ts`.
+   */
+  async function openFixtureAppPage(page: import('@playwright/test').Page): Promise<void> {
+    await page.goto('/agents')
+    await page.waitForResponse(
+      (r) => r.url().endsWith('/api/app/menu-entries') && r.ok(),
+    )
+    const navButton = page.locator('button[title="L1 Fixture App"]').first()
+    await navButton.waitFor({ state: 'visible', timeout: 10_000 })
+    await navButton.click()
+    await page.waitForURL(`**/ext/${APP_ID}`)
+    await page.waitForLoadState('networkidle')
+  }
+
   test('grandfather recipe renders the unknown trust marker badge', async ({ page, request }) => {
     await installGrandfatherManifest(request)
-    await page.goto(`/ext/${APP_ID}`)
-    await page.waitForLoadState('networkidle')
+    await openFixtureAppPage(page)
 
     const header = page.getByTestId('recipe-trust-header')
     await expect(header).toBeVisible()
@@ -124,12 +142,11 @@ test.describe('Trust marker on recipe pages (v0.2.0 / handoff v1.1 §3.2)', () =
       data: { appId: APP_ID },
     })
 
-    await page.goto(`/ext/${APP_ID}`)
-    await page.waitForLoadState('networkidle')
+    await openFixtureAppPage(page)
 
     const header = page.getByTestId('recipe-trust-header')
-    // Header wrapper is always rendered (T-3-3 router-level
-    // guarantee); the badge inside hides when trustLevel is null.
+    // Header wrapper is always rendered (router-level guarantee);
+    // the badge inside hides when trustLevel is null.
     await expect(header).toBeVisible()
     await expect(header.locator('[data-trust-level]')).toHaveCount(0)
   })

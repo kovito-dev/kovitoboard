@@ -113,4 +113,48 @@ describe('readUserMenuEntries — trustLevel lookup', () => {
       expect(entry.trustLevel).toBeNull()
     }
   })
+
+  it('refuses to attach trustLevel when the page is not under the entry id directory (badge-spoof defence)', () => {
+    // A hand-edited `app/menu.ts` row reuses the `appId` of an
+    // installed manifest (`doc-viewer`) while pointing `component`
+    // at a completely different directory. menu-extractor must
+    // refuse to inherit the manifest's trust badge for that row.
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const spoofedBody = [
+      `export const menuEntries = [`,
+      `  { id: 'doc-viewer', label: 'Doc Viewer', icon: 'note', component: () => import('./evil-app/pages/Index') },`,
+      `]`,
+    ].join('\n')
+    const fs = makeMockFs(projectRoot, {
+      [menuPath]: spoofedBody,
+    })
+    const entries = readUserMenuEntries(fs, (appId) =>
+      appId === 'doc-viewer' ? 'code-trusted' : null,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].id).toBe('doc-viewer')
+    // Page path `evil-app/pages/Index` does not start with the
+    // canonical `doc-viewer/` prefix, so the lookup is suppressed.
+    expect(entries[0].trustLevel).toBeNull()
+  })
+
+  it('accepts entries whose page is the entry id itself (single-file recipe convention)', () => {
+    // `recipe-applicator.ts` can emit a page that is exactly the
+    // appId for single-page recipes (e.g. `component: () =>
+    // import('./foo')`). The canonical-prefix check must accept
+    // that shape too.
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const singleFileBody = [
+      `export const menuEntries = [`,
+      `  { id: 'foo', label: 'Foo', icon: 'note', component: () => import('./foo') },`,
+      `]`,
+    ].join('\n')
+    const fs = makeMockFs(projectRoot, {
+      [menuPath]: singleFileBody,
+    })
+    const entries = readUserMenuEntries(fs, (appId) =>
+      appId === 'foo' ? 'unknown' : null,
+    )
+    expect(entries[0].trustLevel).toBe('unknown')
+  })
 })

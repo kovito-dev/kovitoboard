@@ -98,14 +98,19 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
   try {
     const mod = await modules[paths[0]]()
     const raw = mod.menuEntries ?? []
-    // Legacy fixtures may omit `trustLevel` because they were written
-    // before the field existed. Normalize on the way out so the
-    // renderer-side type contract (`trustLevel: TrustLevelValue | null`)
-    // stays honest, treating absent values as `null` (the same answer
-    // the API path returns when no manifest is registered yet).
+    // Anything `app/menu.ts` claims about `trustLevel` is
+    // author-controlled (the file lives inside the recipe artifact
+    // directory). The only legitimate trust authority is the server
+    // manifest store, which the API path reads via
+    // `manifestStore.get(appId)?.trustLevel`. The fallback exists for
+    // tests that stub `app/menu.ts` directly without standing up the
+    // API; production browsers always reach the API path. Force
+    // `trustLevel` to `null` here so a hostile fallback module cannot
+    // forge a trusted badge — the trust marker silently hides itself
+    // in that case rather than rendering a misleading claim.
     return raw.map((entry) => ({
       ...entry,
-      trustLevel: isTrustLevelValue(entry.trustLevel) ? entry.trustLevel : null,
+      trustLevel: null,
     }))
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')

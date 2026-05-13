@@ -165,7 +165,20 @@ export function readUserMenuEntries(
       entry.pageAbsolutePath = tsPath
     }
     if (trustLookup) {
-      entry.trustLevel = trustLookup(entry.id)
+      // Only attach the manifest's trust level when the menu row is
+      // bound to the canonical artifact directory for its `appId`
+      // (`recipe-applicator.ts` always emits `component: () =>
+      // import('./<appId>/...')`). A hand-edited `app/menu.ts` row
+      // that reuses an installed `appId` but points `component` at
+      // some other path would otherwise inherit the trusted badge of
+      // the legitimate manifest. Guarding on the page prefix keeps
+      // the badge bound to the directory the install flow wrote.
+      const canonicalPrefix = `${entry.id}/`
+      if (entry.page === entry.id || entry.page.startsWith(canonicalPrefix)) {
+        entry.trustLevel = trustLookup(entry.id)
+      } else {
+        entry.trustLevel = null
+      }
     }
   }
 
