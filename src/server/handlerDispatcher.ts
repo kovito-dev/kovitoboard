@@ -472,6 +472,14 @@ async function dispatchInner(
   // the handler can read/write the same physical path that scope
   // validation cleared, without re-deriving it.
   const recipeId = manifest.recipeId
+  // Trust-axis value captured at dispatch time. Handler dispatch only
+  // reaches this point AFTER `manifestStore.get(appId)` resolves a
+  // non-null manifest (step 1), so the value is always the manifest's
+  // `trustLevel` — no `'context-missing'` fallback is exercised on
+  // this path. The reservation of the `'context-missing'` enum is
+  // T-3-4 future-proofing for callers that may invoke `writeAuditLog`
+  // outside the dispatcher.
+  const trust = manifest.trustLevel
   const startTime = Date.now()
   try {
     const result = await handlerDef.execute(expandedArgs, {
@@ -494,6 +502,7 @@ async function dispatchInner(
         result: result.ok ? 'ok' : 'error',
         errorCode: result.ok ? undefined : result.error.code as HandlerErrorCode,
         durationMs,
+        trust,
       }),
       projectRoot,
     )
@@ -514,6 +523,7 @@ async function dispatchInner(
         result: 'error',
         errorCode: 'Internal',
         durationMs,
+        trust,
       }),
       projectRoot,
     )

@@ -137,6 +137,88 @@ export const CAPTURE_KIND_VALUES = ['a11y', 'exposed-context'] as const
 export type CaptureKindValue = (typeof CAPTURE_KIND_VALUES)[number]
 
 /**
+ * Trust-axis vocabulary applied to an installed recipe's manifest
+ * (v0.2.0). This is the **install-authority** axis — what authority
+ * a manifest record claims for the code that ships under
+ * `app/<appId>/`. It is intentionally distinct from the
+ * **content-source** axis (`PreambleSource` in
+ * `src/renderer/components/PreambleWarning.tsx`), which classifies
+ * untrusted regions inside a recipe page by where their bytes
+ * originated. The two axes overlap conceptually with the threat
+ * model's vocabulary but are persisted, validated, and rendered
+ * along separate code paths so we can evolve them independently
+ * without breaking either compile-time exhaustiveness boundary:
+ *
+ *   - Manifest-level trust (this enum) is what `recipe-parser` /
+ *     `recipeManifestStore` / `handlerDispatcher` / `auditLogger`
+ *     thread through the install + dispatch path.
+ *   - Content-source trust (`PreambleSource`) is what recipe pages
+ *     attach to specific untrusted regions they render.
+ *
+ * v0.2.x persists only `'unknown'` (grandfather migration sets it
+ * explicitly, the install path is disabled). The remaining enum
+ * members are reserved:
+ *   - `'KB-trusted'` — reserved for KB-core surfaces. Recipe-side
+ *     code paths (menu-entries wire, TrustMarker) MUST reject this
+ *     value on incoming data even though it lives in the union, so
+ *     a server bug / corrupted manifest cannot inflate a recipe
+ *     install to a first-party badge. See `app-loader.ts`
+ *     `toAppMenuEntry` for the wire-side guard.
+ *   - `'code-trusted'` — KovitoHub signed publisher (v0.3.0).
+ *   - `'code-trusted (sideloaded)'` — developer sideload path (v0.3.0).
+ *   - `'unknown'` — grandfather migration / current default.
+ *
+ * Mirrored on the server in `src/server/recipe/apiTypes.ts` (re-export)
+ * so manifestStore / capture / audit code can keep its existing
+ * import path while the renderer reads the same SSOT.
+ *
+ * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @see src/renderer/components/PreambleWarning.tsx (PreambleSource — content axis)
+ * @stable v0.2.0
+ */
+export const TRUST_LEVEL_VALUES = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+export type TrustLevelValue = (typeof TRUST_LEVEL_VALUES)[number]
+
+/** Runtime type guard for {@link TrustLevelValue}. */
+export function isTrustLevelValue(value: unknown): value is TrustLevelValue {
+  return typeof value === 'string' && (TRUST_LEVEL_VALUES as readonly string[]).includes(value)
+}
+
+/**
+ * Trust-axis values that may legitimately accompany a recipe-page
+ * menu entry on the wire (v0.2.0). The full {@link TrustLevelValue}
+ * union includes `'KB-trusted'`, which is reserved for KB-core
+ * surfaces and never legitimately carried by an installed recipe.
+ * The renderer wire-validation guard (`toAppMenuEntry` in
+ * `src/renderer/app-loader.ts`) rejects `'KB-trusted'` on inbound
+ * menu entries so a server-side bug or corrupted manifest cannot
+ * inflate a recipe install into the first-party badge.
+ *
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export const RECIPE_PAGE_TRUST_LEVELS = [
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+export type RecipePageTrustLevel = (typeof RECIPE_PAGE_TRUST_LEVELS)[number]
+
+/** Runtime type guard for {@link RecipePageTrustLevel}. */
+export function isRecipePageTrustLevel(value: unknown): value is RecipePageTrustLevel {
+  return (
+    typeof value === 'string' &&
+    (RECIPE_PAGE_TRUST_LEVELS as readonly string[]).includes(value)
+  )
+}
+
+/**
  * Parsed shape of the optional `capture:` block in `recipe.yaml`.
  *
  * Currently only the `requires` list is meaningful; the surrounding

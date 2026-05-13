@@ -17,10 +17,11 @@
  * logged as warnings without throwing.
  */
 import { serverLogger } from '../logger'
-import { join } from 'path'
+import { join, normalize, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
+import type { RecipePageTrustLevel } from '../recipe/apiTypes'
 
 /** Menu entry shape returned by the extractor (meta + page path). */
 export interface MenuEntryWithPage extends AppMenuEntryMeta {
@@ -36,6 +37,26 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    * written).
    */
   pageAbsolutePath: string | null
+  /**
+   * Trust-axis value sourced from the active `RecipeManifest`
+   * for the menu entry's `appId` (v0.2.0), narrowed to the
+   * recipe-page-only subset so the reserved `'KB-trusted'` literal
+   * cannot reach the wire even as a representable state. `null` when
+   * no manifest has been registered for the entry yet (pre-install
+   * probe, hand-edited `app/menu.ts`, canonical-prefix guard refusal,
+   * or `'KB-trusted'` coerced by the lookup helper).
+   *
+   * The renderer reads this to render the recipe-page trust marker
+   * without an extra round-trip. v0.2.x always supplies `'unknown'`
+   * for managed installs (grandfather migration) — v0.3.0 wiring
+   * extends this to `'code-trusted'` / `'code-trusted (sideloaded)'`
+   * without a wire-format change.
+   *
+   * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
+   * @stable v0.2.0
+   */
+  trustLevel: RecipePageTrustLevel | null
 }
 
 /**
@@ -68,6 +89,10 @@ export function parseMenuTs(content: string): MenuEntryWithPage[] {
       // Absolute path is filled in by readUserMenuEntries; the bare
       // parser cannot probe the filesystem.
       pageAbsolutePath: null,
+      // Trust level is filled in by `readUserMenuEntries` after the
+      // manifest lookup. Parser stays oblivious so the legacy
+      // `parseMenuTs` test surface keeps the same call shape.
+      trustLevel: null,
     })
   }
 
@@ -89,14 +114,33 @@ export function parseMenuTsForApp(content: string, appId: string): MenuEntryWith
 }
 
 /**
+ * Optional manifest lookup used by `readUserMenuEntries` to attach
+ * the active recipe's trust level to each entry. Narrowed to
+ * {@link RecipePageTrustLevel} so the impossible `'KB-trusted'`
+ * state is not even representable at the menu-entry boundary —
+ * callers (currently `app-routes.ts`) coerce the broader manifest
+ * `TrustLevel` to this narrower union (or `null`) before handing it
+ * to the extractor.
+ */
+export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
+
+/**
  * Read `app/menu.ts` from disk and return parsed entries.
  *
  * - Returns `[]` if the file does not exist (newly initialized projects).
  * - Returns `[]` and logs a warning if parsing fails — the renderer
  *   should remain functional even when a recipe author writes an
  *   unparseable `menu.ts`.
+ *
+ * When `trustLookup` is supplied (the API path always does), each
+ * entry's `trustLevel` is populated from the active manifest store
+ * so the renderer can render the recipe-page trust marker without
+ * an extra round-trip.
  */
-export function readUserMenuEntries(fs: FileAccessLayer): MenuEntryWithPage[] {
+export function readUserMenuEntries(
+  fs: FileAccessLayer,
+  trustLookup?: TrustLevelLookup,
+): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
   const menuPath = join(appDir, 'menu.ts')
@@ -124,9 +168,69 @@ export function readUserMenuEntries(fs: FileAccessLayer): MenuEntryWithPage[] {
     } else if (fs.existsSync(tsPath)) {
       entry.pageAbsolutePath = tsPath
     }
+    if (trustLookup) {
+      // Only attach the manifest's trust level when the menu row is
+      // bound to the canonical artifact directory for its `appId`.
+      // `recipe-applicator.ts` always emits `component: () =>
+      // import('./<appId>/...')` — anything else is either an honest
+      // hand-edit that should not inherit the badge or a forgery
+      // attempt that reuses an installed `appId` while pointing at
+      // foreign code. We normalize the raw page string first so a
+      // path-traversal segment (`doc-viewer/../evil-app/...`) cannot
+      // satisfy a naive `startsWith(`${id}/`)` check.
+      if (isCanonicalAppIdPath(entry.page, entry.id)) {
+        entry.trustLevel = trustLookup(entry.id)
+      } else {
+        entry.trustLevel = null
+      }
+    }
   }
 
   return entries
+}
+
+/**
+ * Returns true when `page` (as parsed out of `import('./<page>')`)
+ * resolves to a location strictly inside the canonical
+ * `app/<appId>/` directory — i.e. the canonical recipe-applicator
+ * layout. Path-traversal segments (`../`), absolute paths, and
+ * Windows-style `\` separators are all rejected up front.
+ *
+ * Defends against the hand-edited `app/menu.ts` row that reuses an
+ * installed `appId` while pointing `component` at a different
+ * directory: such a row would otherwise inherit the manifest's
+ * trust badge and let attacker-authored UI borrow a trusted signal.
+ *
+ * Exported so unit tests can exercise the bypass cases directly
+ * (absolute paths, backslash separators, nested traversal) without
+ * having to drive the regex through `parseMenuTs` first — the
+ * parser regex already filters most of these shapes out, but the
+ * canonical-path check is the SSOT and should be testable on its
+ * own.
+ */
+export function isCanonicalAppIdPath(page: string, appId: string): boolean {
+  // Cheap structural rejections first: forward slash is the only
+  // separator the recipe layout uses on disk and the only separator
+  // the parser's regex emits, so any backslash or leading slash is
+  // already non-canonical (and avoids quirks on Windows hosts).
+  if (page.length === 0) return false
+  if (page.startsWith('/') || page.startsWith('\\')) return false
+  if (page.includes('\\')) return false
+
+  // Normalize collapses `./` and `../` segments — `doc-viewer/../evil-app`
+  // becomes `evil-app`. We then re-check the canonical prefix on the
+  // normalized form so a traversal cannot dress an attacker path up
+  // to look like it lives under `<appId>/`.
+  const normalized = normalize(page)
+  if (normalized.startsWith('..') || normalized.includes(`${sep}..${sep}`)) {
+    return false
+  }
+  // POSIX path normalization (the parser regex emits forward slashes
+  // only) — convert any Windows back-slashes that `normalize` might
+  // emit on Win32 hosts so the canonical-prefix comparison stays
+  // platform-independent.
+  const posix = normalized.split(sep).join('/')
+  return posix === appId || posix.startsWith(`${appId}/`)
 }
 
 /** Absolute path to `app/menu.ts` (used by the file watcher). */

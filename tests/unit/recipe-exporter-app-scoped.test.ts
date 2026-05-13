@@ -229,7 +229,18 @@ describe('parseMenuTsForApp', () => {
       "  { id: 'bar', label: 'Bar', icon: 'note', component: () => import('./bar/pages/BarPage') },",
     ].join('\n')
     expect(parseMenuTsForApp(content, 'bar')).toEqual([
-      { id: 'bar', label: 'Bar', icon: 'note', page: 'bar/pages/BarPage', pageAbsolutePath: null },
+      {
+        id: 'bar',
+        label: 'Bar',
+        icon: 'note',
+        page: 'bar/pages/BarPage',
+        pageAbsolutePath: null,
+        // `trustLevel` is filled in by `readUserMenuEntries` after a
+        // manifest-store lookup; the bare regex-based parser leaves it
+        // `null` so the trust marker hides itself for entries written
+        // outside the install flow.
+        trustLevel: null,
+      },
     ])
   })
 

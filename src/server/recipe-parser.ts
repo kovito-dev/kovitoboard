@@ -175,6 +175,8 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
 
   const { data } = matter(yamlContent)
 
+  rejectAuthorTrustLevel(data, dirPath)
+
   const metadata = extractMetadata(data)
   const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts, metadata.recipeId)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
@@ -273,6 +275,8 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
 
   const { data, content: body } = matter(content)
 
+  rejectAuthorTrustLevel(data, filePath)
+
   const metadata = extractMetadata(data)
   const rawArtifacts: ArtifactEntry[] = extractArtifactEntries(data.artifacts, metadata.recipeId)
   const menu: RecipeMenuEntry[] = extractMenuEntries(data.menu)
@@ -323,6 +327,43 @@ function parseMarkdownRecipe(filePath: string, fs: FileAccessLayer): ParsedRecip
   }
   recipe.hash = computeRecipeHash(recipe)
   return recipe
+}
+
+/**
+ * Reject `trustLevel` declarations from author-controlled recipe YAML.
+ *
+ * Defense against T-3-1 (trust marker forgery) from the trust-marker
+ * handoff v1.1 §8.2: a malicious or honest-but-mistaken recipe author
+ * must not be able to write `trustLevel: 'code-trusted'` (or any
+ * other value) into `recipe.yaml` and have the trust-marker UI
+ * present the recipe as authority-verified. The authoritative source
+ * of `RecipeManifest.trustLevel` is server-controlled: KovitoHub
+ * signature verification (v0.3.0 → `'code-trusted'`), developer
+ * sideload assignment (v0.3.0 → `'code-trusted (sideloaded)'`), or
+ * grandfather migration (v0.2.x → `'unknown'`). The parser closes
+ * the front door by failing fast on any author-written declaration.
+ *
+ * @see recipe-system.md v1.4 §6.10.3 (RecipeManifest.trustLevel)
+ * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §8.2 (T-3-1)
+ */
+function rejectAuthorTrustLevel(data: Record<string, unknown>, sourcePath: string): void {
+  if (!Object.prototype.hasOwnProperty.call(data, 'trustLevel')) return
+  // The forbidden field is fully attacker-controlled (it came out of
+  // `gray-matter`'s YAML decode of the recipe file). Logging the raw
+  // value would let a hostile recipe smuggle arbitrary content into
+  // operator log files or inflate the log line itself; the violation
+  // itself is the diagnostic signal, not the chosen literal.
+  recipeLogger.warn(
+    { sourcePath, declaredType: typeof data.trustLevel },
+    'recipe.yaml declared a trustLevel field; rejecting (trust marker forgery defence). ' +
+      'trustLevel is server-assigned (KovitoHub signature / sideload / grandfather migration) — ' +
+      'authors must not declare it in recipe.yaml.',
+  )
+  throw new Error(
+    'recipe.yaml must not declare "trustLevel": this field is server-assigned ' +
+      '(via KovitoHub signature verification, developer sideload, or grandfather ' +
+      'migration). Remove it and let the install path assign the value.',
+  )
 }
 
 /** Format constraint for `recipeId` (DEC-024 D-8 / spec §3.3). */
