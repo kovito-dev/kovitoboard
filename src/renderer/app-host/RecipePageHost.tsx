@@ -49,10 +49,26 @@ import { useEffect, useRef, type ComponentType } from 'react'
 import { injectKb } from './injectKb'
 import { hostFetchWithInternalAuth } from './hostBootstrap'
 import { createLogger } from '../lib/logger'
+import { TrustContext } from './TrustContext'
+import { TrustMarker } from '../components/TrustMarker'
+import type { TrustLevelValue } from '../../shared/recipe-types'
 
 interface Props {
   appId: string
   Page: ComponentType
+  /**
+   * Trust-axis value resolved from the active recipe manifest. `null`
+   * when the menu entry is not (yet) backed by a manifest — the
+   * trust-marker hides itself in that case rather than rendering a
+   * misleading badge.
+   *
+   * Propagated to children via {@link TrustContext} so any
+   * KB-provided / KB-managed widget rendered inside the recipe page
+   * can read the value without prop drilling.
+   *
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
+   */
+  trustLevel: TrustLevelValue | null
 }
 
 const sentinelLog = createLogger('host-bootstrap-sentinel')
@@ -99,7 +115,7 @@ function emitHostBootstrapSentinel(
   })
 }
 
-export function RecipePageHost({ appId, Page }: Props) {
+export function RecipePageHost({ appId, Page, trustLevel }: Props) {
   // `current` holds the recipe id we last bound `window.kb` to and the
   // cleanup returned by that injectKb call.
   const ref = useRef<{ appId: string; cleanup: () => void } | null>(null)
@@ -139,5 +155,25 @@ export function RecipePageHost({ appId, Page }: Props) {
     }
   }, [])
 
-  return <Page />
+  // T-3-3 defence (handoff v1.1 §8.2): the `/ext/<appId>` router
+  // contract is that every recipe page route is wrapped in
+  // RecipePageHost. The trust marker + context are emitted from
+  // here so a recipe cannot suppress them by manipulating its own
+  // DOM — they live on the host-controlled wrapper, not inside the
+  // recipe-owned `<Page />`.
+  return (
+    <TrustContext.Provider value={trustLevel}>
+      <div className="flex flex-1 flex-col">
+        <header
+          data-testid="recipe-trust-header"
+          className="flex items-center justify-start gap-2 px-4 pt-2"
+        >
+          <TrustMarker level={trustLevel} />
+        </header>
+        <div className="flex-1">
+          <Page />
+        </div>
+      </div>
+    </TrustContext.Provider>
+  )
 }

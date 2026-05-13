@@ -137,6 +137,40 @@ export const CAPTURE_KIND_VALUES = ['a11y', 'exposed-context'] as const
 export type CaptureKindValue = (typeof CAPTURE_KIND_VALUES)[number]
 
 /**
+ * Trust-axis vocabulary applied to an installed recipe's manifest
+ * (v0.2.0). v0.2.x persists only `'unknown'` (grandfather migration
+ * sets it explicitly, the install path is disabled). The remaining
+ * enum members are reserved for v0.3.0 wiring:
+ *   - `'KB-trusted'` — reserved for KB-core surfaces; recipes never
+ *     legitimately carry this value (the renderer treats it as a
+ *     no-op badge, but the type is exported so server-side
+ *     vocabulary stays unified).
+ *   - `'code-trusted'` — KovitoHub signed publisher (v0.3.0).
+ *   - `'code-trusted (sideloaded)'` — developer sideload path (v0.3.0).
+ *   - `'unknown'` — grandfather migration / current default.
+ *
+ * Mirrored on the server in `src/server/recipe/apiTypes.ts` (re-export)
+ * so manifestStore / capture / audit code can keep its existing
+ * import path while the renderer reads the same SSOT.
+ *
+ * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export const TRUST_LEVEL_VALUES = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+export type TrustLevelValue = (typeof TRUST_LEVEL_VALUES)[number]
+
+/** Runtime type guard for {@link TrustLevelValue}. */
+export function isTrustLevelValue(value: unknown): value is TrustLevelValue {
+  return typeof value === 'string' && (TRUST_LEVEL_VALUES as readonly string[]).includes(value)
+}
+
+/**
  * Parsed shape of the optional `capture:` block in `recipe.yaml`.
  *
  * Currently only the `requires` list is meaningful; the surrounding

@@ -102,6 +102,14 @@ export function createAuditEntry(params: {
   result: 'ok' | 'error'
   errorCode?: AuditLogEntry['errorCode']
   durationMs: number
+  /**
+   * Trust-axis value from the active manifest at dispatch time.
+   * Required (T-3-4 in the trust-marker handoff v1.1 §8.4 I-8): the
+   * compile-time enforcement guarantees every emission path threads
+   * the manifest's `trustLevel`, falling back to `'context-missing'`
+   * only on paths that bypass manifest resolution.
+   */
+  trust: AuditLogEntry['trust']
 }): AuditLogEntry {
   return {
     timestamp: new Date().toISOString(),
@@ -113,6 +121,7 @@ export function createAuditEntry(params: {
     result: params.result,
     errorCode: params.errorCode,
     durationMs: params.durationMs,
+    trust: params.trust,
   }
 }
 

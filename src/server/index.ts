@@ -345,7 +345,7 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 // higher limit so a multi-file recipe payload fits.
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
-app.use('/api/app', createAppRouter(fs))
+app.use('/api/app', createAppRouter(fs, manifestStore))
 // Capture-token issuance / revoke endpoints
 // (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
 // MUST be mounted before the `/api/app/capture` router because

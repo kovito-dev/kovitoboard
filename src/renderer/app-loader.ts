@@ -36,6 +36,8 @@
 
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 import type { AppMenuEntryMeta } from '../shared/app-types'
+import type { TrustLevelValue } from '../shared/recipe-types'
+import { isTrustLevelValue } from '../shared/recipe-types'
 import { createLogger } from './lib/logger'
 import { kbFetch } from './lib/kbFetch'
 
@@ -51,6 +53,13 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * dynamic-import the module via Vite's `/@fs/` URL.
    */
   pageAbsolutePath: string | null
+  /**
+   * Trust-axis value sourced server-side from the active recipe
+   * manifest (v0.2.0). `null` when the manifest has not yet been
+   * registered (legacy `app/menu.ts` edited outside the install
+   * flow). The renderer forwards this to the trust-marker UI.
+   */
+  trustLevel?: TrustLevelValue | null
 }
 
 /**
@@ -88,7 +97,16 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
 
   try {
     const mod = await modules[paths[0]]()
-    return mod.menuEntries ?? []
+    const raw = mod.menuEntries ?? []
+    // Legacy fixtures may omit `trustLevel` because they were written
+    // before the field existed. Normalize on the way out so the
+    // renderer-side type contract (`trustLevel: TrustLevelValue | null`)
+    // stays honest, treating absent values as `null` (the same answer
+    // the API path returns when no manifest is registered yet).
+    return raw.map((entry) => ({
+      ...entry,
+      trustLevel: isTrustLevelValue(entry.trustLevel) ? entry.trustLevel : null,
+    }))
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')
     return []
@@ -106,10 +124,17 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
  */
 function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
   const absPath = meta.pageAbsolutePath
+  // The wire payload may omit `trustLevel` (legacy server / test
+  // doubles). Validate when present so an unexpected literal coming
+  // off the wire never reaches the renderer-side TrustMarker.
+  const trustLevel: TrustLevelValue | null = isTrustLevelValue(meta.trustLevel)
+    ? meta.trustLevel
+    : null
   return {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
+    trustLevel,
     component: () => {
       if (!absPath) {
         const err = new Error(

@@ -21,6 +21,7 @@ import { join } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
+import type { TrustLevel } from '../recipe/apiTypes'
 
 /** Menu entry shape returned by the extractor (meta + page path). */
 export interface MenuEntryWithPage extends AppMenuEntryMeta {
@@ -36,6 +37,24 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    * written).
    */
   pageAbsolutePath: string | null
+  /**
+   * Trust-axis value sourced from the active `RecipeManifest`
+   * for the menu entry's `appId` (v0.2.0). `null` when no manifest
+   * has been registered for the entry yet (e.g. pre-install probe,
+   * or `app/menu.ts` was edited by hand without going through the
+   * install flow).
+   *
+   * The renderer reads this to render the recipe-page trust marker
+   * without an extra round-trip. v0.2.x always supplies `'unknown'`
+   * for managed installs (grandfather migration) — v0.3.0 wiring
+   * extends this to `'code-trusted'` / `'code-trusted (sideloaded)'`
+   * without a wire-format change.
+   *
+   * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
+   * @stable v0.2.0
+   */
+  trustLevel: TrustLevel | null
 }
 
 /**
@@ -68,6 +87,10 @@ export function parseMenuTs(content: string): MenuEntryWithPage[] {
       // Absolute path is filled in by readUserMenuEntries; the bare
       // parser cannot probe the filesystem.
       pageAbsolutePath: null,
+      // Trust level is filled in by `readUserMenuEntries` after the
+      // manifest lookup. Parser stays oblivious so the legacy
+      // `parseMenuTs` test surface keeps the same call shape.
+      trustLevel: null,
     })
   }
 
@@ -89,14 +112,31 @@ export function parseMenuTsForApp(content: string, appId: string): MenuEntryWith
 }
 
 /**
+ * Optional manifest lookup used by `readUserMenuEntries` to attach
+ * the active recipe's trust level to each entry. Kept narrow so the
+ * extractor's existing call sites stay decoupled from the full
+ * manifest store contract; callers pass a lambda that wraps
+ * `manifestStore.get(appId)?.trustLevel ?? null`.
+ */
+export type TrustLevelLookup = (appId: string) => TrustLevel | null
+
+/**
  * Read `app/menu.ts` from disk and return parsed entries.
  *
  * - Returns `[]` if the file does not exist (newly initialized projects).
  * - Returns `[]` and logs a warning if parsing fails — the renderer
  *   should remain functional even when a recipe author writes an
  *   unparseable `menu.ts`.
+ *
+ * When `trustLookup` is supplied (the API path always does), each
+ * entry's `trustLevel` is populated from the active manifest store
+ * so the renderer can render the recipe-page trust marker without
+ * an extra round-trip.
  */
-export function readUserMenuEntries(fs: FileAccessLayer): MenuEntryWithPage[] {
+export function readUserMenuEntries(
+  fs: FileAccessLayer,
+  trustLookup?: TrustLevelLookup,
+): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
   const menuPath = join(appDir, 'menu.ts')
@@ -123,6 +163,9 @@ export function readUserMenuEntries(fs: FileAccessLayer): MenuEntryWithPage[] {
       entry.pageAbsolutePath = tsxPath
     } else if (fs.existsSync(tsPath)) {
       entry.pageAbsolutePath = tsPath
+    }
+    if (trustLookup) {
+      entry.trustLevel = trustLookup(entry.id)
     }
   }
 

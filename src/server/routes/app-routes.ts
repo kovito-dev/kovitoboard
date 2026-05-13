@@ -24,13 +24,30 @@ import type { FileAccessLayer } from '../fs-layer'
 import {
   readUserMenuEntries,
   type MenuEntryWithPage,
+  type TrustLevelLookup,
 } from '../services/menu-extractor'
+import type { RecipeManifestStore } from '../recipeManifestStore'
 
-export function createAppRouter(fs: FileAccessLayer): Router {
+/**
+ * Build the app extension router.
+ *
+ * `manifestStore` is required so `/menu-entries` can attach the
+ * active recipe's `trustLevel` to each entry. Without it the
+ * renderer would have to call back for every entry it renders,
+ * which would re-introduce the cross-request latency we already
+ * pay once at supervisor startup.
+ */
+export function createAppRouter(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+): Router {
   const router = Router()
 
+  const trustLookup: TrustLevelLookup = (appId) =>
+    manifestStore.get(appId)?.trustLevel ?? null
+
   router.get('/menu-entries', (_req, res) => {
-    const entries: MenuEntryWithPage[] = readUserMenuEntries(fs)
+    const entries: MenuEntryWithPage[] = readUserMenuEntries(fs, trustLookup)
     res.json(entries)
   })
 

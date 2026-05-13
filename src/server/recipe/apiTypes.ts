@@ -119,30 +119,37 @@ export function isValidCaptureKind(value: unknown): value is CaptureKind {
 /**
  * Trust level for an installed recipe (v0.2.0).
  *
+ * Server-side alias for the renderer-shared
+ * {@link TrustLevelValue}, kept under the legacy `TrustLevel` name so
+ * the manifestStore / capture / audit modules can keep their existing
+ * import path. The canonical SSOT lives in
+ * `src/shared/recipe-types.ts` so the renderer's trust-marker UI
+ * reads from the same enum.
+ *
  * v0.2.x retains only `'unknown'` as a runtime value: the install path
  * is temporarily disabled (recipe-system.md §10.6) and every legacy
  * manifest migrates to `'unknown'` to keep the field non-optional.
  * The remaining values are reserved for the v0.3.0 KovitoHub signed
- * publisher path and the developer sideload path; setting them is
- * out of scope here (see the trust-marker / preamble-warning handoff).
+ * publisher path and the developer sideload path.
  *
  * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
  * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
  * @stable v0.2.0
  */
-export type TrustLevel = 'KB-trusted' | 'code-trusted' | 'code-trusted (sideloaded)' | 'unknown'
+import {
+  TRUST_LEVEL_VALUES,
+  type TrustLevelValue,
+  isTrustLevelValue,
+} from '../../shared/recipe-types.js'
+
+export type TrustLevel = TrustLevelValue
 
 /** All trust-level enum values, exported for validation helpers. */
-export const TRUST_LEVELS: readonly TrustLevel[] = [
-  'KB-trusted',
-  'code-trusted',
-  'code-trusted (sideloaded)',
-  'unknown',
-] as const
+export const TRUST_LEVELS: readonly TrustLevel[] = TRUST_LEVEL_VALUES
 
 /** Type guard for the trust-level enum. */
 export function isValidTrustLevel(value: unknown): value is TrustLevel {
-  return typeof value === 'string' && (TRUST_LEVELS as readonly string[]).includes(value)
+  return isTrustLevelValue(value)
 }
 
 /**

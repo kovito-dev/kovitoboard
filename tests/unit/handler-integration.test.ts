@@ -70,6 +70,7 @@ const RECIPE_VERSION = '1.0.0'
 function createTestManifest(overrides?: {
   approvedScopes?: Scope[]
   calls?: RecipeManifest['api']['calls']
+  trustLevel?: RecipeManifest['trustLevel']
 }): RecipeManifest {
   return {
     appId: RECIPE_ID,
@@ -81,6 +82,9 @@ function createTestManifest(overrides?: {
       'project-read',
       'own-data',
     ],
+    captureRequires: [],
+    approvedCaptures: [],
+    trustLevel: overrides?.trustLevel ?? 'unknown',
     api: {
       scopes: overrides?.approvedScopes ?? ['project-read', 'own-data'],
       calls: overrides?.calls ?? [
@@ -246,6 +250,28 @@ describe('T1: 正常系 — list-files 呼び出し', () => {
     // argsHash is 64-char hex
     expect(last.argsHash).toMatch(/^[0-9a-f]{64}$/)
     expect(typeof last.durationMs).toBe('number')
+    // T-3-4 regression — trust field is required on every audit
+    // entry the dispatcher emits. Grandfather recipes always carry
+    // `'unknown'`; the fallback `'context-missing'` is reserved for
+    // future bypass paths (handoff v1.1 §8.2 / §8.4 I-8).
+    expect(last.trust).toBe('unknown')
+  })
+
+  it('監査ログに manifest の trustLevel がそのまま伝搬する (v0.3.0 forward-compat)', async () => {
+    // v0.2.x's only legitimate runtime value is `'unknown'`, but the
+    // dispatcher must thread whatever the manifest carries — v0.3.0
+    // KovitoHub-signed installs will land here as `'code-trusted'`.
+    const manifest = createTestManifest({ trustLevel: 'code-trusted' })
+    manifestStore.save(manifest)
+
+    await dispatch(
+      { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+      manifestStore,
+      projectRoot,
+    )
+
+    const last = readAuditLog().at(-1)
+    expect(last?.trust).toBe('code-trusted')
   })
 })
 
