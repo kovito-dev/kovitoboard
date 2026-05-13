@@ -158,7 +158,14 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       locale,
       onboarding: {
         completedAt: new Date().toISOString(),
-        wizardVersion: '0.1.0',
+        // Bumped from "0.1.0" to "0.2.0" to mark records produced by
+        // the 6-step wizard (Welcome / User / Project / Concierge /
+        // **Security** / Complete). Downstream consumers that key
+        // off `wizardVersion` for migrations or analytics can now
+        // distinguish the original v0.1.0 5-step flow from the
+        // Phase 1 ② 6-step flow (CodeX attempt 16 — versioning
+        // inconsistency).
+        wizardVersion: '0.2.0',
         // `securityRecommendationsReviewedAt` is intentionally
         // omitted: the dismiss-cooldown logic now consumes the
         // seeded `claudeCodeSettingsWarning` record, which carries

@@ -447,10 +447,14 @@ describe('T-2-2: fail-closed on read / parse / schema failure', () => {
     expect(result.reason).toBe('schema-mismatch')
   })
 
-  it('returns reason=file-too-large when stat reports >1MiB', () => {
+  it('returns reason=file-too-large when the read result exceeds 1MiB', () => {
+    // CodeX attempt 16 — the size check is now applied AFTER the
+    // read against the actual byte length, so the fixture must
+    // provide content that is genuinely larger than the cap rather
+    // than just lying about it via stat.
+    const oversizedJson = `{"permissionMode": "default", "padding": "${'x'.repeat(1024 * 1024 + 100)}"}`
     const fs = makeFs({
-      files: { [userPath()]: JSON.stringify({ permissionMode: 'default' }) },
-      statSizes: { [userPath()]: 2 * 1024 * 1024 },
+      files: { [userPath()]: oversizedJson },
     })
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.reason).toBe('file-too-large')
