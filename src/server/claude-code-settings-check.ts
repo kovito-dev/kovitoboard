@@ -886,7 +886,11 @@ export function watchSettingsDirectories(
   homeOverride?: string
 ): WatchHandle | null {
   const home = homeOverride ?? homedir()
-  const projectAbs = resolve(projectRoot)
+  // Apply the same canonicalization the checker uses so the watch
+  // path and the read path agree on which `.claude` tree is
+  // authoritative when the workspace is opened through a symlink
+  // (CodeX attempt 22 — watcher path normalization drift).
+  const projectAbs = canonicalProjectRoot(fs, projectRoot)
 
   // Collect handles in one array so the consumer can close them all
   // through a single composite handle, including watchers that were
