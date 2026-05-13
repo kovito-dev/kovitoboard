@@ -177,6 +177,36 @@ interface ClaudeCodeRawSettings {
 }
 
 /**
+ * Validate the nested shape of a parsed settings file. The top-level
+ * `JSON.parse` only confirms that we have an object; without this
+ * check a repo-provided payload like
+ * `{ "permissionMode": {}, "permissions": { "deny": [".kovitoboard/"] } }`
+ * would slip past as `overallOk: true` because `mergeSettings()`
+ * silently substitutes safe defaults for unexpected types (CodeX
+ * attempt 4 — fail-open schema validation). We do NOT reject unknown
+ * top-level keys — Claude Code adds new fields over time and KB only
+ * inspects the recommended-settings subset — but the types of the
+ * fields we *do* consult must match the Claude Code schema.
+ */
+function validateNestedShape(value: ClaudeCodeRawSettings): boolean {
+  if (
+    value.permissionMode !== undefined &&
+    typeof value.permissionMode !== 'string'
+  ) {
+    return false
+  }
+  if (value.permissions !== undefined) {
+    if (value.permissions === null || typeof value.permissions !== 'object') {
+      return false
+    }
+    if (value.permissions.deny !== undefined && !Array.isArray(value.permissions.deny)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
  * Read + JSON.parse a settings file with a fail-closed posture.
  *
  * Enforces a 1 MiB size cap before the read so an attacker-controlled
@@ -212,7 +242,11 @@ function readAndParse(
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { ok: false, reason: 'schema-mismatch' }
   }
-  return { ok: true, value: parsed as ClaudeCodeRawSettings }
+  const candidate = parsed as ClaudeCodeRawSettings
+  if (!validateNestedShape(candidate)) {
+    return { ok: false, reason: 'schema-mismatch' }
+  }
+  return { ok: true, value: candidate }
 }
 
 /**
@@ -245,19 +279,51 @@ function mergeSettings(
   return { permissionMode, deny: Array.from(denySet) }
 }
 
-/** Heuristic match for `.kovitoboard/` coverage in the deny array. */
+/**
+ * Decide whether a Claude Code deny entry actually covers this KB
+ * instance's project-local `.kovitoboard/` directory.
+ *
+ * Accepts only the recommended forms documented for project-relative
+ * patterns:
+ *
+ *   - `.kovitoboard`             (bare directory)
+ *   - `.kovitoboard/`            (trailing slash variant)
+ *   - `.kovitoboard/**`          (recursive glob)
+ *   - `.kovitoboard/<...>`       (any subpath inside)
+ *
+ * Each form may be wrapped in a Claude Code action prefix such as
+ * `Read(...)`, `Bash(...)`, or `Edit(...)`; the wrapper is stripped
+ * before matching.
+ *
+ * Rejects:
+ *   - absolute-path rules like `/tmp/.kovitoboard/**` (CodeX
+ *     attempt 4 — overly permissive deny matching),
+ *   - parent-traversal rules (`../.kovitoboard/...`),
+ *   - and unrelated entries that merely contain the substring
+ *     `.kovitoboard` (e.g. `apps/cool.kovitoboard-helper`).
+ *
+ * Pattern compilation / actual enforcement remains Claude Code's
+ * responsibility (spec §4 responsibility boundary); this function
+ * only verifies that the user has expressed an intent that names
+ * the KB state directory specifically.
+ */
 function denyCoversKovitoboard(deny: string[]): boolean {
-  for (const entry of deny) {
-    const normalized = entry.replace(/^Read\(/i, '').replace(/\)$/, '').trim()
+  // Strip a single optional action wrapper like `Read(...)`.
+  const ACTION_WRAPPER = /^[A-Za-z][A-Za-z0-9_-]*\((.*)\)$/
+  for (const rawEntry of deny) {
+    if (typeof rawEntry !== 'string') continue
+    const m = ACTION_WRAPPER.exec(rawEntry.trim())
+    const stripped = (m ? m[1] : rawEntry).trim()
+    if (stripped.length === 0) continue
+    // Reject anchored / traversal forms.
+    if (stripped.startsWith('/') || stripped.startsWith('~')) continue
+    if (stripped.startsWith('./')) continue
+    if (stripped.startsWith('../')) continue
     if (
-      normalized === '.kovitoboard' ||
-      normalized === '.kovitoboard/' ||
-      normalized === './.kovitoboard' ||
-      normalized.startsWith('.kovitoboard/') ||
-      normalized.includes('/.kovitoboard/') ||
-      normalized.endsWith('/.kovitoboard') ||
-      normalized.endsWith('/.kovitoboard/**') ||
-      normalized.endsWith('.kovitoboard/**')
+      stripped === '.kovitoboard' ||
+      stripped === '.kovitoboard/' ||
+      stripped === '.kovitoboard/**' ||
+      stripped.startsWith('.kovitoboard/')
     ) {
       return true
     }
@@ -673,13 +739,22 @@ export function watchSettingsDirectories(
           ) {
             return
           }
-          // Anchor-only watchers see every direct child of the home /
-          // project directory; restrict the callback to the `.claude`
-          // entry to avoid churning on unrelated mutations.
+          const path = typeof event.path === 'string' ? event.path : ''
+          const basename = path.split(/[/\\]/).pop() ?? ''
           if (target.anchorOnly) {
-            const path = typeof event.path === 'string' ? event.path : ''
-            const basename = path.split(/[/\\]/).pop() ?? ''
+            // Anchor-only watchers see every direct child of the home /
+            // project directory; restrict the callback to the
+            // `.claude` entry to avoid churning on unrelated mutations.
             if (basename !== target.expectedChildName) return
+          } else {
+            // `.claude/`-rooted watchers see every entry inside the
+            // directory; restrict the callback to `settings.json`
+            // mutations so noisy or attacker-controlled siblings (for
+            // example `.claude/projects/*.jsonl`) do not trigger
+            // repeated re-checks + log emission (CodeX attempt 4 —
+            // watcher-triggered log churn). `addDir` events without
+            // a basename match are ignored for the same reason.
+            if (basename !== 'settings.json') return
           }
           try {
             onMutation()

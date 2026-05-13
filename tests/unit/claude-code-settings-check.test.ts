@@ -353,6 +353,114 @@ describe('T-2-2: fail-closed on read / parse / schema failure', () => {
     expect(result.reason).toBe('file-too-large')
     expect(result.overallOk).toBe(false)
   })
+
+  it('returns reason=schema-mismatch when permissionMode is a non-string', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: {},
+          permissions: { deny: ['.kovitoboard/'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('schema-mismatch')
+    expect(result.overallOk).toBe(false)
+  })
+
+  it('returns reason=schema-mismatch when permissions.deny is a non-array', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: '.kovitoboard/' },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('schema-mismatch')
+  })
+
+  it('returns reason=schema-mismatch when permissions is not an object', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: 'wrong',
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('schema-mismatch')
+  })
+})
+
+describe('denyCoversKovitoboard precision (CodeX attempt 4)', () => {
+  it('rejects absolute-path .kovitoboard rules', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['Read(/tmp/.kovitoboard/**)'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+    expect(result.overallOk).toBe(false)
+  })
+
+  it('rejects parent-traversal references', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['../.kovitoboard/**'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+  })
+
+  it('rejects substring matches such as apps/some.kovitoboard-helper', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['apps/some.kovitoboard-helper'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+  })
+
+  it('accepts the bare project-relative .kovitoboard form', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['.kovitoboard'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
+  })
+
+  it('accepts an action-wrapped recursive glob like Edit(.kovitoboard/**)', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['Edit(.kovitoboard/**)'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
+  })
 })
 
 const baseResult: SettingsCheckResult = {
@@ -592,9 +700,20 @@ describe('T-2-4: watchSettingsDirectories supplements file-level watching', () =
     expect(handle).not.toBeNull()
     // Two directory watchers attached
     expect(watchers.size).toBe(2)
+    // CodeX attempt 4 — only mutations to `settings.json` trigger the
+    // re-check, so unrelated sibling files are ignored.
     for (const h of watchers.values()) {
-      h({ type: 'add', path: '/x' })
+      h({ type: 'add', path: '/some/other.jsonl' })
     }
+    expect(fired).toBe(0)
+    watchers.get(`${HOME}/.claude`)?.({
+      type: 'change',
+      path: `${HOME}/.claude/settings.json`,
+    })
+    watchers.get(`${PROJECT}/.claude`)?.({
+      type: 'change',
+      path: `${PROJECT}/.claude/settings.json`,
+    })
     expect(fired).toBe(2)
     handle?.close()
   })
