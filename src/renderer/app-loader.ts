@@ -36,7 +36,7 @@
 
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 import type { AppMenuEntryMeta } from '../shared/app-types'
-import type { TrustLevelValue } from '../shared/recipe-types'
+import type { RecipePageTrustLevel } from '../shared/recipe-types'
 import { isRecipePageTrustLevel } from '../shared/recipe-types'
 import { createLogger } from './lib/logger'
 import { kbFetch } from './lib/kbFetch'
@@ -58,8 +58,13 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * manifest (v0.2.0). `null` when the manifest has not yet been
    * registered (legacy `app/menu.ts` edited outside the install
    * flow). The renderer forwards this to the trust-marker UI.
+   *
+   * Typed as the broader `string` on the wire because legacy /
+   * forged payloads may emit `'KB-trusted'` (the reserved literal);
+   * `toAppMenuEntry` runs the {@link RecipePageTrustLevel} guard
+   * before forwarding to {@link AppMenuEntry.trustLevel}.
    */
-  trustLevel?: TrustLevelValue | null
+  trustLevel?: string | null
 }
 
 /**
@@ -137,7 +142,7 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
   // TrustMarker. A server bug or corrupted manifest that leaks
   // `'KB-trusted'` over the wire therefore hides the badge instead
   // of inflating a recipe install to the first-party signal.
-  const trustLevel: TrustLevelValue | null = isRecipePageTrustLevel(meta.trustLevel)
+  const trustLevel: RecipePageTrustLevel | null = isRecipePageTrustLevel(meta.trustLevel)
     ? meta.trustLevel
     : null
   if (meta.trustLevel === 'KB-trusted') {

@@ -9,25 +9,27 @@
  * KB-side wrappers — e.g. `TrustMarker`, `PreambleWarning` — that
  * render inside the recipe tree).
  *
- * Public surface contract (module-private context):
- *   - The raw React `Context` object is intentionally **not
- *     exported**. Exporting it would let same-realm recipe code
- *     import the context handle and mount its own
- *     `<TrustContext.Provider value="code-trusted">...</...>`,
- *     forging the value for any KB-managed widget rendered inside
- *     the recipe subtree.
- *   - Callers use `<TrustProvider value={...}>` (host-only — only
- *     `RecipePageHost` legitimately wraps the recipe tree) to set
- *     the value, and `useTrustLevel()` to read it.
- *   - This is **not** a structural defence: recipe code shares the
- *     same JS realm and could re-create a Context with the same
- *     identity via React internals. The closure-only context handle
- *     reduces the everyday attack surface (a recipe author cannot
- *     spoof the value with a single ergonomic `import`) but the
- *     v0.2.x same-realm honest claim
- *     (`recipe-system.md` v1.7.3 §6.10.6.11) still applies. Security
- *     -critical KB widgets MUST receive `trustLevel` via explicit
- *     prop, not via this context.
+ * Surface contract (convenience, **not** a forgery mitigation):
+ *   - The raw React `Context` object is kept module-private as a
+ *     code-organization choice; only `<TrustProvider>` and
+ *     `useTrustLevel()` are exported.
+ *   - **This is not a security boundary.** Recipe code shares the
+ *     same JS realm — anything exported from this module (including
+ *     `TrustProvider` itself) can be imported by recipe code, and a
+ *     hostile recipe could simply mount its own `<TrustProvider
+ *     value="code-trusted">` around a KB-managed widget that reads
+ *     `useTrustLevel()`. Same-realm recipe code can also reach into
+ *     React internals to forge the value even without importing
+ *     this file (v0.2.x same-realm honest claim,
+ *     `recipe-system.md` v1.7.3 §6.10.6.11).
+ *   - **Therefore: security-critical KB widgets MUST take
+ *     `trustLevel` via explicit prop, not via this context.** The
+ *     context is for ergonomics in widgets that already render
+ *     advisory UI (gray badges, banner text) where forgery has no
+ *     authority impact. `TrustMarker` is one such widget — even if
+ *     a recipe forges the value, it only changes the visible badge
+ *     for that recipe's own subtree, which the recipe already
+ *     controls visually anyway.
  *
  *   - The default value is `null`, mirroring the "no manifest yet"
  *     answer the menu-entries API returns when a recipe row exists
@@ -42,25 +44,24 @@
  */
 
 import { createContext, useContext, type ReactNode } from 'react'
-import type { TrustLevelValue } from '../../shared/recipe-types'
+import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 
 /**
- * Module-private React context. Closure-scoped on purpose — see
- * the file header for the rationale (no ergonomic
- * `<TrustContext.Provider>` forging from same-realm recipe code).
+ * Module-private React context. Recipe-page subset only —
+ * `'KB-trusted'` is excluded at the type level (it never
+ * legitimately accompanies a recipe install).
  */
-const TrustContext = createContext<TrustLevelValue | null>(null)
+const TrustContext = createContext<RecipePageTrustLevel | null>(null)
 
 interface TrustProviderProps {
-  value: TrustLevelValue | null
+  value: RecipePageTrustLevel | null
   children: ReactNode
 }
 
 /**
- * Host-only Provider wrapper. Only `RecipePageHost` is expected to
- * legitimately render this; the import remains available to recipe
- * JS in v0.2.x (same-realm constraint), so this stays a visibility
- * signal rather than a structural barrier.
+ * Convenience wrapper around the module-private Context Provider.
+ * Read the file header before adding new consumers — this is a
+ * code-organization helper, not a forgery defence.
  */
 export function TrustProvider({ value, children }: TrustProviderProps) {
   return <TrustContext.Provider value={value}>{children}</TrustContext.Provider>
@@ -71,7 +72,10 @@ export function TrustProvider({ value, children }: TrustProviderProps) {
  * outside a `RecipePageHost` (or inside one where the manifest has
  * not yet been registered) so consumers can render an unobtrusive
  * fallback without conditionally branching at the call site.
+ *
+ * SECURITY: see the file header — the value is not authenticated.
+ * Use an explicit prop for any decision with authority impact.
  */
-export function useTrustLevel(): TrustLevelValue | null {
+export function useTrustLevel(): RecipePageTrustLevel | null {
   return useContext(TrustContext)
 }

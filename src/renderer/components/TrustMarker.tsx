@@ -7,11 +7,9 @@
  * TrustMarker — badge surfacing the active recipe's trust-axis
  * value (handoff v1.1 §3.2 / §3.3) on top of every recipe page.
  *
- * Visual contract:
- *   - `KB-trusted`               → blue   (KB core; recipes never
- *                                   carry this value, but the path
- *                                   exists so the type-level union
- *                                   stays unified — see TrustContext)
+ * Visual contract (recipe-page subset only; `'KB-trusted'` is
+ * statically excluded from the prop type — see
+ * `RecipePageTrustLevel`):
  *   - `code-trusted`             → green  (KovitoHub signed publisher,
  *                                   v0.3.0)
  *   - `code-trusted (sideloaded)`→ orange (developer sideload path,
@@ -36,16 +34,20 @@
  */
 
 import type { ReactElement } from 'react'
-import type { TrustLevelValue } from '../../shared/recipe-types'
+import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 import { t } from '../i18n'
 
 interface TrustMarkerProps {
   /**
-   * Trust-axis value for the active recipe. `null` hides the badge
-   * (the unmanaged-extension / KB-core case — same answer the
-   * menu-entries API returns when no manifest is registered).
+   * Trust-axis value for the active recipe, narrowed to
+   * {@link RecipePageTrustLevel} so the reserved `'KB-trusted'`
+   * literal is statically excluded — the recipe-page badge can
+   * never legitimately carry that value. `null` hides the badge
+   * (the unmanaged-extension case — same answer the menu-entries
+   * API returns when no manifest is registered, including coerced
+   * `'KB-trusted'` rejections from the wire validator).
    */
-  level: TrustLevelValue | null
+  level: RecipePageTrustLevel | null
   /**
    * Optional override for the screen-reader description. Defaults to
    * the localized trust-level label so the announcement stays in sync
@@ -55,32 +57,27 @@ interface TrustMarkerProps {
 }
 
 /**
- * Tailwind classes per trust-axis value. Kept colocated so the spec
- * → CSS mapping is a single grep target.
+ * Tailwind classes per recipe-page trust value. Kept colocated so
+ * the spec → CSS mapping is a single grep target. `'KB-trusted'`
+ * is not included because the recipe-page UI types exclude it at
+ * the type level.
  *
  * `border-` carries the dominant color so the badge stays readable
  * on both light and dark themes (the page background underneath is
  * theme-controlled).
  */
 const PRESENTATION: Record<
-  TrustLevelValue,
+  RecipePageTrustLevel,
   {
     border: string
     bg: string
     text: string
     labelKey:
-      | 'trust.level.kbTrusted'
       | 'trust.level.codeTrusted'
       | 'trust.level.codeTrustedSideloaded'
       | 'trust.level.unknown'
   }
 > = {
-  'KB-trusted': {
-    border: 'border-blue-500',
-    bg: 'bg-blue-50 dark:bg-blue-900/30',
-    text: 'text-blue-700 dark:text-blue-200',
-    labelKey: 'trust.level.kbTrusted',
-  },
   'code-trusted': {
     border: 'border-emerald-500',
     bg: 'bg-emerald-50 dark:bg-emerald-900/30',

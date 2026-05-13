@@ -51,24 +51,25 @@ import { hostFetchWithInternalAuth } from './hostBootstrap'
 import { createLogger } from '../lib/logger'
 import { TrustProvider } from './TrustContext'
 import { TrustMarker } from '../components/TrustMarker'
-import type { TrustLevelValue } from '../../shared/recipe-types'
+import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 
 interface Props {
   appId: string
   Page: ComponentType
   /**
-   * Trust-axis value resolved from the active recipe manifest. `null`
-   * when the menu entry is not (yet) backed by a manifest — the
-   * trust-marker hides itself in that case rather than rendering a
-   * misleading badge.
+   * Trust-axis value resolved from the active recipe manifest,
+   * narrowed to {@link RecipePageTrustLevel} so `'KB-trusted'` is
+   * statically excluded at the recipe-page boundary. `null` is the
+   * legitimate "no manifest registered yet" state — the trust
+   * marker hides itself rather than rendering a misleading badge.
    *
-   * Propagated to children via {@link TrustContext} so any
-   * KB-provided / KB-managed widget rendered inside the recipe page
-   * can read the value without prop drilling.
+   * Propagated to children via the trust context so any KB-provided
+   * widget rendered inside the recipe page can read the value
+   * without prop drilling.
    *
    * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
    */
-  trustLevel: TrustLevelValue | null
+  trustLevel: RecipePageTrustLevel | null
 }
 
 const sentinelLog = createLogger('host-bootstrap-sentinel')

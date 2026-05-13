@@ -15,7 +15,7 @@
  */
 
 import type { AppMenuEntryMeta } from '../../shared/app-types'
-import type { TrustLevelValue } from '../../shared/recipe-types'
+import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 
 /**
  * A single user-defined menu entry from app/menu.ts.
@@ -26,16 +26,19 @@ export interface AppMenuEntry extends AppMenuEntryMeta {
   component: () => Promise<{ default: React.ComponentType }>
   /**
    * Trust-axis value sourced from the active recipe manifest
-   * (`RecipeManifest.trustLevel`) at menu-entry load time. `null`
-   * when no manifest has been registered for the entry — the
-   * trust-marker UI treats this as the unmanaged-extension case
-   * (still gray, hidden until install completes).
+   * (`RecipeManifest.trustLevel`) at menu-entry load time. Narrowed
+   * to {@link RecipePageTrustLevel} so the renderer-side types
+   * statically exclude `'KB-trusted'` — that literal is reserved
+   * for KB-core surfaces and the wire validation in
+   * `app-loader.ts` already coerces stray values to `null`. `null`
+   * is the "no manifest registered yet" state (the trust marker
+   * hides itself).
    *
    * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
    * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
    * @stable v0.2.0
    */
-  trustLevel: TrustLevelValue | null
+  trustLevel: RecipePageTrustLevel | null
 }
 
 /** The shape exported by app/menu.ts */
