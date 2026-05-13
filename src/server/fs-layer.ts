@@ -17,6 +17,7 @@
  * For detailed design rationale, see kovitoboard-dev docs/design/v0.1.0-fs-layer-notes.md.
  */
 
+import { constants as fsConstants } from 'fs'
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
@@ -35,6 +36,7 @@ import {
   readSync as fsReadSync,
   closeSync as fsCloseSync,
   fsyncSync as fsFsyncSync,
+  fstatSync as fsFstatSync,
   fchmodSync as fsFchmodSync,
   fchownSync as fsFchownSync,
 } from 'fs'
@@ -136,6 +138,35 @@ export interface FileAccessLayer {
   readFileSync(path: string, encoding?: BufferEncoding): string
   /** Low-level byte-range read (for watcher.ts JSONL differential parsing) */
   readBytesSync(path: string, offset: number, length: number): Buffer
+  /**
+   * Read a file with two guarantees enforced via `fstat` on the open
+   * file descriptor:
+   *
+   *   1. **regular-file gate**: `fstat.isFile()` must hold. FIFOs,
+   *      devices, directories, and sockets are rejected with
+   *      `{ notRegular: true }` so the caller's prior `lstat` check
+   *      cannot be undone by a TOCTOU swap (CodeX attempt 18 —
+   *      validate-then-open race).
+   *   2. **size cap**: `fstat.size` must be within `maxBytes`. An
+   *      oversized file is rejected with `{ oversized: true }` and no
+   *      content is buffered (CodeX attempt 16 / 17 — resource
+   *      exhaustion).
+   *
+   * Both checks run against the SAME file descriptor as the read, so
+   * an attacker cannot swap or grow the file between validation and
+   * load. Implementations MUST close the fd in a `finally` branch so
+   * a thrown read does not leak descriptors.
+   *
+   * Throws on `open`/`stat`/`read` failures other than the gates —
+   * the caller treats those as `read-error`.
+   */
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true }
 
   // --- Write ---
   writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
@@ -243,6 +274,50 @@ export class DirectFsLayer implements FileAccessLayer {
       fsCloseSync(fd)
     }
     return buffer
+  }
+
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true } {
+    // Open with O_NONBLOCK so a FIFO target does not stall the
+    // event loop waiting for a writer (CodeX attempt 20 —
+    // blocking I/O). Once we observe `isFile() === false` we
+    // bail; otherwise the non-blocking flag has no effect on a
+    // regular file read.
+    const fd = fsOpenSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK)
+    try {
+      const stat = fsFstatSync(fd)
+      if (!stat.isFile()) {
+        return { oversized: false, notRegular: true }
+      }
+      if (stat.size > maxBytes) {
+        return { oversized: true, notRegular: false, size: stat.size }
+      }
+      const buffer = Buffer.alloc(stat.size)
+      let totalRead = 0
+      while (totalRead < stat.size) {
+        const bytesRead = fsReadSync(
+          fd,
+          buffer,
+          totalRead,
+          stat.size - totalRead,
+          totalRead,
+        )
+        if (bytesRead <= 0) break
+        totalRead += bytesRead
+      }
+      return {
+        oversized: false,
+        notRegular: false,
+        content: buffer.subarray(0, totalRead).toString('utf-8'),
+      }
+    } finally {
+      fsCloseSync(fd)
+    }
   }
 
   writeFileSync(

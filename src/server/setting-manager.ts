@@ -104,6 +104,15 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   const onboarding = obj.onboarding as Record<string, unknown>
   if (onboarding.completedAt !== null && typeof onboarding.completedAt !== 'string') return false
   if (typeof onboarding.wizardVersion !== 'string') return false
+  // `securityRecommendationsReviewedAt` is optional; only validate type
+  // when present so older setting files without the field continue to
+  // load. Spec handoff v1.1 §3.4.3.
+  if (
+    onboarding.securityRecommendationsReviewedAt !== undefined &&
+    typeof onboarding.securityRecommendationsReviewedAt !== 'string'
+  ) {
+    return false
+  }
 
   // ambientSidebar (optional, DEC-020 / EU8)
   if (obj.ambientSidebar !== undefined) {
@@ -142,6 +151,45 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
     if (cmg.lastInjectedAt !== undefined && typeof cmg.lastInjectedAt !== 'string') {
       return false
     }
+  }
+
+  // claudeCodeSettingsWarning (optional, handoff v1.1 §3.5 / §8.2 T-2-3).
+  // The struct persists the user's dismiss decision so we can honor a
+  // 24-hour cooldown across restarts. We only verify the shape here;
+  // the temporal bounds check (T-2-3 mitigation, `dismissedAt <= now +
+  // 24h`) is enforced at consumption time in
+  // `claude-code-settings-check.ts` so that a future-dated value
+  // injected directly into the file cannot keep the warning suppressed
+  // indefinitely.
+  if (obj.claudeCodeSettingsWarning !== undefined) {
+    if (
+      obj.claudeCodeSettingsWarning === null ||
+      typeof obj.claudeCodeSettingsWarning !== 'object'
+    ) {
+      return false
+    }
+    const cw = obj.claudeCodeSettingsWarning as Record<string, unknown>
+    if (typeof cw.dismissedAt !== 'string') return false
+    if (cw.dismissedResult === null || typeof cw.dismissedResult !== 'object') {
+      return false
+    }
+    const dr = cw.dismissedResult as Record<string, unknown>
+    // Minimum required shape — the consumer (check helper) is the
+    // canonical interpreter; we just reject obviously-malformed
+    // structures so other reads do not crash later.
+    if (typeof dr.overallOk !== 'boolean') return false
+    if (typeof dr.reason !== 'string') return false
+    if (dr.permissionMode === null || typeof dr.permissionMode !== 'object') return false
+    if (dr.denyPattern === null || typeof dr.denyPattern !== 'object') return false
+    if (dr.bypassMode === null || typeof dr.bypassMode !== 'object') return false
+    // CodeX attempt 11 — defense-in-depth: a persisted dismiss
+    // snapshot is only meaningful when it captures a non-fail-closed
+    // check result. Reject saved records whose `reason !== 'ok'` so a
+    // crafted file cannot keep an "unreadable settings" warning
+    // suppressed across reads. The HTTP dismiss endpoint already
+    // refuses to write such a record server-side; this validator
+    // closes the equivalent loophole for direct on-disk edits.
+    if (dr.reason !== 'ok') return false
   }
 
   return true

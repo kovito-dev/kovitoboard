@@ -61,6 +61,14 @@ import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
 import { createAuditRouter } from './routes/audit-routes'
+import { createSecurityRouter } from './routes/security-routes'
+import {
+  checkClaudeCodeSettings,
+  logCheckResult,
+  watchSettingsFile,
+  watchSettingsDirectories,
+  shouldLogStartupWarning,
+} from './claude-code-settings-check'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -391,6 +399,12 @@ app.use(
     logger: apiLogger,
   }),
 )
+
+// --- Phase 1 prompt injection ② — Claude Code recommended-settings
+// check + dismiss. Handoff v1.1; specs trust-prompt-relay §10.5,
+// onboarding-scenarios §9.5, logging-baseline §12.7.
+// Mounted before the SPA fallback so /api/security/* resolves here.
+app.use('/api/security', createSecurityRouter(fs, projectRoot))
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
@@ -2583,4 +2597,96 @@ server.listen(PORT, '127.0.0.1', () => {
   serverLogger.info({ url: `ws://127.0.0.1:${PORT}` }, 'WebSocket listening')
   serverLogger.info({ projectRoot, projectRootSource }, 'Project root resolved')
   serverLogger.info({ claudeDir: `${config.claudeDir}/projects/` }, 'Watching Claude Code session directory')
+
+  // Phase 1 prompt injection ② — Claude Code recommended-settings check
+  // (spec trust-prompt-relay §10.5, onboarding-scenarios §9.5,
+  // logging-baseline §12.7; handoff v1.1).
+  //
+  // Runs once at startup so the warn surface is computed early. The
+  // result is fetched lazily by the renderer via /api/security/settings-check
+  // so we do not need to push it via WS here. A `fs.watch` is attached
+  // to the effective settings file when it already exists at startup so
+  // runtime mutations re-run the check and emit a `server.log` entry.
+  //
+  // SCOPE NOTE (CodeX attempt 26): the watcher does NOT cover the case
+  // where `~/.claude/` or `<project>/.claude/` is created *after* KB
+  // startup — an anchor-level fallback was removed to avoid avoidable
+  // CPU churn on busy home / project trees. When the directory
+  // materializes later, the toast's focus / visibility refetch and the
+  // per-request `/api/security/settings-check` evaluation pick up the
+  // new state on demand; a server.log entry for that transition is
+  // only emitted on the next KB restart.
+  try {
+    const checkResult = checkClaudeCodeSettings(fs, projectRoot)
+    const setting = readSetting(fs)
+    if (shouldLogStartupWarning(checkResult, setting)) {
+      logCheckResult(checkResult)
+    }
+    // Install file-level + directory-level watchers so we cover both
+    // existing settings files (file watcher) and the case where a
+    // settings file appears after startup or moves between user- and
+    // project-level (directory watcher). Both watchers feed the same
+    // re-check + log callback; the callback de-duplicates so a noisy
+    // writer (or both watchers firing for the same save) does not
+    // amplify into repeated log entries (CodeX attempt 7 — log
+    // amplification / resource exhaustion).
+    const installedHandles: Array<{ close: () => void }> = []
+    function rerunSignature(r: ReturnType<typeof checkClaudeCodeSettings>): string {
+      return [
+        r.overallOk ? '1' : '0',
+        r.reason,
+        r.permissionMode.current,
+        r.permissionMode.ok ? '1' : '0',
+        r.denyPattern.ok ? '1' : '0',
+        r.bypassMode.active ? '1' : '0',
+      ].join('|')
+    }
+    // Seed the dedupe signature from the startup state so the first
+    // watcher-triggered rerun does not re-log the same warning when
+    // the state has not actually changed (CodeX attempt 15 — log
+    // deduplication). Must be initialized AFTER the helper is
+    // hoisted but BEFORE the watchers are installed.
+    let lastEmittedSignature: string | null = rerunSignature(checkResult)
+    const rerun = () => {
+      const next = checkClaudeCodeSettings(fs, projectRoot)
+      const signature = rerunSignature(next)
+      if (signature === lastEmittedSignature) {
+        return // no observable change — suppress the duplicate log entry
+      }
+      // Honor the dismiss state: when the user has already
+      // acknowledged the same warning state we do not need to write
+      // another entry on every fs blip.
+      const setting = readSetting(fs)
+      if (!shouldLogStartupWarning(next, setting)) {
+        lastEmittedSignature = signature
+        return
+      }
+      lastEmittedSignature = signature
+      logCheckResult(next)
+    }
+    if (checkResult.settingsFilePath) {
+      const fileHandle = watchSettingsFile(fs, checkResult.settingsFilePath, rerun)
+      if (fileHandle) installedHandles.push(fileHandle)
+    }
+    const dirHandle = watchSettingsDirectories(fs, projectRoot, rerun)
+    if (dirHandle) installedHandles.push(dirHandle)
+    if (installedHandles.length > 0) {
+      process.once('beforeExit', () => {
+        for (const handle of installedHandles) {
+          try {
+            handle.close()
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      })
+    }
+  } catch (err) {
+    // Never let the settings check abort startup. Surface the failure
+    // so observability captures it, then continue.
+    serverLogger.warn(
+      { err },
+      'Claude Code recommended-settings startup check threw; continuing',
+    )
+  }
 })
