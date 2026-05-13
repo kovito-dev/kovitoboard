@@ -21,7 +21,7 @@ import { join, normalize, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
-import type { TrustLevel } from '../recipe/apiTypes'
+import type { RecipePageTrustLevel } from '../recipe/apiTypes'
 
 /** Menu entry shape returned by the extractor (meta + page path). */
 export interface MenuEntryWithPage extends AppMenuEntryMeta {
@@ -39,10 +39,12 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
   pageAbsolutePath: string | null
   /**
    * Trust-axis value sourced from the active `RecipeManifest`
-   * for the menu entry's `appId` (v0.2.0). `null` when no manifest
-   * has been registered for the entry yet (e.g. pre-install probe,
-   * or `app/menu.ts` was edited by hand without going through the
-   * install flow).
+   * for the menu entry's `appId` (v0.2.0), narrowed to the
+   * recipe-page-only subset so the reserved `'KB-trusted'` literal
+   * cannot reach the wire even as a representable state. `null` when
+   * no manifest has been registered for the entry yet (pre-install
+   * probe, hand-edited `app/menu.ts`, canonical-prefix guard refusal,
+   * or `'KB-trusted'` coerced by the lookup helper).
    *
    * The renderer reads this to render the recipe-page trust marker
    * without an extra round-trip. v0.2.x always supplies `'unknown'`
@@ -54,7 +56,7 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §3.2
    * @stable v0.2.0
    */
-  trustLevel: TrustLevel | null
+  trustLevel: RecipePageTrustLevel | null
 }
 
 /**
@@ -113,12 +115,14 @@ export function parseMenuTsForApp(content: string, appId: string): MenuEntryWith
 
 /**
  * Optional manifest lookup used by `readUserMenuEntries` to attach
- * the active recipe's trust level to each entry. Kept narrow so the
- * extractor's existing call sites stay decoupled from the full
- * manifest store contract; callers pass a lambda that wraps
- * `manifestStore.get(appId)?.trustLevel ?? null`.
+ * the active recipe's trust level to each entry. Narrowed to
+ * {@link RecipePageTrustLevel} so the impossible `'KB-trusted'`
+ * state is not even representable at the menu-entry boundary —
+ * callers (currently `app-routes.ts`) coerce the broader manifest
+ * `TrustLevel` to this narrower union (or `null`) before handing it
+ * to the extractor.
  */
-export type TrustLevelLookup = (appId: string) => TrustLevel | null
+export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
 
 /**
  * Read `app/menu.ts` from disk and return parsed entries.

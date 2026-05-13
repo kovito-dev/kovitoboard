@@ -28,6 +28,7 @@ import {
 } from '../services/menu-extractor'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { serverLogger } from '../logger'
+import { isRecipePageTrustLevel } from '../recipe/apiTypes'
 
 /**
  * Build the app extension router.
@@ -48,20 +49,21 @@ export function createAppRouter(
   // refuses to load a recipe manifest that carries the reserved
   // `'KB-trusted'` literal, but the wire boundary fails closed too —
   // any value that slips through (e.g. a manifest minted by an older
-  // version, or an in-memory mutation after load) becomes `null`
-  // here so the renderer's TrustMarker hides the badge instead of
-  // inflating the recipe to the first-party signal.
+  // version, or an in-memory mutation after load) is coerced to
+  // `null` by the `isRecipePageTrustLevel` guard before reaching the
+  // extractor, whose `TrustLevelLookup` contract already statically
+  // excludes the forbidden literal.
   const trustLookup: TrustLevelLookup = (appId) => {
-    const value = manifestStore.get(appId)?.trustLevel ?? null
+    const value = manifestStore.get(appId)?.trustLevel
+    if (isRecipePageTrustLevel(value)) return value
     if (value === 'KB-trusted') {
       serverLogger.warn(
         { appId },
         'Refusing to serve KB-trusted on a recipe-page menu entry; coercing to null. ' +
           'KB-trusted is reserved for KB-core surfaces — investigate the manifest source.',
       )
-      return null
     }
-    return value
+    return null
   }
 
   router.get('/menu-entries', (_req, res) => {
