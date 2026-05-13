@@ -22,39 +22,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
 import { t } from '../../i18n'
-import type { SettingsCheckResult } from '../../../shared/setting-types'
-
-interface CheckResponse {
-  result: SettingsCheckResult
-  suppressToast: boolean
-  dismissExpiresAt: string | null
-}
-
-/**
- * Build a synthetic fail-closed CheckResponse so a fetch failure
- * surfaces the same fail-closed banner instead of leaving the wizard
- * stuck in a perpetual loading state with Next disabled. Without
- * this fall-through the onboarding flow would deadlock on a
- * transient /api/security/* outage. (CodeX review attempt 1.)
- */
-function buildFetchFailureResponse(): CheckResponse {
-  return {
-    result: {
-      permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
-      denyPattern: {
-        hasKovitoboardDeny: false,
-        ok: false,
-        remediation: 'Review your Claude Code settings manually.',
-      },
-      bypassMode: { active: false, ok: false },
-      overallOk: false,
-      reason: 'read-error',
-      settingsFilePath: null,
-    },
-    suppressToast: false,
-    dismissExpiresAt: null,
-  }
-}
+import {
+  type SecurityCheckResponse,
+  buildFetchFailureResponse,
+} from '../../lib/securityCheckResponse'
 
 interface StepSecurityProps {
   onNext: () => void
@@ -64,7 +35,7 @@ interface StepSecurityProps {
 type WhyKey = 'permissionMode' | 'denyPattern' | 'bypassMode' | null
 
 export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
-  const [state, setState] = useState<CheckResponse | null>(null)
+  const [state, setState] = useState<SecurityCheckResponse | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
   const [whyOpen, setWhyOpen] = useState<WhyKey>(null)
 
@@ -75,7 +46,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
         if (!r.ok) throw new Error(`status ${r.status}`)
         return r.json()
       })
-      .then((data: CheckResponse) => {
+      .then((data: SecurityCheckResponse) => {
         if (!cancelled) setState(data)
       })
       .catch(() => {

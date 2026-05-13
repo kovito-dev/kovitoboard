@@ -107,13 +107,22 @@ function isWithin(child: string, parent: string): boolean {
  * outside the project tree is rejected (T-2-1 mitigation).
  *
  * Returns `null` when the file does not exist. Sets `rejected: true`
- * when the realpath resolution escapes the project root *and* the
- * user's home directory — both anchors are valid origins for a real
- * `.claude` file (test fixtures live under `/tmp`, CI workspaces live
- * under `/runner/_work`, etc.), so the previous "must be under ~"
- * rule was too strict and broke legitimate installations. We still
- * reject when a symlink redirects to a third-party location that is
- * neither the project tree nor the user's home tree.
+ * when the realpath lands somewhere other than one of the two
+ * explicitly trusted destinations:
+ *
+ *   1. anywhere inside the project tree — the common case, including
+ *      intra-project symlinks (test fixtures under `/tmp`, CI
+ *      workspaces under `/runner/_work`, etc.).
+ *   2. exactly `${home}/.claude/settings.json` — to support the
+ *      pattern where a project links its `.claude/settings.json` to
+ *      the user-level shared config.
+ *
+ * Earlier revisions accepted any realpath under `${home}`, but CodeX
+ * attempt 8 pointed out that this lets an untrusted project widen the
+ * read scope to arbitrary JSON files in the user's home (e.g. a
+ * symlink to `~/.ssh/config.json`). The narrower whitelist here
+ * preserves the legitimate use case while restoring the T-2-1
+ * boundary.
  */
 function resolveProjectSettingsPath(
   fs: FileAccessLayer,
@@ -132,14 +141,14 @@ function resolveProjectSettingsPath(
     // resolution failure rather than fail-open.
     return { path: null, rejected: true }
   }
-  // T-2-1: accept when the resolved path stays inside the project
-  // tree (the common case, including symlinks within the project)
-  // OR when it lands inside the user's home directory (a deliberate
-  // user-level shared config). Reject any other redirection.
-  if (!isWithin(resolved, projectRoot) && !isWithin(resolved, home)) {
-    return { path: null, rejected: true }
+  const userClaudePath = join(home, '.claude', 'settings.json')
+  if (isWithin(resolved, projectRoot)) {
+    return { path: resolved, rejected: false }
   }
-  return { path: resolved, rejected: false }
+  if (resolved === userClaudePath) {
+    return { path: resolved, rejected: false }
+  }
+  return { path: null, rejected: true }
 }
 
 /**

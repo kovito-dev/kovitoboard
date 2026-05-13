@@ -25,40 +25,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { kbFetch } from '../lib/kbFetch'
 import { t } from '../i18n'
-import type { SettingsCheckResult } from '../../shared/setting-types'
-
-interface CheckResponse {
-  result: SettingsCheckResult
-  suppressToast: boolean
-  dismissExpiresAt: string | null
-}
-
-/**
- * Build a synthetic fail-closed CheckResponse so a fetch failure
- * surfaces the same "settings could not be read" warning UX as a
- * server-reported fail-closed result. Keeping a separate response
- * (rather than hiding the toast) preserves the structural intent of
- * the security-recommendations channel: an outage of /api/security/*
- * must NOT silently dismiss the warning for already-onboarded users.
- */
-function buildFetchFailureResponse(): CheckResponse {
-  return {
-    result: {
-      permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
-      denyPattern: {
-        hasKovitoboardDeny: false,
-        ok: false,
-        remediation: 'Review your Claude Code settings manually.',
-      },
-      bypassMode: { active: false, ok: false },
-      overallOk: false,
-      reason: 'read-error',
-      settingsFilePath: null,
-    },
-    suppressToast: false,
-    dismissExpiresAt: null,
-  }
-}
+import {
+  type SecurityCheckResponse,
+  buildFetchFailureResponse,
+} from '../lib/securityCheckResponse'
 
 interface SecurityRecommendationsToastProps {
   /**
@@ -73,7 +43,7 @@ interface SecurityRecommendationsToastProps {
 export function SecurityRecommendationsToast({
   onboardingComplete = true,
 }: SecurityRecommendationsToastProps) {
-  const [state, setState] = useState<CheckResponse | null>(null)
+  const [state, setState] = useState<SecurityCheckResponse | null>(null)
   const [hidden, setHidden] = useState(false)
   const [dismissing, setDismissing] = useState(false)
 
@@ -85,7 +55,7 @@ export function SecurityRecommendationsToast({
         if (!r.ok) throw new Error(`status ${r.status}`)
         return r.json()
       })
-      .then((data: CheckResponse) => {
+      .then((data: SecurityCheckResponse) => {
         if (!cancelled) setState(data)
       })
       .catch(() => {

@@ -239,12 +239,12 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     expect(result.reason).toBe('path-resolution-rejected')
   })
 
-  it('accepts a project .claude that realpath keeps under home', () => {
-    // The fixture stores the file contents at BOTH the original
-    // candidate path (so existsSync hits) and the resolved canonical
-    // path (so the subsequent readFileSync hits) — mirroring how a
-    // real symlink under the home directory would behave.
-    const resolved = `${HOME}/symlink-target/settings.json`
+  it('accepts a project .claude symlink that resolves to the user-level shared config', () => {
+    // CodeX attempt 8 — the only home-directory location that is
+    // still trusted as a project-level redirect target is the
+    // canonical user-level Claude Code settings file. Any other
+    // home-relative target must be rejected.
+    const resolved = `${HOME}/.claude/settings.json`
     const contents = JSON.stringify({
       permissionMode: 'default',
       permissions: { deny: ['.kovitoboard/'] },
@@ -261,6 +261,25 @@ describe('T-2-1: path traversal / symlink redirection', () => {
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
     expect(result.reason).toBe('ok')
     expect(result.overallOk).toBe(true)
+  })
+
+  it('rejects a project .claude symlink that resolves to an arbitrary home-relative file', () => {
+    // CodeX attempt 8 — an untrusted project must not be able to
+    // widen the read scope to e.g. `${HOME}/sensitive/secret.json`.
+    const resolved = `${HOME}/sensitive/secret.json`
+    const contents = JSON.stringify({ permissionMode: 'default' })
+    const fs = makeFs({
+      files: {
+        [projectPath()]: contents,
+        [resolved]: contents,
+      },
+      realpaths: {
+        [projectPath()]: resolved,
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.reason).toBe('path-resolution-rejected')
+    expect(result.overallOk).toBe(false)
   })
 
   it('accepts a project .claude whose realpath stays inside the project tree (outside home)', () => {
