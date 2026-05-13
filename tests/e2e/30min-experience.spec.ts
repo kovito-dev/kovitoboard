@@ -328,9 +328,18 @@ test.describe('S1: Onboarding 6-step completion @preonboarding', () => {
     // and a banner is shown — accept the banner and proceed.
     const stepSecurity = page.getByTestId('onboarding-step-security')
     await expect(stepSecurity).toBeVisible()
-    const ack = page.getByTestId('security-acknowledge')
-    if (await ack.isVisible().catch(() => false)) {
-      await ack.check()
+    // CodeX attempt 19 — per-item acknowledgement. Tick whichever
+    // row checkboxes are visible, plus the shared fail-closed box
+    // when present, before advancing.
+    const sharedAck = page.getByTestId('security-acknowledge')
+    if (await sharedAck.isVisible().catch(() => false)) {
+      await sharedAck.check()
+    }
+    for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
+      const box = page.getByTestId(`row-${row}-acknowledge`)
+      if (await box.isVisible().catch(() => false)) {
+        await box.check()
+      }
     }
     await page.getByTestId('security-next').click()
 

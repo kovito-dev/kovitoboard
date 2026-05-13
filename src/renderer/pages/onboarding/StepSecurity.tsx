@@ -46,7 +46,16 @@ type WhyKey = 'permissionMode' | 'denyPattern' | 'bypassMode' | null
 
 export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
-  const [acknowledged, setAcknowledged] = useState(false)
+  // Per-item acknowledgements (CodeX attempt 19 — security UX
+  // regression). The wizard previously collapsed all violations into
+  // a single shared checkbox, which let a user clear every warning
+  // with one tick and defeated the rubber-stamp prevention intent
+  // (handoff §3.4.2 / spec §9.5.2.3 / threat-model §4.3.3).
+  const [acknowledged, setAcknowledged] = useState<{
+    permissionMode: boolean
+    denyPattern: boolean
+    bypassMode: boolean
+  }>({ permissionMode: false, denyPattern: false, bypassMode: false })
   const [whyOpen, setWhyOpen] = useState<WhyKey>(null)
 
   useEffect(() => {
@@ -73,8 +82,28 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     }
   }, [])
 
+  // Gate the Next button on per-item acknowledgement of EVERY
+  // violated row (CodeX attempt 19). A row that is already OK does
+  // not need a tick, so the user only needs to acknowledge what they
+  // are accepting risk on. The fail-closed banner branch keeps its
+  // own single-item gate via the legacy boolean below because there
+  // is no per-row violation to render.
+  const allOk = state?.result.overallOk === true
+  const failClosed = state?.result.reason !== 'ok' && state !== null
+  const allRequiredAcknowledged = (() => {
+    if (!state) return false
+    if (allOk) return true
+    if (failClosed) return acknowledged.permissionMode // reuse one box for the banner branch
+    const violations: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = []
+    if (!state.result.permissionMode.ok) violations.push('permissionMode')
+    if (!state.result.denyPattern.ok) violations.push('denyPattern')
+    if (!state.result.bypassMode.ok) violations.push('bypassMode')
+    return violations.every((row) => acknowledged[row])
+  })()
+  const nextEnabled = allRequiredAcknowledged
+
   const handleNext = useCallback(() => {
-    if (!acknowledged && state && !state.result.overallOk) return
+    if (!nextEnabled) return
     // Hand off the exact snapshot the user just acknowledged so the
     // dismiss record reflects the reviewed state, not whatever the
     // settings file happens to look like at completion time (CodeX
@@ -84,13 +113,11 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
       ? state.result
       : null
     onNext(reviewed)
-  }, [acknowledged, state, onNext])
+  }, [nextEnabled, state, onNext])
 
-  // Allow Next without an explicit acknowledge when everything is OK
-  // — otherwise force the user to tick the box.
-  const allOk = state?.result.overallOk === true
-  const failClosed = state?.result.reason !== 'ok' && state !== null
-  const nextEnabled = allOk || acknowledged
+  function setRowAck(row: 'permissionMode' | 'denyPattern' | 'bypassMode', next: boolean): void {
+    setAcknowledged((prev) => ({ ...prev, [row]: next }))
+  }
 
   return (
     <div data-testid="onboarding-step-security" className="flex flex-col gap-6">
@@ -133,6 +160,8 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               description={t('onboarding.security.permissionMode.description')}
               violated={!state.result.permissionMode.ok}
               severity="high"
+              acknowledged={acknowledged.permissionMode}
+              onAcknowledgeChange={(v) => setRowAck('permissionMode', v)}
               onWhy={() => setWhyOpen('permissionMode')}
             />
             <SecurityRow
@@ -141,6 +170,8 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               description={t('onboarding.security.denyPattern.description')}
               violated={!state.result.denyPattern.ok}
               severity="medium"
+              acknowledged={acknowledged.denyPattern}
+              onAcknowledgeChange={(v) => setRowAck('denyPattern', v)}
               onWhy={() => setWhyOpen('denyPattern')}
             />
             <SecurityRow
@@ -149,19 +180,24 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               description={t('onboarding.security.bypassMode.description')}
               violated={!state.result.bypassMode.ok}
               severity="high"
+              acknowledged={acknowledged.bypassMode}
+              onAcknowledgeChange={(v) => setRowAck('bypassMode', v)}
               onWhy={() => setWhyOpen('bypassMode')}
             />
           </div>
         </>
       )}
 
-      {!allOk && state !== null && (
+      {failClosed && (
+        // Fail-closed branch retains a single acknowledgement because
+        // there are no per-row violations to check off — the banner
+        // covers the structural read failure as a whole.
         <label className="flex items-start gap-2 text-sm text-[var(--text-primary)]">
           <input
             type="checkbox"
             data-testid="security-acknowledge"
-            checked={acknowledged}
-            onChange={(e) => setAcknowledged(e.target.checked)}
+            checked={acknowledged.permissionMode}
+            onChange={(e) => setRowAck('permissionMode', e.target.checked)}
             className="mt-0.5"
           />
           <span>{t('onboarding.security.acknowledge')}</span>
@@ -200,6 +236,8 @@ interface SecurityRowProps {
   description: string
   violated: boolean
   severity: 'high' | 'medium'
+  acknowledged: boolean
+  onAcknowledgeChange: (next: boolean) => void
   onWhy: () => void
 }
 
@@ -209,6 +247,8 @@ function SecurityRow({
   description,
   violated,
   severity,
+  acknowledged,
+  onAcknowledgeChange,
   onWhy,
 }: SecurityRowProps) {
   const accentClass = violated
@@ -234,6 +274,21 @@ function SecurityRow({
         </button>
       </div>
       <p className="text-xs text-[var(--text-dim)]">{description}</p>
+      {violated && (
+        // Per-item acknowledgement (CodeX attempt 19). Each violated
+        // row gets its own checkbox so a single tick cannot clear all
+        // warnings at once.
+        <label className="flex items-start gap-2 text-xs mt-1 text-[var(--text-primary)]">
+          <input
+            type="checkbox"
+            data-testid={`${testId}-acknowledge`}
+            checked={acknowledged}
+            onChange={(e) => onAcknowledgeChange(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>{t('onboarding.security.acknowledge')}</span>
+        </label>
+      )}
     </div>
   )
 }

@@ -876,32 +876,43 @@ export function watchSettingsDirectories(
   const handles: WatchHandle[] = []
 
   function attachClaudeDirWatcher(claudeDir: string): void {
+    const expectedSettingsPath = join(claudeDir, 'settings.json')
     try {
-      const handle = fs.watch(claudeDir, (event) => {
-        if (event.type === 'error') {
-          log.warn({ err: event.error }, 'Settings directory watcher reported error')
-          return
-        }
-        if (
-          event.type !== 'add' &&
-          event.type !== 'change' &&
-          event.type !== 'unlink' &&
-          event.type !== 'addDir'
-        ) {
-          return
-        }
-        const path = typeof event.path === 'string' ? event.path : ''
-        const basename = path.split(/[/\\]/).pop() ?? ''
-        if (basename !== 'settings.json') return
-        try {
-          onMutation()
-        } catch (err) {
-          log.error(
-            { err, event: event.type },
-            'Settings directory mutation handler threw; ignoring'
-          )
-        }
-      })
+      const handle = fs.watch(
+        claudeDir,
+        (event) => {
+          if (event.type === 'error') {
+            log.warn({ err: event.error }, 'Settings directory watcher reported error')
+            return
+          }
+          if (
+            event.type !== 'add' &&
+            event.type !== 'change' &&
+            event.type !== 'unlink' &&
+            event.type !== 'addDir'
+          ) {
+            return
+          }
+          const path = typeof event.path === 'string' ? event.path : ''
+          // CodeX attempt 19 — require an *exact* match against the
+          // canonical `<claudeDir>/settings.json` so a nested
+          // `<claudeDir>/projects/<id>/settings.json` (which chokidar
+          // would still surface even at depth 0 if a sub-tree is
+          // recursive) cannot retrigger reruns / log churn.
+          if (path !== expectedSettingsPath) return
+          try {
+            onMutation()
+          } catch (err) {
+            log.error(
+              { err, event: event.type },
+              'Settings directory mutation handler threw; ignoring'
+            )
+          }
+        },
+        // Limit the watch to the immediate children of `.claude/` so
+        // unrelated subtrees do not balloon the watch set.
+        { depth: 0 },
+      )
       handles.push(handle)
     } catch (err) {
       log.warn({ err, dir: claudeDir }, 'Failed to install .claude/ watcher')

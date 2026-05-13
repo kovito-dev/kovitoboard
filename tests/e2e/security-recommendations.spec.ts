@@ -127,15 +127,32 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
     await expect(securityStep).toBeVisible({ timeout: 5000 })
 
     const next = page.getByTestId('security-next')
-    // When the check returned overallOk: false (typical L1 fixture
-    // state), the next button is gated on the acknowledge checkbox.
-    // When the check returned overallOk: true (rare on CI), the
-    // checkbox is not rendered and next is enabled.
-    const ackCheckbox = page.getByTestId('security-acknowledge')
-    const checkboxVisible = await ackCheckbox.isVisible().catch(() => false)
-    if (checkboxVisible) {
+    // CodeX attempt 19 — per-item acknowledgement: every violated
+    // row gets its own checkbox, so the gate is "every visible row
+    // checkbox is ticked." A single shared box only exists on the
+    // fail-closed banner branch.
+    const sharedAck = page.getByTestId('security-acknowledge')
+    if (await sharedAck.isVisible().catch(() => false)) {
       await expect(next).toBeDisabled()
-      await ackCheckbox.check()
+      await sharedAck.check()
+      await expect(next).toBeEnabled()
+      return
+    }
+    // Otherwise tick every per-row checkbox that is rendered.
+    const rowIds: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = [
+      'permissionMode',
+      'denyPattern',
+      'bypassMode',
+    ]
+    let anyVisible = false
+    for (const row of rowIds) {
+      const box = page.getByTestId(`row-${row}-acknowledge`)
+      if (await box.isVisible().catch(() => false)) {
+        anyVisible = true
+        await box.check()
+      }
+    }
+    if (anyVisible) {
       await expect(next).toBeEnabled()
     } else {
       await expect(next).toBeEnabled()

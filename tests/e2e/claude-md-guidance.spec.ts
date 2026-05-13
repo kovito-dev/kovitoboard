@@ -51,9 +51,17 @@ async function skipSecurityStep(
 ): Promise<void> {
   const securityStep = page.getByTestId('onboarding-step-security')
   await expect(securityStep).toBeVisible({ timeout: 5000 })
-  const ack = page.getByTestId('security-acknowledge')
-  if (await ack.isVisible().catch(() => false)) {
-    await ack.check()
+  // CodeX attempt 19 — per-item acknowledgement. Tick every visible
+  // row checkbox so the Next button enables.
+  const sharedAck = page.getByTestId('security-acknowledge')
+  if (await sharedAck.isVisible().catch(() => false)) {
+    await sharedAck.check()
+  }
+  for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
+    const box = page.getByTestId(`row-${row}-acknowledge`)
+    if (await box.isVisible().catch(() => false)) {
+      await box.check()
+    }
   }
   await page.getByTestId('security-next').click()
 }
