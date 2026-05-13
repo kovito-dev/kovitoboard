@@ -45,12 +45,33 @@ test.describe('セキュリティ推奨設定 API', () => {
     expect(body.result).toHaveProperty('bypassMode')
   })
 
-  test('check 結果が fail-closed posture を返す (T-2-2 / T-2-1)', async ({ request }) => {
+  test('check 結果が fail-closed posture を返す (T-2-1 / T-2-2)', async ({ request }) => {
     const res = await request.get(`${API_BASE}/api/security/settings-check`)
     const body = await res.json()
-    // L1 fixture project root is /tmp/... so realpath rejects it OR
-    // the file simply does not exist (deny missing → not OK either).
+    // CodeX attempt 25 — pin the L1 fixture's deterministic outcome
+    // so a regression in the path-resolution / read pipeline cannot
+    // silently slip through under a softer `overallOk: false` assertion.
+    //
+    // L1 fixture: no `.claude/settings.json` exists at either
+    // user-level or project-level (the template-cache project root
+    // lives under /tmp/kb-e2e-template-XXX). The bounded reader
+    // therefore observes ENOENT, classifies it as "missing entry"
+    // (not a fail-closed rejection), and the checker falls back to
+    // Claude Code's documented default `permissionMode: 'default'`
+    // with an empty deny set. That yields:
+    //   - reason === 'ok' (no structural failure)
+    //   - permissionMode.ok === true (default is the recommended value)
+    //   - denyPattern.ok === false (no entry covers .kovitoboard/)
+    //   - bypassMode.ok === true (bypass not active)
+    //   - overallOk === false (the deny-pattern recommendation is unmet)
     expect(body.result.overallOk).toBe(false)
+    expect(body.result.reason).toBe('ok')
+    expect(body.result.permissionMode.ok).toBe(true)
+    expect(body.result.permissionMode.current).toBe('default')
+    expect(body.result.denyPattern.ok).toBe(false)
+    expect(body.result.denyPattern.hasKovitoboardDeny).toBe(false)
+    expect(body.result.bypassMode.ok).toBe(true)
+    expect(body.result.bypassMode.active).toBe(false)
   })
 })
 

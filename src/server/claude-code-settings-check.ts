@@ -432,48 +432,50 @@ function mergeSettings(
 
 /**
  * Decide whether a Claude Code deny entry actually covers the *entire*
- * `.kovitoboard/` directory tree.
+ * `.kovitoboard/` directory tree across every action class.
  *
- * Accepts only the whole-tree forms documented in the user-facing
- * recommendation:
+ * Accepts only the un-scoped, whole-tree forms documented in the
+ * user-facing recommendation:
  *
  *   - `.kovitoboard`             (bare directory — deny the whole dir)
  *   - `.kovitoboard/`            (trailing slash variant)
  *   - `.kovitoboard/**`          (recursive glob)
  *
- * Each form may be wrapped in a Claude Code action prefix such as
- * `Read(...)`, `Bash(...)`, or `Edit(...)`; the wrapper is stripped
- * before matching.
+ * Rejects (returns `false` for the entry, but the loop keeps
+ * scanning the rest of the array in case another entry qualifies):
  *
- * Rejects:
  *   - absolute-path rules like `/tmp/.kovitoboard/**` (CodeX
  *     attempt 4 — overly permissive deny matching),
  *   - parent-traversal rules (`../.kovitoboard/...`),
  *   - unrelated entries that merely contain the substring
  *     `.kovitoboard` (e.g. `apps/cool.kovitoboard-helper`),
- *   - **and any descendant-only pattern** such as
- *     `.kovitoboard/cache/**` or `.kovitoboard/state.json`. Those
- *     leave the rest of `.kovitoboard/` writable and therefore do
- *     not satisfy the recommendation copy in the toast / wizard
- *     (CodeX attempt 10 — scope validation).
+ *   - descendant-only patterns such as `.kovitoboard/cache/**` or
+ *     `.kovitoboard/state.json` — those leave the rest of
+ *     `.kovitoboard/` writable (CodeX attempt 10 — scope validation),
+ *   - **action-scoped wrappers** such as `Read(.kovitoboard/**)` or
+ *     `Edit(.kovitoboard/**)`. A single-action wrapper covers only
+ *     that action class and leaves the others (notably write paths)
+ *     open, which contradicts the recommendation copy that asks for
+ *     the entire tree to be off-limits (CodeX attempt 25 — security
+ *     validation).
  *
  * Pattern compilation / actual enforcement remains Claude Code's
  * responsibility (spec §4 responsibility boundary); this function
  * only verifies that the user has expressed an intent to deny the
- * whole `.kovitoboard/` tree.
+ * whole `.kovitoboard/` tree across every action class.
  */
 function denyCoversKovitoboard(deny: string[]): boolean {
-  // Strip a single optional action wrapper like `Read(...)`.
-  const ACTION_WRAPPER = /^[A-Za-z][A-Za-z0-9_-]*\((.*)\)$/
   for (const rawEntry of deny) {
     if (typeof rawEntry !== 'string') continue
-    const m = ACTION_WRAPPER.exec(rawEntry.trim())
-    const stripped = (m ? m[1] : rawEntry).trim()
+    const stripped = rawEntry.trim()
     if (stripped.length === 0) continue
     // Reject anchored / traversal forms.
     if (stripped.startsWith('/') || stripped.startsWith('~')) continue
     if (stripped.startsWith('./')) continue
     if (stripped.startsWith('../')) continue
+    // Reject action-scoped wrappers — they cover only one action
+    // class, leaving the rest of `.kovitoboard/` writable.
+    if (/^[A-Za-z][A-Za-z0-9_-]*\(.*\)$/.test(stripped)) continue
     if (
       stripped === '.kovitoboard' ||
       stripped === '.kovitoboard/' ||

@@ -203,7 +203,10 @@ describe('checkClaudeCodeSettings — happy paths', () => {
     expect(result.bypassMode.active).toBe(false)
   })
 
-  it('honors `Read(.kovitoboard/**)`-style deny entries', () => {
+  it('rejects action-scoped Read(.kovitoboard/**) (only one action class is covered)', () => {
+    // CodeX attempt 25 — a single-action wrapper like
+    // `Read(.kovitoboard/**)` leaves write-capable actions open, so
+    // it does NOT satisfy "deny the whole .kovitoboard/ tree".
     const fs = makeFs({
       files: {
         [userPath()]: JSON.stringify({
@@ -213,7 +216,7 @@ describe('checkClaudeCodeSettings — happy paths', () => {
       },
     })
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
-    expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
   })
 
   it('flags bypassPermissions and surfaces permissionMode mismatch together', () => {
@@ -253,7 +256,9 @@ describe('checkClaudeCodeSettings — happy paths', () => {
     expect(result.overallOk).toBe(true)
   })
 
-  it('treats project deny entries as union with user deny entries', () => {
+  it('does not credit union when only action-scoped wrappers cover .kovitoboard', () => {
+    // Both entries are action-scoped, so neither (alone or as a
+    // union) satisfies the whole-tree requirement (CodeX attempt 25).
     const fs = makeFs({
       files: {
         [userPath()]: JSON.stringify({
@@ -263,6 +268,23 @@ describe('checkClaudeCodeSettings — happy paths', () => {
         [projectPath()]: JSON.stringify({
           permissionMode: 'default',
           permissions: { deny: ['Read(.kovitoboard/**)'] },
+        }),
+      },
+    })
+    const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
+  })
+
+  it('treats union as covering when ANY entry is an un-scoped whole-tree form', () => {
+    const fs = makeFs({
+      files: {
+        [userPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['Bash(rm:*)'] },
+        }),
+        [projectPath()]: JSON.stringify({
+          permissionMode: 'default',
+          permissions: { deny: ['.kovitoboard/'] },
         }),
       },
     })
@@ -586,7 +608,8 @@ describe('denyCoversKovitoboard precision (CodeX attempt 4)', () => {
     expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
   })
 
-  it('accepts an action-wrapped recursive glob like Edit(.kovitoboard/**)', () => {
+  it('rejects an action-wrapped recursive glob like Edit(.kovitoboard/**)', () => {
+    // CodeX attempt 25 — wrapper covers only the Edit action class.
     const fs = makeFs({
       files: {
         [userPath()]: JSON.stringify({
@@ -596,7 +619,7 @@ describe('denyCoversKovitoboard precision (CodeX attempt 4)', () => {
       },
     })
     const result = checkClaudeCodeSettings(fs, PROJECT, HOME)
-    expect(result.denyPattern.hasKovitoboardDeny).toBe(true)
+    expect(result.denyPattern.hasKovitoboardDeny).toBe(false)
   })
 
   it('rejects descendant-only patterns like .kovitoboard/cache/** (CodeX attempt 10)', () => {
