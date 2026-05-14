@@ -289,6 +289,29 @@ test.describe('@preonboarding Rule of Two onboarding step', () => {
     await expect(accept).toBeEnabled({ timeout: 4000 })
   })
 
+  test('@preonboarding modal re-open で既に tick 済 acknowledgement も reset される', async ({
+    page,
+  }) => {
+    await advanceToSecurityStep(page)
+
+    // Pass the gate once and tick accept.
+    await page.getByTestId('onboarding-rule-of-two-why-link').click()
+    await page.getByTestId('rule-of-two-explanation-close').click()
+    const accept = page.getByTestId('onboarding-rule-of-two-accept')
+    await expect(accept).toBeEnabled({ timeout: 4000 })
+    await accept.check()
+    await expect(accept).toBeChecked()
+
+    // Re-open the explanation modal. The accept state must invalidate
+    // immediately so the user cannot proceed without going through the
+    // full "open / read / close / wait / accept" cycle again. Without
+    // this reset, a stale "checked" state would keep the Next-button
+    // gate satisfied even though the user has re-entered the
+    // explanation flow.
+    await page.getByTestId('onboarding-rule-of-two-why-link').click()
+    await expect(accept).not.toBeChecked()
+  })
+
   test('@preonboarding accept tick → Next 有効化 (denyPattern 行も ack 必須)', async ({
     page,
   }) => {

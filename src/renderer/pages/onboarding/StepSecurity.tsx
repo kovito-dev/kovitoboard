@@ -244,13 +244,20 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
 
   const openRuleOfTwoModal = useCallback(() => {
     setWhyOpen('bypassMode')
-    // Re-arm the idle gate on every open (CodeX attempt 2). The
-    // disabled memo above already keys off `whyOpen === 'bypassMode'`
-    // for the modal-open phase; clearing the closed timestamp here
-    // ensures the 2 s idle re-arms cleanly the instant the modal
-    // closes again, so the cycle is "open / read / close / wait /
-    // accept" on every re-entry, never a single-shot satisfy.
+    // Re-arm the idle gate on every open. The disabled memo above
+    // already keys off `whyOpen === 'bypassMode'` for the modal-open
+    // phase; clearing the closed timestamp here ensures the 2 s idle
+    // re-arms cleanly the instant the modal closes again, so the
+    // cycle is "open / read / close / wait / accept" on every
+    // re-entry, never a single-shot satisfy.
     setRuleOfTwoClosedAt(null)
+    // Re-arm the acknowledgement state as well. Without this, a user
+    // who already ticked accept once could re-open the modal, close
+    // it, and the Next button would stay enabled because
+    // `acknowledged.bypassMode` survived — defeating the
+    // "open / read / close / wait / accept" cycle that the gate is
+    // supposed to enforce on every re-entry.
+    setAcknowledged((prev) => ({ ...prev, bypassMode: false }))
   }, [])
 
   const closeWhyModal = useCallback(() => {
