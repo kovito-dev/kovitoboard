@@ -336,49 +336,49 @@ function matchClaudeMdBasename(k: string): boolean {
 export function isForbidden(
   exclusionKey: string,
   _projectRoot: string,
-  context: { operation: ExclusionOperation; matchedScope: Scope | null },
+  context: { operation: ExclusionOperation; approvedScopes: readonly Scope[] },
 ): boolean {
   if (exclusionKey === '') return false
   // Overlap semantics: the exclusion table can hold multiple entries
-  // matching the same path (`.claude/agents/CLAUDE.md` matches both
+  // matching the same path. `.claude/agents/CLAUDE.md` matches both
   // `.claude/agents/**` and the `CLAUDE.md` basename entry;
   // `.claude/agents/.env` matches both `.claude/agents/**` and the
   // bypassless `.env` entry; `node_modules/pkg/CLAUDE.md` matches
-  // both `node_modules/**` and the CLAUDE.md basename entry). Bypass
-  // is **per entry**, not global: a `readBypassScopes` allowance on
-  // one entry must not let a recipe punch through an unrelated
-  // hard-block entry on the same path. We therefore evaluate every
-  // matching block entry and demand that *each* one be bypassed by
-  // the current matched scope on the current operation. If any
-  // matching entry blocks and is not bypassed, the path is
-  // forbidden. This keeps `.env` / `.git/` / `node_modules/`
-  // hard-blocks intact even when the path also matches a
-  // bypassable narrow-scope subtree, and it requires a recipe that
-  // wants to read e.g. `.claude/agents/CLAUDE.md` to hold *both*
-  // `agents-read` (for the agents subtree rule) and `claude-md-read`
-  // (for the CLAUDE.md basename rule).
+  // both `node_modules/**` and the CLAUDE.md basename entry.
+  //
+  // Bypass is **per entry, evaluated against the full approved-scope
+  // set**. An entry is considered bypassed when its
+  // `readBypassScopes` intersects with the recipe's approved scopes
+  // — single-scope iteration would have made some legitimate reads
+  // unreachable (a recipe holding both `agents-read` and
+  // `claude-md-read` would have one entry bypass on the agents
+  // iteration and the other on the claude-md iteration, never both
+  // at once). If any matching entry blocks and no approved scope
+  // bypasses it, the path is forbidden. This preserves the
+  // `.env` / `.git/` / `node_modules/` hard-blocks even when the
+  // path overlaps a bypassable narrow-scope subtree, and it lets
+  // recipes that hold the right combination of read scopes reach
+  // overlapping nested CLAUDE.md files.
   for (const entry of EXCLUSIONS) {
     if (!entry.match(exclusionKey)) continue
     if (!entry.blockedOps.includes(context.operation)) continue
-    // Read-only bypass: a recipe with the dedicated read scope
-    // (`agents-read` / `skills-read` / `claude-md-read`) may read the
-    // narrow-scope subtree even though the entry blocks reads from a
-    // broader scope like `project-read`. Writes are never bypassed in
-    // v0.2.x — see the `readBypassScopes` field comment for the
-    // temporary-disabled rationale.
+    // Read-only bypass: at least one of this entry's
+    // `readBypassScopes` must be in the recipe's approved-scope set.
+    // Writes are never bypassed in v0.2.x — see the
+    // `readBypassScopes` field comment for the temporary-disabled
+    // rationale.
     if (
       context.operation === 'read' &&
       entry.readBypassScopes &&
-      context.matchedScope !== null &&
-      entry.readBypassScopes.includes(context.matchedScope)
+      entry.readBypassScopes.some((s) => context.approvedScopes.includes(s))
     ) {
       // This entry is bypassed; keep checking the remaining entries
       // so an overlapping non-bypassable rule (e.g. `.env`) can
       // still deny.
       continue
     }
-    // This entry blocks the operation and is not bypassed by the
-    // current scope — final block.
+    // This entry blocks the operation and is not bypassed by any
+    // approved scope — final block.
     return true
   }
   return false
@@ -428,10 +428,9 @@ export function filterExcludedEntries<T extends { path: string }>(
       }
       return false
     }
-    const matchedScope = selectReadBypassScope(normalize.key, approvedScopes)
     return !isForbidden(normalize.key, projectRoot, {
       operation,
-      matchedScope,
+      approvedScopes,
     })
   })
   if (suspiciousSkipped > 0) {
@@ -444,25 +443,6 @@ export function filterExcludedEntries<T extends { path: string }>(
     )
   }
   return filtered
-}
-
-/**
- * Pick the recipe-approved scope that, if any, bypasses a read-time
- * exclusion for the given entry. Returns null when no relevant
- * bypass scope is held (the read will be blocked).
- */
-function selectReadBypassScope(
-  exclusionKey: string,
-  approvedScopes: readonly Scope[],
-): Scope | null {
-  for (const entry of EXCLUSIONS) {
-    if (!entry.match(exclusionKey)) continue
-    if (!entry.readBypassScopes) continue
-    for (const bypass of entry.readBypassScopes) {
-      if (approvedScopes.includes(bypass)) return bypass
-    }
-  }
-  return null
 }
 
 // =========================================
@@ -724,7 +704,7 @@ export function validatePathForScope(
       if (
         isForbidden(normalized.key, projectRootResolved, {
           operation,
-          matchedScope: scope,
+          approvedScopes,
         })
       ) {
         // claude-md-read is the read-only branch (writes were
@@ -754,7 +734,7 @@ export function validatePathForScope(
     if (
       isForbidden(normalized.key, projectRootResolved, {
         operation,
-        matchedScope: scope,
+        approvedScopes,
       })
     ) {
       if (operation === 'write') {

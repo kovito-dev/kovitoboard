@@ -211,7 +211,11 @@ export function validatePathForArtifactRead(
   if (
     isForbidden(exclusionKey.key, ctx.projectRoot, {
       operation: 'read',
-      matchedScope: null,
+      // The artifact pipeline runs outside the recipe scope
+      // dispatcher; no recipe-side bypass scopes apply, so we pass an
+      // empty set and the v1.8 surface bites at its strongest for
+      // artifact preview probes.
+      approvedScopes: [],
     })
   ) {
     return {

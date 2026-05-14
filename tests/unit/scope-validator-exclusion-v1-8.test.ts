@@ -198,13 +198,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.env', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.env', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -213,7 +213,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.env.production', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
   })
@@ -222,13 +222,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.git/head', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.git/hooks/post-commit', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -237,7 +237,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('node_modules/pkg/index.js', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
   })
@@ -246,13 +246,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/credentials', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/credentials.json', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
   })
@@ -262,13 +262,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/hooks/post-launch.sh', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/hooks/post-launch.sh', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -277,13 +277,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/settings.json', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/settings.json', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -292,13 +292,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/settings.local.json', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/settings.local.json', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -307,13 +307,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/commands/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/commands/foo.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
   })
@@ -325,7 +325,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
     // agents-read bypasses the read block (its scope root is
@@ -333,7 +333,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'agents-read',
+        approvedScopes: ['agents-read'],
       }),
     ).toBe(false)
     // project-read alone is **not** sufficient — narrow-scope subtree
@@ -341,7 +341,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
     // agents-read does **not** bypass writes (write opt-in scope is
@@ -349,7 +349,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'agents-read',
+        approvedScopes: ['agents-read'],
       }),
     ).toBe(true)
   })
@@ -358,19 +358,19 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/skills/foo.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
     expect(
       isForbidden('.claude/skills/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'skills-read',
+        approvedScopes: ['skills-read'],
       }),
     ).toBe(false)
     expect(
       isForbidden('.claude/skills/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
   })
@@ -388,7 +388,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/.env', projectRoot, {
         operation: 'read',
-        matchedScope: 'agents-read',
+        approvedScopes: ['agents-read'],
       }),
     ).toBe(true)
   })
@@ -400,7 +400,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('node_modules/pkg/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'claude-md-read',
+        approvedScopes: ['claude-md-read'],
       }),
     ).toBe(true)
   })
@@ -414,7 +414,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'claude-md-read',
+        approvedScopes: ['claude-md-read'],
       }),
     ).toBe(true)
   })
@@ -426,7 +426,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'agents-read',
+        approvedScopes: ['agents-read'],
       }),
     ).toBe(true)
   })
@@ -435,7 +435,48 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
+      }),
+    ).toBe(true)
+  })
+
+  // Overlap allow-path: when the recipe holds *both* bypass scopes
+  // that the overlapping entries demand, every matching entry is
+  // bypassed and the read succeeds. The full-set approvedScopes
+  // model lets this happen on a single isForbidden call (the
+  // previous single-`matchedScope` design could only ever satisfy
+  // one entry per call).
+  it('allows .claude/agents/CLAUDE.md read when both agents-read and claude-md-read are approved', () => {
+    expect(
+      isForbidden('.claude/agents/claude.md', projectRoot, {
+        operation: 'read',
+        approvedScopes: ['agents-read', 'claude-md-read'],
+      }),
+    ).toBe(false)
+  })
+
+  it('allows .claude/skills/CLAUDE.md read when both skills-read and claude-md-read are approved', () => {
+    expect(
+      isForbidden('.claude/skills/claude.md', projectRoot, {
+        operation: 'read',
+        approvedScopes: ['skills-read', 'claude-md-read'],
+      }),
+    ).toBe(false)
+  })
+
+  it('still blocks .claude/agents/.env even when every read scope is approved (hard-block survives)', () => {
+    // `.env` has no readBypassScopes, so no combination of read
+    // scopes can authorize it. This is the security-critical
+    // regression test for the bypass-leak class.
+    expect(
+      isForbidden('.claude/agents/.env', projectRoot, {
+        operation: 'read',
+        approvedScopes: [
+          'project-read',
+          'agents-read',
+          'skills-read',
+          'claude-md-read',
+        ],
       }),
     ).toBe(true)
   })
@@ -444,19 +485,19 @@ describe('isForbidden', () => {
     expect(
       isForbidden('claude.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
     expect(
       isForbidden('pkg/sub/claude.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
     expect(
       isForbidden('claude.local.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(true)
     // claude-md-read bypasses the read block (case-folded match for
@@ -464,14 +505,14 @@ describe('isForbidden', () => {
     expect(
       isForbidden('pkg/sub/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'claude-md-read',
+        approvedScopes: ['claude-md-read'],
       }),
     ).toBe(false)
     // project-read alone is **not** sufficient.
     expect(
       isForbidden('pkg/sub/claude.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(true)
   })
@@ -480,7 +521,7 @@ describe('isForbidden', () => {
     expect(
       isForbidden('', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(false)
   })
@@ -489,19 +530,19 @@ describe('isForbidden', () => {
     expect(
       isForbidden('readme.md', projectRoot, {
         operation: 'read',
-        matchedScope: 'project-read',
+        approvedScopes: ['project-read'],
       }),
     ).toBe(false)
     expect(
       isForbidden('intel/report.md', projectRoot, {
         operation: 'write',
-        matchedScope: 'project-write',
+        approvedScopes: ['project-write'],
       }),
     ).toBe(false)
   })
 
   it('ignores bypass scopes when matchedScope is null (artifact path)', () => {
-    // The artifact-path-validator passes matchedScope: null; in that
+    // The artifact-path-validator passes approvedScopes: []; in that
     // mode no bypass applies, so the artifact preview sees the
     // strongest read-time exclusion (no recipe-style narrow scope is
     // in play). Both the full-block `.git/` entry and the narrow-scope
@@ -509,13 +550,13 @@ describe('isForbidden', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
-        matchedScope: null,
+        approvedScopes: [],
       }),
     ).toBe(true)
     expect(
       isForbidden('.git/head', projectRoot, {
         operation: 'read',
-        matchedScope: null,
+        approvedScopes: [],
       }),
     ).toBe(true)
   })
