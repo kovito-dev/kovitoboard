@@ -168,6 +168,17 @@ function makeFs(seed: Record<string, string>): FileAccessLayer {
     symlinkSync: () => {
       throw new Error('symlinkSync not supported in mock')
     },
+    realpathSync: (p) => {
+      // The fake filesystem does not model symlinks, so the
+      // canonical path equals the input as long as the entry
+      // exists. Tests that exercise symlink-escape behaviour
+      // (see `recipe-parser-artifact-path-traversal.test.ts`)
+      // override this with a custom mapping.
+      if (!files.has(p) && !dirs.has(p)) {
+        throw new Error(`ENOENT: ${p}`)
+      }
+      return p
+    },
     watch: () => ({
       close: async () => {
         /* no-op */

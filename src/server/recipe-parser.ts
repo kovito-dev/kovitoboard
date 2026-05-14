@@ -6,7 +6,7 @@
 /**
  * Recipe parser — supports both directory format and single-file Markdown format.
  */
-import { join, extname, normalize } from 'path'
+import { join, extname, isAbsolute, normalize, sep } from 'path'
 import { createHash } from 'crypto'
 import matter from 'gray-matter'
 import type { FileAccessLayer } from './fs-layer'
@@ -194,11 +194,33 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
   // the stat-first ordering the parser would still materialize a
   // hostile artifact body before checking the byte count, which is
   // the OOM path the limits are supposed to close.
+  // Canonicalise the recipe directory once so the per-artifact
+  // containment check below compares like-with-like. `realpath`
+  // failure on the directory itself is treated as a parse error —
+  // we already opened the YAML through `fs.readFileSync` further
+  // up, so a broken `dirPath` at this point is a programmer bug,
+  // not a recipe authoring mistake.
+  const canonicalDir = fs.realpathSync(dirPath)
+
   let totalBytes = yamlBytes
   const artifacts: ArtifactWithContent[] = rawArtifacts.map((entry) => {
     const filePath = join(dirPath, entry.path)
     if (!fs.existsSync(filePath)) {
       throw new Error(`Artifact file not found: ${entry.path} (expected at ${filePath})`)
+    }
+    // Final containment check (supplementary review §S3 step 3):
+    // even when `entry.path` itself contains no `..` segments, a
+    // symlink inside the recipe directory can still redirect to an
+    // arbitrary project file. `realpath` resolves every symlink in
+    // the resolved chain so the comparison reflects the actual
+    // on-disk target, not the lexical path. The check runs BEFORE
+    // `statSync` / `readFileSync` so a hostile artifact body never
+    // reaches the bounded reader at all.
+    const canonicalFile = fs.realpathSync(filePath)
+    if (!isPathWithin(canonicalFile, canonicalDir)) {
+      throw new Error(
+        `Artifact ${entry.path}: resolves outside the recipe directory`,
+      )
     }
     const stat = fs.statSync(filePath)
     // L-R4: per-file ceiling, checked on stat metadata so an
@@ -543,7 +565,36 @@ function extractArtifactEntries(
       throw new Error(`Artifact ${i}: "type" must be one of: ${[...VALID_ARTIFACT_TYPES].join(', ')}`)
     }
 
+    // Reject path escapes at the YAML-parse entry so a malicious
+    // recipe cannot pull arbitrary project files into
+    // `artifact.content` (supplementary review §S3 / recipe
+    // artifact-path traversal). Three independent gates are needed
+    // because `normalize` preserves `..` segments and a
+    // `join(dirPath, '../../.env')` would otherwise resolve outside
+    // the recipe directory:
+    //
+    //   1. Absolute paths (`/etc/passwd`, `C:\\...`) — a directory
+    //      recipe's artifacts are always relative to the recipe
+    //      directory; an absolute path is a structural rejection.
+    //   2. Any path component that normalizes to `..` — this catches
+    //      both leading `..` (`../../.env`) and interior `..` after
+    //      a long prefix (`a/../../b`). Checking only the normalized
+    //      string with `startsWith('../')` would miss the leading
+    //      `./` form on Windows separators, so we split on both
+    //      POSIX and Windows separators and reject any `..` segment
+    //      regardless of position.
+    //   3. The directory parser also runs a `realpath` containment
+    //      check on the joined path before any `fs.readFileSync` —
+    //      that final gate closes the symlink-escape variant where
+    //      `entry.path` itself contains no `..`.
+    if (isAbsolute(entry.path)) {
+      throw new Error(`Artifact ${i}: "path" must be a relative path inside the recipe directory`)
+    }
     const normalizedPath = normalize(entry.path)
+    const segments = normalizedPath.split(/[/\\]/)
+    if (segments.some((segment) => segment === '..')) {
+      throw new Error(`Artifact ${i}: "path" must not contain ".." segments`)
+    }
     const ext = extname(normalizedPath)
     if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
       throw new Error(`Artifact ${i}: extension "${ext}" is not allowed (${[...ALLOWED_EXTENSIONS].join(', ')})`)
@@ -554,6 +605,20 @@ function extractArtifactEntries(
       type: entry.type as ArtifactType,
     }
   })
+}
+
+/**
+ * Test whether `child` resolves to `parent` itself or a path strictly
+ * inside `parent`. Both arguments must already be canonicalised via
+ * `realpath` — this helper does not normalise separators or follow
+ * symlinks. Used by `parseDirectoryRecipe` to confirm that each
+ * artifact file lands inside the recipe directory even after
+ * symlinks are resolved.
+ */
+function isPathWithin(child: string, parent: string): boolean {
+  if (child === parent) return true
+  const parentWithSep = parent.endsWith(sep) ? parent : parent + sep
+  return child.startsWith(parentWithSep)
 }
 
 /**
