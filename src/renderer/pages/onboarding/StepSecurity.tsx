@@ -6,20 +6,39 @@
 /**
  * StepSecurity — onboarding step that surfaces Claude Code recommended-
  * settings violations for non-onboarded users (spec
- * `onboarding-scenarios.md` v1.2 §9.5; handoff
+ * `onboarding-scenarios.md` v1.2 §9.5; handoffs
  * `v02x-phase1-claude-code-recommended-settings-check-request.md` v1.1
- * §3.4).
+ * §3.4 + `v02x-phase1-rule-of-two-warning-implementation-request.md`
+ * v1.1 §3.2 + §3.5 + §8).
  *
- * Rubber-stamp prevention (handoff §3.4.2 / spec §9.5.2.3 / threat-
- * model §4.3.3):
+ * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 / threat-
+ * model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
  *   - Checkboxes are stacked vertically (no horizontal layout that
  *     invites a "tick everything in one swipe" gesture).
  *   - Each row has its own "Why?" link that opens a modal explaining
  *     the recommendation; no "Approve All" button.
- *   - The acknowledge checkbox uses the spec label "I have reviewed
- *     these recommendations" so the user must opt in explicitly.
+ *   - When bypass mode is active, the bypass row is replaced by a
+ *     prominent <RuleOfTwoViolationCard> with its own accept gate:
+ *       - Accept stays disabled until the RuleOfTwoExplanation modal
+ *         has been opened at least once (T-4-2 / I-6).
+ *       - A minimum 2-second idle delay is enforced after the modal
+ *         closes before accept enables (T-4-2 / D-E).
+ *       - The accept handler refuses non-trusted (programmatic) click
+ *         events via `event.isTrusted` (T-4-1 / I-6).
+ *   - For non-bypass rows the legacy per-row acknowledge checkbox is
+ *     retained — the rubber-stamp risk for those rows is already
+ *     handled by separate `Why?` modals + per-row ack (handoff ② v1.1).
+ *
+ * Out of scope:
+ *   - `window.kb` ambient API audit (T-4-1 b): already enforced at the
+ *     bridge — see `installAmbientKbBridge.ts`, which only exposes
+ *     `call` / `log` / `exposeContext`. No accept-state mutation API
+ *     exists on the ambient surface, so DOM-level click automation is
+ *     the only relevant attack and is mitigated by the
+ *     `event.isTrusted` gate below + the App-level onboarding gate
+ *     that refuses recipe page mounts before completion (T-4-1 a).
  */
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
 import { t } from '../../i18n'
 import type { SettingsCheckResult } from '../../../shared/setting-types'
@@ -28,6 +47,8 @@ import {
   buildFetchFailureResponse,
   isSecurityCheckResponse,
 } from '../../lib/securityCheckResponse'
+import { RuleOfTwoExplanation } from '../../components/RuleOfTwoExplanation'
+import { RuleOfTwoViolationCard } from '../../components/RuleOfTwoViolationCard'
 
 interface StepSecurityProps {
   /**
@@ -45,19 +66,46 @@ interface StepSecurityProps {
 
 type WhyKey = 'permissionMode' | 'denyPattern' | 'bypassMode' | null
 
+/**
+ * Minimum idle time (ms) after the RuleOfTwoExplanation modal closes
+ * before the bypass-mode accept checkbox enables. T-4-2 / D-E rubber-
+ * stamp prevention: forces a "reading delay" so a user cannot ack the
+ * modal-open + accept-tick combo in a single keystroke burst.
+ */
+const RULE_OF_TWO_ACCEPT_IDLE_MS = 2000
+
 export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
   // Per-item acknowledgements (CodeX attempt 19 — security UX
   // regression). The wizard previously collapsed all violations into
   // a single shared checkbox, which let a user clear every warning
   // with one tick and defeated the rubber-stamp prevention intent
-  // (handoff §3.4.2 / spec §9.5.2.3 / threat-model §4.3.3).
+  // (handoff ② §3.4.2 / spec §9.5.2.3 / threat-model §4.3.3).
   const [acknowledged, setAcknowledged] = useState<{
     permissionMode: boolean
     denyPattern: boolean
     bypassMode: boolean
   }>({ permissionMode: false, denyPattern: false, bypassMode: false })
   const [whyOpen, setWhyOpen] = useState<WhyKey>(null)
+  /**
+   * Has the bypass-mode `RuleOfTwoExplanation` modal been opened at
+   * least once during this onboarding session? T-4-2 / I-6 — accept
+   * stays disabled until this flips to `true`.
+   */
+  const [ruleOfTwoEverOpened, setRuleOfTwoEverOpened] = useState(false)
+  /**
+   * Wall-clock timestamp at which the bypass-mode explanation modal
+   * was last closed. The accept checkbox re-enables only after
+   * `RULE_OF_TWO_ACCEPT_IDLE_MS` has elapsed since this moment
+   * (T-4-2 / D-E reading-delay simulation).
+   */
+  const [ruleOfTwoClosedAt, setRuleOfTwoClosedAt] = useState<number | null>(null)
+  /**
+   * Live "now" tick. Updated only while the idle window is active so a
+   * background interval does not keep firing for the rest of the
+   * wizard's lifetime.
+   */
+  const [now, setNow] = useState<number>(() => Date.now())
 
   useEffect(() => {
     let cancelled = false
@@ -92,6 +140,28 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     }
   }, [])
 
+  // Tick `now` while the idle window is open so the disabled-state
+  // computation below transitions smoothly to enabled. The interval
+  // stops automatically once the window has elapsed — there is no
+  // background timer running for the rest of onboarding.
+  useEffect(() => {
+    if (ruleOfTwoClosedAt === null) return
+    const elapsed = Date.now() - ruleOfTwoClosedAt
+    if (elapsed >= RULE_OF_TWO_ACCEPT_IDLE_MS) return
+    const id = setInterval(() => {
+      setNow(Date.now())
+    }, 100)
+    return () => clearInterval(id)
+  }, [ruleOfTwoClosedAt, now])
+
+  const bypassActive = state?.result.bypassMode.active === true
+  const ruleOfTwoAcceptDisabled = useMemo(() => {
+    if (!bypassActive) return false
+    if (!ruleOfTwoEverOpened) return true
+    if (ruleOfTwoClosedAt === null) return true
+    return now - ruleOfTwoClosedAt < RULE_OF_TWO_ACCEPT_IDLE_MS
+  }, [bypassActive, ruleOfTwoEverOpened, ruleOfTwoClosedAt, now])
+
   // Gate the Next button on per-item acknowledgement of EVERY
   // violated row (CodeX attempt 19). A row that is already OK does
   // not need a tick, so the user only needs to acknowledge what they
@@ -125,9 +195,43 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     onNext(reviewed)
   }, [nextEnabled, state, onNext])
 
+  /**
+   * T-4-1 / I-6 — refuse synthetic / programmatic click events for the
+   * bypass-mode accept checkbox. The ambient `window.kb` API does not
+   * expose accept-state mutation (see `installAmbientKbBridge.ts`), but
+   * a recipe page running in the same renderer realm could still
+   * dispatch a synthetic event. `event.isTrusted` distinguishes
+   * user-initiated activations.
+   */
+  const handleBypassAccept = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      if (!event.nativeEvent.isTrusted) {
+        // Surface nothing to the user — a synthetic event indicates a
+        // programmatic mutation attempt, not a legitimate accident.
+        return
+      }
+      setAcknowledged((prev) => ({ ...prev, bypassMode: event.target.checked }))
+    },
+    [],
+  )
+
   function setRowAck(row: 'permissionMode' | 'denyPattern' | 'bypassMode', next: boolean): void {
     setAcknowledged((prev) => ({ ...prev, [row]: next }))
   }
+
+  const openRuleOfTwoModal = useCallback(() => {
+    setWhyOpen('bypassMode')
+  }, [])
+
+  const closeWhyModal = useCallback(() => {
+    if (whyOpen === 'bypassMode') {
+      setRuleOfTwoEverOpened(true)
+      const closedAt = Date.now()
+      setRuleOfTwoClosedAt(closedAt)
+      setNow(closedAt)
+    }
+    setWhyOpen(null)
+  }, [whyOpen])
 
   return (
     <div data-testid="onboarding-step-security" className="flex flex-col gap-6">
@@ -164,6 +268,49 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
             {t('onboarding.security.intro')}
           </p>
           <div className="flex flex-col gap-3">
+            {bypassActive ? (
+              <RuleOfTwoViolationCard
+                testId="onboarding-rule-of-two"
+                onOpenWhy={openRuleOfTwoModal}
+              >
+                <label
+                  className={`flex items-start gap-2 text-xs mt-1 text-red-900 dark:text-red-100 ${
+                    ruleOfTwoAcceptDisabled ? 'opacity-60' : ''
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    data-testid="onboarding-rule-of-two-accept"
+                    checked={acknowledged.bypassMode}
+                    disabled={ruleOfTwoAcceptDisabled}
+                    onChange={handleBypassAccept}
+                    className="mt-0.5"
+                  />
+                  <span className="flex flex-col gap-0.5">
+                    <span>{t('ruleOfTwo.violation.accept')}</span>
+                    {ruleOfTwoAcceptDisabled && (
+                      <span
+                        data-testid="onboarding-rule-of-two-accept-hint"
+                        className="text-[10px] text-red-700 dark:text-red-300"
+                      >
+                        {t('ruleOfTwo.violation.acceptDisabledHint')}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </RuleOfTwoViolationCard>
+            ) : (
+              <SecurityRow
+                testId="row-bypassMode"
+                label={t('onboarding.security.bypassMode.label')}
+                description={t('onboarding.security.bypassMode.description')}
+                violated={!state.result.bypassMode.ok}
+                severity="high"
+                acknowledged={acknowledged.bypassMode}
+                onAcknowledgeChange={(v) => setRowAck('bypassMode', v)}
+                onWhy={() => setWhyOpen('bypassMode')}
+              />
+            )}
             <SecurityRow
               testId="row-permissionMode"
               label={t('onboarding.security.permissionMode.label')}
@@ -183,16 +330,6 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               acknowledged={acknowledged.denyPattern}
               onAcknowledgeChange={(v) => setRowAck('denyPattern', v)}
               onWhy={() => setWhyOpen('denyPattern')}
-            />
-            <SecurityRow
-              testId="row-bypassMode"
-              label={t('onboarding.security.bypassMode.label')}
-              description={t('onboarding.security.bypassMode.description')}
-              violated={!state.result.bypassMode.ok}
-              severity="high"
-              acknowledged={acknowledged.bypassMode}
-              onAcknowledgeChange={(v) => setRowAck('bypassMode', v)}
-              onWhy={() => setWhyOpen('bypassMode')}
             />
           </div>
         </>
@@ -233,9 +370,11 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
         </button>
       </div>
 
-      {whyOpen !== null && (
+      {whyOpen === 'bypassMode' ? (
+        <RuleOfTwoExplanation onClose={closeWhyModal} />
+      ) : whyOpen !== null ? (
         <WhyModal whyKey={whyOpen} onClose={() => setWhyOpen(null)} />
-      )}
+      ) : null}
     </div>
   )
 }
