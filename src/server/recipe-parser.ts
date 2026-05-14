@@ -6,7 +6,7 @@
 /**
  * Recipe parser — supports both directory format and single-file Markdown format.
  */
-import { join, extname, normalize } from 'path'
+import { join, extname, normalize, posix as pathPosix, win32 as pathWin32, sep } from 'path'
 import { createHash } from 'crypto'
 import matter from 'gray-matter'
 import type { FileAccessLayer } from './fs-layer'
@@ -194,13 +194,53 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
   // the stat-first ordering the parser would still materialize a
   // hostile artifact body before checking the byte count, which is
   // the OOM path the limits are supposed to close.
+  // Canonicalise the recipe directory once so the per-artifact
+  // containment check below compares like-with-like. `realpath`
+  // failure on the directory itself is treated as a parse error —
+  // we already opened the YAML through `fs.readFileSync` further
+  // up, so a broken `dirPath` at this point is a programmer bug,
+  // not a recipe authoring mistake.
+  const canonicalDir = fs.realpathSync(dirPath)
+
   let totalBytes = yamlBytes
   const artifacts: ArtifactWithContent[] = rawArtifacts.map((entry) => {
     const filePath = join(dirPath, entry.path)
     if (!fs.existsSync(filePath)) {
       throw new Error(`Artifact file not found: ${entry.path} (expected at ${filePath})`)
     }
-    const stat = fs.statSync(filePath)
+    // Final containment check (supplementary review §S3 step 3):
+    // even when `entry.path` itself contains no `..` segments, a
+    // symlink inside the recipe directory can still redirect to an
+    // arbitrary project file. `realpath` resolves every symlink in
+    // the resolved chain so the comparison reflects the actual
+    // on-disk target, not the lexical path. The check runs BEFORE
+    // `statSync` / `readFileSync` so a hostile artifact body never
+    // reaches the bounded reader at all.
+    const canonicalFile = fs.realpathSync(filePath)
+    if (!isPathWithin(canonicalFile, canonicalDir)) {
+      throw new Error(
+        `Artifact ${entry.path}: resolves outside the recipe directory`,
+      )
+    }
+    // Run `statSync` + `readFileSync` against the canonical target
+    // rather than the lexical pathname. This narrows the
+    // observation window: a swap on the lexical `filePath` alone
+    // (the entry pointed at by `recipe.yaml`) no longer redirects
+    // the bounded reader, because the canonical path captured here
+    // has already been resolved end-to-end. This does NOT close
+    // the broader TOCTOU race against the canonical target itself
+    // — an attacker who can write to the resolved file between the
+    // `realpath` call here and the `readFileSync` below can still
+    // redirect the read by mutating the resolved entry. Closing
+    // that wider race requires an fd-based open/fstat/read pipeline,
+    // which is a parser-wide I/O refactor and is intentionally out
+    // of scope for this PR (see PR description `## Out of Scope`).
+    // The recipe-parser threat model in v0.2.x assumes the recipe
+    // upload directory is staged by KovitoBoard itself prior to
+    // parsing, so a concurrent attacker cannot reach the canonical
+    // entries during the parse window; this hardening is defence
+    // in depth on top of that staging guarantee.
+    const stat = fs.statSync(canonicalFile)
     // L-R4: per-file ceiling, checked on stat metadata so an
     // oversized artifact never reaches readFileSync.
     checkParserLimit({
@@ -223,7 +263,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
       extraFields: { artifactPath: entry.path },
     })
     totalBytes += stat.size
-    const content = fs.readFileSync(filePath, 'utf-8')
+    const content = fs.readFileSync(canonicalFile, 'utf-8')
     // utf-8 round-trip: `Buffer.byteLength(content, 'utf-8')`
     // matches `stat.size` for every well-formed input. We surface
     // the decoded count to keep the historical contract on
@@ -543,7 +583,61 @@ function extractArtifactEntries(
       throw new Error(`Artifact ${i}: "type" must be one of: ${[...VALID_ARTIFACT_TYPES].join(', ')}`)
     }
 
+    // Reject path escapes at the YAML-parse entry so a malicious
+    // recipe cannot pull arbitrary project files into
+    // `artifact.content` (supplementary review §S3 / recipe
+    // artifact-path traversal). Three independent gates are needed
+    // because `normalize` preserves `..` segments and a
+    // `join(dirPath, '../../.env')` would otherwise resolve outside
+    // the recipe directory:
+    //
+    //   1. Absolute paths (`/etc/passwd`, `C:\\...`) — a directory
+    //      recipe's artifacts are always relative to the recipe
+    //      directory; an absolute path is a structural rejection.
+    //   2. Any path component that normalizes to `..` — this catches
+    //      both leading `..` (`../../.env`) and interior `..` after
+    //      a long prefix (`a/../../b`). Checking only the normalized
+    //      string with `startsWith('../')` would miss the leading
+    //      `./` form on Windows separators, so we split on both
+    //      POSIX and Windows separators and reject any `..` segment
+    //      regardless of position.
+    //   3. The directory parser also runs a `realpath` containment
+    //      check on the joined path before any `fs.readFileSync` —
+    //      that final gate closes the symlink-escape variant where
+    //      `entry.path` itself contains no `..`.
+    // Reject empty / whitespace-only paths up front. Without this
+    // guard `normalize('')` collapses to `'.'`, which represents the
+    // recipe directory itself and would otherwise be read as if it
+    // were an artifact file, leaving a regular-file mismatch to fall
+    // out of `fs.readFileSync` as an opaque OS error.
+    if (entry.path.trim() === '') {
+      throw new Error(`Artifact ${i}: "path" must not be empty`)
+    }
+    // Check both POSIX and Windows absolute-path shapes regardless
+    // of host platform. `path.isAbsolute()` is host-dependent, so on
+    // a Linux deployment it would not flag `C:\\secret.txt` or
+    // `\\\\server\\share\\x`. Recipes are portable artifacts that
+    // may be authored on any OS, so the absolute-path rejection
+    // must agree on every host.
+    if (pathPosix.isAbsolute(entry.path) || pathWin32.isAbsolute(entry.path)) {
+      throw new Error(`Artifact ${i}: "path" must be a relative path inside the recipe directory`)
+    }
     const normalizedPath = normalize(entry.path)
+    // An input like `'.'`, `'./'`, or `'.\\'` represents the recipe
+    // directory itself rather than a file inside it. `normalize`
+    // keeps the trailing separator on `'./'` (POSIX) and `'.\\'`
+    // (Windows), so strip a trailing slash before comparing. Reject
+    // here so the parser fails with a deterministic validation
+    // message instead of the downstream `readFileSync`
+    // ENOENT/EISDIR surface.
+    const strippedTail = normalizedPath.replace(/[/\\]+$/, '')
+    if (strippedTail === '.' || strippedTail === '') {
+      throw new Error(`Artifact ${i}: "path" must point to a file inside the recipe directory`)
+    }
+    const segments = normalizedPath.split(/[/\\]/)
+    if (segments.some((segment) => segment === '..')) {
+      throw new Error(`Artifact ${i}: "path" must not contain ".." segments`)
+    }
     const ext = extname(normalizedPath)
     if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
       throw new Error(`Artifact ${i}: extension "${ext}" is not allowed (${[...ALLOWED_EXTENSIONS].join(', ')})`)
@@ -554,6 +648,20 @@ function extractArtifactEntries(
       type: entry.type as ArtifactType,
     }
   })
+}
+
+/**
+ * Test whether `child` resolves to `parent` itself or a path strictly
+ * inside `parent`. Both arguments must already be canonicalised via
+ * `realpath` — this helper does not normalise separators or follow
+ * symlinks. Used by `parseDirectoryRecipe` to confirm that each
+ * artifact file lands inside the recipe directory even after
+ * symlinks are resolved.
+ */
+function isPathWithin(child: string, parent: string): boolean {
+  if (child === parent) return true
+  const parentWithSep = parent.endsWith(sep) ? parent : parent + sep
+  return child.startsWith(parentWithSep)
 }
 
 /**
