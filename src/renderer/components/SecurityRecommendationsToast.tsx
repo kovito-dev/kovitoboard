@@ -9,6 +9,14 @@
  * `v02x-phase1-claude-code-recommended-settings-check-request.md` v1.1
  * §3.3; spec `trust-prompt-relay.md` v1.3 §10.5).
  *
+ * Phase 1 ④ extension
+ * (`v02x-phase1-rule-of-two-warning-implementation-request.md` v1.1
+ * §3.3): when bypass mode is active the toast swaps the per-row
+ * violation list for a <RuleOfTwoViolationCard> + "Why?" link that
+ * opens <RuleOfTwoExplanation>. The Dismiss button stays disabled
+ * while bypass is active (I-7 / I-8 — re-surface every startup + every
+ * mutation, never dismissable).
+ *
  * Self-contained:
  *   1. Fetches `/api/security/settings-check` on mount.
  *   2. Hides itself when `suppressToast === true` (already dismissed
@@ -18,9 +26,10 @@
  *      `<StepSecurity>` and the toast would otherwise double-up.
  *   4. POSTs to `/api/security/dismiss` when the user clicks Dismiss.
  *
- * Rubber-stamp prevention (handoff §3.3.3, threat-model §4.3): no
- * "Approve All" button; each violation is listed in its own row with a
- * dedicated severity color.
+ * Rubber-stamp prevention (handoff ② §3.3.3 + ④ §8 D-F, threat-model
+ * §4.3): no "Approve All" button; each violation is listed in its own
+ * row with a dedicated severity color, and bypass mode active is
+ * surfaced via a prominent Rule of Two card that is not dismissable.
  */
 import { useEffect, useState, useCallback } from 'react'
 import { kbFetch } from '../lib/kbFetch'
@@ -30,6 +39,8 @@ import {
   buildFetchFailureResponse,
   isSecurityCheckResponse,
 } from '../lib/securityCheckResponse'
+import { RuleOfTwoViolationCard } from './RuleOfTwoViolationCard'
+import { RuleOfTwoExplanation } from './RuleOfTwoExplanation'
 
 interface SecurityRecommendationsToastProps {
   /**
@@ -55,6 +66,9 @@ export function SecurityRecommendationsToast({
   // drift).
   const [optimisticHidden, setOptimisticHidden] = useState(false)
   const [dismissing, setDismissing] = useState(false)
+  // Tracks whether the Rule of Two explanation modal is currently
+  // mounted on top of the toast (Phase 1 ④ §3.3 + §3.5).
+  const [explanationOpen, setExplanationOpen] = useState(false)
 
   useEffect(() => {
     if (!onboardingComplete) return
@@ -154,84 +168,115 @@ export function SecurityRecommendationsToast({
 
   const { result } = state
   const failClosed = result.reason !== 'ok'
+  const bypassActive = result.bypassMode.active === true
 
   return (
-    <div
-      data-testid="security-recommendations-toast"
-      className="fixed top-4 right-4 z-50 max-w-md rounded-xl border border-amber-400/50 bg-amber-50 dark:bg-amber-950/90 dark:border-amber-700/50 shadow-lg p-4 text-sm"
-      role="alert"
-      aria-live="polite"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1">
-          <div className="font-semibold text-amber-900 dark:text-amber-100 mb-2">
-            ⚠️ {t('security.toast.title')}
-          </div>
-          {failClosed ? (
-            <p className="text-amber-800 dark:text-amber-200">
-              {t('security.toast.failClosed')}
-            </p>
-          ) : (
-            <>
-              <p className="text-amber-800 dark:text-amber-200 mb-2">
-                {t('security.toast.intro')}
+    <>
+      <div
+        data-testid="security-recommendations-toast"
+        className="fixed top-4 right-4 z-50 max-w-md rounded-xl border border-amber-400/50 bg-amber-50 dark:bg-amber-950/90 dark:border-amber-700/50 shadow-lg p-4 text-sm"
+        role="alert"
+        aria-live="polite"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <div className="font-semibold text-amber-900 dark:text-amber-100 mb-2">
+              ⚠️ {t('security.toast.title')}
+            </div>
+            {failClosed ? (
+              <p className="text-amber-800 dark:text-amber-200">
+                {t('security.toast.failClosed')}
               </p>
-              <ul className="space-y-1 list-none ml-0">
-                {!result.permissionMode.ok && (
-                  <li
-                    data-testid="violation-permissionMode"
-                    className="text-red-700 dark:text-red-300"
-                  >
-                    ✗ {t('security.toast.permissionMode.violation', {
-                      current: result.permissionMode.current,
-                    })}
-                  </li>
-                )}
+            ) : bypassActive ? (
+              /*
+               * Phase 1 ④ §3.3: surface the Rule of Two violation
+               * prominently when bypass mode is active. The card
+               * supersedes the per-row list (the permissionMode row
+               * would otherwise duplicate the same bypass concern in
+               * a less actionable form); a denyPattern violation
+               * still surfaces below as an independent issue.
+               */
+              <>
+                <RuleOfTwoViolationCard
+                  testId="toast-rule-of-two"
+                  onOpenWhy={() => setExplanationOpen(true)}
+                />
                 {!result.denyPattern.ok && (
-                  <li
-                    data-testid="violation-denyPattern"
-                    className="text-amber-700 dark:text-amber-300"
-                  >
-                    ✗ {t('security.toast.denyPattern.violation')}
-                  </li>
+                  <ul className="space-y-1 list-none ml-0 mt-2">
+                    <li
+                      data-testid="violation-denyPattern"
+                      className="text-amber-700 dark:text-amber-300"
+                    >
+                      ✗ {t('security.toast.denyPattern.violation')}
+                    </li>
+                  </ul>
                 )}
-                {!result.bypassMode.ok && (
-                  <li
-                    data-testid="violation-bypassMode"
-                    className="text-red-700 dark:text-red-300"
-                  >
-                    ✗ {t('security.toast.bypassMode.violation')}
-                  </li>
-                )}
-              </ul>
-            </>
-          )}
+              </>
+            ) : (
+              <>
+                <p className="text-amber-800 dark:text-amber-200 mb-2">
+                  {t('security.toast.intro')}
+                </p>
+                <ul className="space-y-1 list-none ml-0">
+                  {!result.permissionMode.ok && (
+                    <li
+                      data-testid="violation-permissionMode"
+                      className="text-red-700 dark:text-red-300"
+                    >
+                      ✗ {t('security.toast.permissionMode.violation', {
+                        current: result.permissionMode.current,
+                      })}
+                    </li>
+                  )}
+                  {!result.denyPattern.ok && (
+                    <li
+                      data-testid="violation-denyPattern"
+                      className="text-amber-700 dark:text-amber-300"
+                    >
+                      ✗ {t('security.toast.denyPattern.violation')}
+                    </li>
+                  )}
+                  {!result.bypassMode.ok && (
+                    <li
+                      data-testid="violation-bypassMode"
+                      className="text-red-700 dark:text-red-300"
+                    >
+                      ✗ {t('security.toast.bypassMode.violation')}
+                    </li>
+                  )}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-3">
+          <a
+            href="https://docs.anthropic.com/en/docs/claude-code"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-amber-700 dark:text-amber-300 underline hover:text-amber-900 dark:hover:text-amber-100"
+          >
+            {t('security.toast.learnMore')}
+          </a>
+          {/*
+           * T-2-3 / I-7: dismiss is intentionally disabled when bypass
+           * mode is active. The Rule of Two violation must re-surface
+           * every startup; the server-side endpoint also enforces this,
+           * so the disabled state is purely a UX affordance.
+           */}
+          <button
+            type="button"
+            onClick={handleDismiss}
+            disabled={dismissing || bypassActive || failClosed}
+            className="text-xs px-3 py-1 rounded-md border border-amber-700/40 text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t('security.toast.dismiss')}
+          </button>
         </div>
       </div>
-      <div className="flex items-center justify-end gap-2 mt-3">
-        <a
-          href="https://docs.anthropic.com/en/docs/claude-code"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-amber-700 dark:text-amber-300 underline hover:text-amber-900 dark:hover:text-amber-100"
-        >
-          {t('security.toast.learnMore')}
-        </a>
-        {/*
-         * T-2-3 / I-8: dismiss is intentionally disabled when bypass
-         * mode is active. The Rule of Two violation must re-surface
-         * every startup; the server-side endpoint also enforces this,
-         * so the disabled state is purely a UX affordance.
-         */}
-        <button
-          type="button"
-          onClick={handleDismiss}
-          disabled={dismissing || result.bypassMode.active || failClosed}
-          className="text-xs px-3 py-1 rounded-md border border-amber-700/40 text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {t('security.toast.dismiss')}
-        </button>
-      </div>
-    </div>
+      {explanationOpen && (
+        <RuleOfTwoExplanation onClose={() => setExplanationOpen(false)} />
+      )}
+    </>
   )
 }
