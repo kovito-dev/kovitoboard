@@ -71,15 +71,25 @@ export function handlerError<T = never>(
 
 /**
  * Definition of 7 scope types.
- * Represents permissions required for handler execution. Approved by the user at install time.
- * @see recipe-system.md §12-3
+ *
+ * Represents permissions required for handler execution. Approved by
+ * the user at install time.
+ *
+ * v0.2.x note (recipe-system.md v1.8 §6.5.3 final paragraph): the
+ * write opt-in scopes `agents-write` / `skills-write` defined in
+ * v1.8 §6.5.1 are intentionally **not** included here. The install
+ * path is disabled in v0.2.x (recipe-system.md §10.6), so writes to
+ * `.claude/agents/` / `.claude/skills/` stay uniformly blocked by
+ * the exclusion table until v0.3.0 reintroduces the opt-in flow.
+ *
+ * @see recipe-system.md v1.8 §6.5
  */
 export type Scope =
   | 'project-read'    // Read access under project root (excluding exclusion list)
   | 'project-write'   // Write access under project root (same exclusions)
   | 'agents-read'     // Read access under .claude/agents/
   | 'skills-read'     // Read access under .claude/skills/
-  | 'claude-md-read'  // Read access to various CLAUDE.md files
+  | 'claude-md-read'  // Read access to any nested CLAUDE.md / CLAUDE.local.md
   | 'kb-data-read'    // Read access under kovitoboard/data/
   | 'own-data'        // Read/write access under app/data/{appId}/
 
@@ -379,16 +389,45 @@ export const HANDLER_LIMITS = {
 // =========================================
 
 /**
- * Hardcoded exclusion patterns — always denied regardless of scope.
- * Managed in a single location (scopeValidator.ts); individual handlers do not check these.
- * @see recipe-system.md §12-3-1
+ * Hardcoded exclusion patterns — documentation copy only.
+ *
+ * The authoritative, operation-aware table lives in
+ * `scopeValidator.ts` (`EXCLUSIONS`). Individual handlers must not
+ * check these — exclusion is enforced in one place.
+ *
+ * v1.8 (recipe-system.md §6.6, security-threat-model.md §S2/§S3/§S9):
+ * the table is now operation-aware. The patterns below are listed
+ * with their {block-mode} annotation so this file stays a quick
+ * reference, but match logic is in scopeValidator.ts.
+ *
+ *   `.env` / `.env.*` / nested `.env*`        [read+write block]
+ *   `.git` / `.git/**`                        [read+write block]
+ *   `node_modules/**`                         [read+write block]
+ *   `.claude/credentials*`                    [read+write block]
+ *   `.claude/hooks/**`                        [read+write block, v1.8]
+ *   `.claude/settings.json` / `.local.json`   [read+write block, v1.8]
+ *   `.claude/commands/**`                     [read+write block, v1.8]
+ *   `.claude/agents/**`                       [write block; read via `agents-read`, v1.8]
+ *   `.claude/skills/**`                       [write block; read via `skills-read`, v1.8]
+ *   `<any>/CLAUDE.md` / `<any>/CLAUDE.local.md`   [write block; read via `claude-md-read`, v1.8]
+ *
+ * @see recipe-system.md v1.8 §6.6 (exclusion, operation-aware)
+ * @see scopeValidator.ts `EXCLUSIONS` (authoritative table)
  */
 export const HARDCODED_EXCLUSIONS = [
-  '.env',               // Exact match for .env
-  '.env.*',             // .env.production, .env.local, etc.
-  '.git/**',            // Everything under .git/
-  'node_modules/**',    // Everything under node_modules/
-  '.claude/credentials*', // .claude/credentials, .claude/credentials.json, etc.
+  '.env',
+  '.env.*',
+  '.git/**',
+  'node_modules/**',
+  '.claude/credentials*',
+  '.claude/hooks/**',
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.claude/commands/**',
+  '.claude/agents/** (write only; read via agents-read)',
+  '.claude/skills/** (write only; read via skills-read)',
+  'CLAUDE.md (any nested, write only; read via claude-md-read)',
+  'CLAUDE.local.md (any nested, write only; read via claude-md-read)',
 ] as const
 
 // =========================================

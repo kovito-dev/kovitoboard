@@ -41,7 +41,7 @@
 
 import { isAbsolute, normalize, resolve } from 'path'
 import type { FileAccessLayer } from './fs-layer'
-import { isForbidden } from './scopeValidator'
+import { isForbidden, normalizeForExclusionMatch } from './scopeValidator'
 import { realpathUpToExisting } from './pathResolver'
 
 export type ArtifactPathValidation =
@@ -180,12 +180,31 @@ export function validatePathForArtifactRead(
   }
   // Project-relative exclusion check. `resolveArtifactPath` returns
   // a canonicalized path, and `ctx.projectRoot` is canonical too
-  // (built via `prepareArtifactPathContext`), so `isForbidden`'s
-  // relative-path computation lines up with the on-disk layout.
-  // `isForbidden` itself returns `false` for paths outside the
-  // project (e.g. the upload directory), so attached uploads keep
-  // rendering through the preview pane.
-  if (isForbidden(resolved, ctx.projectRoot)) {
+  // (built via `prepareArtifactPathContext`), so the normalized key
+  // computation lines up with the on-disk layout. An empty key
+  // (path outside the project root, e.g. the upload directory)
+  // returns `false`, so attached uploads keep rendering through the
+  // preview pane.
+  //
+  // The artifact pipeline runs outside the recipe scope dispatcher,
+  // so we pass `matchedScope: null` — no recipe-style bypass scopes
+  // apply, and the v1.8 operation-aware table gives the artifact
+  // surface the strongest read-time exclusion (recipe-system.md
+  // §6.6.3).
+  const exclusionKey = normalizeForExclusionMatch(resolved, ctx.projectRoot)
+  if (!exclusionKey.ok) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Access denied: path contains zero-width or bidi-override characters',
+    }
+  }
+  if (
+    isForbidden(exclusionKey.key, ctx.projectRoot, {
+      operation: 'read',
+      matchedScope: null,
+    })
+  ) {
     return {
       ok: false,
       status: 403,
