@@ -127,12 +127,21 @@ export function normalizeForExclusionMatch(
   // and let them bypass exclusion entirely. Match only when the
   // leading dotdot is followed by a path separator (or is the entire
   // relative path).
+  //
+  // Windows cross-volume edge case: `path.relative` on win32 returns
+  // an *absolute*-looking string (e.g. `D:\some\path`) when the
+  // target lives on a different drive letter than `projectRoot`,
+  // because there is no relative path that joins two drive letters.
+  // Treat any absolute leading segment as outside-root too,
+  // otherwise an external preview probe on another drive could be
+  // misclassified as in-project and run through the exclusion table.
   const rel = path.relative(nfcRoot, nfcAbs)
   if (
     rel === '' ||
     rel === '..' ||
     rel.startsWith('../') ||
-    rel.startsWith('..\\')
+    rel.startsWith('..\\') ||
+    path.isAbsolute(rel)
   ) {
     return { ok: true, key: '' }
   }
