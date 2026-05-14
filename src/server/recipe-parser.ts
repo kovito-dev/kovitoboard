@@ -222,7 +222,14 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
         `Artifact ${entry.path}: resolves outside the recipe directory`,
       )
     }
-    const stat = fs.statSync(filePath)
+    // Bind `statSync` + `readFileSync` to the canonical target so
+    // validation and consumption operate on the same bytes. If the
+    // lexical `filePath` is swapped (TOCTOU) after the realpath
+    // check but before the read, the canonical path already
+    // captured here is unaffected — the swap would have to redirect
+    // the canonical target itself, which still has to satisfy the
+    // containment invariant verified above.
+    const stat = fs.statSync(canonicalFile)
     // L-R4: per-file ceiling, checked on stat metadata so an
     // oversized artifact never reaches readFileSync.
     checkParserLimit({
@@ -245,7 +252,7 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
       extraFields: { artifactPath: entry.path },
     })
     totalBytes += stat.size
-    const content = fs.readFileSync(filePath, 'utf-8')
+    const content = fs.readFileSync(canonicalFile, 'utf-8')
     // utf-8 round-trip: `Buffer.byteLength(content, 'utf-8')`
     // matches `stat.size` for every well-formed input. We surface
     // the decoded count to keep the historical contract on

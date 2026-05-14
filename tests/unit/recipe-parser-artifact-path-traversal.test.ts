@@ -229,6 +229,14 @@ describe('recipe-parser artifact path traversal (supplementary review §S3)', ()
       const recipe = parseRecipe(RECIPE_DIR, fs)
       expect(recipe.artifacts).toHaveLength(1)
       expect(recipe.artifacts[0].path).toBe('pages/Test.tsx')
+      // TOCTOU regression: the parser must read via the canonical
+      // path, not the lexical one, so the bytes that end up in
+      // `recipe.artifacts[0].content` are the bytes that passed
+      // the containment check. If the read were bound to the
+      // lexical pathname, a swap between validation and read could
+      // redirect to an arbitrary file; reading via the canonical
+      // target closes that race window.
+      expect(recipe.artifacts[0].content).toBe('// aliased')
     })
   })
 })
