@@ -96,15 +96,25 @@ export function installWebSocketHeartbeat(
      * and the tick would observe an empty tracker.
      */
     aliveTracker?: WeakMap<WebSocket, boolean>
+    /**
+     * Companion bound-sockets set, in step with `aliveTracker`.
+     * Used purely for "have we already installed listeners on this
+     * socket?" — separated from `aliveTracker` so a tick that
+     * writes the liveness flag cannot accidentally short-circuit
+     * the listener installation guard (see
+     * `attachConnectionHooks` rationale).
+     */
+    boundSockets?: WeakSet<WebSocket>
   } = { log: silentLogger() },
 ): HeartbeatHandle {
   const intervalMs = options.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
   const log = options.log
   const aliveTracker = options.aliveTracker ?? new WeakMap<WebSocket, boolean>()
+  const boundSockets = options.boundSockets ?? new WeakSet<WebSocket>()
 
   if (options.attachOnConnection !== false) {
     wss.on('connection', (ws) => {
-      attachConnectionHooks(ws, aliveTracker, log)
+      attachConnectionHooks(ws, aliveTracker, log, boundSockets)
     })
   }
 
@@ -172,17 +182,33 @@ export function attachConnectionHooks(
   ws: WebSocket,
   aliveTracker: WeakMap<WebSocket, boolean>,
   log: Pick<Logger, 'warn' | 'info' | 'debug'>,
+  /**
+   * Set of sockets whose listeners have already been installed.
+   * Optional for backward compatibility — callers without
+   * `createHeartbeatTracker` (only the unit suite) can omit it; the
+   * helper then allocates a process-local fallback so the
+   * idempotency guard still holds within that helper instance.
+   *
+   * This is intentionally a separate state from `aliveTracker`: the
+   * tick loop also writes to `aliveTracker`, so a socket that the
+   * loop has seen once (even before this function ran) would
+   * otherwise short-circuit listener installation and leave the
+   * socket without `pong` / `error` handlers, eventually causing
+   * false-positive termination.
+   */
+  boundSockets: WeakSet<WebSocket> = fallbackBoundSet(),
 ): void {
   // Idempotency: a second `attachConnectionHooks` call on the same
   // socket would otherwise bind a second `pong` listener (causing
   // duplicate alive-flag writes) and a second `error` listener
   // (eventually triggering `MaxListenersExceededWarning` on a long-
-  // lived socket). `aliveTracker.has(ws)` is the canonical "this
-  // socket has already been bound" predicate because every code path
-  // below seeds the tracker before subscribing.
-  if (aliveTracker.has(ws)) {
+  // lived socket). Keep this state in a dedicated `WeakSet` so it
+  // is not entangled with the heartbeat liveness map that the tick
+  // loop writes to.
+  if (boundSockets.has(ws)) {
     return
   }
+  boundSockets.add(ws)
   aliveTracker.set(ws, true)
   ws.on('pong', () => {
     aliveTracker.set(ws, true)
@@ -259,16 +285,31 @@ export function createHeartbeatTracker(
   handle: HeartbeatHandle
 } {
   const aliveTracker = new WeakMap<WebSocket, boolean>()
+  const boundSockets = new WeakSet<WebSocket>()
   const log = options.log
   const handle = installWebSocketHeartbeat(wss, {
     ...options,
     attachOnConnection: false,
     aliveTracker,
+    boundSockets,
   })
   return {
-    attach: (ws: WebSocket) => attachConnectionHooks(ws, aliveTracker, log),
+    attach: (ws: WebSocket) =>
+      attachConnectionHooks(ws, aliveTracker, log, boundSockets),
     handle,
   }
+}
+
+/**
+ * Module-local fallback bound-set used only when a caller invokes
+ * `attachConnectionHooks` without explicitly providing one.
+ * `createHeartbeatTracker` always supplies its own set, so this
+ * fallback is reserved for legacy / unit-test callers.
+ */
+const fallbackBoundSetSingleton = new WeakSet<WebSocket>()
+
+function fallbackBoundSet(): WeakSet<WebSocket> {
+  return fallbackBoundSetSingleton
 }
 
 function silentLogger(): Pick<Logger, 'warn' | 'info' | 'debug'> {
