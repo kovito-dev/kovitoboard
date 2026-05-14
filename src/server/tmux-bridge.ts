@@ -72,14 +72,47 @@ export class TmuxBridge {
    * Derived from resolveProjectRoot(fs) on first access.
    * Not evaluated at module load time to avoid fs dependency ordering issues.
    *
-   * During E2E tests: if the KOVITOBOARD_E2E_TMUX_SESSION environment variable is set,
-   * use that session name. In production mode this is a no-op (when the env var is not set,
-   * behavior is unchanged).
+   * During E2E tests: if the KOVITOBOARD_E2E_TMUX_SESSION environment
+   * variable is set AND `KB_E2E_MODE === '1'` is also set, use that
+   * session name. The double-gate is intentional: setting only
+   * `KOVITOBOARD_E2E_TMUX_SESSION` from a production-style launcher
+   * (e.g. a stray entry in a shared dotfile, a wrapper script that
+   * preserves environment, or an attacker who can influence the
+   * launcher's env block) would otherwise let KovitoBoard attach to
+   * a different operator's tmux session and observe / drive their
+   * Claude windows. `KB_E2E_MODE` is the canonical "this is a test
+   * harness" flag (already used by `/api/admin/test-reset-state`
+   * and the trust-prompt-detector poll interval), so requiring it
+   * here keeps the test surfaces consistent and closes the
+   * production attack path described in supplementary review §S6.
+   *
+   * When `KOVITOBOARD_E2E_TMUX_SESSION` is set without `KB_E2E_MODE`,
+   * the env var is ignored and a warn-level log entry is emitted so
+   * a misconfigured test environment surfaces loudly rather than
+   * silently falling back to the production session name.
+   *
    * @see docs/design/fake-claude-design.md §5-3 approach A
    */
   get sessionName(): string {
     if (!this._sessionName) {
-      const e2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+      const rawE2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+      const e2eModeEnabled = process.env.KB_E2E_MODE === '1'
+      if (rawE2eSession && !e2eModeEnabled) {
+        // The env var is set but the test-harness flag is not.
+        // Refuse to honour the override and log loudly: silently
+        // falling back to the production session would mask a
+        // misconfiguration that, in the worst case, could redirect
+        // KovitoBoard to an attacker-controlled tmux session
+        // (supplementary review §S6).
+        tmuxLogger.warn(
+          {
+            envName: 'KOVITOBOARD_E2E_TMUX_SESSION',
+            gateEnv: 'KB_E2E_MODE',
+          },
+          'Ignoring KOVITOBOARD_E2E_TMUX_SESSION because KB_E2E_MODE is not set; falling back to the project-name-derived session',
+        )
+      }
+      const e2eSession = e2eModeEnabled ? rawE2eSession : undefined
       this._sessionName = e2eSession || resolveTmuxSessionName(this.fs)
     }
     return this._sessionName
