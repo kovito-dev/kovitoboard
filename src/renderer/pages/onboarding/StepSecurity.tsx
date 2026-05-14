@@ -163,9 +163,16 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   const ruleOfTwoAcceptDisabled = useMemo(() => {
     if (!bypassActive) return false
     if (!ruleOfTwoEverOpened) return true
+    // Re-opening the explanation modal must re-disable the accept
+    // affordance so the "open / read / close / wait 2 s / accept" gate
+    // is re-armed on every cycle (CodeX attempt 2 — ack gate bypass).
+    // Without this branch a user could open the modal once, satisfy
+    // the 2 s window, then re-open it later and still tick accept
+    // because the timer never re-armed.
+    if (whyOpen === 'bypassMode') return true
     if (ruleOfTwoClosedAt === null) return true
     return now - ruleOfTwoClosedAt < RULE_OF_TWO_ACCEPT_IDLE_MS
-  }, [bypassActive, ruleOfTwoEverOpened, ruleOfTwoClosedAt, now])
+  }, [bypassActive, ruleOfTwoEverOpened, whyOpen, ruleOfTwoClosedAt, now])
 
   // Gate the Next button on per-item acknowledgement of EVERY
   // violated row (CodeX attempt 19). A row that is already OK does
@@ -237,6 +244,13 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
 
   const openRuleOfTwoModal = useCallback(() => {
     setWhyOpen('bypassMode')
+    // Re-arm the idle gate on every open (CodeX attempt 2). The
+    // disabled memo above already keys off `whyOpen === 'bypassMode'`
+    // for the modal-open phase; clearing the closed timestamp here
+    // ensures the 2 s idle re-arms cleanly the instant the modal
+    // closes again, so the cycle is "open / read / close / wait /
+    // accept" on every re-entry, never a single-shot satisfy.
+    setRuleOfTwoClosedAt(null)
   }, [])
 
   const closeWhyModal = useCallback(() => {

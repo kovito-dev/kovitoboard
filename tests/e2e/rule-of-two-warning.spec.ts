@@ -264,6 +264,31 @@ test.describe('@preonboarding Rule of Two onboarding step', () => {
     await expect(accept).toBeChecked()
   })
 
+  test('@preonboarding modal 再開で accept が再 disabled になる (gate re-arm regression)', async ({
+    page,
+  }) => {
+    await advanceToSecurityStep(page)
+
+    // First cycle: open → close → wait past idle → accept enables.
+    await page.getByTestId('onboarding-rule-of-two-why-link').click()
+    await page.getByTestId('rule-of-two-explanation-close').click()
+    const accept = page.getByTestId('onboarding-rule-of-two-accept')
+    await expect(accept).toBeEnabled({ timeout: 4000 })
+
+    // Re-open the modal: accept must disable again while the modal is
+    // mounted so a keyboard-focused checkbox cannot be toggled from
+    // behind the dialog (background interaction guard).
+    await page.getByTestId('onboarding-rule-of-two-why-link').click()
+    await expect(page.getByTestId('rule-of-two-explanation')).toBeVisible()
+    await expect(accept).toBeDisabled()
+
+    // After the second close the idle window re-arms — accept stays
+    // disabled inside the 2 s gate, then re-enables after it elapses.
+    await page.getByTestId('rule-of-two-explanation-close').click()
+    await expect(accept).toBeDisabled()
+    await expect(accept).toBeEnabled({ timeout: 4000 })
+  })
+
   test('@preonboarding accept tick → Next 有効化 (denyPattern 行も ack 必須)', async ({
     page,
   }) => {
