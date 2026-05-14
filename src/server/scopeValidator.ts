@@ -371,13 +371,25 @@ export function filterExcludedEntries<T extends { path: string }>(
   },
 ): T[] {
   const { operation, approvedScopes, projectRoot } = context
-  return entries.filter((entry) => {
+  // Per-call dedup for the suspicious-character security event so a
+  // malicious listing cannot amplify log volume by planting many
+  // crafted entries in one directory. The first occurrence is logged
+  // verbosely; subsequent occurrences within the same call are
+  // collapsed into a single summary line at the end.
+  let suspiciousLogged = 0
+  let suspiciousSkipped = 0
+  const filtered = entries.filter((entry) => {
     const absPath = path.isAbsolute(entry.path)
       ? entry.path
       : path.join(projectRoot, entry.path)
     const normalize = normalizeForExclusionMatch(absPath, projectRoot)
     if (!normalize.ok) {
-      reportSuspiciousCharRejection(absPath)
+      if (suspiciousLogged === 0) {
+        reportSuspiciousCharRejection(absPath)
+        suspiciousLogged++
+      } else {
+        suspiciousSkipped++
+      }
       return false
     }
     const matchedScope = selectReadBypassScope(normalize.key, approvedScopes)
@@ -386,6 +398,16 @@ export function filterExcludedEntries<T extends { path: string }>(
       matchedScope,
     })
   })
+  if (suspiciousSkipped > 0) {
+    log.warn(
+      {
+        event: 'PathRejectedSuspiciousChar',
+        additionalRejections: suspiciousSkipped,
+      },
+      'Additional suspicious-character entries rejected in the same list-files call',
+    )
+  }
+  return filtered
 }
 
 /**
@@ -420,9 +442,25 @@ function selectReadBypassScope(
  *
  * @see recipe-system.md v1.8 §6.5.5 / §6.6.2 step 3
  */
+/**
+ * Escape a path string so zero-width / bidi-override characters
+ * surface as visible Unicode escapes in the log instead of being
+ * embedded verbatim. We render the path through `JSON.stringify`
+ * which already escapes control / non-ASCII characters; the result
+ * is forensically actionable (the exact code points are visible)
+ * without the operational log replaying the spoofing sequence to
+ * downstream viewers.
+ */
+function escapePathForLog(p: string): string {
+  return JSON.stringify(p)
+}
+
 function reportSuspiciousCharRejection(physicalPath: string): void {
   log.warn(
-    { event: 'PathRejectedSuspiciousChar', physicalPath },
+    {
+      event: 'PathRejectedSuspiciousChar',
+      physicalPath: escapePathForLog(physicalPath),
+    },
     'Rejected path containing zero-width or bidi-override characters',
   )
 }
@@ -496,26 +534,31 @@ export function validatePathForScope(
     ? realpathUpToExisting(kovitoboardRoot)
     : undefined
 
-  // Spec §6.6.3 evaluation order: try every matching scope in turn.
-  // An exclusion hit under a broader scope (e.g. `project-read`) is
-  // not the final answer — a narrower scope (`agents-read`,
-  // `skills-read`, `claude-md-read`) may still bypass the read block
-  // and authorize the operation. We therefore track whether any
-  // scope hit the exclusion table so the final outcome can be
-  // disambiguated between `PathOutOfScope` (no scope ever covered
-  // the region) and `PathForbidden` (a scope covered the region but
-  // could not bypass the exclusion).
+  // Spec §6.6.3 evaluation order is asymmetric in v0.2.x:
   //
-  // Subtle case: `.git/HEAD` read with `[project-read, own-data]`.
-  // `project-read` covers the path with an exclusion hit, but
-  // `own-data` re-interprets the relative path against
-  // `app/data/<appId>/` so the project-relative exclusion key no
-  // longer starts with `.git/`. The own-data branch reaches
-  // `{ ok: true }` and the handler then fails open as `NotFound`
-  // when no such file lives inside the recipe's data root. That is
-  // intentional: the attacker-controlled rawPath never touched
-  // `<projectRoot>/.git/HEAD` itself (own-data has its own root), so
-  // the v1.0 `PathForbidden` was tighter than the spec requires.
+  // - **Reads** walk every matching scope. An exclusion hit under a
+  //   broader scope (e.g. `project-read`) is not the final answer
+  //   because a narrower bypass scope (`agents-read`, `skills-read`,
+  //   `claude-md-read`) may still authorize the access via
+  //   `readBypassScopes`.
+  //
+  // - **Writes** short-circuit on the first exclusion hit. In v0.2.x
+  //   no recipe-side write bypass exists (the spec-defined
+  //   `agents-write` / `skills-write` opt-in scopes stay deferred to
+  //   v0.3.0, §6.5.3 final paragraph). Falling through to a lower
+  //   scope like `own-data` would only re-interpret a forbidden
+  //   write target against the recipe's own data root, which makes
+  //   `.claude/credentials` look like `app/data/<appId>/.claude/credentials`
+  //   and lets the call succeed quietly there. That is not a real
+  //   authorization escape, but it muddies the operator's view of
+  //   what the recipe just attempted — the first-match
+  //   `PathForbidden` keeps the audit signal crisp and matches v0.1.0
+  //   behaviour. When v0.3.0 adds the opt-in write scopes the write
+  //   path will need to walk the same precedence loop as reads.
+  //
+  // `blockedByExclusion` is therefore only consulted on the read
+  // path; the write path returns the moment any covered scope hits
+  // the exclusion table.
   let blockedByExclusion = false
 
   for (const scope of matchingScopes) {
@@ -559,6 +602,9 @@ export function validatePathForScope(
           matchedScope: scope,
         })
       ) {
+        // claude-md-read is the read-only branch (writes were
+        // already filtered above), so the read-path continue is
+        // the only valid follow-up here.
         blockedByExclusion = true
         continue
       }
@@ -578,6 +624,9 @@ export function validatePathForScope(
         matchedScope: scope,
       })
     ) {
+      if (operation === 'write') {
+        return { ok: false, failedCode: 'PathForbidden' }
+      }
       blockedByExclusion = true
       continue
     }

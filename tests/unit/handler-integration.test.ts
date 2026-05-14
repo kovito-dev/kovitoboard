@@ -1026,48 +1026,15 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('write-file で .claude/credentials は project-write 単体で PathForbidden', async () => {
-    // spec v1.8 §6.6.3 evaluation order: with `own-data` removed
-    // from the scope set, only `project-write` ever covers the
-    // region, and the exclusion table refuses the write — this is
-    // the v0.1.0-style direct-write block. Adding `own-data` would
-    // re-interpret the path under the recipe's own data root, which
-    // is not an attack on the real `<projectRoot>/.claude/credentials`
-    // and is covered by the next test below.
-    const manifest = createTestManifest({
-      approvedScopes: ['project-read', 'project-write'],
-      calls: [
-        {
-          id: 'write-creds',
-          handler: 'write-file',
-          args: { path: '${input.path}', content: '${input.content}' },
-        },
-      ],
-    })
-    manifestStore.save(manifest)
-
-    const result = await dispatch(
-      {
-        appId: RECIPE_ID,
-        callId: 'write-creds',
-        input: { path: '.claude/credentials', content: '{"token":"stolen"}' },
-      },
-      manifestStore,
-      projectRoot,
-    )
-
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.error.code).toBe('PathForbidden')
-  })
-
-  it('write-file で .claude/credentials は own-data 同時宣言時に own-data 内へ再解釈される (spec v1.8)', async () => {
-    // With `own-data` in the scope set, spec §6.6.3 evaluation
-    // order falls through to it after `project-write` refuses, and
-    // the write targets `<projectRoot>/app/data/<appId>/.claude/credentials`.
-    // The parent directory does not exist (createDirs is false by
-    // default for this call), so the handler surfaces `NotFound`.
-    // The real `<projectRoot>/.claude/credentials` is never touched.
+  it('write-file で .claude/credentials は PathForbidden を返す (write は first-match short-circuit, spec v1.8)', async () => {
+    // spec v1.8 §6.6.3 evaluation order is asymmetric in v0.2.x:
+    // writes short-circuit on the first exclusion hit because no
+    // recipe-side write bypass exists yet (the `agents-write` /
+    // `skills-write` opt-in scopes stay deferred to v0.3.0).
+    // Falling through to `own-data` would only re-interpret the
+    // forbidden write target against the recipe's own data root,
+    // which is not an authorization escape but muddies the audit
+    // signal. The first-match `PathForbidden` keeps it crisp.
     const manifest = createTestManifest({
       approvedScopes: ['project-read', 'project-write', 'own-data'],
       calls: [
@@ -1092,7 +1059,7 @@ describe('セキュリティ回帰テスト', () => {
 
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.error.code).toBe('NotFound')
+    expect(result.error.code).toBe('PathForbidden')
   })
 })
 
