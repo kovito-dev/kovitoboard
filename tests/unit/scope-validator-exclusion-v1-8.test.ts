@@ -375,6 +375,49 @@ describe('isForbidden', () => {
     ).toBe(true)
   })
 
+  // Regression: overlapping rules must each get a chance to grant a
+  // bypass. `.claude/agents/CLAUDE.md` matches both the
+  // `.claude/agents/**` entry (bypass via `agents-read`) and the
+  // `CLAUDE.md` basename entry (bypass via `claude-md-read`). A
+  // first-match short-circuit would block the path for a recipe that
+  // only holds `claude-md-read`, contrary to spec §6.5.4 where the
+  // bypass applies to any nested CLAUDE.md under the project root.
+  it('allows .claude/agents/CLAUDE.md read via claude-md-read despite the agents subtree overlap', () => {
+    expect(
+      isForbidden('.claude/agents/claude.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'claude-md-read',
+      }),
+    ).toBe(false)
+  })
+
+  it('allows .claude/skills/CLAUDE.md read via claude-md-read despite the skills subtree overlap', () => {
+    expect(
+      isForbidden('.claude/skills/claude.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'claude-md-read',
+      }),
+    ).toBe(false)
+  })
+
+  it('allows .claude/agents/CLAUDE.md read via agents-read (first matching entry bypass)', () => {
+    expect(
+      isForbidden('.claude/agents/claude.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'agents-read',
+      }),
+    ).toBe(false)
+  })
+
+  it('blocks .claude/agents/CLAUDE.md read under project-read (neither overlap grants bypass)', () => {
+    expect(
+      isForbidden('.claude/agents/claude.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'project-read',
+      }),
+    ).toBe(true)
+  })
+
   it('blocks any nested CLAUDE.md read+write; allows reads only via claude-md-read (v1.8)', () => {
     expect(
       isForbidden('claude.md', projectRoot, {

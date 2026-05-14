@@ -339,6 +339,19 @@ export function isForbidden(
   context: { operation: ExclusionOperation; matchedScope: Scope | null },
 ): boolean {
   if (exclusionKey === '') return false
+  // The exclusion table can hold overlapping rules. For example,
+  // `.claude/agents/CLAUDE.md` matches both the `.claude/agents/**`
+  // entry (read+write block, bypass via `agents-read`) and the
+  // `CLAUDE.md` basename entry (read+write block, bypass via
+  // `claude-md-read`). A first-match short-circuit would deny a
+  // recipe that holds only `claude-md-read` for that path, contrary
+  // to recipe-system.md v1.8 §6.5.4 which makes nested `CLAUDE.md`
+  // accessible via `claude-md-read` regardless of which subtree it
+  // happens to live in. We therefore evaluate *every* matching
+  // entry: if any of them grants a bypass for the current operation
+  // and matched scope the path is allowed; otherwise it is blocked
+  // when at least one matching entry actually blocks the operation.
+  let anyBlocked = false
   for (const entry of EXCLUSIONS) {
     if (!entry.match(exclusionKey)) continue
     if (!entry.blockedOps.includes(context.operation)) continue
@@ -354,11 +367,15 @@ export function isForbidden(
       context.matchedScope !== null &&
       entry.readBypassScopes.includes(context.matchedScope)
     ) {
-      continue
+      // Bypass granted by this entry — short-circuit to allow. We
+      // intentionally stop here even though other overlapping
+      // entries may still block, because a bypass on any matching
+      // entry is sufficient to authorize the access.
+      return false
     }
-    return true
+    anyBlocked = true
   }
-  return false
+  return anyBlocked
 }
 
 // =========================================
