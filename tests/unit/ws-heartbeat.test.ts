@@ -227,7 +227,7 @@ describe('ws-heartbeat — error handling', () => {
     // `uncaughtException`.
     expect(() => ws.emit('error', boom)).not.toThrow()
     expect(log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ err: boom }),
+      expect.objectContaining({ errMessage: 'socket boom' }),
       expect.stringContaining('WebSocket connection error'),
     )
 
@@ -372,5 +372,79 @@ describe('ws-heartbeat — attachConnectionHooks unit', () => {
     aliveTracker.set(ws as unknown as WebSocket, false)
     ws.emit('pong')
     expect(aliveTracker.get(ws as unknown as WebSocket)).toBe(true)
+  })
+})
+
+describe('ws-heartbeat — idempotency', () => {
+  it('a second attachConnectionHooks call on the same socket does not add duplicate pong listeners', () => {
+    const aliveTracker = new WeakMap<WebSocket, boolean>()
+    const ws = makeFakeSocket()
+    attachConnectionHooks(ws as unknown as WebSocket, aliveTracker, silentLog())
+    // Bind a second time — must be a no-op so the listener count
+    // for `pong` stays at exactly one. Otherwise a single inbound
+    // pong would refresh the alive flag twice and a long-lived
+    // socket would eventually trigger `MaxListenersExceededWarning`.
+    attachConnectionHooks(ws as unknown as WebSocket, aliveTracker, silentLog())
+    expect(ws.listenerCount('pong')).toBe(1)
+    expect(ws.listenerCount('error')).toBe(1)
+  })
+
+  it('a second attach() call through createHeartbeatTracker is a no-op', () => {
+    const server = makeFakeServer()
+    const tracker = createHeartbeatTracker(server as unknown as WebSocketServer, {
+      intervalMs: 100,
+      log: silentLog(),
+    })
+    const ws = makeFakeSocket()
+    server.emitConnection(ws)
+    tracker.attach(ws as unknown as WebSocket)
+    tracker.attach(ws as unknown as WebSocket)
+    expect(ws.listenerCount('pong')).toBe(1)
+    expect(ws.listenerCount('error')).toBe(1)
+    tracker.handle.stop()
+  })
+})
+
+describe('ws-heartbeat — log amplification cap', () => {
+  it('logs only the first ws.error per socket and silently drops the rest', () => {
+    const aliveTracker = new WeakMap<WebSocket, boolean>()
+    const log = silentLog()
+    const ws = makeFakeSocket()
+    attachConnectionHooks(ws as unknown as WebSocket, aliveTracker, log)
+
+    // First error — recorded at warn level.
+    ws.emit('error', new Error('first failure'))
+    expect(log.warn).toHaveBeenCalledTimes(1)
+
+    // Repeated errors on the same socket — silently dropped so a
+    // noisy peer cannot inflate the warn-level log volume past the
+    // structured-logging budget.
+    for (let i = 0; i < 50; i++) {
+      ws.emit('error', new Error(`flood ${i}`))
+    }
+    expect(log.warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs the compact { errCode, errMessage } shape instead of the full Error', () => {
+    const aliveTracker = new WeakMap<WebSocket, boolean>()
+    const log = silentLog()
+    const ws = makeFakeSocket()
+    attachConnectionHooks(ws as unknown as WebSocket, aliveTracker, log)
+
+    type CodedError = Error & { code: string }
+    const err = new Error('socket reset') as CodedError
+    err.code = 'ECONNRESET'
+    ws.emit('error', err)
+    expect(log.warn).toHaveBeenCalledWith(
+      { errCode: 'ECONNRESET', errMessage: 'socket reset' },
+      expect.stringContaining('WebSocket connection error'),
+    )
+    // Crucially, the call signature must NOT pass `{ err }` — that
+    // serializes the full error chain and can blow the
+    // MAX_LOG_LINE_BYTES budget on a deeply nested peer error.
+    expect(log.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ err }),
+      expect.anything(),
+    )
   })
 })

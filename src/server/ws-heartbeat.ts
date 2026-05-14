@@ -173,19 +173,67 @@ export function attachConnectionHooks(
   aliveTracker: WeakMap<WebSocket, boolean>,
   log: Pick<Logger, 'warn' | 'info' | 'debug'>,
 ): void {
+  // Idempotency: a second `attachConnectionHooks` call on the same
+  // socket would otherwise bind a second `pong` listener (causing
+  // duplicate alive-flag writes) and a second `error` listener
+  // (eventually triggering `MaxListenersExceededWarning` on a long-
+  // lived socket). `aliveTracker.has(ws)` is the canonical "this
+  // socket has already been bound" predicate because every code path
+  // below seeds the tracker before subscribing.
+  if (aliveTracker.has(ws)) {
+    return
+  }
   aliveTracker.set(ws, true)
   ws.on('pong', () => {
     aliveTracker.set(ws, true)
   })
   // The `error` event is non-fatal at the `ws` layer — without a
   // listener Node escalates it to an `uncaughtException`. Record it
-  // through the structured logger so the redaction pipeline applies
-  // and the supervisor's log volume stays bounded (the heartbeat
-  // tick will follow up with a `terminate()` if the socket never
-  // recovers).
+  // through the structured logger so the redaction pipeline applies.
+  //
+  // Log-volume cap: only the first error per socket is recorded at
+  // `warn` level. Subsequent errors on the same socket are
+  // suppressed; if the socket never recovers, the next heartbeat
+  // tick will terminate it anyway, so silencing the repeats does
+  // not hide a failure that has no other surface. The compact
+  // `{ errCode, errMessage }` shape (instead of the full `{ err }`
+  // object) keeps the on-disk line within the
+  // `MAX_LOG_LINE_BYTES` ceiling even when the peer's error chain
+  // is deeply nested.
+  const errorStats = perSocketErrorStats(ws)
   ws.on('error', (err: Error) => {
-    log.warn({ err }, 'WebSocket connection error')
+    errorStats.count += 1
+    if (errorStats.count === 1) {
+      log.warn(
+        {
+          errCode: (err as { code?: string }).code,
+          errMessage: err.message,
+        },
+        'WebSocket connection error',
+      )
+    }
+    // count > 1 → silently dropped to bound log volume against a
+    // hostile / chronically broken peer.
   })
+}
+
+interface SocketErrorStats {
+  count: number
+}
+
+/**
+ * Per-socket error stats, scoped to the lifetime of the socket via a
+ * module-level `WeakMap`. The map keeps the helper closures free of
+ * state without leaking entries after the socket is GC'd.
+ */
+const perSocketErrorStatsMap = new WeakMap<WebSocket, SocketErrorStats>()
+
+function perSocketErrorStats(ws: WebSocket): SocketErrorStats {
+  const existing = perSocketErrorStatsMap.get(ws)
+  if (existing) return existing
+  const fresh: SocketErrorStats = { count: 0 }
+  perSocketErrorStatsMap.set(ws, fresh)
+  return fresh
 }
 
 /**
