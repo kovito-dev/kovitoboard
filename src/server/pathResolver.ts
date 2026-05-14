@@ -128,15 +128,19 @@ export function isWithin(absPath: string, scopeRoot: string): boolean {
 }
 
 /**
- * Special check for the claude-md-read scope.
- * Only allows access to CLAUDE.md files.
+ * Special check for the `claude-md-read` scope.
+ *
+ * v1.8 (recipe-system.md §6.5.4): allows any `<any>/CLAUDE.md` or
+ * `<any>/CLAUDE.local.md` under the project root. Case-insensitive
+ * basename match so the predicate aligns with the case-folded
+ * exclusion key produced by `normalizeForExclusionMatch` step 6 —
+ * `CLAUDE.MD`, `Claude.md`, etc. are all considered the same logical
+ * file the recipe can read but not write.
  */
 export function isClaudeMdPath(absPath: string, projectRoot: string): boolean {
-  const basename = path.basename(absPath)
-  if (basename !== 'CLAUDE.md') return false
-
-  // CLAUDE.md directly under the project root or under .claude/
-  return isWithin(absPath, projectRoot)
+  if (!isWithin(absPath, projectRoot)) return false
+  const basename = path.basename(absPath).toLowerCase()
+  return basename === 'claude.md' || basename === 'claude.local.md'
 }
 
 // --- Error type ---

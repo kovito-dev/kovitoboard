@@ -52,6 +52,8 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
     expect(result.ok).toBe(true)
     // The dispatcher now consumes `resolvedPath` as the physical
@@ -66,6 +68,8 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
     expect(result.ok).toBe(true)
     expect(result.resolvedPath).toBe(
@@ -83,6 +87,8 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
     expect(result.ok).toBe(false)
     expect(result.failedCode).toBe('PathOutOfScope')
@@ -96,6 +102,8 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       realProject,
+      undefined,
+      'read',
     )
     expect(result.ok).toBe(true)
     expect(result.resolvedPath).toBe(fs.realpathSync(realProject))
