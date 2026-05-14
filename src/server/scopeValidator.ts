@@ -575,6 +575,22 @@ const SCOPE_PRECEDENCE: readonly Scope[] = [
   'own-data',
 ]
 
+/**
+ * Scopes that can authorize an excluded read via the per-entry
+ * `readBypassScopes` field. Used to decide whether the read-path
+ * precedence walk should keep walking after an exclusion hit:
+ * falling through to `own-data` (or `kb-data-read`) only re-anchors
+ * the rawPath under a different scope root, so a forbidden probe
+ * like `.git/HEAD` would degrade to `NotFound` or read a different
+ * file. We therefore only keep walking when at least one of these
+ * dedicated bypass scopes remains in the precedence list.
+ */
+const READ_BYPASS_CANDIDATES: ReadonlySet<Scope> = new Set([
+  'agents-read',
+  'skills-read',
+  'claude-md-read',
+])
+
 function sortByPrecedence(
   scopes: readonly Scope[],
   _operation: ExclusionOperation,
@@ -712,8 +728,16 @@ export function validatePathForScope(
         })
       ) {
         // claude-md-read is the read-only branch (writes were
-        // already filtered above), so the read-path continue is
-        // the only valid follow-up here.
+        // already filtered above). Read fallback is only meaningful
+        // when a dedicated read-bypass scope is still ahead in the
+        // precedence list; falling into `own-data` / `kb-data-read`
+        // would only re-anchor the rawPath under a different scope
+        // root and hide a forbidden access as `NotFound`.
+        const idx = matchingScopes.indexOf(scope)
+        const remaining = matchingScopes.slice(idx + 1)
+        if (!remaining.some((s) => READ_BYPASS_CANDIDATES.has(s))) {
+          return { ok: false, failedCode: 'PathForbidden' }
+        }
         blockedByExclusion = true
         continue
       }
@@ -734,6 +758,15 @@ export function validatePathForScope(
       })
     ) {
       if (operation === 'write') {
+        return { ok: false, failedCode: 'PathForbidden' }
+      }
+      // Same read-fallback restriction as the claude-md-read branch:
+      // we keep walking only when a dedicated read-bypass scope is
+      // still ahead so an exclusion hit cannot degrade to a quieter
+      // `NotFound` through `own-data` / `kb-data-read` re-anchoring.
+      const idx = matchingScopes.indexOf(scope)
+      const remaining = matchingScopes.slice(idx + 1)
+      if (!remaining.some((s) => READ_BYPASS_CANDIDATES.has(s))) {
         return { ok: false, failedCode: 'PathForbidden' }
       }
       blockedByExclusion = true

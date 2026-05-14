@@ -484,14 +484,17 @@ describe('T4: 除外リスト → PathForbidden', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('".git/HEAD" への read-file は own-data 経由で別パスに再解釈され NotFound (spec v1.8)', async () => {
-    // Same path with the default scopes (`project-read` + `own-data`):
-    // the spec §6.6.3 walk reaches the `own-data` branch and the
-    // re-interpreted target lives under `app/data/<appId>/.git/HEAD`,
-    // which the test fixture does not materialise. The handler
-    // surfaces `NotFound`. No information about the real
-    // `<projectRoot>/.git/HEAD` leaks because `own-data` operates on
-    // its own root.
+  it('".git/HEAD" への read-file は default scopes でも PathForbidden を返す (read-fallback 制限)', async () => {
+    // Default scopes are `['project-read', 'own-data']`. With the
+    // v0.2.x read-fallback restriction, an exclusion hit on
+    // `project-read` is only allowed to fall through to a dedicated
+    // read-bypass scope (`agents-read` / `skills-read` /
+    // `claude-md-read`). `own-data` is **not** a read-bypass scope —
+    // it would only re-anchor `.git/HEAD` under
+    // `app/data/<appId>/.git/HEAD` and silently degrade the audit
+    // signal to `NotFound`. The validator therefore returns
+    // `PathForbidden` immediately, preserving the v0.1.0-style
+    // audit-meaningful outcome.
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
@@ -507,7 +510,7 @@ describe('T4: 除外リスト → PathForbidden', () => {
 
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.error.code).toBe('NotFound')
+    expect(result.error.code).toBe('PathForbidden')
   })
 
   it('list-files で "." を要求したとき、.env / .git / node_modules がエントリに含まれない', async () => {
