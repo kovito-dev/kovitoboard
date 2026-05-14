@@ -22,8 +22,11 @@
  *     and write-blocked depending on the matched scope.
  *   - Expanded `.claude/...` block surface (§S3 mitigation): hooks,
  *     settings, settings.local.json, commands are full-block; agents,
- *     skills, and CLAUDE.md (any nested) are write-block with read
- *     allowed via the corresponding `*-read` scope.
+ *     skills, and CLAUDE.md (any nested) are read+write blocked with
+ *     reads bypassable only via the corresponding dedicated `*-read`
+ *     scope (`agents-read`, `skills-read`, `claude-md-read`). The
+ *     broader `project-read` scope is **not** sufficient to read those
+ *     narrow-scope subtrees.
  *   - v0.2.x temporary disabled (§6.5.3 final paragraph): the new
  *     `agents-write` / `skills-write` opt-in scopes are intentionally
  *     **not** introduced here; the install path is disabled in v0.2.x
@@ -161,20 +164,20 @@ interface ExclusionEntry {
   /** Operations this entry blocks. */
   blockedOps: ReadonlyArray<ExclusionOperation>
   /**
-   * Scopes that bypass the block. For the v1.8 write-only blocks
-   * (`.claude/agents/` tree, `.claude/skills/` tree, any nested
-   * `CLAUDE.md`), these
-   * are the read-permission scopes (`agents-read`, `skills-read`,
-   * `claude-md-read`) that allow recipes to read but not write.
+   * Scopes that bypass the block on the **read** path only. For the
+   * v1.8 narrow-scope subtrees (`.claude/agents/` tree, `.claude/skills/`
+   * tree, any nested `CLAUDE.md`), these are the dedicated read-permission
+   * scopes (`agents-read`, `skills-read`, `claude-md-read`) — recipes
+   * must hold one of them to read those paths; `project-read` is
+   * **not** sufficient.
    *
-   * Empty / undefined means no bypass (read+write full block).
-   *
-   * v0.2.x note: the spec-defined `agents-write` / `skills-write`
-   * opt-in scopes are intentionally not listed here. They are
-   * deferred to v0.3.0 alongside the re-enabled install path
-   * (§6.5.3 final paragraph, temporary disabled path).
+   * Empty / undefined means no read bypass exists. Write bypass is
+   * intentionally absent in v0.2.x: the spec-defined `agents-write` /
+   * `skills-write` opt-in scopes are deferred to v0.3.0 alongside the
+   * re-enabled install path (§6.5.3 final paragraph, temporary
+   * disabled path).
    */
-  bypassScopes?: ReadonlyArray<Scope>
+  readBypassScopes?: ReadonlyArray<Scope>
 }
 
 const EXCLUSIONS: readonly ExclusionEntry[] = [
@@ -217,24 +220,28 @@ const EXCLUSIONS: readonly ExclusionEntry[] = [
     match: (k) => matchClaudeCommands(k),
     blockedOps: ['read', 'write'],
   },
-  // v1.8: .claude/agents/** — write blocked; read via `agents-read`.
+  // v1.8: .claude/agents/** — read+write blocked; reads bypass only
+  // via the dedicated `agents-read` scope (project-read cannot reach
+  // these paths).
   {
     match: (k) => matchClaudeAgents(k),
-    blockedOps: ['write'],
-    bypassScopes: ['agents-read'],
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['agents-read'],
   },
-  // v1.8: .claude/skills/** — write blocked; read via `skills-read`.
+  // v1.8: .claude/skills/** — read+write blocked; reads bypass only
+  // via the dedicated `skills-read` scope.
   {
     match: (k) => matchClaudeSkills(k),
-    blockedOps: ['write'],
-    bypassScopes: ['skills-read'],
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['skills-read'],
   },
   // v1.8: CLAUDE.md / CLAUDE.local.md anywhere under the project root
-  // (case-insensitive). Write blocked; read via `claude-md-read`.
+  // (case-insensitive). Read+write blocked; reads bypass only via the
+  // dedicated `claude-md-read` scope.
   {
     match: (k) => matchClaudeMdBasename(k),
-    blockedOps: ['write'],
-    bypassScopes: ['claude-md-read'],
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['claude-md-read'],
   },
 ]
 
@@ -322,10 +329,17 @@ export function isForbidden(
   for (const entry of EXCLUSIONS) {
     if (!entry.match(exclusionKey)) continue
     if (!entry.blockedOps.includes(context.operation)) continue
+    // Read-only bypass: a recipe with the dedicated read scope
+    // (`agents-read` / `skills-read` / `claude-md-read`) may read the
+    // narrow-scope subtree even though the entry blocks reads from a
+    // broader scope like `project-read`. Writes are never bypassed in
+    // v0.2.x — see the `readBypassScopes` field comment for the
+    // temporary-disabled rationale.
     if (
-      entry.bypassScopes &&
+      context.operation === 'read' &&
+      entry.readBypassScopes &&
       context.matchedScope !== null &&
-      entry.bypassScopes.includes(context.matchedScope)
+      entry.readBypassScopes.includes(context.matchedScope)
     ) {
       continue
     }
@@ -385,8 +399,8 @@ function selectReadBypassScope(
 ): Scope | null {
   for (const entry of EXCLUSIONS) {
     if (!entry.match(exclusionKey)) continue
-    if (!entry.bypassScopes) continue
-    for (const bypass of entry.bypassScopes) {
+    if (!entry.readBypassScopes) continue
+    for (const bypass of entry.readBypassScopes) {
       if (approvedScopes.includes(bypass)) return bypass
     }
   }

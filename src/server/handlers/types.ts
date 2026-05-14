@@ -407,9 +407,9 @@ export const HANDLER_LIMITS = {
  *   `.claude/hooks/**`                        [read+write block, v1.8]
  *   `.claude/settings.json` / `.local.json`   [read+write block, v1.8]
  *   `.claude/commands/**`                     [read+write block, v1.8]
- *   `.claude/agents/**`                       [write block; read via `agents-read`, v1.8]
- *   `.claude/skills/**`                       [write block; read via `skills-read`, v1.8]
- *   `<any>/CLAUDE.md` / `<any>/CLAUDE.local.md`   [write block; read via `claude-md-read`, v1.8]
+ *   `.claude/agents/**`                       [read+write block; read bypass via `agents-read`, v1.8]
+ *   `.claude/skills/**`                       [read+write block; read bypass via `skills-read`, v1.8]
+ *   any nested `CLAUDE.md` / `CLAUDE.local.md` [read+write block; read bypass via `claude-md-read`, v1.8]
  *
  * @see recipe-system.md v1.8 §6.6 (exclusion, operation-aware)
  * @see scopeValidator.ts `EXCLUSIONS` (authoritative table)
@@ -424,10 +424,10 @@ export const HARDCODED_EXCLUSIONS = [
   '.claude/settings.json',
   '.claude/settings.local.json',
   '.claude/commands/**',
-  '.claude/agents/** (write only; read via agents-read)',
-  '.claude/skills/** (write only; read via skills-read)',
-  'CLAUDE.md (any nested, write only; read via claude-md-read)',
-  'CLAUDE.local.md (any nested, write only; read via claude-md-read)',
+  '.claude/agents/** (read+write block; read bypass via agents-read)',
+  '.claude/skills/** (read+write block; read bypass via skills-read)',
+  'CLAUDE.md (any nested, read+write block; read bypass via claude-md-read)',
+  'CLAUDE.local.md (any nested, read+write block; read bypass via claude-md-read)',
 ] as const
 
 // =========================================

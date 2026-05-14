@@ -289,32 +289,43 @@ describe('isForbidden', () => {
     ).toBe(true)
   })
 
-  // v1.8: write-only blocks with read bypass
-  it('blocks .claude/agents/** writes; allows reads via agents-read (v1.8)', () => {
+  // v1.8: narrow-scope subtree blocks with read bypass via the
+  // dedicated `agents-read` / `skills-read` / `claude-md-read` scope.
+  // (project-read alone cannot reach these paths.)
+  it('blocks .claude/agents/** read+write; allows reads only via agents-read (v1.8)', () => {
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'write',
         matchedScope: 'project-write',
       }),
     ).toBe(true)
-    // read via agents-read scope — bypass applies
+    // agents-read bypasses the read block (its scope root is
+    // .claude/agents/ — the dedicated narrow scope).
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
         matchedScope: 'agents-read',
       }),
     ).toBe(false)
-    // read via a non-bypass scope — write-only block has no effect on
-    // reads because `blockedOps` does not include 'read'.
+    // project-read alone is **not** sufficient — narrow-scope subtree
+    // remains read-blocked.
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
         matchedScope: 'project-read',
       }),
-    ).toBe(false)
+    ).toBe(true)
+    // agents-read does **not** bypass writes (write opt-in scope is
+    // deferred to v0.3.0).
+    expect(
+      isForbidden('.claude/agents/foo.md', projectRoot, {
+        operation: 'write',
+        matchedScope: 'agents-read',
+      }),
+    ).toBe(true)
   })
 
-  it('blocks .claude/skills/** writes; allows reads via skills-read (v1.8)', () => {
+  it('blocks .claude/skills/** read+write; allows reads only via skills-read (v1.8)', () => {
     expect(
       isForbidden('.claude/skills/foo.md', projectRoot, {
         operation: 'write',
@@ -327,9 +338,15 @@ describe('isForbidden', () => {
         matchedScope: 'skills-read',
       }),
     ).toBe(false)
+    expect(
+      isForbidden('.claude/skills/foo.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'project-read',
+      }),
+    ).toBe(true)
   })
 
-  it('blocks any nested CLAUDE.md write; allows read via claude-md-read (v1.8)', () => {
+  it('blocks any nested CLAUDE.md read+write; allows reads only via claude-md-read (v1.8)', () => {
     expect(
       isForbidden('claude.md', projectRoot, {
         operation: 'write',
@@ -348,14 +365,21 @@ describe('isForbidden', () => {
         matchedScope: 'project-write',
       }),
     ).toBe(true)
-    // claude-md-read bypasses the write-only block; reads under any
-    // matchedScope succeed because the block is write-only.
+    // claude-md-read bypasses the read block (case-folded match for
+    // CLAUDE.md / CLAUDE.local.md anywhere under the project root).
     expect(
       isForbidden('pkg/sub/claude.md', projectRoot, {
         operation: 'read',
         matchedScope: 'claude-md-read',
       }),
     ).toBe(false)
+    // project-read alone is **not** sufficient.
+    expect(
+      isForbidden('pkg/sub/claude.md', projectRoot, {
+        operation: 'read',
+        matchedScope: 'project-read',
+      }),
+    ).toBe(true)
   })
 
   it('returns false for an empty key (outside projectRoot)', () => {
@@ -384,21 +408,22 @@ describe('isForbidden', () => {
 
   it('ignores bypass scopes when matchedScope is null (artifact path)', () => {
     // The artifact-path-validator passes matchedScope: null; in that
-    // mode no bypass applies, so the write-only block surface
-    // collapses to a full read+write block at this layer (the
-    // artifact pipeline itself only asks for 'read').
+    // mode no bypass applies, so the artifact preview sees the
+    // strongest read-time exclusion (no recipe-style narrow scope is
+    // in play). Both the full-block `.git/` entry and the narrow-scope
+    // `.claude/agents/` entry collapse to a read block here.
     expect(
       isForbidden('.claude/agents/foo.md', projectRoot, {
         operation: 'read',
         matchedScope: null,
       }),
-    ).toBe(false) // write-only block still does not bite on read
+    ).toBe(true)
     expect(
       isForbidden('.git/head', projectRoot, {
         operation: 'read',
         matchedScope: null,
       }),
-    ).toBe(true) // read+write block applies
+    ).toBe(true)
   })
 })
 
@@ -434,6 +459,21 @@ describe('filterExcludedEntries', () => {
       projectRoot,
     })
     expect(result.map((e) => e.path)).toEqual(['.claude/agents/agent.md'])
+  })
+
+  it('drops .claude/agents entries on read when only project-read is approved (v1.8)', () => {
+    const entries = [
+      { path: '.claude/agents/agent.md' },
+      { path: '.claude/skills/skill.md' },
+      { path: 'CLAUDE.md' },
+      { path: 'readme.md' },
+    ]
+    const result = filterExcludedEntries(entries, {
+      operation: 'read',
+      approvedScopes: ['project-read'],
+      projectRoot,
+    })
+    expect(result.map((e) => e.path)).toEqual(['readme.md'])
   })
 
   it('keeps nested CLAUDE.md on read when claude-md-read is approved', () => {
@@ -835,5 +875,63 @@ describe('validatePathForScope (v1.8 operation-aware)', () => {
     )
     expect(r.ok).toBe(false)
     expect(r.failedCode).toBe('PathOutOfScope')
+  })
+
+  // v1.8: narrow-scope subtrees are read-blocked from `project-read`.
+  // The dedicated `*-read` scopes are the only read paths.
+  it('blocks .claude/agents/* read under project-read alone (v1.8)', () => {
+    const r = validatePathForScope(
+      '.claude/agents/agent.md',
+      ['project-read'],
+      ['project-read'],
+      APP_ID,
+      projectRoot,
+      undefined,
+      'read',
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failedCode).toBe('PathForbidden')
+  })
+
+  it('blocks .claude/skills/* read under project-read alone (v1.8)', () => {
+    const r = validatePathForScope(
+      '.claude/skills/skill.md',
+      ['project-read'],
+      ['project-read'],
+      APP_ID,
+      projectRoot,
+      undefined,
+      'read',
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failedCode).toBe('PathForbidden')
+  })
+
+  it('blocks CLAUDE.md read under project-read alone (v1.8)', () => {
+    const r = validatePathForScope(
+      'CLAUDE.md',
+      ['project-read'],
+      ['project-read'],
+      APP_ID,
+      projectRoot,
+      undefined,
+      'read',
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failedCode).toBe('PathForbidden')
+  })
+
+  it('blocks nested pkg/CLAUDE.md read under project-read alone (v1.8)', () => {
+    const r = validatePathForScope(
+      'pkg/CLAUDE.md',
+      ['project-read'],
+      ['project-read'],
+      APP_ID,
+      projectRoot,
+      undefined,
+      'read',
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failedCode).toBe('PathForbidden')
   })
 })
