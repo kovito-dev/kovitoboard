@@ -6,7 +6,7 @@
 /**
  * Recipe parser — supports both directory format and single-file Markdown format.
  */
-import { join, extname, isAbsolute, normalize, sep } from 'path'
+import { join, extname, normalize, posix as pathPosix, win32 as pathWin32, sep } from 'path'
 import { createHash } from 'crypto'
 import matter from 'gray-matter'
 import type { FileAccessLayer } from './fs-layer'
@@ -605,10 +605,35 @@ function extractArtifactEntries(
     //      check on the joined path before any `fs.readFileSync` —
     //      that final gate closes the symlink-escape variant where
     //      `entry.path` itself contains no `..`.
-    if (isAbsolute(entry.path)) {
+    // Reject empty / whitespace-only paths up front. Without this
+    // guard `normalize('')` collapses to `'.'`, which represents the
+    // recipe directory itself and would otherwise be read as if it
+    // were an artifact file, leaving a regular-file mismatch to fall
+    // out of `fs.readFileSync` as an opaque OS error.
+    if (entry.path.trim() === '') {
+      throw new Error(`Artifact ${i}: "path" must not be empty`)
+    }
+    // Check both POSIX and Windows absolute-path shapes regardless
+    // of host platform. `path.isAbsolute()` is host-dependent, so on
+    // a Linux deployment it would not flag `C:\\secret.txt` or
+    // `\\\\server\\share\\x`. Recipes are portable artifacts that
+    // may be authored on any OS, so the absolute-path rejection
+    // must agree on every host.
+    if (pathPosix.isAbsolute(entry.path) || pathWin32.isAbsolute(entry.path)) {
       throw new Error(`Artifact ${i}: "path" must be a relative path inside the recipe directory`)
     }
     const normalizedPath = normalize(entry.path)
+    // An input like `'.'`, `'./'`, or `'.\\'` represents the recipe
+    // directory itself rather than a file inside it. `normalize`
+    // keeps the trailing separator on `'./'` (POSIX) and `'.\\'`
+    // (Windows), so strip a trailing slash before comparing. Reject
+    // here so the parser fails with a deterministic validation
+    // message instead of the downstream `readFileSync`
+    // ENOENT/EISDIR surface.
+    const strippedTail = normalizedPath.replace(/[/\\]+$/, '')
+    if (strippedTail === '.' || strippedTail === '') {
+      throw new Error(`Artifact ${i}: "path" must point to a file inside the recipe directory`)
+    }
     const segments = normalizedPath.split(/[/\\]/)
     if (segments.some((segment) => segment === '..')) {
       throw new Error(`Artifact ${i}: "path" must not contain ".." segments`)

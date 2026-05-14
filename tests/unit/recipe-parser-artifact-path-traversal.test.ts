@@ -147,6 +147,51 @@ describe('recipe-parser artifact path traversal (supplementary review §S3)', ()
         /must be a relative path inside the recipe directory/,
       )
     })
+
+    it('rejects a Windows drive-letter absolute path (C:\\\\secret.txt) regardless of host OS', () => {
+      // Cross-platform check: `path.isAbsolute()` is host-dependent
+      // and would NOT flag this shape on a Linux runner. The parser
+      // explicitly tests both POSIX and Windows forms so a recipe
+      // authored on Windows cannot escape the directory only because
+      // the server happens to run on Linux.
+      const fs = makeFs(seedRecipe(makeYaml('C:\\\\secret.txt')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(
+        /must be a relative path inside the recipe directory/,
+      )
+    })
+
+    it('rejects a Windows UNC path (\\\\\\\\server\\\\share\\\\x) regardless of host OS', () => {
+      const fs = makeFs(seedRecipe(makeYaml('\\\\\\\\server\\\\share\\\\x.tsx')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(
+        /must be a relative path inside the recipe directory/,
+      )
+    })
+  })
+
+  describe('gate 0: extractArtifactEntries — empty / dot paths', () => {
+    it('rejects an empty path', () => {
+      const fs = makeFs(seedRecipe(makeYaml('')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(/"path" must not be empty/)
+    })
+
+    it('rejects a whitespace-only path', () => {
+      const fs = makeFs(seedRecipe(makeYaml('   ')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(/"path" must not be empty/)
+    })
+
+    it('rejects the literal "." path (recipe directory itself)', () => {
+      const fs = makeFs(seedRecipe(makeYaml('.')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(
+        /must point to a file inside the recipe directory/,
+      )
+    })
+
+    it('rejects "./" which normalises to the recipe directory itself', () => {
+      const fs = makeFs(seedRecipe(makeYaml('./')))
+      expect(() => parseRecipe(RECIPE_DIR, fs)).toThrow(
+        /must point to a file inside the recipe directory/,
+      )
+    })
   })
 
   describe('gate 2: extractArtifactEntries — .. segments', () => {
