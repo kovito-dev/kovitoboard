@@ -222,13 +222,24 @@ function parseDirectoryRecipe(dirPath: string, fs: FileAccessLayer): ParsedRecip
         `Artifact ${entry.path}: resolves outside the recipe directory`,
       )
     }
-    // Bind `statSync` + `readFileSync` to the canonical target so
-    // validation and consumption operate on the same bytes. If the
-    // lexical `filePath` is swapped (TOCTOU) after the realpath
-    // check but before the read, the canonical path already
-    // captured here is unaffected — the swap would have to redirect
-    // the canonical target itself, which still has to satisfy the
-    // containment invariant verified above.
+    // Run `statSync` + `readFileSync` against the canonical target
+    // rather than the lexical pathname. This narrows the
+    // observation window: a swap on the lexical `filePath` alone
+    // (the entry pointed at by `recipe.yaml`) no longer redirects
+    // the bounded reader, because the canonical path captured here
+    // has already been resolved end-to-end. This does NOT close
+    // the broader TOCTOU race against the canonical target itself
+    // — an attacker who can write to the resolved file between the
+    // `realpath` call here and the `readFileSync` below can still
+    // redirect the read by mutating the resolved entry. Closing
+    // that wider race requires an fd-based open/fstat/read pipeline,
+    // which is a parser-wide I/O refactor and is intentionally out
+    // of scope for this PR (see PR description `## Out of Scope`).
+    // The recipe-parser threat model in v0.2.x assumes the recipe
+    // upload directory is staged by KovitoBoard itself prior to
+    // parsing, so a concurrent attacker cannot reach the canonical
+    // entries during the parse window; this hardening is defence
+    // in depth on top of that staging guarantee.
     const stat = fs.statSync(canonicalFile)
     // L-R4: per-file ceiling, checked on stat metadata so an
     // oversized artifact never reaches readFileSync.
