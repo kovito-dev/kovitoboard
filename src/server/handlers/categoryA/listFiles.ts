@@ -190,7 +190,11 @@ export const listFilesHandler: HandlerDef<ListFilesInput, ListFilesOutput> = {
         ...entry,
         path: path.join(basePath, entry.path),
       }))
-      const filtered = filterExcludedEntries(entriesWithAbsPaths, context.projectRoot)
+      const filtered = filterExcludedEntries(entriesWithAbsPaths, {
+        operation: 'read',
+        approvedScopes: context.approvedScopes,
+        projectRoot: context.projectRoot,
+      })
 
       // Convert results back to relative paths
       const result: FileEntry[] = filtered.map((entry) => ({

@@ -319,6 +319,31 @@ const HANDLERS_WITH_PATH: Set<CategoryAHandlerName> = new Set([
 ])
 
 /**
+ * Operation kind threaded into `validatePathForScope` so the v1.8
+ * operation-aware exclusion table can distinguish read-vs-write
+ * checks. `list-files` and `read-file` walk the read side of the
+ * table (write-only blocks may be bypassed by `agents-read` /
+ * `skills-read` / `claude-md-read`); `write-file` walks the write
+ * side (those bypass scopes do not apply).
+ *
+ * @see recipe-system.md v1.8 §6.6.3
+ */
+const HANDLER_OPERATION: Record<CategoryAHandlerName, 'read' | 'write'> = {
+  'list-files': 'read',
+  'read-file': 'read',
+  'write-file': 'write',
+  // Scope-only handlers below — never reach validatePathForScope, but
+  // listed so the record is exhaustive over CategoryAHandlerName and
+  // future additions force a compile-time decision.
+  'kv-get': 'read',
+  'kv-set': 'write',
+  'kv-list': 'read',
+  'kv-delete': 'write',
+  'notify': 'read',
+  'export-file': 'read',
+}
+
+/**
  * Dispatch a handler invocation.
  *
  * Acquires the per-appId mutex first so the manifest snapshot read by
@@ -420,6 +445,7 @@ async function dispatchInner(
       appId,
       projectRoot,
       kovitoboardRoot,
+      HANDLER_OPERATION[handlerName],
     )
     if (!pathValidation.ok) {
       return handlerError(

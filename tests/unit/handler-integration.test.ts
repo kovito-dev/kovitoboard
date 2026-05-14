@@ -456,7 +456,45 @@ describe('T4: 除外リスト → PathForbidden', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('".git/HEAD" への read-file で PathForbidden が返る', async () => {
+  it('".git/HEAD" への read-file は project-read 単体で PathForbidden が返る', async () => {
+    // recipe-system.md v1.8 §6.6.3 evaluation order: every matching
+    // scope is tried. Default createTestManifest carries
+    // `['project-read', 'own-data']`, so `own-data` re-interprets
+    // `.git/HEAD` relative to `app/data/<appId>/`, sails past the
+    // project-root exclusion table, and the handler reads (or fails)
+    // inside the recipe's own data root. To assert the
+    // `PathForbidden` outcome we restrict the recipe to
+    // `project-read`, which is the only scope that should ever try
+    // to reach `<projectRoot>/.git/HEAD`.
+    const manifest = createTestManifest({ approvedScopes: ['project-read'] })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'read-intel-report',
+        input: { path: '.git/HEAD' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('PathForbidden')
+  })
+
+  it('".git/HEAD" への read-file は default scopes でも PathForbidden を返す (read-fallback 制限)', async () => {
+    // Default scopes are `['project-read', 'own-data']`. With the
+    // v0.2.x read-fallback restriction, an exclusion hit on
+    // `project-read` is only allowed to fall through to a dedicated
+    // read-bypass scope (`agents-read` / `skills-read` /
+    // `claude-md-read`). `own-data` is **not** a read-bypass scope —
+    // it would only re-anchor `.git/HEAD` under
+    // `app/data/<appId>/.git/HEAD` and silently degrade the audit
+    // signal to `NotFound`. The validator therefore returns
+    // `PathForbidden` immediately, preserving the v0.1.0-style
+    // audit-meaningful outcome.
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
@@ -991,7 +1029,15 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('write-file で .claude/credentials に書き込もうとすると PathForbidden', async () => {
+  it('write-file で .claude/credentials は PathForbidden を返す (write は first-match short-circuit, spec v1.8)', async () => {
+    // spec v1.8 §6.6.3 evaluation order is asymmetric in v0.2.x:
+    // writes short-circuit on the first exclusion hit because no
+    // recipe-side write bypass exists yet (the `agents-write` /
+    // `skills-write` opt-in scopes stay deferred to v0.3.0).
+    // Falling through to `own-data` would only re-interpret the
+    // forbidden write target against the recipe's own data root,
+    // which is not an authorization escape but muddies the audit
+    // signal. The first-match `PathForbidden` keeps it crisp.
     const manifest = createTestManifest({
       approvedScopes: ['project-read', 'project-write', 'own-data'],
       calls: [

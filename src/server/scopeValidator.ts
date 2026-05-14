@@ -4,19 +4,39 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Scope Validator — maps scope to path and enforces exclusion lists.
+ * Scope Validator — maps scope to path and enforces operation-aware
+ * exclusion (recipe-system.md v1.8 §6.5 / §6.6).
  *
- * Called from the handler dispatcher to ensure, before handler execution,
- * that the path is within an approved scope's region and is not on the
- * exclusion list.
+ * Called from the handler dispatcher to ensure, before handler
+ * execution, that the path is within an approved scope's region and
+ * is not on the operation-aware exclusion list.
  *
- * The exclusion list is managed in **this one place only**.
+ * The exclusion table is managed in **this one place only**.
  * Individual handlers must not perform their own exclusion checks.
  *
- * @see recipe-system.md §12-3 (scope definitions)
- * @see recipe-system.md §12-3-1 (hardcoded exclusion list)
- * @see recipe-backend-implementation-plan.md §8-2 principle 3
- * @stable v0.1.0
+ * Key v1.8 changes (security-threat-model.md §S2/§S3/§S9):
+ *   - Path normalization pipeline for exclusion match (§6.6.2 step 1-6:
+ *     realpath → NFC → suspicious-char reject → separator unification →
+ *     Win32 canonicalization → case-fold).
+ *   - Operation-aware exclusion (§6.6.3): the same path may be read-OK
+ *     and write-blocked depending on the matched scope.
+ *   - Expanded `.claude/...` block surface (§S3 mitigation): hooks,
+ *     settings, settings.local.json, commands are full-block; agents,
+ *     skills, and CLAUDE.md (any nested) are read+write blocked with
+ *     reads bypassable only via the corresponding dedicated `*-read`
+ *     scope (`agents-read`, `skills-read`, `claude-md-read`). The
+ *     broader `project-read` scope is **not** sufficient to read those
+ *     narrow-scope subtrees.
+ *   - v0.2.x temporary disabled (§6.5.3 final paragraph): the new
+ *     `agents-write` / `skills-write` opt-in scopes are intentionally
+ *     **not** introduced here; the install path is disabled in v0.2.x
+ *     so write access to `.claude/agents/` / `.claude/skills/` is
+ *     uniformly blocked until v0.3.0 reintroduces the opt-in scopes.
+ *
+ * @see recipe-system.md v1.8 §6.5 (scope definitions)
+ * @see recipe-system.md v1.8 §6.6 (exclusion, operation-aware)
+ * @see security-threat-model.md v1.2 §S2 / §S3 / §S9
+ * @stable v0.2.0
  */
 
 import * as path from 'path'
@@ -29,76 +49,452 @@ import {
   PathResolutionError,
   realpathUpToExisting,
 } from './pathResolver.js'
+import { lazyChildLogger } from './logger.js'
+
+/**
+ * Logger handle for the scope-validator. `lazyChildLogger` is used
+ * (instead of `serverLogger`) so unit tests that import this module
+ * without booting `initLogger()` do not crash when the
+ * `PathRejectedSuspiciousChar` event fires — the console fallback
+ * keeps assertions stable while production keeps routing through the
+ * real pino logger.
+ */
+const log = lazyChildLogger('scope-validator')
 
 // =========================================
-// Exclusion patterns
+// Operation kind
 // =========================================
 
 /**
- * Hardcoded exclusion patterns (common across all scopes).
- *
- * Matched against the relative portion of the path (relative to project root).
- * @see recipe-system.md §12-3-1
+ * Filesystem operation kind, threaded into the exclusion table so the
+ * same path can be read-allowed and write-blocked depending on which
+ * scope matched in the precedence loop.
  */
-const EXCLUSION_MATCHERS: Array<(relativePath: string) => boolean> = [
-  // .env (exact match)
-  (rel) => rel === '.env',
-  // .env.* (.env.production, .env.local, etc.)
-  (rel) => rel.startsWith('.env.'),
-  // Nested .env* files (e.g. subdir/.env)
-  (rel) => {
-    const basename = path.basename(rel)
-    return basename === '.env' || basename.startsWith('.env.')
+export type ExclusionOperation = 'read' | 'write'
+
+// =========================================
+// §6.6.2 Path normalization pipeline (exclusion match only)
+// =========================================
+
+/**
+ * Unicode code points that cause an exclusion-match path to be
+ * rejected outright. Covers zero-width characters and bidi overrides
+ * used to visually spoof e.g. `.git<ZWSP>/hooks` or
+ * `.claude<ZWSP>/settings.json` (recipe-system.md v1.8 §6.6.2 step 3).
+ */
+const SUSPICIOUS_CHAR_REGEX =
+  /[\u200B\u200C\u200D\uFEFF\u202A\u202B\u202C\u202D\u202E]/
+
+/**
+ * Result of normalizing a physical path for exclusion match. `ok:
+ * false` means the path contained a suspicious character and the
+ * caller must reject (security event, fail-fast `Internal` error).
+ */
+export type ExclusionKeyResult =
+  | { ok: true; key: string }
+  | { ok: false; reason: 'SuspiciousChar' }
+
+/**
+ * Apply the §6.6.2 6-step normalization pipeline (step 1 happens
+ * upstream when `physicalPath` is the output of `normalizePath` /
+ * `realpathUpToExisting`).
+ *
+ * The pipeline is applied **only** for exclusion match. Real fs
+ * read/write keeps using `physicalPath` directly so case-sensitive
+ * filesystems still see the original bytes.
+ */
+export function normalizeForExclusionMatch(
+  physicalPath: string,
+  projectRoot: string,
+): ExclusionKeyResult {
+  // Step 2: NFC — defend against NFD / composing diacritics bypass.
+  const nfcAbs = physicalPath.normalize('NFC')
+  const nfcRoot = projectRoot.normalize('NFC')
+
+  // Step 3: zero-width / bidi-override reject (security event).
+  if (SUSPICIOUS_CHAR_REGEX.test(nfcAbs)) {
+    return { ok: false, reason: 'SuspiciousChar' }
+  }
+
+  // Compute the project-relative portion. Paths outside the project
+  // root produce an empty key — callers treat that as "no exclusion
+  // match" (attachments, uploads, kb-data-read targets, etc.).
+  //
+  // Use a segment-aware "outside" check: `path.relative` returns a
+  // string that begins with a literal `..` segment when the target
+  // is outside the root. A naive `startsWith('..')` would also catch
+  // legitimate in-project names like `..cache/.env` or `..team/CLAUDE.md`
+  // and let them bypass exclusion entirely. Match only when the
+  // leading dotdot is followed by a path separator (or is the entire
+  // relative path).
+  //
+  // Windows cross-volume edge case: `path.relative` on win32 returns
+  // an *absolute*-looking string (e.g. `D:\some\path`) when the
+  // target lives on a different drive letter than `projectRoot`,
+  // because there is no relative path that joins two drive letters.
+  // Treat any absolute leading segment as outside-root too,
+  // otherwise an external preview probe on another drive could be
+  // misclassified as in-project and run through the exclusion table.
+  const rel = path.relative(nfcRoot, nfcAbs)
+  if (
+    rel === '' ||
+    rel === '..' ||
+    rel.startsWith('../') ||
+    rel.startsWith('..\\') ||
+    path.isAbsolute(rel)
+  ) {
+    return { ok: true, key: '' }
+  }
+
+  // Step 4: separator unification (`\` → `/`) so Windows-style
+  // segment markers cannot bypass the patterns below.
+  const sepUnified = rel.replace(/\\/g, '/')
+
+  // Step 5: Win32 / NTFS canonicalization. NTFS aliases trailing
+  // dots and spaces to the dotless / spaceless form (`CLAUDE.md.` and
+  // `CLAUDE.md ` both open the same file as `CLAUDE.md`). Strip them
+  // per segment. Shortname (`PROGRA~1`) is not handled here — it
+  // would require an FS round-trip and is off on modern NTFS by
+  // default; left as documented residual in security-threat-model.md
+  // §S2.
+  const canon = stripTrailingDotsAndSpaces(sepUnified)
+
+  // Step 6: case-fold. Applied regardless of FS case sensitivity so
+  // exclusion patterns match `.GIT/HOOKS`, `Claude.md`, etc.
+  const folded = canon.toLowerCase()
+
+  return { ok: true, key: folded }
+}
+
+function stripTrailingDotsAndSpaces(p: string): string {
+  return p
+    .split('/')
+    .map((seg) => seg.replace(/[. ]+$/, ''))
+    .join('/')
+}
+
+// =========================================
+// §6.6 Exclusion table (operation-aware)
+// =========================================
+
+interface ExclusionEntry {
+  /**
+   * Predicate matching against the normalized exclusion key
+   * (project-relative, case-folded, forward-slash separated).
+   */
+  match: (key: string) => boolean
+  /** Operations this entry blocks. */
+  blockedOps: ReadonlyArray<ExclusionOperation>
+  /**
+   * Scopes that bypass the block on the **read** path only. For the
+   * v1.8 narrow-scope subtrees (`.claude/agents/` tree, `.claude/skills/`
+   * tree, any nested `CLAUDE.md`), these are the dedicated read-permission
+   * scopes (`agents-read`, `skills-read`, `claude-md-read`) — recipes
+   * must hold one of them to read those paths; `project-read` is
+   * **not** sufficient.
+   *
+   * Empty / undefined means no read bypass exists. Write bypass is
+   * intentionally absent in v0.2.x: the spec-defined `agents-write` /
+   * `skills-write` opt-in scopes are deferred to v0.3.0 alongside the
+   * re-enabled install path (§6.5.3 final paragraph, temporary
+   * disabled path).
+   */
+  readBypassScopes?: ReadonlyArray<Scope>
+}
+
+const EXCLUSIONS: readonly ExclusionEntry[] = [
+  // .env exact or .env.* and the same as a basename anywhere nested.
+  {
+    match: (k) => matchEnv(k),
+    blockedOps: ['read', 'write'],
   },
-  // Everything under .git/
-  (rel) => rel === '.git' || rel.startsWith('.git/') || rel.startsWith('.git\\'),
-  // Everything under node_modules/
-  (rel) => rel === 'node_modules' || rel.startsWith('node_modules/') || rel.startsWith('node_modules\\'),
-  // .claude/credentials*
-  (rel) => {
-    const normalized = rel.replace(/\\/g, '/')
-    return normalized === '.claude/credentials' || normalized.startsWith('.claude/credentials')
+  // .git directory tree and the `.git` gitfile (worktree / submodule
+  // pointer file). A v0.2.1 follow-up will extend matching to
+  // bare-repo / submodule linked gitdirs once §6.6.1 normative
+  // implementation lands.
+  {
+    match: (k) => matchGit(k),
+    blockedOps: ['read', 'write'],
+  },
+  // node_modules tree.
+  {
+    match: (k) => matchNodeModules(k),
+    blockedOps: ['read', 'write'],
+  },
+  // .claude/credentials* — single-file or extension family.
+  {
+    match: (k) => matchClaudeCredentials(k),
+    blockedOps: ['read', 'write'],
+  },
+  // v1.8: .claude/hooks/** — RCE vector via Claude Code launch hooks.
+  {
+    match: (k) => matchClaudeHooks(k),
+    blockedOps: ['read', 'write'],
+  },
+  // v1.8: .claude/settings.json + .claude/settings.local.json — Claude
+  // Code per-project configuration (hook registration etc.).
+  {
+    match: (k) => matchClaudeSettings(k),
+    blockedOps: ['read', 'write'],
+  },
+  // v1.8: .claude/commands/** — Claude Code slash-command definitions.
+  {
+    match: (k) => matchClaudeCommands(k),
+    blockedOps: ['read', 'write'],
+  },
+  // v1.8: .claude/agents/** — read+write blocked; reads bypass only
+  // via the dedicated `agents-read` scope (project-read cannot reach
+  // these paths).
+  {
+    match: (k) => matchClaudeAgents(k),
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['agents-read'],
+  },
+  // v1.8: .claude/skills/** — read+write blocked; reads bypass only
+  // via the dedicated `skills-read` scope.
+  {
+    match: (k) => matchClaudeSkills(k),
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['skills-read'],
+  },
+  // v1.8: CLAUDE.md / CLAUDE.local.md anywhere under the project root
+  // (case-insensitive). Read+write blocked; reads bypass only via the
+  // dedicated `claude-md-read` scope.
+  {
+    match: (k) => matchClaudeMdBasename(k),
+    blockedOps: ['read', 'write'],
+    readBypassScopes: ['claude-md-read'],
   },
 ]
 
-/**
- * Determine whether an absolute path matches the exclusion list.
- *
- * @param absPath - Normalized absolute path
- * @param projectRoot - Project root path
- * @returns true if the path is forbidden
- */
-export function isForbidden(absPath: string, projectRoot: string): boolean {
-  // Compute relative path from project root
-  const rel = path.relative(projectRoot, absPath)
+// --- match predicates (each receives the normalized key) ---
 
-  // Paths outside the project (starting with ../) do not need exclusion checks
-  // (they will be rejected by the scope region check)
-  if (rel.startsWith('..')) return false
-
-  return EXCLUSION_MATCHERS.some((matcher) => matcher(rel))
+function matchEnv(k: string): boolean {
+  if (k === '.env' || k.startsWith('.env.')) return true
+  const idx = k.lastIndexOf('/')
+  const base = idx === -1 ? k : k.slice(idx + 1)
+  return base === '.env' || base.startsWith('.env.')
 }
 
+function matchGit(k: string): boolean {
+  if (k === '.git') return true
+  return k.startsWith('.git/')
+}
+
+function matchNodeModules(k: string): boolean {
+  if (k === 'node_modules') return true
+  return k.startsWith('node_modules/')
+}
+
+function matchClaudeCredentials(k: string): boolean {
+  return k === '.claude/credentials' || k.startsWith('.claude/credentials')
+}
+
+function matchClaudeHooks(k: string): boolean {
+  return k === '.claude/hooks' || k.startsWith('.claude/hooks/')
+}
+
+function matchClaudeSettings(k: string): boolean {
+  return k === '.claude/settings.json' || k === '.claude/settings.local.json'
+}
+
+function matchClaudeCommands(k: string): boolean {
+  return k === '.claude/commands' || k.startsWith('.claude/commands/')
+}
+
+function matchClaudeAgents(k: string): boolean {
+  return k === '.claude/agents' || k.startsWith('.claude/agents/')
+}
+
+function matchClaudeSkills(k: string): boolean {
+  return k === '.claude/skills' || k.startsWith('.claude/skills/')
+}
+
+function matchClaudeMdBasename(k: string): boolean {
+  if (k === '') return false
+  const idx = k.lastIndexOf('/')
+  const base = idx === -1 ? k : k.slice(idx + 1)
+  return base === 'claude.md' || base === 'claude.local.md'
+}
+
+// =========================================
+// §6.6.3 isForbidden — operation + matchedScope aware
+// =========================================
+
 /**
- * Remove excluded paths from list-files result entries.
+ * Determine whether the given exclusion key matches an entry that
+ * blocks the requested operation under the matched scope.
  *
- * Entries matching excluded paths are silently omitted from results
- * (treated as "non-existent" rather than errors) to prevent metadata
- * leakage through side channels.
+ * Callers must pass the normalized key from
+ * {@link normalizeForExclusionMatch}. The signature mirrors the
+ * normative shape from recipe-system.md v1.8 §6.6.3.
  *
- * @see recipe-system.md §12-3-1 list-files exclusion behavior
- * @see recipe-system.md §12-2-1 list-files exclusion list handling
+ * `matchedScope === null` indicates a check path that runs outside
+ * the recipe scope dispatcher (e.g. the artifact-path-validator's
+ * project-internal preview path). Bypass scopes never trigger in that
+ * mode, so non-scope callers see full-strength exclusion.
+ *
+ * @param exclusionKey - Output of normalizeForExclusionMatch (the
+ *   project-relative, case-folded form). Pass the empty string to
+ *   signal "outside project root" — the function returns false.
+ * @param _projectRoot - Project root; unused at this layer but kept
+ *   in the signature for spec parity and future absolute-key needs.
+ * @param context - operation kind + scope that matched in the
+ *   precedence loop.
+ */
+export function isForbidden(
+  exclusionKey: string,
+  _projectRoot: string,
+  context: { operation: ExclusionOperation; approvedScopes: readonly Scope[] },
+): boolean {
+  if (exclusionKey === '') return false
+  // Overlap semantics: the exclusion table can hold multiple entries
+  // matching the same path. `.claude/agents/CLAUDE.md` matches both
+  // `.claude/agents/**` and the `CLAUDE.md` basename entry;
+  // `.claude/agents/.env` matches both `.claude/agents/**` and the
+  // bypassless `.env` entry; `node_modules/pkg/CLAUDE.md` matches
+  // both `node_modules/**` and the CLAUDE.md basename entry.
+  //
+  // Bypass is **per entry, evaluated against the full approved-scope
+  // set**. An entry is considered bypassed when its
+  // `readBypassScopes` intersects with the recipe's approved scopes
+  // — single-scope iteration would have made some legitimate reads
+  // unreachable (a recipe holding both `agents-read` and
+  // `claude-md-read` would have one entry bypass on the agents
+  // iteration and the other on the claude-md iteration, never both
+  // at once). If any matching entry blocks and no approved scope
+  // bypasses it, the path is forbidden. This preserves the
+  // `.env` / `.git/` / `node_modules/` hard-blocks even when the
+  // path overlaps a bypassable narrow-scope subtree, and it lets
+  // recipes that hold the right combination of read scopes reach
+  // overlapping nested CLAUDE.md files.
+  for (const entry of EXCLUSIONS) {
+    if (!entry.match(exclusionKey)) continue
+    if (!entry.blockedOps.includes(context.operation)) continue
+    // Read-only bypass: at least one of this entry's
+    // `readBypassScopes` must be in the recipe's approved-scope set.
+    // Writes are never bypassed in v0.2.x — see the
+    // `readBypassScopes` field comment for the temporary-disabled
+    // rationale.
+    if (
+      context.operation === 'read' &&
+      entry.readBypassScopes &&
+      entry.readBypassScopes.some((s) => context.approvedScopes.includes(s))
+    ) {
+      // This entry is bypassed; keep checking the remaining entries
+      // so an overlapping non-bypassable rule (e.g. `.env`) can
+      // still deny.
+      continue
+    }
+    // This entry blocks the operation and is not bypassed by any
+    // approved scope — final block.
+    return true
+  }
+  return false
+}
+
+// =========================================
+// filterExcludedEntries — operation-aware (list-files only)
+// =========================================
+
+/**
+ * Remove excluded paths from a list-files result.
+ *
+ * v1.8: callers pass the recipe's approvedScopes so per-entry bypass
+ * selection can keep readable entries under `.claude/agents/`,
+ * `.claude/skills/`, and `<any>/CLAUDE.md` visible when the recipe
+ * holds the corresponding read scope. Suspicious-char rejections are
+ * silently dropped (metadata-leak avoidance) and recorded as a
+ * security event in the server log.
  */
 export function filterExcludedEntries<T extends { path: string }>(
   entries: T[],
-  projectRoot: string,
+  context: {
+    operation: 'read'
+    approvedScopes: readonly Scope[]
+    projectRoot: string
+  },
 ): T[] {
-  return entries.filter((entry) => {
+  const { operation, approvedScopes, projectRoot } = context
+  // Per-call dedup for the suspicious-character security event so a
+  // malicious listing cannot amplify log volume by planting many
+  // crafted entries in one directory. The first occurrence is logged
+  // verbosely; subsequent occurrences within the same call are
+  // collapsed into a single summary line at the end.
+  let suspiciousLogged = 0
+  let suspiciousSkipped = 0
+  const filtered = entries.filter((entry) => {
     const absPath = path.isAbsolute(entry.path)
       ? entry.path
       : path.join(projectRoot, entry.path)
-    return !isForbidden(absPath, projectRoot)
+    const normalize = normalizeForExclusionMatch(absPath, projectRoot)
+    if (!normalize.ok) {
+      if (suspiciousLogged === 0) {
+        reportSuspiciousCharRejection(absPath)
+        suspiciousLogged++
+      } else {
+        suspiciousSkipped++
+      }
+      return false
+    }
+    return !isForbidden(normalize.key, projectRoot, {
+      operation,
+      approvedScopes,
+    })
   })
+  if (suspiciousSkipped > 0) {
+    log.warn(
+      {
+        event: 'PathRejectedSuspiciousChar',
+        additionalRejections: suspiciousSkipped,
+      },
+      'Additional suspicious-character entries rejected in the same list-files call',
+    )
+  }
+  return filtered
+}
+
+// =========================================
+// Suspicious-char security event
+// =========================================
+
+/**
+ * Emit a structured security event for a path rejected by §6.6.2
+ * step 3 (zero-width / bidi-override). The event sits outside the
+ * regular handler audit log because rejection happens before scope
+ * selection — no appId / recipeId context exists at this point.
+ * Forensic queries filter on `event: 'PathRejectedSuspiciousChar'`.
+ *
+ * @see recipe-system.md v1.8 §6.5.5 / §6.6.2 step 3
+ */
+/**
+ * Escape a path string so zero-width / bidi-override characters
+ * surface as visible Unicode escapes in the log instead of being
+ * embedded verbatim. JSON.stringify alone is insufficient — the JSON
+ * spec only mandates escaping U+0000-U+001F, `"`, and `\`, so
+ * code points like U+200B / U+202E pass through untouched and would
+ * still be replayed verbatim by log viewers and terminals. We
+ * therefore (a) explicitly rewrite the §6.6.2 step 3 reject list to
+ * `\uXXXX` sequences, and (b) pass the result through
+ * `JSON.stringify` so any remaining control characters and quotes
+ * are quoted as well.
+ */
+function escapePathForLog(p: string): string {
+  const explicit = p.replace(
+    /[\u200B\u200C\u200D\uFEFF\u202A\u202B\u202C\u202D\u202E]/g,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
+  )
+  return JSON.stringify(explicit)
+}
+
+export function reportSuspiciousCharRejection(physicalPath: string): void {
+  log.warn(
+    {
+      event: 'PathRejectedSuspiciousChar',
+      physicalPath: escapePathForLog(physicalPath),
+    },
+    'Rejected path containing zero-width or bidi-override characters',
+  )
 }
 
 // =========================================
@@ -123,24 +519,108 @@ export interface ScopeValidationResult {
   resolvedPath?: string
 }
 
+// =========================================
+// Scope precedence (operation-aware)
+// =========================================
+
+/**
+ * Canonical scope precedence used to order `matchingScopes` before
+ * evaluation so the outcome no longer depends on the incidental
+ * order in which `HANDLER_REQUIRED_SCOPES` declares each scope.
+ *
+ * **v0.2.x specific: broader-first.** `project-*` scopes (and the
+ * other dedicated read scopes) run before `own-data`. This keeps two
+ * properties intact:
+ *
+ *   1. **v0.1.0 path-resolution compatibility.** Every relative
+ *      `rawPath` is consistent with the recipe's project view —
+ *      `intel/foo.md` continues to mean `<projectRoot>/intel/foo.md`
+ *      rather than `app/data/<appId>/intel/foo.md`. `own-data` always
+ *      passes the region check by re-anchoring the relative path
+ *      under the recipe's data root, so if it ran first a recipe
+ *      that asked for `intel/foo.md` would silently start reading a
+ *      completely different file.
+ *   2. **Crisp write audit.** With no recipe-side write bypass in
+ *      v0.2.x (`agents-write` / `skills-write` are deferred to
+ *      v0.3.0), an exclusion hit under `project-write` short-circuits
+ *      to `PathForbidden` immediately. If `own-data` ran first it
+ *      would re-interpret a forbidden target like
+ *      `.claude/credentials` under the data root and let the call
+ *      look successful at the validator layer.
+ *
+ * Spec v1.8 §6.5.1 specifies a **narrow-first** order intended for
+ * the v0.3.0 model where `agents-write` / `skills-write` opt-in
+ * scopes need first crack at `.claude/agents/` / `.claude/skills/`
+ * writes via bypass. When those scopes ship the precedence below
+ * needs to be revisited so the narrow-first walk applies again.
+ */
+const SCOPE_PRECEDENCE: readonly Scope[] = [
+  'project-read',
+  'project-write',
+  'kb-data-read',
+  'claude-md-read',
+  'agents-read',
+  'skills-read',
+  'own-data',
+]
+
+/**
+ * Scopes that can authorize an excluded read via the per-entry
+ * `readBypassScopes` field. Used to decide whether the read-path
+ * precedence walk should keep walking after an exclusion hit:
+ * falling through to `own-data` (or `kb-data-read`) only re-anchors
+ * the rawPath under a different scope root, so a forbidden probe
+ * like `.git/HEAD` would degrade to `NotFound` or read a different
+ * file. We therefore only keep walking when at least one of these
+ * dedicated bypass scopes remains in the precedence list.
+ */
+const READ_BYPASS_CANDIDATES: ReadonlySet<Scope> = new Set([
+  'agents-read',
+  'skills-read',
+  'claude-md-read',
+])
+
+function sortByPrecedence(
+  scopes: readonly Scope[],
+  _operation: ExclusionOperation,
+): Scope[] {
+  // The same SCOPE_PRECEDENCE applies to both read and write in
+  // v0.2.x; the `_operation` parameter is retained so the v0.3.0
+  // narrow-first walk for opt-in write scopes can hook in without a
+  // signature change.
+  return [...scopes].sort((a, b) => {
+    const ia = SCOPE_PRECEDENCE.indexOf(a)
+    const ib = SCOPE_PRECEDENCE.indexOf(b)
+    // Scopes outside the precedence list (none in v0.2.x) keep their
+    // original relative order behind known scopes.
+    if (ia === -1 && ib === -1) return 0
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
+}
+
 /**
  * Validate that a path argument is within an approved scope's region
- * and does not match the exclusion list.
+ * and is not blocked by the operation-aware exclusion table.
  *
  * On success returns `{ ok: true, resolvedPath }` so the dispatcher
- * can hand the physical path to the handler verbatim. Path-bound
- * handlers (`list-files`, `read-file`, `write-file`) must consume
- * `HandlerContext.resolvedPath` and never re-join the raw `input.path`
- * onto `context.projectRoot`.
+ * can hand the physical path to the handler verbatim.
  *
- * @param rawPath - Path argument received by the handler (relative or absolute)
+ * v1.8 adds an explicit `operation` argument so the exclusion table
+ * can distinguish read-vs-write decisions and so write-only blocks
+ * (`.claude/agents/`, `.claude/skills/`, `<any>/CLAUDE.md`) keep reads
+ * working when the recipe holds the matching `*-read` scope.
+ *
+ * @param rawPath - Path argument received by the handler
  * @param approvedScopes - Scopes approved by the user at install time
- * @param requiredScopes - Scopes required by this handler (any one approved is sufficient)
- * @param appId - KB-local app identifier (drives the `own-data` scope root)
- * @param projectRoot - Root path of the target project
- * @param kovitoboardRoot - KovitoBoard installation path (used for kb-data-read, optional)
- *
- * @see recipe-backend-critical-reviews.md §2-3
+ * @param requiredScopes - Scopes accepted by this handler (any match
+ *   is sufficient)
+ * @param appId - KB-local app id (drives `own-data` scope root)
+ * @param projectRoot - Target project root
+ * @param kovitoboardRoot - KovitoBoard installation root (kb-data-read)
+ * @param operation - Operation kind: 'read' for read-file / list-files,
+ *   'write' for write-file. Threaded into the exclusion table.
  */
 export function validatePathForScope(
   rawPath: string,
@@ -148,11 +628,12 @@ export function validatePathForScope(
   requiredScopes: readonly Scope[],
   appId: string,
   projectRoot: string,
-  kovitoboardRoot?: string,
+  kovitoboardRoot: string | undefined,
+  operation: ExclusionOperation,
 ): ScopeValidationResult {
-  // Find the intersection of approved scopes and required scopes
-  const matchingScopes = requiredScopes.filter((s) =>
-    approvedScopes.includes(s),
+  const matchingScopes = sortByPrecedence(
+    requiredScopes.filter((s) => approvedScopes.includes(s)),
+    operation,
   )
 
   if (matchingScopes.length === 0) {
@@ -161,19 +642,39 @@ export function validatePathForScope(
 
   // Resolve symlinks in the supplied roots up front so the prefix
   // comparison below sees the same physical path that
-  // `normalizePath(rawPath, scopeRoot)` returns. Without this,
-  // deployments where projectRoot is itself a symlink (e.g. the
-  // kb-test runner's `~/test/kb-latest -> kb-blank-<ts>` link)
-  // emit `PathOutOfScope` for every relative path because the
-  // resolved `physical` and the unresolved `scopeRoot` never share
-  // a prefix.
+  // `normalizePath(rawPath, scopeRoot)` returns.
   const projectRootResolved = realpathUpToExisting(projectRoot)
   const kovitoboardRootResolved = kovitoboardRoot
     ? realpathUpToExisting(kovitoboardRoot)
     : undefined
 
-  // Try path validation against each matching scope
-  // Any one passing is sufficient
+  // Spec §6.6.3 evaluation order is asymmetric in v0.2.x:
+  //
+  // - **Reads** walk every matching scope. An exclusion hit under a
+  //   broader scope (e.g. `project-read`) is not the final answer
+  //   because a narrower bypass scope (`agents-read`, `skills-read`,
+  //   `claude-md-read`) may still authorize the access via
+  //   `readBypassScopes`.
+  //
+  // - **Writes** short-circuit on the first exclusion hit. In v0.2.x
+  //   no recipe-side write bypass exists (the spec-defined
+  //   `agents-write` / `skills-write` opt-in scopes stay deferred to
+  //   v0.3.0, §6.5.3 final paragraph). Falling through to a lower
+  //   scope like `own-data` would only re-interpret a forbidden
+  //   write target against the recipe's own data root, which makes
+  //   `.claude/credentials` look like `app/data/<appId>/.claude/credentials`
+  //   and lets the call succeed quietly there. That is not a real
+  //   authorization escape, but it muddies the operator's view of
+  //   what the recipe just attempted — the first-match
+  //   `PathForbidden` keeps the audit signal crisp and matches v0.1.0
+  //   behaviour. When v0.3.0 adds the opt-in write scopes the write
+  //   path will need to walk the same precedence loop as reads.
+  //
+  // `blockedByExclusion` is therefore only consulted on the read
+  // path; the write path returns the moment any covered scope hits
+  // the exclusion table.
+  let blockedByExclusion = false
+
   for (const scope of matchingScopes) {
     const scopeRoot = realpathUpToExisting(
       resolveScopeRoot(
@@ -194,33 +695,82 @@ export function validatePathForScope(
       throw err
     }
 
-    // claude-md-read has special handling (only CLAUDE.md is allowed)
+    // claude-md-read is a file-only scope. It only ever allows reads
+    // of `<any>/CLAUDE.md` / `<any>/CLAUDE.local.md`. Writes never match,
+    // so a write attempt under this scope falls through to the next
+    // scope without setting blockedByExclusion.
     if (scope === 'claude-md-read') {
-      if (isClaudeMdPath(physical, projectRootResolved)) {
-        // Exclusion list check (CLAUDE.md normally won't match, but as a safety measure)
-        if (isForbidden(physical, projectRootResolved)) {
-          continue // Try next scope
-        }
-        return { ok: true, resolvedPath: physical }
+      if (operation === 'write') continue
+      if (!isClaudeMdPath(physical, projectRootResolved)) continue
+      const normalized = normalizeForExclusionMatch(
+        physical,
+        projectRootResolved,
+      )
+      if (!normalized.ok) {
+        reportSuspiciousCharRejection(physical)
+        return { ok: false, failedCode: 'Internal' }
       }
-      continue // Not CLAUDE.md, try next scope
+      if (
+        isForbidden(normalized.key, projectRootResolved, {
+          operation,
+          approvedScopes,
+        })
+      ) {
+        // claude-md-read is the read-only branch (writes were
+        // already filtered above). Read fallback is only meaningful
+        // when a dedicated read-bypass scope is still ahead in the
+        // precedence list; falling into `own-data` / `kb-data-read`
+        // would only re-anchor the rawPath under a different scope
+        // root and hide a forbidden access as `NotFound`.
+        const idx = matchingScopes.indexOf(scope)
+        const remaining = matchingScopes.slice(idx + 1)
+        if (!remaining.some((s) => READ_BYPASS_CANDIDATES.has(s))) {
+          return { ok: false, failedCode: 'PathForbidden' }
+        }
+        blockedByExclusion = true
+        continue
+      }
+      return { ok: true, resolvedPath: physical }
     }
 
-    // Check if path is within scope region
-    if (!isWithin(physical, scopeRoot)) {
-      continue // Try next scope
-    }
+    if (!isWithin(physical, scopeRoot)) continue
 
-    // Exclusion list check (always enforced regardless of scope declaration)
-    if (isForbidden(physical, projectRootResolved)) {
-      return { ok: false, failedCode: 'PathForbidden' }
+    const normalized = normalizeForExclusionMatch(physical, projectRootResolved)
+    if (!normalized.ok) {
+      reportSuspiciousCharRejection(physical)
+      return { ok: false, failedCode: 'Internal' }
+    }
+    if (
+      isForbidden(normalized.key, projectRootResolved, {
+        operation,
+        approvedScopes,
+      })
+    ) {
+      if (operation === 'write') {
+        return { ok: false, failedCode: 'PathForbidden' }
+      }
+      // Same read-fallback restriction as the claude-md-read branch:
+      // we keep walking only when a dedicated read-bypass scope is
+      // still ahead so an exclusion hit cannot degrade to a quieter
+      // `NotFound` through `own-data` / `kb-data-read` re-anchoring.
+      const idx = matchingScopes.indexOf(scope)
+      const remaining = matchingScopes.slice(idx + 1)
+      if (!remaining.some((s) => READ_BYPASS_CANDIDATES.has(s))) {
+        return { ok: false, failedCode: 'PathForbidden' }
+      }
+      blockedByExclusion = true
+      continue
     }
 
     return { ok: true, resolvedPath: physical }
   }
 
-  // No scope passed the region check
-  return { ok: false, failedCode: 'PathOutOfScope' }
+  // Distinguish "region covered, exclusion bit" from "no scope ever
+  // covered the region" so callers see the spec-defined error code.
+  return {
+    ok: false,
+    failedCode: blockedByExclusion ? 'PathForbidden' : 'PathOutOfScope',
+  }
 }
 
 /**
@@ -231,7 +781,8 @@ export function validateScopeOnly(
   approvedScopes: readonly Scope[],
   requiredScopes: readonly Scope[],
 ): ScopeValidationResult {
-  const hasMatch = requiredScopes.length === 0 ||
+  const hasMatch =
+    requiredScopes.length === 0 ||
     requiredScopes.some((s) => approvedScopes.includes(s))
   return hasMatch
     ? { ok: true }
