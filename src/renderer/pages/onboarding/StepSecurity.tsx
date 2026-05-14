@@ -38,7 +38,7 @@
  *     `event.isTrusted` gate below + the App-level onboarding gate
  *     that refuses recipe page mounts before completion (T-4-1 a).
  */
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
 import { t } from '../../i18n'
 import type { SettingsCheckResult } from '../../../shared/setting-types'
@@ -330,7 +330,9 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
                         data-testid="onboarding-rule-of-two-accept-hint"
                         className="text-[10px] text-red-700 dark:text-red-300"
                       >
-                        {t('ruleOfTwo.violation.acceptDisabledHint')}
+                        {!ruleOfTwoEverOpened || whyOpen === 'bypassMode'
+                          ? t('ruleOfTwo.violation.acceptDisabledHint.modal')
+                          : t('ruleOfTwo.violation.acceptDisabledHint.idle')}
                       </span>
                     )}
                   </span>
