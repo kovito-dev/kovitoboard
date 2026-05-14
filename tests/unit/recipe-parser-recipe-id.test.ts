@@ -94,6 +94,15 @@ function makeMockFs(seed: Record<string, string>): FileAccessLayer {
     symlinkSync: () => {
       throw new Error('symlinkSync not supported in mock')
     },
+    realpathSync: (p) => {
+      // No symlinks modelled — identity mapping for any extant
+      // path. See `recipe-parser-artifact-path-traversal.test.ts`
+      // for the symlink-escape coverage.
+      if (!files.has(p) && !dirs.has(p)) {
+        throw new Error(`ENOENT: ${p}`)
+      }
+      return p
+    },
     watch: () => ({
       close: async () => {
         /* no-op */
