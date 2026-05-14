@@ -496,22 +496,28 @@ export function validatePathForScope(
     ? realpathUpToExisting(kovitoboardRoot)
     : undefined
 
-  // v0.2.x A-path semantics (recipe-system.md v1.8 §6.5.3 final
-  // paragraph, "temporary disabled"): the `agents-write` /
-  // `skills-write` opt-in scopes are not introduced yet, so no
-  // recipe-side bypass exists for the write-only blocks. With no
-  // bypass to defer to, an exclusion hit on the first matching
-  // scope is the final answer — we return `PathForbidden` straight
-  // away rather than falling through to other matching scopes (e.g.
-  // `own-data` would re-interpret `.git/HEAD` as
-  // `app/data/<appId>/.git/HEAD` and then sail past the exclusion
-  // check because the project-relative key no longer starts with
-  // `.git/`). The read-time bypass scopes (`agents-read`,
-  // `skills-read`, `claude-md-read`) cannot be observed here either,
-  // because their blocks are write-only — read operations simply
-  // miss the `blockedOps` filter and never reach the bypass logic.
-  // When v0.3.0 reintroduces the opt-in write scopes the precedence
-  // loop will revisit this design (§6.5.1 narrow-first sort).
+  // Spec §6.6.3 evaluation order: try every matching scope in turn.
+  // An exclusion hit under a broader scope (e.g. `project-read`) is
+  // not the final answer — a narrower scope (`agents-read`,
+  // `skills-read`, `claude-md-read`) may still bypass the read block
+  // and authorize the operation. We therefore track whether any
+  // scope hit the exclusion table so the final outcome can be
+  // disambiguated between `PathOutOfScope` (no scope ever covered
+  // the region) and `PathForbidden` (a scope covered the region but
+  // could not bypass the exclusion).
+  //
+  // Subtle case: `.git/HEAD` read with `[project-read, own-data]`.
+  // `project-read` covers the path with an exclusion hit, but
+  // `own-data` re-interprets the relative path against
+  // `app/data/<appId>/` so the project-relative exclusion key no
+  // longer starts with `.git/`. The own-data branch reaches
+  // `{ ok: true }` and the handler then fails open as `NotFound`
+  // when no such file lives inside the recipe's data root. That is
+  // intentional: the attacker-controlled rawPath never touched
+  // `<projectRoot>/.git/HEAD` itself (own-data has its own root), so
+  // the v1.0 `PathForbidden` was tighter than the spec requires.
+  let blockedByExclusion = false
+
   for (const scope of matchingScopes) {
     const scopeRoot = realpathUpToExisting(
       resolveScopeRoot(
@@ -553,7 +559,8 @@ export function validatePathForScope(
           matchedScope: scope,
         })
       ) {
-        return { ok: false, failedCode: 'PathForbidden' }
+        blockedByExclusion = true
+        continue
       }
       return { ok: true, resolvedPath: physical }
     }
@@ -571,14 +578,19 @@ export function validatePathForScope(
         matchedScope: scope,
       })
     ) {
-      return { ok: false, failedCode: 'PathForbidden' }
+      blockedByExclusion = true
+      continue
     }
 
     return { ok: true, resolvedPath: physical }
   }
 
-  // No scope ever passed the region check.
-  return { ok: false, failedCode: 'PathOutOfScope' }
+  // Distinguish "region covered, exclusion bit" from "no scope ever
+  // covered the region" so callers see the spec-defined error code.
+  return {
+    ok: false,
+    failedCode: blockedByExclusion ? 'PathForbidden' : 'PathOutOfScope',
+  }
 }
 
 /**

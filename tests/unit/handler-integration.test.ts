@@ -456,8 +456,17 @@ describe('T4: 除外リスト → PathForbidden', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('".git/HEAD" への read-file で PathForbidden が返る', async () => {
-    const manifest = createTestManifest()
+  it('".git/HEAD" への read-file は project-read 単体で PathForbidden が返る', async () => {
+    // recipe-system.md v1.8 §6.6.3 evaluation order: every matching
+    // scope is tried. Default createTestManifest carries
+    // `['project-read', 'own-data']`, so `own-data` re-interprets
+    // `.git/HEAD` relative to `app/data/<appId>/`, sails past the
+    // project-root exclusion table, and the handler reads (or fails)
+    // inside the recipe's own data root. To assert the
+    // `PathForbidden` outcome we restrict the recipe to
+    // `project-read`, which is the only scope that should ever try
+    // to reach `<projectRoot>/.git/HEAD`.
+    const manifest = createTestManifest({ approvedScopes: ['project-read'] })
     manifestStore.save(manifest)
 
     const result = await dispatch(
@@ -473,6 +482,32 @@ describe('T4: 除外リスト → PathForbidden', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error.code).toBe('PathForbidden')
+  })
+
+  it('".git/HEAD" への read-file は own-data 経由で別パスに再解釈され NotFound (spec v1.8)', async () => {
+    // Same path with the default scopes (`project-read` + `own-data`):
+    // the spec §6.6.3 walk reaches the `own-data` branch and the
+    // re-interpreted target lives under `app/data/<appId>/.git/HEAD`,
+    // which the test fixture does not materialise. The handler
+    // surfaces `NotFound`. No information about the real
+    // `<projectRoot>/.git/HEAD` leaks because `own-data` operates on
+    // its own root.
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'read-intel-report',
+        input: { path: '.git/HEAD' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('NotFound')
   })
 
   it('list-files で "." を要求したとき、.env / .git / node_modules がエントリに含まれない', async () => {
@@ -991,7 +1026,48 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('write-file で .claude/credentials に書き込もうとすると PathForbidden', async () => {
+  it('write-file で .claude/credentials は project-write 単体で PathForbidden', async () => {
+    // spec v1.8 §6.6.3 evaluation order: with `own-data` removed
+    // from the scope set, only `project-write` ever covers the
+    // region, and the exclusion table refuses the write — this is
+    // the v0.1.0-style direct-write block. Adding `own-data` would
+    // re-interpret the path under the recipe's own data root, which
+    // is not an attack on the real `<projectRoot>/.claude/credentials`
+    // and is covered by the next test below.
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'project-write'],
+      calls: [
+        {
+          id: 'write-creds',
+          handler: 'write-file',
+          args: { path: '${input.path}', content: '${input.content}' },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'write-creds',
+        input: { path: '.claude/credentials', content: '{"token":"stolen"}' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('PathForbidden')
+  })
+
+  it('write-file で .claude/credentials は own-data 同時宣言時に own-data 内へ再解釈される (spec v1.8)', async () => {
+    // With `own-data` in the scope set, spec §6.6.3 evaluation
+    // order falls through to it after `project-write` refuses, and
+    // the write targets `<projectRoot>/app/data/<appId>/.claude/credentials`.
+    // The parent directory does not exist (createDirs is false by
+    // default for this call), so the handler surfaces `NotFound`.
+    // The real `<projectRoot>/.claude/credentials` is never touched.
     const manifest = createTestManifest({
       approvedScopes: ['project-read', 'project-write', 'own-data'],
       calls: [
@@ -1016,7 +1092,7 @@ describe('セキュリティ回帰テスト', () => {
 
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.error.code).toBe('PathForbidden')
+    expect(result.error.code).toBe('NotFound')
   })
 })
 
