@@ -384,51 +384,15 @@ export const HANDLER_LIMITS = {
   HANDLER_TIMEOUT_MS: 30_000,
 } as const
 
-// =========================================
-// Hardcoded exclusion patterns
-// =========================================
-
-/**
- * Hardcoded exclusion patterns — documentation copy only.
- *
- * The authoritative, operation-aware table lives in
- * `scopeValidator.ts` (`EXCLUSIONS`). Individual handlers must not
- * check these — exclusion is enforced in one place.
- *
- * v1.8 (recipe-system.md §6.6, security-threat-model.md §S2/§S3/§S9):
- * the table is now operation-aware. The patterns below are listed
- * with their {block-mode} annotation so this file stays a quick
- * reference, but match logic is in scopeValidator.ts.
- *
- *   `.env` / `.env.*` / nested `.env*`        [read+write block]
- *   `.git` / `.git/**`                        [read+write block]
- *   `node_modules/**`                         [read+write block]
- *   `.claude/credentials*`                    [read+write block]
- *   `.claude/hooks/**`                        [read+write block, v1.8]
- *   `.claude/settings.json` / `.local.json`   [read+write block, v1.8]
- *   `.claude/commands/**`                     [read+write block, v1.8]
- *   `.claude/agents/**`                       [read+write block; read bypass via `agents-read`, v1.8]
- *   `.claude/skills/**`                       [read+write block; read bypass via `skills-read`, v1.8]
- *   any nested `CLAUDE.md` / `CLAUDE.local.md` [read+write block; read bypass via `claude-md-read`, v1.8]
- *
- * @see recipe-system.md v1.8 §6.6 (exclusion, operation-aware)
- * @see scopeValidator.ts `EXCLUSIONS` (authoritative table)
- */
-export const HARDCODED_EXCLUSIONS = [
-  '.env',
-  '.env.*',
-  '.git/**',
-  'node_modules/**',
-  '.claude/credentials*',
-  '.claude/hooks/**',
-  '.claude/settings.json',
-  '.claude/settings.local.json',
-  '.claude/commands/**',
-  '.claude/agents/** (read+write block; read bypass via agents-read)',
-  '.claude/skills/** (read+write block; read bypass via skills-read)',
-  'CLAUDE.md (any nested, read+write block; read bypass via claude-md-read)',
-  'CLAUDE.local.md (any nested, read+write block; read bypass via claude-md-read)',
-] as const
+// `HARDCODED_EXCLUSIONS` was removed in v0.2.0. The constant was a
+// duplicated documentation copy of the exclusion list maintained in
+// `scopeValidator.ts`. It had no machine consumers (verified by
+// repo grep) and the v1.8 operation-aware shape — read+write
+// blocks, write-only blocks, read bypass scopes — does not fit a
+// flat `readonly string[]` typed export. The authoritative,
+// operation-aware table is `EXCLUSIONS` inside
+// `scopeValidator.ts`. Documentation about the table layout lives
+// in `recipe-system.md` v1.8 §6.6 / §6.6.4.
 
 // =========================================
 // Audit log types
