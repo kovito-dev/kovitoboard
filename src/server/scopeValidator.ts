@@ -475,7 +475,7 @@ function escapePathForLog(p: string): string {
   return JSON.stringify(explicit)
 }
 
-function reportSuspiciousCharRejection(physicalPath: string): void {
+export function reportSuspiciousCharRejection(physicalPath: string): void {
   log.warn(
     {
       event: 'PathRejectedSuspiciousChar',
@@ -505,6 +505,71 @@ export interface ScopeValidationResult {
    * the subsequent fs operation.
    */
   resolvedPath?: string
+}
+
+// =========================================
+// Scope precedence (operation-aware)
+// =========================================
+
+/**
+ * Canonical scope precedence used to order `matchingScopes` before
+ * evaluation so the outcome no longer depends on the incidental
+ * order in which `HANDLER_REQUIRED_SCOPES` declares each scope.
+ *
+ * **v0.2.x specific: broader-first.** `project-*` scopes (and the
+ * other dedicated read scopes) run before `own-data`. This keeps two
+ * properties intact:
+ *
+ *   1. **v0.1.0 path-resolution compatibility.** Every relative
+ *      `rawPath` is consistent with the recipe's project view —
+ *      `intel/foo.md` continues to mean `<projectRoot>/intel/foo.md`
+ *      rather than `app/data/<appId>/intel/foo.md`. `own-data` always
+ *      passes the region check by re-anchoring the relative path
+ *      under the recipe's data root, so if it ran first a recipe
+ *      that asked for `intel/foo.md` would silently start reading a
+ *      completely different file.
+ *   2. **Crisp write audit.** With no recipe-side write bypass in
+ *      v0.2.x (`agents-write` / `skills-write` are deferred to
+ *      v0.3.0), an exclusion hit under `project-write` short-circuits
+ *      to `PathForbidden` immediately. If `own-data` ran first it
+ *      would re-interpret a forbidden target like
+ *      `.claude/credentials` under the data root and let the call
+ *      look successful at the validator layer.
+ *
+ * Spec v1.8 §6.5.1 specifies a **narrow-first** order intended for
+ * the v0.3.0 model where `agents-write` / `skills-write` opt-in
+ * scopes need first crack at `.claude/agents/` / `.claude/skills/`
+ * writes via bypass. When those scopes ship the precedence below
+ * needs to be revisited so the narrow-first walk applies again.
+ */
+const SCOPE_PRECEDENCE: readonly Scope[] = [
+  'project-read',
+  'project-write',
+  'kb-data-read',
+  'claude-md-read',
+  'agents-read',
+  'skills-read',
+  'own-data',
+]
+
+function sortByPrecedence(
+  scopes: readonly Scope[],
+  _operation: ExclusionOperation,
+): Scope[] {
+  // The same SCOPE_PRECEDENCE applies to both read and write in
+  // v0.2.x; the `_operation` parameter is retained so the v0.3.0
+  // narrow-first walk for opt-in write scopes can hook in without a
+  // signature change.
+  return [...scopes].sort((a, b) => {
+    const ia = SCOPE_PRECEDENCE.indexOf(a)
+    const ib = SCOPE_PRECEDENCE.indexOf(b)
+    // Scopes outside the precedence list (none in v0.2.x) keep their
+    // original relative order behind known scopes.
+    if (ia === -1 && ib === -1) return 0
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
 }
 
 /**
@@ -538,8 +603,9 @@ export function validatePathForScope(
   kovitoboardRoot: string | undefined,
   operation: ExclusionOperation,
 ): ScopeValidationResult {
-  const matchingScopes = requiredScopes.filter((s) =>
-    approvedScopes.includes(s),
+  const matchingScopes = sortByPrecedence(
+    requiredScopes.filter((s) => approvedScopes.includes(s)),
+    operation,
   )
 
   if (matchingScopes.length === 0) {

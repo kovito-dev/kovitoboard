@@ -963,4 +963,25 @@ describe('validatePathForScope (v1.8 operation-aware)', () => {
     expect(r.ok).toBe(false)
     expect(r.failedCode).toBe('PathForbidden')
   })
+
+  it('blocks .claude/credentials write even when scope arrays list own-data first (precedence sort)', () => {
+    // Regression for the v0.2.x precedence sort: an
+    // `approvedScopes` / `requiredScopes` array that happens to
+    // declare `own-data` ahead of `project-write` must still see
+    // `project-write` evaluated first, so the exclusion table hits
+    // before `own-data` re-interprets `.claude/credentials` under
+    // the recipe's data root. Without the sort the validator would
+    // return `{ ok: true }` here (or fail downstream as NotFound).
+    const r = validatePathForScope(
+      '.claude/credentials',
+      ['own-data', 'project-write'],
+      ['own-data', 'project-write'],
+      APP_ID,
+      projectRoot,
+      undefined,
+      'write',
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failedCode).toBe('PathForbidden')
+  })
 })

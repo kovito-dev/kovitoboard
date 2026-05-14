@@ -41,7 +41,11 @@
 
 import { isAbsolute, normalize, resolve } from 'path'
 import type { FileAccessLayer } from './fs-layer'
-import { isForbidden, normalizeForExclusionMatch } from './scopeValidator'
+import {
+  isForbidden,
+  normalizeForExclusionMatch,
+  reportSuspiciousCharRejection,
+} from './scopeValidator'
 import { realpathUpToExisting } from './pathResolver'
 
 export type ArtifactPathValidation =
@@ -193,6 +197,11 @@ export function validatePathForArtifactRead(
   // §6.6.3).
   const exclusionKey = normalizeForExclusionMatch(resolved, ctx.projectRoot)
   if (!exclusionKey.ok) {
+    // Emit the same `PathRejectedSuspiciousChar` security event the
+    // recipe scope dispatcher uses, so artifact-preview probes that
+    // try to smuggle a zero-width / bidi-override path become
+    // visible in the operational audit trail.
+    reportSuspiciousCharRejection(resolved)
     return {
       ok: false,
       status: 403,
