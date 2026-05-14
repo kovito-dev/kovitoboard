@@ -140,19 +140,24 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     }
   }, [])
 
-  // Tick `now` while the idle window is open so the disabled-state
-  // computation below transitions smoothly to enabled. The interval
-  // stops automatically once the window has elapsed — there is no
-  // background timer running for the rest of onboarding.
+  // Schedule a single setNow() at the moment the idle window closes
+  // so the `ruleOfTwoAcceptDisabled` memo flips to false without
+  // burning a polling interval for the full delay (CodeX attempt 1 —
+  // unnecessary timer churn). The timer is keyed solely on
+  // `ruleOfTwoClosedAt`, so a second open-and-close of the modal
+  // simply re-arms it without ever stacking handlers.
   useEffect(() => {
     if (ruleOfTwoClosedAt === null) return
-    const elapsed = Date.now() - ruleOfTwoClosedAt
-    if (elapsed >= RULE_OF_TWO_ACCEPT_IDLE_MS) return
-    const id = setInterval(() => {
+    const remaining = RULE_OF_TWO_ACCEPT_IDLE_MS - (Date.now() - ruleOfTwoClosedAt)
+    if (remaining <= 0) {
       setNow(Date.now())
-    }, 100)
-    return () => clearInterval(id)
-  }, [ruleOfTwoClosedAt, now])
+      return
+    }
+    const id = setTimeout(() => {
+      setNow(Date.now())
+    }, remaining)
+    return () => clearTimeout(id)
+  }, [ruleOfTwoClosedAt])
 
   const bypassActive = state?.result.bypassMode.active === true
   const ruleOfTwoAcceptDisabled = useMemo(() => {
@@ -202,6 +207,12 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
    * a recipe page running in the same renderer realm could still
    * dispatch a synthetic event. `event.isTrusted` distinguishes
    * user-initiated activations.
+   *
+   * Defense in depth (CodeX attempt 1 — client-side gate bypass):
+   * re-validate the "modal opened + 2s idle" prerequisites here even
+   * though the rendered `disabled` attribute already blocks the
+   * click. A future refactor or DOM-level re-enable must not be able
+   * to flip the accept state without re-passing the same gate.
    */
   const handleBypassAccept = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -210,9 +221,14 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
         // programmatic mutation attempt, not a legitimate accident.
         return
       }
+      if (ruleOfTwoAcceptDisabled) {
+        // Re-check the gate at the state-mutation site rather than
+        // trusting the DOM disabled prop alone (defense in depth).
+        return
+      }
       setAcknowledged((prev) => ({ ...prev, bypassMode: event.target.checked }))
     },
-    [],
+    [ruleOfTwoAcceptDisabled],
   )
 
   function setRowAck(row: 'permissionMode' | 'denyPattern' | 'bypassMode', next: boolean): void {
