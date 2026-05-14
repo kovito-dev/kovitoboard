@@ -119,8 +119,21 @@ export function normalizeForExclusionMatch(
   // Compute the project-relative portion. Paths outside the project
   // root produce an empty key — callers treat that as "no exclusion
   // match" (attachments, uploads, kb-data-read targets, etc.).
+  //
+  // Use a segment-aware "outside" check: `path.relative` returns a
+  // string that begins with a literal `..` segment when the target
+  // is outside the root. A naive `startsWith('..')` would also catch
+  // legitimate in-project names like `..cache/.env` or `..team/CLAUDE.md`
+  // and let them bypass exclusion entirely. Match only when the
+  // leading dotdot is followed by a path separator (or is the entire
+  // relative path).
   const rel = path.relative(nfcRoot, nfcAbs)
-  if (rel === '' || rel.startsWith('..')) {
+  if (
+    rel === '' ||
+    rel === '..' ||
+    rel.startsWith('../') ||
+    rel.startsWith('..\\')
+  ) {
     return { ok: true, key: '' }
   }
 
@@ -445,14 +458,21 @@ function selectReadBypassScope(
 /**
  * Escape a path string so zero-width / bidi-override characters
  * surface as visible Unicode escapes in the log instead of being
- * embedded verbatim. We render the path through `JSON.stringify`
- * which already escapes control / non-ASCII characters; the result
- * is forensically actionable (the exact code points are visible)
- * without the operational log replaying the spoofing sequence to
- * downstream viewers.
+ * embedded verbatim. JSON.stringify alone is insufficient — the JSON
+ * spec only mandates escaping U+0000-U+001F, `"`, and `\`, so
+ * code points like U+200B / U+202E pass through untouched and would
+ * still be replayed verbatim by log viewers and terminals. We
+ * therefore (a) explicitly rewrite the §6.6.2 step 3 reject list to
+ * `\uXXXX` sequences, and (b) pass the result through
+ * `JSON.stringify` so any remaining control characters and quotes
+ * are quoted as well.
  */
 function escapePathForLog(p: string): string {
-  return JSON.stringify(p)
+  const explicit = p.replace(
+    /[\u200B\u200C\u200D\uFEFF\u202A\u202B\u202C\u202D\u202E]/g,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
+  )
+  return JSON.stringify(explicit)
 }
 
 function reportSuspiciousCharRejection(physicalPath: string): void {

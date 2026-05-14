@@ -108,6 +108,35 @@ describe('normalizeForExclusionMatch', () => {
     expect(result.key).toBe('')
   })
 
+  it('does not classify in-project names starting with ".." as outside-root', () => {
+    // Segment-aware outside-root check: legitimate in-project paths
+    // such as `..cache/.env` or `..team/CLAUDE.md` must still flow
+    // into exclusion match. A naive `startsWith('..')` would let
+    // them bypass the table entirely.
+    const dotdotEnv = path.join(projectRoot, '..cache', '.env')
+    const r1 = normalizeForExclusionMatch(dotdotEnv, projectRoot)
+    expect(r1.ok).toBe(true)
+    if (!r1.ok) return
+    expect(r1.key).toBe('..cache/.env')
+
+    const dotdotClaude = path.join(projectRoot, '..team', 'CLAUDE.md')
+    const r2 = normalizeForExclusionMatch(dotdotClaude, projectRoot)
+    expect(r2.ok).toBe(true)
+    if (!r2.ok) return
+    expect(r2.key).toBe('..team/claude.md')
+  })
+
+  it('still classifies "../foo" relative paths as outside the project root', () => {
+    // Sanity check: actual parent-directory escapes still produce
+    // an empty exclusion key (treated as outside the root by
+    // upstream scope region checks).
+    const outside = path.dirname(projectRoot)
+    const r = normalizeForExclusionMatch(outside, projectRoot)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.key).toBe('')
+  })
+
   it('returns an empty key for the project root itself', () => {
     const result = normalizeForExclusionMatch(projectRoot, projectRoot)
     expect(result.ok).toBe(true)
