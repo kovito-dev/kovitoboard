@@ -27,6 +27,7 @@ import { readBasicSettings, readSkills, readAutomations, readIntegrations, readR
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
 import { AgentActivityMonitor } from './agent-activity-monitor'
+import { createHeartbeatTracker } from './ws-heartbeat'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest, SessionOrigin } from './types'
 import { mountAppApiRoutes } from './app-api-loader'
 import { getInitialPrompt } from './services/initial-prompts'
@@ -2314,8 +2315,25 @@ const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'client_log',
 ])
 
+// --- WebSocket connection heartbeat (supplementary review §S5) ---
+// Detect dead clients (NAT timeout / hard browser close / network
+// drop) by running the ws ping/pong heartbeat on a 30 s tick. Without
+// this loop `wss.clients` accumulates phantom sockets indefinitely
+// and every broadcast still calls `send` against them. The tracker
+// is created BEFORE the `connection` handler below so the per-socket
+// `attach()` call inside the handler always sees a live timer.
+const wsHeartbeat = createHeartbeatTracker(wss, { log: wsLogger })
+
 // --- WebSocket: client -> server (trust prompt response handling) ---
 wss.on('connection', (ws) => {
+  // Wire the pong / error listeners that the heartbeat tracker
+  // expects. Done at the top of the handler so subsequent logic
+  // (replay + message dispatch) cannot short-circuit before the
+  // heartbeat is bound — otherwise a socket that emits an error
+  // before the first message would propagate as an
+  // `uncaughtException`.
+  wsHeartbeat.attach(ws)
+
   // Replay pending trust-prompt events to the newly connected client.
   // The detector may have broadcast events before any UI client was connected,
   // causing them to be lost. This ensures late-connecting clients receive them.
