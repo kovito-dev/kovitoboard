@@ -339,19 +339,24 @@ export function isForbidden(
   context: { operation: ExclusionOperation; matchedScope: Scope | null },
 ): boolean {
   if (exclusionKey === '') return false
-  // The exclusion table can hold overlapping rules. For example,
-  // `.claude/agents/CLAUDE.md` matches both the `.claude/agents/**`
-  // entry (read+write block, bypass via `agents-read`) and the
-  // `CLAUDE.md` basename entry (read+write block, bypass via
-  // `claude-md-read`). A first-match short-circuit would deny a
-  // recipe that holds only `claude-md-read` for that path, contrary
-  // to recipe-system.md v1.8 §6.5.4 which makes nested `CLAUDE.md`
-  // accessible via `claude-md-read` regardless of which subtree it
-  // happens to live in. We therefore evaluate *every* matching
-  // entry: if any of them grants a bypass for the current operation
-  // and matched scope the path is allowed; otherwise it is blocked
-  // when at least one matching entry actually blocks the operation.
-  let anyBlocked = false
+  // Overlap semantics: the exclusion table can hold multiple entries
+  // matching the same path (`.claude/agents/CLAUDE.md` matches both
+  // `.claude/agents/**` and the `CLAUDE.md` basename entry;
+  // `.claude/agents/.env` matches both `.claude/agents/**` and the
+  // bypassless `.env` entry; `node_modules/pkg/CLAUDE.md` matches
+  // both `node_modules/**` and the CLAUDE.md basename entry). Bypass
+  // is **per entry**, not global: a `readBypassScopes` allowance on
+  // one entry must not let a recipe punch through an unrelated
+  // hard-block entry on the same path. We therefore evaluate every
+  // matching block entry and demand that *each* one be bypassed by
+  // the current matched scope on the current operation. If any
+  // matching entry blocks and is not bypassed, the path is
+  // forbidden. This keeps `.env` / `.git/` / `node_modules/`
+  // hard-blocks intact even when the path also matches a
+  // bypassable narrow-scope subtree, and it requires a recipe that
+  // wants to read e.g. `.claude/agents/CLAUDE.md` to hold *both*
+  // `agents-read` (for the agents subtree rule) and `claude-md-read`
+  // (for the CLAUDE.md basename rule).
   for (const entry of EXCLUSIONS) {
     if (!entry.match(exclusionKey)) continue
     if (!entry.blockedOps.includes(context.operation)) continue
@@ -367,15 +372,16 @@ export function isForbidden(
       context.matchedScope !== null &&
       entry.readBypassScopes.includes(context.matchedScope)
     ) {
-      // Bypass granted by this entry — short-circuit to allow. We
-      // intentionally stop here even though other overlapping
-      // entries may still block, because a bypass on any matching
-      // entry is sufficient to authorize the access.
-      return false
+      // This entry is bypassed; keep checking the remaining entries
+      // so an overlapping non-bypassable rule (e.g. `.env`) can
+      // still deny.
+      continue
     }
-    anyBlocked = true
+    // This entry blocks the operation and is not bypassed by the
+    // current scope — final block.
+    return true
   }
-  return anyBlocked
+  return false
 }
 
 // =========================================
