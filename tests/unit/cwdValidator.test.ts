@@ -23,6 +23,7 @@ import {
   normaliseCanonical,
   isSubtree,
   isDenylisted,
+  getDenylistAnchors,
   type ValidateCwdResult,
   type RootKind,
 } from '../../src/server/cwdValidator'
@@ -166,6 +167,68 @@ describe('isDenylisted', () => {
   it('allows normal user paths', () => {
     expect(isDenylisted('/tmp/work', HOMEDIR, KB_ROOT)).toBe(false)
     expect(isDenylisted('/home/alice/projects', HOMEDIR, KB_ROOT)).toBe(false)
+  })
+})
+
+// --- getDenylistAnchors --- CodeX PR #38 Attempt 5 HIGH 1 regression
+
+describe('getDenylistAnchors', () => {
+  // The denylist comparison normalises only slash and case. If the
+  // anchor itself (kbRepoRoot) is a symlink to its real directory,
+  // matching it against a canonicalised user path would fail and a
+  // caller could add the canonical target of the KB repo root as a
+  // work root, bypassing the denylist. The fix realpaths the anchors
+  // inside `getDenylistAnchors()` so the comparison happens on
+  // canonical forms on both sides.
+  it('canonicalises kbRepoRoot via realpath when KOVITOBOARD_PROJECT_ROOT is a symlink', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'kb-denylist-anchor-'))
+    try {
+      const realDir = join(tmp, 'real-repo')
+      const linkDir = join(tmp, 'link-repo')
+      mkdirSync(realDir, { recursive: true })
+      symlinkSync(realDir, linkDir, 'dir')
+
+      const previous = process.env.KOVITOBOARD_PROJECT_ROOT
+      process.env.KOVITOBOARD_PROJECT_ROOT = linkDir
+      try {
+        const anchors = getDenylistAnchors()
+        // kbRepoRoot must report the canonical (post-realpath) form,
+        // not the symlink we just wrote. fs.realpathSync(linkDir)
+        // resolves to the canonical realDir form.
+        expect(anchors.kbRepoRoot).toBe(fs.realpathSync(linkDir))
+        // And the denylist correctly matches a canonical request cwd
+        // (= realDir) against the canonical anchor (= realDir).
+        expect(
+          isDenylisted(fs.realpathSync(realDir), anchors.homedir, anchors.kbRepoRoot),
+        ).toBe(true)
+      } finally {
+        if (previous === undefined) {
+          delete process.env.KOVITOBOARD_PROJECT_ROOT
+        } else {
+          process.env.KOVITOBOARD_PROJECT_ROOT = previous
+        }
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  // Defensive: when realpath fails for some reason (vanished
+  // directory, exotic FS), the helper must still return the raw
+  // value so the denylist continues to block the literal form.
+  it('falls back to the raw env value when realpath fails', () => {
+    const previous = process.env.KOVITOBOARD_PROJECT_ROOT
+    process.env.KOVITOBOARD_PROJECT_ROOT = '/definitely-not-a-real-path-' + Date.now()
+    try {
+      const anchors = getDenylistAnchors()
+      expect(anchors.kbRepoRoot).toBe(process.env.KOVITOBOARD_PROJECT_ROOT)
+    } finally {
+      if (previous === undefined) {
+        delete process.env.KOVITOBOARD_PROJECT_ROOT
+      } else {
+        process.env.KOVITOBOARD_PROJECT_ROOT = previous
+      }
+    }
   })
 })
 

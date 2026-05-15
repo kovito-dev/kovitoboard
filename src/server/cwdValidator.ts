@@ -32,6 +32,7 @@
  */
 
 import { homedir } from 'os'
+import { realpathSync } from 'fs'
 import { isAbsolute, relative } from 'path'
 import type { FileAccessLayer } from './fs-layer'
 import type { WorkRootMetadata } from '../shared/setting-types'
@@ -196,11 +197,39 @@ export function isDenylisted(
  *   - `os.homedir()` for the user's home directory anchor.
  *   - `process.env.KOVITOBOARD_PROJECT_ROOT ?? process.cwd()` for the
  *     KB repo root anchor (matches `config.ts` resolution order).
+ *
+ * Both anchors are canonicalised via `realpathSync` before being
+ * returned, so a caller who supplies a symlink, bind mount, or
+ * junction form of the home / repo root still matches the denylist
+ * after `validateCwd` canonicalises the request cwd (CodeX PR #38
+ * Attempt 5 HIGH 1). If `realpathSync` fails for either anchor
+ * (extremely rare — typically only when the underlying directory is
+ * gone) we fall back to the raw value so the denylist still blocks
+ * the literal path; the symlink-bypass surface is then unprotected,
+ * but that already requires the user's home / repo root to be in a
+ * malformed state.
  */
 export function getDenylistAnchors(): { homedir: string; kbRepoRoot: string } {
+  const rawHome = homedir()
+  const rawRepo = process.env.KOVITOBOARD_PROJECT_ROOT ?? process.cwd()
   return {
-    homedir: homedir(),
-    kbRepoRoot: process.env.KOVITOBOARD_PROJECT_ROOT ?? process.cwd(),
+    homedir: tryRealpath(rawHome),
+    kbRepoRoot: tryRealpath(rawRepo),
+  }
+}
+
+/**
+ * Best-effort `realpathSync` wrapper. Returns the raw input when
+ * resolution fails so the denylist still blocks the literal form.
+ * Used only by `getDenylistAnchors` — the main `validateCwd` path
+ * stays free of raw `fs` calls and routes every resolution through
+ * the injected `FileAccessLayer`.
+ */
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
   }
 }
 
