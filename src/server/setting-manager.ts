@@ -58,6 +58,9 @@ const LOCK_OPTIONS = {
   stale: 5000,
 } as const
 
+/** Suffix appended to the setting path for the dedicated lockfile. */
+const LOCKFILE_SUFFIX = '.lock'
+
 /**
  * Thrown by `writeSettingCas()` when the on-disk revision no longer
  * matches the caller's `expectedRevision`. Callers translate this to
@@ -80,6 +83,38 @@ export class SettingConflictError extends Error {
 /** Return the path to .kovitoboard/setting.json */
 export function getSettingPath(fs: FileAccessLayer): string {
   return join(getKovitoboardDir(fs), SETTING_FILENAME)
+}
+
+/**
+ * Return the path to the dedicated lockfile sitting alongside the
+ * setting file (`<setting.json>.lock`). We use a separate lockfile —
+ * not `setting.json` itself — so the lock can be acquired even before
+ * `setting.json` exists, which is what makes the create path race-safe
+ * (CodeX PR #38 Attempt 3 MEDIUM 2).
+ */
+function getLockfilePath(fs: FileAccessLayer): string {
+  return getSettingPath(fs) + LOCKFILE_SUFFIX
+}
+
+/**
+ * Ensure the dedicated lockfile exists so `lockfile.lockSync()` can
+ * target it. Returns the lockfile path.
+ *
+ * `proper-lockfile.lockSync` requires its target to exist on disk
+ * (the underlying adapter checks the path before installing the
+ * platform-specific lock primitive). By touching a zero-byte
+ * `<setting.json>.lock` we make the lock available regardless of
+ * whether `setting.json` has been created yet, so two concurrent
+ * first-writes serialise on the lockfile instead of both observing
+ * "missing file" and both writing revision 1.
+ */
+function ensureLockfile(fs: FileAccessLayer): string {
+  ensureDir(fs)
+  const lockPath = getLockfilePath(fs)
+  if (!fs.existsSync(lockPath)) {
+    fs.writeFileSync(lockPath, '')
+  }
+  return lockPath
 }
 
 /**
@@ -116,26 +151,29 @@ export function readSettingWithRevision(
  */
 export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): void {
   const settingPath = getSettingPath(fs)
-  ensureDir(fs)
-
-  // Initial create path: when the file does not yet exist there is no
-  // existing writer to race against. Skip the lock so first-launch
-  // onboarding cannot fail with a missing-lock-target error.
-  if (!fs.existsSync(settingPath)) {
-    writeAtomic(fs, normaliseV12(data, 1))
-    return
-  }
+  // Touch the dedicated lockfile so both the create path and the
+  // CAS-update path serialise on the same lock target (CodeX PR #38
+  // Attempt 3 MEDIUM 2). Skipping the lock for first-write would let
+  // two concurrent callers both observe "missing file" and both write
+  // revision 1, silently clobbering one another.
+  const lockPath = ensureLockfile(fs)
 
   let attempt = 0
   let lastErr: unknown
   while (attempt < CAS_MAX_RETRIES) {
     let release: (() => void) | null = null
     try {
-      release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
+      release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
       // We hold the lock, so suppress migration write-back to avoid
       // `tryMigrationWriteBack()` re-taking the same lock (which would
       // throw `ELOCKED` and silently abort the migration).
       const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
+      if (!fs.existsSync(settingPath)) {
+        // First-write path, now executed under the lock so concurrent
+        // first-writers serialise here instead of racing on revision 1.
+        writeAtomic(fs, normaliseV12(data, 1))
+        return
+      }
       const currentRevision = current?.setting.revision ?? 0
       // Protect cwd-allowlist subsystem fields against stale-snapshot
       // overwrites from the four legacy callers (`config-routes`,
@@ -189,24 +227,28 @@ export function writeSettingCas(
   expectedRevision: number,
 ): void {
   const settingPath = getSettingPath(fs)
-  ensureDir(fs)
-
-  // Initial create path: `expectedRevision === 0` means "I read no
-  // file"; allow the create as long as the file is still missing.
-  if (!fs.existsSync(settingPath)) {
-    if (expectedRevision !== 0) {
-      throw new SettingConflictError(expectedRevision, 0)
-    }
-    writeAtomic(fs, normaliseV12(data, 1))
-    return
-  }
+  // Acquire the dedicated lockfile before the existence check so the
+  // create path serialises with concurrent first-writers (CodeX PR #38
+  // Attempt 3 MEDIUM 2). Two callers each with `expectedRevision === 0`
+  // would otherwise both see "missing file" and both write revision 1.
+  const lockPath = ensureLockfile(fs)
 
   let release: (() => void) | null = null
   try {
-    release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
+    release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
     // We hold the lock; suppress migration write-back so
     // `tryMigrationWriteBack()` does not re-take the lock (same-process
     // recursive lock would surface as `ELOCKED`).
+    if (!fs.existsSync(settingPath)) {
+      // First-write path under the lock. `expectedRevision === 0`
+      // means "I read no file"; any other value indicates the caller
+      // expected an existing revision, so surface a conflict.
+      if (expectedRevision !== 0) {
+        throw new SettingConflictError(expectedRevision, 0)
+      }
+      writeAtomic(fs, normaliseV12(data, 1))
+      return
+    }
     const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
     const currentRevision = current?.setting.revision ?? 0
     if (currentRevision !== expectedRevision) {
@@ -529,7 +571,10 @@ function tryMigrationWriteBack(
 ): void {
   let release: (() => void) | null = null
   try {
-    release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
+    // Use the dedicated lockfile so we serialise with `writeSetting`
+    // / `writeSettingCas` (which now lock the same path).
+    const lockPath = ensureLockfile(fs)
+    release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
 
     // Re-read under lock. If the file is already v1.2, another writer
     // has migrated it in the meantime — abandon our write-back so we

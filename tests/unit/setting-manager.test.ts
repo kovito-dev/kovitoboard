@@ -516,6 +516,47 @@ describe('writeSetting (auto-CAS)', () => {
     }
   })
 
+  // CodeX PR #38 Attempt 3 MEDIUM 2 regression — the first-write path
+  // must take the dedicated lockfile so two concurrent first-writers
+  // serialise instead of both observing "missing file" and writing
+  // revision 1. JavaScript is single-threaded so we cannot drive a
+  // true cross-process race in-process; this test instead pins the
+  // structural fix — `setting.json.lock` is touched by the first
+  // write and survives subsequent writes, which is the prerequisite
+  // for `proper-lockfile.lockSync()` to function at all on the
+  // create path. (Cross-process serialization is exercised by L1
+  // E2E in `tests/e2e/cwd-allowlist-deny.spec.ts`.)
+  it('first-write creates the dedicated lockfile alongside setting.json', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      const settingPath = join(ctx.dir, '.kovitoboard', 'setting.json')
+      const lockPath = settingPath + '.lock'
+
+      // Lockfile must not exist before the first write.
+      expect(() => readFileSync(lockPath, 'utf-8')).toThrow()
+
+      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+
+      // After the first write the lockfile target must exist so
+      // future first-write concurrents can lock it. Content is
+      // intentionally a zero-byte sentinel.
+      const lockContents = readFileSync(lockPath, 'utf-8')
+      expect(lockContents).toBe('')
+
+      // A second write must not corrupt or remove the lockfile.
+      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir }, locale: 'en' })
+      expect(readFileSync(lockPath, 'utf-8')).toBe('')
+
+      // The revision must monotonically progress (no clobber-on-create).
+      const final = readSettingWithRevision(fs)
+      expect(final!.revision).toBe(2)
+      expect(final!.setting.locale).toBe('en')
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
   // CodeX Attempt 2 MEDIUM 1 regression — writeSetting() must not let a
   // legacy caller's stale in-memory snapshot clobber concurrent
   // allow-list edits made via writeSettingCas(). Simulate the race by:
