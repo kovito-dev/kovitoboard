@@ -30,9 +30,11 @@
  *
  * CAS retry (§7.5):
  *   POST / DELETE drive their own CAS retry policy (3 attempts with
- *   50/100/200 ms exponential backoff). When the budget is exhausted
- *   we surface HTTP 409 + `setting_collision` so the client can
- *   retry at its own pace.
+ *   50/100/200 ms exponential backoff). The backoff is async
+ *   (`await sleep(...)`) so contention does not block the event loop
+ *   (CodeX Attempt 1 MEDIUM 2). When the budget is exhausted we
+ *   surface HTTP 409 + `setting_collision` so the client can retry at
+ *   its own pace.
  */
 import { Router, type Response } from 'express'
 import { isAbsolute } from 'path'
@@ -69,7 +71,7 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
   })
 
   // POST /api/work-roots
-  router.post('/', (req, res) => {
+  router.post('/', async (req, res) => {
     const input = req.body?.path
     if (typeof input !== 'string') {
       sendError(res, 400, 'not_absolute', 'Path must be a string', input)
@@ -198,7 +200,7 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         return
       } catch (err) {
         if (err instanceof SettingConflictError) {
-          sleepSync(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
+          await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
           attempt++
           continue
         }
@@ -224,7 +226,7 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
   })
 
   // DELETE /api/work-roots
-  router.delete('/', (req, res) => {
+  router.delete('/', async (req, res) => {
     const input = req.body?.path
     if (typeof input !== 'string' || input.length === 0) {
       sendError(res, 400, 'invalid_path', 'Path must be a non-empty string', input)
@@ -264,7 +266,7 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         return
       } catch (err) {
         if (err instanceof SettingConflictError) {
-          sleepSync(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
+          await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
           attempt++
           continue
         }
@@ -308,9 +310,14 @@ function sendError(
   })
 }
 
-function sleepSync(ms: number): void {
-  if (ms <= 0) return
-  const shared = new SharedArrayBuffer(4)
-  const view = new Int32Array(shared)
-  Atomics.wait(view, 0, 0, ms)
+/**
+ * Async sleep used between CAS retries. Yields the event loop instead of
+ * blocking it (the previous `Atomics.wait()` implementation stalled
+ * unrelated traffic for 50/100/200 ms per conflicting write — CodeX
+ * Attempt 1 MEDIUM 2). All `/api/work-roots` handlers are `async`, so
+ * `await sleep(...)` is the natural fit.
+ */
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

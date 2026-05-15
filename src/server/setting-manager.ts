@@ -132,7 +132,10 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
     let release: (() => void) | null = null
     try {
       release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
-      const current = readSettingInternal(fs)
+      // We hold the lock, so suppress migration write-back to avoid
+      // `tryMigrationWriteBack()` re-taking the same lock (which would
+      // throw `ELOCKED` and silently abort the migration).
+      const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
       const currentRevision = current?.setting.revision ?? 0
       writeAtomic(fs, normaliseV12(data, currentRevision + 1))
       return
@@ -190,7 +193,10 @@ export function writeSettingCas(
   let release: (() => void) | null = null
   try {
     release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
-    const current = readSettingInternal(fs)
+    // We hold the lock; suppress migration write-back so
+    // `tryMigrationWriteBack()` does not re-take the lock (same-process
+    // recursive lock would surface as `ELOCKED`).
+    const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
     const currentRevision = current?.setting.revision ?? 0
     if (currentRevision !== expectedRevision) {
       throw new SettingConflictError(expectedRevision, currentRevision)
@@ -447,8 +453,22 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
 
 // --- internal helpers ---------------------------------------------------
 
+/**
+ * Options for the internal reader.
+ *
+ * `skipMigrationWriteBack` is set by `writeSetting()` / `writeSettingCas()`
+ * which are *already* holding the setting-file lock when they invoke
+ * `readSettingInternal()`. `tryMigrationWriteBack()` re-takes the same
+ * lock via `proper-lockfile.lockSync`, which would surface as `ELOCKED`
+ * inside the same process and abort the migration. Suppressing the
+ * write-back from those call sites keeps the write paths deadlock-free;
+ * the migration still happens on the next plain `readSetting()` call.
+ */
+type ReadSettingOptions = { skipMigrationWriteBack?: boolean }
+
 function readSettingInternal(
   fs: FileAccessLayer,
+  options: ReadSettingOptions = {},
 ): { setting: KovitoboardSetting } | null {
   const settingPath = getSettingPath(fs)
   if (!fs.existsSync(settingPath)) return null
@@ -465,19 +485,8 @@ function readSettingInternal(
   const previousVersion = raw.version
   const { migrated, changed } = migrateSettingObject(raw)
 
-  if (changed) {
-    try {
-      writeAtomic(fs, migrated as unknown as KovitoboardSetting)
-      settingLog.info(
-        { fromVersion: previousVersion, toVersion: '1.2' },
-        '[setting-manager] Migrated setting.json',
-      )
-    } catch (writeErr) {
-      settingLog.warn(
-        { err: writeErr },
-        '[setting-manager] Migration write-back failed; continuing in memory',
-      )
-    }
+  if (changed && !options.skipMigrationWriteBack) {
+    tryMigrationWriteBack(fs, settingPath, previousVersion, migrated)
   }
 
   if (!validateSetting(migrated)) {
@@ -487,6 +496,74 @@ function readSettingInternal(
     return null
   }
   return { setting: migrated }
+}
+
+/**
+ * Persist the migrated form back to disk under the same `proper-lockfile`
+ * lock that the write paths use. Re-reads the on-disk file *inside* the
+ * lock; if another writer has already promoted the file to v1.2 we
+ * abandon the write-back rather than clobbering newer state (CodeX
+ * Attempt 1 HIGH 1). The cwd allow-list — `additionalWorkRoots[]` /
+ * `workRootsMetadata` / `revision` — is persisted here, so a stale
+ * migration overwrite would be a security-relevant state loss.
+ *
+ * Failures are swallowed: callers continue with the in-memory migrated
+ * form, matching the prior best-effort contract of migration-on-read.
+ */
+function tryMigrationWriteBack(
+  fs: FileAccessLayer,
+  settingPath: string,
+  previousVersion: unknown,
+  migrated: Record<string, unknown>,
+): void {
+  let release: (() => void) | null = null
+  try {
+    release = lockfile.lockSync(settingPath, LOCK_OPTIONS)
+
+    // Re-read under lock. If the file is already v1.2, another writer
+    // has migrated it in the meantime — abandon our write-back so we
+    // do not roll their `additionalWorkRoots` / `workRootsMetadata` /
+    // `revision` back to the migration default.
+    let currentRaw: Record<string, unknown>
+    try {
+      const text = fs.readFileSync(settingPath, 'utf-8')
+      currentRaw = JSON.parse(text) as Record<string, unknown>
+    } catch (readErr) {
+      settingLog.warn(
+        { err: readErr },
+        '[setting-manager] Migration write-back skipped: re-read under lock failed',
+      )
+      return
+    }
+    if (currentRaw.version === '1.2') {
+      settingLog.debug(
+        '[setting-manager] Migration write-back skipped: concurrent writer already promoted file to v1.2',
+      )
+      return
+    }
+
+    writeAtomic(fs, migrated as unknown as KovitoboardSetting)
+    settingLog.info(
+      { fromVersion: previousVersion, toVersion: '1.2' },
+      '[setting-manager] Migrated setting.json',
+    )
+  } catch (writeErr) {
+    settingLog.warn(
+      { err: writeErr },
+      '[setting-manager] Migration write-back failed; continuing in memory',
+    )
+  } finally {
+    if (release) {
+      try {
+        release()
+      } catch (releaseErr) {
+        settingLog.warn(
+          { err: releaseErr },
+          '[setting-manager] Lock release failed',
+        )
+      }
+    }
+  }
 }
 
 /**
@@ -528,10 +605,22 @@ function writeAtomic(fs: FileAccessLayer, data: KovitoboardSetting): void {
 }
 
 /**
- * Synchronous sleep used only between CAS retries to give the
- * lock-holder a chance to release the lock. `Atomics.wait` blocks the
- * thread without burning CPU and is the recommended pattern for the
- * tiny waits we want (≤ 200 ms).
+ * Synchronous sleep used only between CAS retries inside the legacy
+ * `writeSetting()` path to give the lock-holder a chance to release the
+ * lock. `Atomics.wait` blocks the thread without burning CPU and is the
+ * recommended pattern for the tiny waits we want (≤ 200 ms).
+ *
+ * Why sync (instead of `await setTimeout`):
+ *   `writeSetting()` is sync by contract (spec `cwd-allowlist.md` v1.0
+ *   §7.5 — "writeSetting() keeps its synchronous shape"), preserving
+ *   the call shape of the four pre-existing callers (`config-routes`,
+ *   `security-routes`, `user-avatar-routes`, the setting PUT inside
+ *   `index.ts`). The blocking window is bounded — total sleep across
+ *   the CAS budget is 50 + 100 + 200 = 350 ms max.
+ *
+ *   New explicit-CAS callers (`/api/work-roots`) use the async retry
+ *   helper inside `work-roots-routes.ts` so contention there does not
+ *   stall the event loop.
  */
 function sleepSync(ms: number): void {
   if (ms <= 0) return

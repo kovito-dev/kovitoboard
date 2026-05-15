@@ -397,6 +397,79 @@ describe('readSetting + migration-on-read', () => {
       ctx.cleanup()
     }
   })
+
+  // CodeX Attempt 1 HIGH 1 regression — migration write-back must not
+  // clobber a newer on-disk v1.2 file produced by a racing writer.
+  // We simulate the race by:
+  //   1. preparing a legacy v1.1 file on disk
+  //   2. having the renderer about to read it
+  //   3. another writer racing in and producing a richer v1.2 file with
+  //      additionalWorkRoots / workRootsMetadata before our reader gets
+  //      to write the migration back
+  //   4. asserting the reader returns the migrated form in memory but
+  //      DOES NOT overwrite the disk file
+  it('migration write-back skips when on-disk file is already v1.2 (race defence)', () => {
+    const ctx = setupTempRoot()
+    try {
+      const settingPath = join(ctx.dir, '.kovitoboard', 'setting.json')
+
+      // Step 1: seed a legacy v1.1 file (this is what readSetting sees
+      // initially).
+      const legacy = {
+        version: '1.1',
+        user: { displayName: 'legacy', avatar: null },
+        project: { name: 'p', description: 'd', path: ctx.dir },
+        locale: 'ja',
+        onboarding: { completedAt: null, wizardVersion: '0.1.0' },
+      }
+      writeFileSync(settingPath, JSON.stringify(legacy, null, 2))
+      const fs = new DirectFsLayer()
+
+      // Step 2 + 3: between the in-memory migration and the write-back,
+      // simulate a racing writer that produced a richer v1.2 form. We
+      // overwrite the file with a v1.2 snapshot that carries an
+      // additionalWorkRoots entry — exactly the state we must protect.
+      const racingV12 = {
+        version: '1.2',
+        revision: 7,
+        additionalWorkRoots: ['/tmp/sensitive-work-root'],
+        workRootsMetadata: {
+          '/tmp/sensitive-work-root': {
+            caseSensitive: true,
+            probedAt: '2026-05-15T00:00:00Z',
+          },
+        },
+        user: { displayName: 'winning-writer', avatar: null },
+        project: { name: 'p', description: 'd', path: ctx.dir },
+        locale: 'ja',
+        onboarding: { completedAt: null, wizardVersion: '0.1.0' },
+      }
+      writeFileSync(settingPath, JSON.stringify(racingV12, null, 2))
+
+      // Step 4: invoking readSetting now must NOT roll the file back to
+      // the migration default. The re-read under lock inside
+      // `tryMigrationWriteBack()` should detect `version === '1.2'` and
+      // abandon the write-back.
+      const result = readSetting(fs)
+      expect(result).not.toBeNull()
+      expect(result!.version).toBe('1.2')
+
+      const persisted = JSON.parse(readFileSync(settingPath, 'utf-8'))
+      expect(persisted.version).toBe('1.2')
+      expect(persisted.revision).toBe(7)
+      expect(persisted.additionalWorkRoots).toEqual(['/tmp/sensitive-work-root'])
+      expect(persisted.workRootsMetadata['/tmp/sensitive-work-root']).toEqual({
+        caseSensitive: true,
+        probedAt: '2026-05-15T00:00:00Z',
+      })
+      // The racing writer's identifying field must still be intact.
+      expect((persisted.user as { displayName: string }).displayName).toBe(
+        'winning-writer',
+      )
+    } finally {
+      ctx.cleanup()
+    }
+  })
 })
 
 describe('writeSetting (auto-CAS)', () => {
