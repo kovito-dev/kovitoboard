@@ -38,7 +38,7 @@ const SETTING_FILENAME = 'setting.json'
 
 /**
  * Maximum number of internal retries when `writeSetting()` encounters a
- * CAS collision. Matches spec §7.5 ("最大 3 回 retry") with exponential
+ * CAS collision. Matches spec §7.5 (up to 3 retries) with exponential
  * backoff.
  */
 const CAS_MAX_RETRIES = 3
