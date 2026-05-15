@@ -656,8 +656,32 @@ app.post('/api/sessions/:id/send', async (req, res) => {
   // we refuse to resume rather than spawning claude under an
   // un-vetted cwd. The UI consumes the §6.4 envelope to surface the
   // resume-rejection options (§10.2 SSOT).
-  let resolvedSessionCwd: string | undefined = sessionCwd
+  let resolvedSessionCwd: string | undefined =
+    typeof sessionCwd === 'string' ? sessionCwd : undefined
   if (sessionCwd !== undefined) {
+    // Defensive type check: persisted JSONL events are trusted input
+    // for cwd validation, but a corrupted record (legacy migration,
+    // hand-edit, downstream tool that emitted a non-string) would
+    // make `fs.existsSync()` inside `validateCwd()` throw before this
+    // handler's try/catch fires, turning one bad event into a 500
+    // for every resume attempt. Surface a structured rejection
+    // instead so the UI can prompt the user to remove or re-record
+    // the session (CodeX Attempt 2 MEDIUM 2).
+    if (typeof sessionCwd !== 'string') {
+      apiLogger.warn(
+        { sessionId, sessionCwdType: typeof sessionCwd },
+        '[cwd-gate] Session resume refused — persisted metadata.cwd is not a string',
+      )
+      res.status(400).json({
+        error: 'cwd_validation_failed',
+        reason: 'malformed_metadata',
+        message:
+          'Session resume refused: persisted metadata.cwd is malformed (expected string). Re-record the session or remove it from the on-disk log.',
+        requested_cwd: null,
+        allowed_roots: [],
+      })
+      return
+    }
     const snapshot = ensureWorkRootMetadata(fs, projectRoot)
     const result = validateCwd(
       sessionCwd,

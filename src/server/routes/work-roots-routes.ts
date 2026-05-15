@@ -84,36 +84,20 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
       return
     }
 
-    // Step 2: existsSync.
-    if (!fs.existsSync(input)) {
-      sendError(res, 400, 'not_found', 'Path does not exist', input)
-      return
-    }
-
-    // Step 3: isDirectory.
-    let stat
-    try {
-      stat = fs.statSync(input)
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'EACCES') {
-        sendError(res, 400, 'permission_denied', 'Permission denied', input)
-        return
-      }
-      sendError(res, 400, 'not_found', 'Path does not exist', input)
-      return
-    }
-    if (!stat.isDirectory) {
-      sendError(res, 400, 'not_directory', 'Path is not a directory', input)
-      return
-    }
-
-    // Step 4: realpath (also raises ELOOP / EACCES).
+    // Step 2: realpath (resolves existence, symlink loops, and
+    // permission errors in one call). We do not pre-check with
+    // `existsSync()` because it flattens EACCES / ELOOP into a falsy
+    // answer and would lose the dedicated `permission_denied` /
+    // `symlink_loop` error cases (CodeX Attempt 2 LOW 4).
     let canonical: string
     try {
       canonical = fs.realpathSync(input)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') {
+        sendError(res, 400, 'not_found', 'Path does not exist', input)
+        return
+      }
       if (code === 'ELOOP') {
         sendError(res, 400, 'symlink_loop', 'Symlink loop detected', input)
         return
@@ -122,7 +106,32 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         sendError(res, 400, 'permission_denied', 'Permission denied', input)
         return
       }
+      // Unknown errno: fail-closed via not_found so we never claim
+      // the path is valid.
       sendError(res, 400, 'not_found', 'Path does not exist', input)
+      return
+    }
+
+    // Step 3: isDirectory check on the canonical form (so a symlink
+    // pointing at a non-directory is rejected on its actual target).
+    let stat
+    try {
+      stat = fs.statSync(canonical)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'EACCES') {
+        sendError(res, 400, 'permission_denied', 'Permission denied', input)
+        return
+      }
+      if (code === 'ENOENT') {
+        sendError(res, 400, 'not_found', 'Path does not exist', input)
+        return
+      }
+      sendError(res, 400, 'not_found', 'Path does not exist', input)
+      return
+    }
+    if (!stat.isDirectory) {
+      sendError(res, 400, 'not_directory', 'Path is not a directory', input)
       return
     }
 

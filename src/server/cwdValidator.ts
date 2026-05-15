@@ -219,17 +219,19 @@ export interface ValidateCwdOptions {
  * Validate a request cwd against the allow-list (§6.3 / §7.1 SSOT).
  *
  * Algorithm:
- *   1. Reject when `requestedCwd` does not exist (`not_found`).
- *   2. Resolve via `realpathSync` to the canonical form. ENOENT /
- *      ELOOP / EACCES map to dedicated reasons.
- *   3. Reject when the canonical form is not a directory
+ *   1. Resolve via `realpathSync` to the canonical form. ENOENT /
+ *      ELOOP / EACCES map to dedicated reasons (`not_found` /
+ *      `symlink_loop` / `permission_denied`). We deliberately skip an
+ *      `existsSync()` precheck because it would flatten EACCES / ELOOP
+ *      into `not_found` (CodeX Attempt 2 LOW 3).
+ *   2. Reject when the canonical form is not a directory
  *      (`not_directory`).
- *   4. Resolve every allowed root to its own canonical form (skipping
+ *   3. Resolve every allowed root to its own canonical form (skipping
  *      stale entries that fail realpath).
- *   5. For each root, look up its `workRootsMetadata[<canonicalRoot>]`
+ *   4. For each root, look up its `workRootsMetadata[<canonicalRoot>]`
  *      entry. Missing metadata for a containing root surfaces
  *      `probe_failed` per §6.3 path b.
- *   6. If no root contains the cwd, return `not_allowed` plus
+ *   5. If no root contains the cwd, return `not_allowed` plus
  *      `addToAllowListPossible` (false when the path itself is
  *      denylisted, true otherwise).
  *
@@ -245,15 +247,14 @@ export function validateCwd(
   fs: FileAccessLayer,
   options?: ValidateCwdOptions,
 ): ValidateCwdResult {
-  // 1. existsSync precheck. We still call realpath afterwards because
-  //    a symlink chain to a dangling target reports the chain's
-  //    existence here but throws ENOENT on resolve — we route both to
-  //    the same `not_found` reason for caller ergonomics.
-  if (!fs.existsSync(requestedCwd)) {
-    return { ok: false, reason: 'not_found' }
-  }
-
-  // 2. realpath. errno mapping per §6.4 SSOT.
+  // 1. realpath, errno-aware. We no longer pre-check with
+  //    `fs.existsSync()`: it returns `false` for both ENOENT and
+  //    paths that fail with EACCES / ELOOP, which would flatten the
+  //    distinct `permission_denied` / `symlink_loop` reasons defined
+  //    by §6.4 into `not_found`. `realpathSync()` surfaces the right
+  //    errno directly (CodeX Attempt 2 LOW 3). Dangling-symlink
+  //    chains still return ENOENT here, so the documented "chain
+  //    exists but target is gone → not_found" behaviour is preserved.
   let canonical: string
   try {
     canonical = fs.realpathSync(requestedCwd)
@@ -267,7 +268,7 @@ export function validateCwd(
     return { ok: false, reason: 'not_found' }
   }
 
-  // 3. isDirectory check on the realpath'd form.
+  // 2. isDirectory check on the realpath'd form.
   let stat
   try {
     stat = fs.statSync(canonical)

@@ -515,6 +515,64 @@ describe('writeSetting (auto-CAS)', () => {
       ctx.cleanup()
     }
   })
+
+  // CodeX Attempt 2 MEDIUM 1 regression — writeSetting() must not let a
+  // legacy caller's stale in-memory snapshot clobber concurrent
+  // allow-list edits made via writeSettingCas(). Simulate the race by:
+  //   1. seeding the file via writeSetting() (legacy caller's baseline)
+  //   2. having a /api/work-roots-like writer add `additionalWorkRoots`
+  //      via writeSettingCas()
+  //   3. having the legacy caller call writeSetting() with their stale
+  //      snapshot (no additionalWorkRoots, only the field they meant
+  //      to update — e.g. locale)
+  //   4. asserting the on-disk additionalWorkRoots survives.
+  it('preserves additionalWorkRoots from concurrent writeSettingCas() update', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
+
+      // Step 1: legacy caller seeds the file.
+      writeSetting(fs, base)
+      const beforeCas = readSettingWithRevision(fs)
+      expect(beforeCas!.setting.additionalWorkRoots).toEqual([])
+
+      // Step 2: /api/work-roots-style writer adds a root via CAS.
+      writeSettingCas(
+        fs,
+        {
+          ...beforeCas!.setting,
+          additionalWorkRoots: ['/tmp/added-root'],
+          workRootsMetadata: {
+            '/tmp/added-root': {
+              caseSensitive: true,
+              probedAt: '2026-05-15T00:00:00Z',
+            },
+          },
+        },
+        beforeCas!.revision,
+      )
+
+      // Step 3: legacy caller now calls writeSetting() with their
+      // *stale* in-memory snapshot (their copy still has empty roots).
+      writeSetting(fs, { ...base, locale: 'en' })
+
+      // Step 4: the live allow-list state must survive.
+      const persisted = readSettingWithRevision(fs)
+      expect(persisted!.setting.additionalWorkRoots).toEqual(['/tmp/added-root'])
+      expect(persisted!.setting.workRootsMetadata).toEqual({
+        '/tmp/added-root': {
+          caseSensitive: true,
+          probedAt: '2026-05-15T00:00:00Z',
+        },
+      })
+      // The legacy caller's edit (locale change) must still take
+      // effect — we only protect the cwd-allowlist fields.
+      expect(persisted!.setting.locale).toBe('en')
+    } finally {
+      ctx.cleanup()
+    }
+  })
 })
 
 describe('writeSettingCas (explicit CAS)', () => {

@@ -137,7 +137,18 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
       // throw `ELOCKED` and silently abort the migration).
       const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
       const currentRevision = current?.setting.revision ?? 0
-      writeAtomic(fs, normaliseV12(data, currentRevision + 1))
+      // Protect cwd-allowlist subsystem fields against stale-snapshot
+      // overwrites from the four legacy callers (`config-routes`,
+      // `security-routes`, `user-avatar-routes`, the `/api/setting` PUT
+      // inside `index.ts`). Spec `cwd-allowlist.md` v1.0 §5.3 designates
+      // `additionalWorkRoots[]` / `workRootsMetadata` as "protected
+      // fields" — only `writeSettingCas()` (driven by `/api/work-roots`)
+      // owns mutations. Carrying the on-disk values forward here means
+      // a legacy caller whose in-memory snapshot pre-dates a concurrent
+      // allow-list edit can never erase that edit (CodeX Attempt 2
+      // MEDIUM 1).
+      const preserved = preserveAllowListFields(data, current?.setting)
+      writeAtomic(fs, normaliseV12(preserved, currentRevision + 1))
       return
     } catch (err) {
       lastErr = err
@@ -602,6 +613,32 @@ function writeAtomic(fs: FileAccessLayer, data: KovitoboardSetting): void {
   const settingPath = getSettingPath(fs)
   ensureDir(fs)
   fs.writeFileAtomic(settingPath, JSON.stringify(data, null, 2) + '\n')
+}
+
+/**
+ * Carry the cwd-allowlist subsystem fields from the on-disk setting
+ * into the caller-supplied snapshot before the write. The four legacy
+ * `writeSetting()` callers do not edit these fields (spec §5.3 marks
+ * them as protected and routes mutations through `/api/work-roots` →
+ * `writeSettingCas()`), so preserving them is always safe and prevents
+ * a stale snapshot from silently erasing concurrent allow-list state.
+ *
+ * Falls back to the caller's value (or the spec defaults) when the
+ * on-disk read returned nothing (e.g. fresh install before
+ * `writeSetting` ran).
+ */
+function preserveAllowListFields(
+  data: KovitoboardSetting,
+  onDisk: KovitoboardSetting | undefined,
+): KovitoboardSetting {
+  if (!onDisk) return data
+  return {
+    ...data,
+    additionalWorkRoots:
+      onDisk.additionalWorkRoots ?? data.additionalWorkRoots ?? [],
+    workRootsMetadata:
+      onDisk.workRootsMetadata ?? data.workRootsMetadata ?? {},
+  }
 }
 
 /**
