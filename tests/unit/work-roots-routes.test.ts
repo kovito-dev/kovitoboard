@@ -385,6 +385,22 @@ describe('DELETE /api/work-roots', () => {
     expect(body.error).toBe('invalid_path')
   })
 
+  // CodeX PR #38 Attempt 8 LOW 1 regression — DELETE must enforce
+  // the same absolute-only contract as POST + validateCwd. A
+  // relative input previously fell through to realpathSync() which
+  // resolved it against the server process cwd, making a
+  // security-sensitive allow-list mutation depend on process state.
+  it('rejects a relative path with not_absolute (matches POST contract)', async () => {
+    const res = await fetch(`${baseUrl}/api/work-roots`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'relative/work-root' }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe('not_absolute')
+  })
+
   // CodeX PR #38 Attempt 4 LOW 3 regression — DELETE canonicalises
   // the input via realpath so a trailing-slash form (or any other
   // equivalent form) successfully matches the stored canonical entry.

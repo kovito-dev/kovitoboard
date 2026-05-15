@@ -274,6 +274,8 @@ const ja = {
   'workRoots.adding': '追加中…',
   'workRoots.listSection.title': '追加済みの作業ルート',
   'workRoots.listSection.empty': '追加済みの作業ルートはまだありません。',
+  'workRoots.listSection.loadError':
+    '現在の作業ルートの読み込みに失敗しました。上のリストは不完全な可能性があります。詳細はサーバーログを確認し、再読み込みしてください。',
   'workRoots.deleteConfirm.title': 'この作業ルートを削除しますか？',
   'workRoots.deleteConfirm.body':
     'KovitoBoard は今後このフォルダ配下で新しい Claude Code セッションを開始しません。実行中のセッションは終了するまでそのまま継続します。',

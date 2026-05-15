@@ -278,6 +278,8 @@ const en: Record<MessageKey, string> = {
   'workRoots.adding': 'Adding…',
   'workRoots.listSection.title': 'Additional work roots',
   'workRoots.listSection.empty': 'No additional work roots yet.',
+  'workRoots.listSection.loadError':
+    'Failed to load the current work roots. The list shown above may be incomplete. See server logs for details and reload to retry.',
   'workRoots.deleteConfirm.title': 'Remove this work root?',
   'workRoots.deleteConfirm.body':
     'KovitoBoard will refuse to start new Claude Code sessions under this folder. In-flight sessions will keep running until they exit on their own.',

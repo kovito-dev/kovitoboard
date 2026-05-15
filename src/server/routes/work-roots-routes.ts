@@ -332,6 +332,17 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
       return
     }
 
+    // Absolute-only, mirroring POST and validateCwd (CodeX PR #38
+    // Attempt 8 LOW 1). Without this guard, `realpathSync()` would
+    // resolve relative inputs against the server process cwd and
+    // make a security-sensitive allow-list mutation depend on
+    // process state — the same regression we already closed for
+    // the POST / validateCwd surface.
+    if (!isAbsolute(input)) {
+      sendError(res, 400, 'not_absolute', 'Path must be an absolute path', input)
+      return
+    }
+
     // Canonicalise the delete input so it matches the form stored by
     // POST (`realpathSync`). Without this step a trailing slash, a
     // symlink form, or a case-variant on a case-insensitive FS would

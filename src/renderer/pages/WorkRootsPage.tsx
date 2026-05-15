@@ -43,6 +43,11 @@ interface ErrorBody {
 export default function WorkRootsPage() {
   const [roots, setRoots] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
+  // Dedicated load-error state so a failed initial fetch is not
+  // rendered as "no additional work roots yet" (CodeX PR #38
+  // Attempt 8 LOW 2 — a 401 / 403 / 500 had been collapsing into
+  // the empty-state copy and hiding operational/auth issues).
+  const [loadError, setLoadError] = useState<boolean>(false)
   const [inputPath, setInputPath] = useState('')
   const [addError, setAddError] = useState<ErrorBody | null>(null)
   const [adding, setAdding] = useState(false)
@@ -54,13 +59,23 @@ export default function WorkRootsPage() {
   useEffect(() => {
     let cancelled = false
     kbFetch('/api/work-roots')
-      .then((res) => res.json())
-      .then((body: WorkRootsResponse) => {
+      .then(async (res) => {
+        if (!res.ok) {
+          if (!cancelled) {
+            setRoots([])
+            setLoadError(true)
+          }
+          return
+        }
+        const body = (await res.json()) as WorkRootsResponse
         if (cancelled) return
         setRoots(body.additionalWorkRoots ?? [])
       })
       .catch(() => {
-        if (!cancelled) setRoots([])
+        if (!cancelled) {
+          setRoots([])
+          setLoadError(true)
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -189,6 +204,13 @@ export default function WorkRootsPage() {
           {loading ? (
             <div className="text-sm text-[var(--text-dim)]">
               {t('common.loading')}
+            </div>
+          ) : loadError ? (
+            <div
+              className="text-sm px-3 py-2 rounded bg-red-500/10 border border-red-500/30 text-red-300"
+              data-testid="work-roots-load-error"
+            >
+              {t('workRoots.listSection.loadError')}
             </div>
           ) : roots.length === 0 ? (
             <div
