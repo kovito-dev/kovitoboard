@@ -564,6 +564,64 @@ describe('writeSetting (auto-CAS)', () => {
     }
   })
 
+  // CodeX PR #38 Attempt 12 HIGH 1 regression — the first-write
+  // path must scrub `additionalWorkRoots[]` / `workRootsMetadata`
+  // to empty defaults so the onboarding-style PUT /api/config/setting
+  // cannot seed an arbitrary allow-list before /api/work-roots'
+  // probe + denylist + count/length validation has a chance to run.
+  it('writeSetting forces empty allow-list on first write even if caller supplies entries', async () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      // Caller (e.g. compromised onboarding payload) supplies a
+      // fully-formed setting with attacker-chosen allow-list entries.
+      await writeSetting(fs, {
+        ...validSetting,
+        project: { ...validSetting.project, path: ctx.dir },
+        additionalWorkRoots: ['/etc', '/var/log'],
+        workRootsMetadata: {
+          '/etc': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+          '/var/log': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+        },
+      })
+      const result = readSettingWithRevision(fs)
+      expect(result).not.toBeNull()
+      // The allow-list fields must have been scrubbed to empty
+      // regardless of what the caller passed.
+      expect(result!.setting.additionalWorkRoots).toEqual([])
+      expect(result!.setting.workRootsMetadata).toEqual({})
+      // Other fields the caller did get to set must still be honoured —
+      // we only protect the cwd-allowlist subsystem fields.
+      expect(result!.setting.locale).toBe('ja')
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('writeSettingCas forces empty allow-list on first write (defence-in-depth)', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      writeSettingCas(
+        fs,
+        {
+          ...validSetting,
+          project: { ...validSetting.project, path: ctx.dir },
+          additionalWorkRoots: ['/sneaky-root'],
+          workRootsMetadata: {
+            '/sneaky-root': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+          },
+        },
+        0,
+      )
+      const result = readSettingWithRevision(fs)
+      expect(result!.setting.additionalWorkRoots).toEqual([])
+      expect(result!.setting.workRootsMetadata).toEqual({})
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
   // CodeX PR #38 Attempt 3 MEDIUM 2 regression — the first-write path
   // must take the dedicated lockfile so two concurrent first-writers
   // serialise instead of both observing "missing file" and writing

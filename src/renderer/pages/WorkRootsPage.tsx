@@ -105,6 +105,13 @@ export default function WorkRootsPage() {
       }
       setRoots(body.additionalWorkRoots ?? [])
       setInputPath('')
+      // A successful mutation proves the server is reachable and
+      // returned an authoritative roots list, so clear the
+      // initial-load banner. Without this clear, a transient load
+      // failure would keep the load-error UI stuck forever even
+      // after the user successfully adds a root (CodeX PR #38
+      // Attempt 12 LOW 2).
+      setLoadError(false)
     } catch (err) {
       setAddError({
         error: 'network_error',
@@ -135,6 +142,10 @@ export default function WorkRootsPage() {
       }
       setRoots(body.additionalWorkRoots ?? [])
       setPendingDelete(null)
+      // Same recovery as the add path — a successful mutation
+      // clears the stale load-error banner (CodeX PR #38 Attempt
+      // 12 LOW 2).
+      setLoadError(false)
     } catch (err) {
       setDeleteError({
         error: 'network_error',

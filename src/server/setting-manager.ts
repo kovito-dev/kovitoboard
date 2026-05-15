@@ -216,7 +216,16 @@ export async function writeSetting(
       if (!fs.existsSync(settingPath)) {
         // First-write path, now executed under the lock so concurrent
         // first-writers serialise here instead of racing on revision 1.
-        writeAtomic(fs, normaliseV12(data, 1))
+        // We also force `additionalWorkRoots[]` / `workRootsMetadata`
+        // to empty so a caller (e.g. `PUT /api/config/setting`
+        // during onboarding) cannot seed allow-list state through
+        // this path. Spec `cwd-allowlist.md` v1.0 §5.3 / §6.2 SSOT —
+        // allow-list mutations MUST flow through `/api/work-roots`
+        // (probe + denylist + count/length validation). Without this
+        // scrub, an attacker who reaches the onboarding API can plant
+        // an arbitrary cwd allow-list before the user runs the
+        // wizard (CodeX PR #38 Attempt 12 HIGH 1).
+        writeAtomic(fs, normaliseV12(scrubAllowListFields(data), 1))
         return
       }
       const currentRevision = current?.setting.revision ?? 0
@@ -339,7 +348,15 @@ export function writeSettingCas(
       if (expectedRevision !== 0) {
         throw new SettingConflictError(expectedRevision, 0)
       }
-      writeAtomic(fs, normaliseV12(data, 1))
+      // Mirror the scrub from `writeSetting()` — even the explicit
+      // CAS first-write path must not seed `additionalWorkRoots[]`
+      // / `workRootsMetadata` from caller-supplied data. `/api/work-roots`
+      // POST never reaches this branch because its precheck rejects
+      // a missing setting.json with `no_setting`; this guard exists
+      // for any other caller (e.g. tests, future onboarding flows)
+      // that might attempt an explicit-CAS first write (CodeX PR #38
+      // Attempt 12 HIGH 1 defence-in-depth).
+      writeAtomic(fs, normaliseV12(scrubAllowListFields(data), 1))
       return
     }
     const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
@@ -761,6 +778,27 @@ function writeAtomic(fs: FileAccessLayer, data: KovitoboardSetting): void {
   const settingPath = getSettingPath(fs)
   ensureDir(fs)
   fs.writeFileAtomic(settingPath, JSON.stringify(data, null, 2) + '\n')
+}
+
+/**
+ * Force the cwd-allowlist subsystem fields to safe empty defaults
+ * before the first write. Spec `cwd-allowlist.md` v1.0 §5.3 / §6.2
+ * SSOT — only `/api/work-roots` may mutate `additionalWorkRoots[]`
+ * / `workRootsMetadata`, and the route runs the 7-step validation
+ * (absolute / exists / directory / realpath / denylist / duplicate
+ * / probe) before persisting an entry. Letting first-write callers
+ * (typically the onboarding `PUT /api/config/setting` flow) seed
+ * those fields from the caller's payload would bypass every check.
+ * The scrub is unconditional on first-write because the spec also
+ * mandates that the initial setting.json carry empty allow-list
+ * state (CodeX PR #38 Attempt 12 HIGH 1).
+ */
+function scrubAllowListFields(data: KovitoboardSetting): KovitoboardSetting {
+  return {
+    ...data,
+    additionalWorkRoots: [],
+    workRootsMetadata: {} as Record<string, WorkRootMetadata>,
+  }
 }
 
 /**
