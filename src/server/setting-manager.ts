@@ -234,10 +234,18 @@ export async function writeSetting(
       writeAtomic(fs, normaliseV12(preserved, currentRevision + 1))
       return
     } catch (err) {
+      // Only retry on transient lock contention. Non-retriable I/O
+      // failures (ENOSPC, EACCES, etc.) escape immediately so the
+      // caller sees the real error without paying for an extra
+      // 50 + 100 + 200 = 350 ms of cumulative backoff sleep across
+      // multiple HTTP handlers (CodeX PR #38 Attempt 9 MED 1).
+      if (!isTransientContentionError(err)) {
+        throw err
+      }
       lastErr = err
       settingLog.warn(
         { err, attempt },
-        '[setting-manager] writeSetting attempt failed, will retry',
+        '[setting-manager] writeSetting attempt failed (lock contention), will retry',
       )
     } finally {
       if (release) {
@@ -251,15 +259,34 @@ export async function writeSetting(
         }
       }
     }
-    // Async backoff between CAS retries (spec v1.1 §7.5). Yields the
-    // event loop so concurrent traffic is not blocked while we wait
-    // for the lock-holder to release.
-    await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
     attempt++
+    if (attempt < CAS_MAX_RETRIES) {
+      // Async backoff between CAS retries (spec v1.1 §7.5). Yields
+      // the event loop so concurrent traffic is not blocked while
+      // we wait for the lock-holder to release. We skip the sleep
+      // on the terminal attempt — there is no next iteration to
+      // benefit from the wait (CodeX PR #38 Attempt 9 LOW 2 same
+      // pattern in the explicit-CAS routes).
+      await sleep(CAS_BACKOFF_MS[Math.min(attempt - 1, CAS_BACKOFF_MS.length - 1)])
+    }
   }
   throw lastErr instanceof Error
     ? lastErr
     : new Error('[setting-manager] writeSetting failed after retries')
+}
+
+/**
+ * Classify an error from the `writeSetting` CAS loop as transient
+ * lock contention (retry worthwhile) or non-retriable (give up
+ * immediately). `proper-lockfile` surfaces contention as `ELOCKED`;
+ * anything else (ENOSPC / EACCES / EROFS / bug in our own code) is
+ * treated as permanent so a storage fault cannot turn into a
+ * cumulative sleep tax across multiple HTTP handlers.
+ */
+function isTransientContentionError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false
+  const code = (err as NodeJS.ErrnoException).code
+  return code === 'ELOCKED'
 }
 
 /**

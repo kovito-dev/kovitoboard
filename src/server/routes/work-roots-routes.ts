@@ -293,8 +293,15 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         return
       } catch (err) {
         if (err instanceof SettingConflictError) {
-          await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
           attempt++
+          if (attempt < CAS_MAX_RETRIES) {
+            // Sleep only when another retry will actually run; the
+            // previous loop slept even on the terminal attempt and
+            // added 200 ms of latency on top of the 409
+            // `setting_collision` response (CodeX PR #38 Attempt 9
+            // LOW 2).
+            await sleep(CAS_BACKOFF_MS[Math.min(attempt - 1, CAS_BACKOFF_MS.length - 1)])
+          }
           continue
         }
         // Log the raw exception (which can contain filesystem paths,
@@ -406,8 +413,12 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         return
       } catch (err) {
         if (err instanceof SettingConflictError) {
-          await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
           attempt++
+          if (attempt < CAS_MAX_RETRIES) {
+            // Skip the backoff on the terminal attempt — same fix
+            // as the POST path above (CodeX PR #38 Attempt 9 LOW 2).
+            await sleep(CAS_BACKOFF_MS[Math.min(attempt - 1, CAS_BACKOFF_MS.length - 1)])
+          }
           continue
         }
         // Same client-safe envelope as the POST path. Internal
