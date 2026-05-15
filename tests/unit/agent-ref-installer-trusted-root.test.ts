@@ -56,7 +56,10 @@ let baseUrl: string
 
 function makeSetting(overrides: Partial<KovitoboardSetting> = {}): KovitoboardSetting {
   return {
-    version: '1.1',
+    version: '1.2',
+    revision: 1,
+    additionalWorkRoots: [],
+    workRootsMetadata: {},
     user: { displayName: 'Test', avatar: null },
     project: {
       name: 'trusted-test',

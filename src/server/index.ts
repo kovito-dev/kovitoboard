@@ -33,6 +33,11 @@ import { mountAppApiRoutes } from './app-api-loader'
 import { getInitialPrompt } from './services/initial-prompts'
 import { readSetting, writeSetting } from './setting-manager'
 import type { KovitoboardSetting } from '../shared/setting-types'
+import { validateCwd } from './cwdValidator'
+import {
+  ensureWorkRootMetadata,
+  buildCwdErrorResponse,
+} from './cwd-precheck'
 import { createOnboardingRedirect } from './middleware/onboarding-redirect'
 import {
   createTokenAndOriginGuard,
@@ -63,6 +68,7 @@ import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
 import { createAuditRouter } from './routes/audit-routes'
 import { createSecurityRouter } from './routes/security-routes'
+import { createWorkRootsRouter } from './routes/work-roots-routes'
 import {
   checkClaudeCodeSettings,
   logCheckResult,
@@ -407,6 +413,12 @@ app.use(
 // Mounted before the SPA fallback so /api/security/* resolves here.
 app.use('/api/security', createSecurityRouter(fs, projectRoot))
 
+// --- /api/work-roots (cwd-allowlist.md v1.0 §5.3) ---
+// The work-roots router owns additionalWorkRoots[] / workRootsMetadata
+// mutations. Mounting it before the SPA fallback so DELETE / POST
+// resolve here instead of becoming a static-asset 404.
+app.use('/api/work-roots', createWorkRootsRouter(fs))
+
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
 // to the detector) so the version router can mount BEFORE the SPA
@@ -636,8 +648,67 @@ app.post('/api/sessions/:id/send', async (req, res) => {
   // Fallback: ClaudeBridge (--print mode)
   const sessionCwd = session.events.find(e => e.metadata.cwd)?.metadata.cwd
 
+  // cwd allow-list gate — consumer #3 in spec `cwd-allowlist.md`
+  // v1.0 §5.2 (session resume's persisted metadata.cwd). When a
+  // legacy session was recorded with a cwd that no longer satisfies
+  // the allow-list — for example because the user has since removed
+  // the work root, or because the session predates v0.2.0 entirely —
+  // we refuse to resume rather than spawning claude under an
+  // un-vetted cwd. The UI consumes the §6.4 envelope to surface the
+  // resume-rejection options (§10.2 SSOT).
+  let resolvedSessionCwd: string | undefined =
+    typeof sessionCwd === 'string' ? sessionCwd : undefined
+  if (sessionCwd !== undefined) {
+    // Defensive type check: persisted JSONL events are trusted input
+    // for cwd validation, but a corrupted record (legacy migration,
+    // hand-edit, downstream tool that emitted a non-string) would
+    // make `fs.existsSync()` inside `validateCwd()` throw before this
+    // handler's try/catch fires, turning one bad event into a 500
+    // for every resume attempt. Surface a structured rejection
+    // instead so the UI can prompt the user to remove or re-record
+    // the session (CodeX Attempt 2 MEDIUM 2).
+    if (typeof sessionCwd !== 'string') {
+      apiLogger.warn(
+        { sessionId, sessionCwdType: typeof sessionCwd },
+        '[cwd-gate] Session resume refused — persisted metadata.cwd is not a string',
+      )
+      res.status(400).json({
+        error: 'cwd_validation_failed',
+        reason: 'malformed_metadata',
+        message:
+          'Session resume refused: persisted metadata.cwd is malformed (expected string). Re-record the session or remove it from the on-disk log.',
+        requested_cwd: null,
+        allowed_roots: [],
+      })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const result = validateCwd(
+      sessionCwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!result.ok) {
+      apiLogger.warn(
+        { sessionId, reason: result.reason },
+        '[cwd-gate] Session resume refused — persisted cwd outside allow-list',
+      )
+      const { status, body } = buildCwdErrorResponse(
+        result,
+        sessionCwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedSessionCwd = result.resolvedCwd
+  }
+
   try {
-    const processId = claudeBridge.sendToSession(sessionId, message.trim(), sessionCwd)
+    const processId = claudeBridge.sendToSession(sessionId, message.trim(), resolvedSessionCwd)
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     apiLogger.error({ err }, 'Session send error')
@@ -648,6 +719,38 @@ app.post('/api/sessions/:id/send', async (req, res) => {
 // Start a new session
 app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd, initialPrompt, origin } = req.body as NewSessionRequest
+
+  // cwd allow-list gate — consumer #1 in spec `cwd-allowlist.md`
+  // v1.0 §5.2. We resolve here before any side effects (origin
+  // reservation, tmux auto-start) so a forged cwd cannot leak past
+  // validation through one of the early-return success branches
+  // below.
+  let resolvedCwd: string | undefined = undefined
+  if (cwd !== undefined) {
+    if (typeof cwd !== 'string') {
+      res.status(400).json({ error: 'cwd must be a string' })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const result = validateCwd(
+      cwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!result.ok) {
+      const { status, body } = buildCwdErrorResponse(
+        result,
+        cwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedCwd = result.resolvedCwd
+  }
 
   // If initialPrompt is specified, resolve the prompt text from the dictionary
   let effectiveMessage: string | undefined = message
@@ -736,9 +839,15 @@ app.post('/api/sessions/new', async (req, res) => {
     }
   }
 
-  // Fallback: ClaudeBridge (--print mode)
+  // Fallback: ClaudeBridge (--print mode).
+  // §8.3 TOCTOU defence: pass `resolvedCwd` (the realpath form)
+  // rather than the raw client input.
   try {
-    const processId = claudeBridge.startNewSession(effectiveMessage.trim(), agentId, cwd)
+    const processId = claudeBridge.startNewSession(
+      effectiveMessage.trim(),
+      agentId,
+      resolvedCwd,
+    )
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     apiLogger.error({ err }, 'New session start error')
@@ -887,7 +996,36 @@ app.post('/api/tmux/start-agent', async (req, res) => {
     return
   }
 
-  const result = await tmuxBridge.startAgent(agentId, windowName, cwd)
+  // cwd allow-list gate — consumer #2 in spec `cwd-allowlist.md`
+  // v1.0 §5.2. Same shape as consumer #1 above.
+  let resolvedCwd: string | undefined = undefined
+  if (cwd !== undefined) {
+    if (typeof cwd !== 'string') {
+      res.status(400).json({ error: 'cwd must be a string' })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const validation = validateCwd(
+      cwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!validation.ok) {
+      const { status, body } = buildCwdErrorResponse(
+        validation,
+        cwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedCwd = validation.resolvedCwd
+  }
+
+  const result = await tmuxBridge.startAgent(agentId, windowName, resolvedCwd)
   if (result.success) {
     res.json({ success: true })
   } else {
@@ -931,7 +1069,7 @@ app.get('/api/settings/basic', (_req, res) => {
  * `project.path` cannot be edited from this surface — projects are
  * switched via a future "open another project" UI (v0.1.1 backlog).
  */
-app.put('/api/settings/basic', (req, res) => {
+app.put('/api/settings/basic', async (req, res) => {
   const body = (req.body ?? {}) as {
     displayName?: unknown
     locale?: unknown
@@ -998,7 +1136,9 @@ app.put('/api/settings/basic', (req, res) => {
   }
 
   try {
-    writeSetting(fs, next)
+    // `writeSetting()` is async since spec cwd-allowlist.md v1.1 §7.5
+    // (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS backoff).
+    await writeSetting(fs, next)
     apiLogger.info({ displayName: next.user.displayName, locale: next.locale }, 'Basic settings updated')
     res.json({ success: true })
   } catch (err) {

@@ -49,7 +49,7 @@ export function createConfigRouter(
   })
 
   // PUT /api/config/setting
-  router.put('/setting', (req, res) => {
+  router.put('/setting', async (req, res) => {
     const body = req.body
     if (!validateSetting(body)) {
       res.status(400).json({ error: 'Invalid setting data' })
@@ -129,7 +129,11 @@ export function createConfigRouter(
       // the marker prevents a re-injection on retry, so the two
       // states diverge silently. Writing the setting first keeps
       // recovery deterministic.
-      writeSetting(fs, body)
+      //
+      // `writeSetting()` is async since spec cwd-allowlist.md v1.1
+      // §7.5 (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS
+      // backoff to avoid event-loop blocking).
+      await writeSetting(fs, body)
 
       // Install agent-ref docs on setting write (R12).
       //
@@ -178,7 +182,7 @@ export function createConfigRouter(
           // means the audit log loses one timestamp entry).
           try {
             const refreshed = readSetting(fs) ?? body
-            writeSetting(fs, {
+            await writeSetting(fs, {
               ...refreshed,
               claudeMdGuidance: {
                 ...(refreshed.claudeMdGuidance ?? {}),
