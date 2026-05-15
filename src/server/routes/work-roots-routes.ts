@@ -44,6 +44,8 @@ import {
   writeSettingCas,
   SettingConflictError,
   getSettingPath,
+  MAX_WORK_ROOTS,
+  MAX_WORK_ROOT_PATH_LENGTH,
 } from '../setting-manager'
 import { isDenylisted, getDenylistAnchors } from '../cwdValidator'
 import { probeWorkRoot } from '../fs-probe'
@@ -56,25 +58,12 @@ const CAS_MAX_RETRIES = 3
 /** Exponential backoff between CAS retries (ms). */
 const CAS_BACKOFF_MS = [50, 100, 200] as const
 
-/**
- * Resource limits on `additionalWorkRoots[]` (CodeX PR #38 Attempt 4
- * MED 2 — unbounded allow-list amplifies every guarded spawn/tmux
- * path into O(n) disk work via `ensureWorkRootMetadata()` /
- * `validateCwd()`. Without a ceiling, a caller can grow the array
- * indefinitely and turn each future session-start into a slow
- * fan-out across stale entries — a durable server-side DoS vector).
- *
- * - `MAX_WORK_ROOTS`: ceiling on `additionalWorkRoots.length`. 32 is
- *   well above any realistic individual-developer workload (typical
- *   KB users have 1–5 active project trees) while keeping the
- *   per-spawn fan-out bounded.
- * - `MAX_WORK_ROOT_PATH_LENGTH`: per-entry path length cap. 4096 matches
- *   Linux `PATH_MAX`; Windows long-path support (32k) is out of scope
- *   here because the cwd allow-list itself is only used for `claude`
- *   spawn cwd and tmux `-c`, both of which the OS clamps anyway.
- */
-const MAX_WORK_ROOTS = 32
-const MAX_WORK_ROOT_PATH_LENGTH = 4096
+// `MAX_WORK_ROOTS` / `MAX_WORK_ROOT_PATH_LENGTH` SSOT moved to
+// `setting-manager.ts` so the same limits are enforced at both the
+// HTTP boundary (this file, POST validation) and on every
+// `setting.json` read (`validateSetting()` — CodeX PR #38 Attempt
+// 13 MED 1, prevents a hand-edited file from carrying oversized
+// state past the write-time caps).
 
 /**
  * Build the work-roots router. The router is mounted at

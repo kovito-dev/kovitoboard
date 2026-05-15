@@ -135,6 +135,56 @@ describe('validateSetting (post-migration v1.2)', () => {
     ).toBe(true)
   })
 
+  // CodeX PR #38 Attempt 13 MED 1 regression — the same MAX_WORK_ROOTS
+  // and MAX_WORK_ROOT_PATH_LENGTH caps that /api/work-roots POST
+  // applies must also fire at read time, so a hand-edited /
+  // migrated setting.json cannot carry oversized state past the
+  // write-time gate.
+  it('rejects additionalWorkRoots longer than MAX_WORK_ROOTS', () => {
+    // 33 entries — one past the spec cap (32).
+    const oversized = Array.from(
+      { length: 33 },
+      (_v, i) => `/tmp/root-${i}`,
+    )
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: oversized,
+      }),
+    ).toBe(false)
+  })
+
+  it('accepts additionalWorkRoots at exactly MAX_WORK_ROOTS', () => {
+    const atCap = Array.from(
+      { length: 32 },
+      (_v, i) => `/tmp/root-${i}`,
+    )
+    const metaAtCap = Object.fromEntries(
+      atCap.map((p) => [
+        p,
+        { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+      ]),
+    )
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: atCap,
+        workRootsMetadata: metaAtCap,
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects additionalWorkRoots entries longer than MAX_WORK_ROOT_PATH_LENGTH', () => {
+    // 4097 chars: one past the per-entry cap (4096).
+    const longPath = '/' + 'a'.repeat(4096)
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: [longPath],
+      }),
+    ).toBe(false)
+  })
+
   it('rejects workRootsMetadata entry missing caseSensitive', () => {
     expect(
       validateSetting({

@@ -81,6 +81,27 @@ const CAS_MAX_RETRIES = 3
 const CAS_BACKOFF_MS = [50, 100, 200] as const
 
 /**
+ * Resource limits on `additionalWorkRoots[]` (CodeX PR #38 Attempt 4
+ * MED 2 + Attempt 13 MED 1). Enforced at both the HTTP boundary
+ * (`/api/work-roots` POST in `work-roots-routes.ts`) **and** at
+ * read time (`validateSetting()` below). The read-time enforcement
+ * is what stops a hand-edited or migrated `setting.json` from
+ * carrying thousands of entries (or megabyte-sized paths) past the
+ * write-time caps and re-introducing the DoS vector on every
+ * subsequent `ensureWorkRootMetadata()` / `validateCwd()` call.
+ *
+ * - `MAX_WORK_ROOTS`: ceiling on `additionalWorkRoots.length`. 32 is
+ *   well above any realistic individual-developer workload (typical
+ *   users have 1–5 active project trees) while keeping the per-spawn
+ *   fan-out bounded.
+ * - `MAX_WORK_ROOT_PATH_LENGTH`: per-entry path length cap. 4096
+ *   matches Linux `PATH_MAX`; Windows long-path support is out of
+ *   scope here.
+ */
+export const MAX_WORK_ROOTS = 32
+export const MAX_WORK_ROOT_PATH_LENGTH = 4096
+
+/**
  * `proper-lockfile.lockSync` options. The sync entrypoint does not
  * accept a `retries` profile (the underlying adapter throws "Cannot use
  * retries with the sync api"), so callers are responsible for retrying
@@ -484,10 +505,20 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   // therefore turn into an unintended allowed root and reintroduce
   // the security regression we already closed for the HTTP
   // boundary (CodeX PR #38 Attempt 11 MED 1).
+  //
+  // Enforce the same `MAX_WORK_ROOTS` count / `MAX_WORK_ROOT_PATH_LENGTH`
+  // per-entry caps that `/api/work-roots` POST applies at write
+  // time. Without these read-time gates, a hand-edited
+  // `setting.json` with thousands of (or extremely long) entries
+  // would slip past the HTTP boundary and re-introduce the DoS
+  // amplification on every guarded spawn/tmux path (CodeX PR #38
+  // Attempt 13 MED 1).
   if (obj.additionalWorkRoots !== undefined) {
     if (!Array.isArray(obj.additionalWorkRoots)) return false
+    if (obj.additionalWorkRoots.length > MAX_WORK_ROOTS) return false
     for (const entry of obj.additionalWorkRoots) {
       if (typeof entry !== 'string' || entry.length === 0) return false
+      if (entry.length > MAX_WORK_ROOT_PATH_LENGTH) return false
       if (!isAbsolute(entry)) return false
     }
   }

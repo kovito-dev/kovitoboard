@@ -304,7 +304,13 @@ export function validateCwd(
   //    exists but target is gone → not_found" behaviour is preserved.
   let canonical: string
   try {
-    canonical = fs.realpathSync(requestedCwd)
+    // NFC-normalise the realpath result so the canonical form
+    // matches the one stored by `POST /api/work-roots` and used as
+    // the `workRootsMetadata` lookup key. Legacy macOS HFS+ returns
+    // NFD here; APFS / ext4 return NFC; mixing the two breaks
+    // metadata lookup (CodeX PR #38 Attempt 11 LOW 2 + Attempt 13
+    // LOW 2 — close the gap between storage and lookup paths).
+    canonical = fs.realpathSync(requestedCwd).normalize('NFC')
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { ok: false, reason: 'not_found' }
@@ -338,7 +344,13 @@ export function validateCwd(
   const addRoot = (root: string, kind: RootKind): void => {
     let resolved: string
     try {
-      resolved = fs.realpathSync(root)
+      // NFC at the lookup side so `workRootsMetadata[resolved]`
+      // matches the NFC-normalised key stored at POST time. Without
+      // this, an NFD-returning filesystem would surface
+      // `probe_failed` on a path whose metadata is actually
+      // persisted under its NFC spelling (CodeX PR #38 Attempt 13
+      // LOW 2).
+      resolved = fs.realpathSync(root).normalize('NFC')
     } catch {
       return
     }

@@ -202,7 +202,14 @@ const REASON_TO_MESSAGE: Record<
 
 function pushIfCanResolve(out: string[], root: string, fs: FileAccessLayer): void {
   try {
-    const canonical = fs.realpathSync(root)
+    // Mirror the NFC normalisation done at storage time so
+    // metadata lookups in `ensureWorkRootMetadata()` find the
+    // right key on filesystems that surface NFD paths (legacy
+    // macOS HFS+ etc.). Without this fold, a probe / metadata
+    // entry stored under the NFC form silently misses lookups
+    // performed against the raw NFD realpath output (CodeX PR
+    // #38 Attempt 13 LOW 2).
+    const canonical = fs.realpathSync(root).normalize('NFC')
     if (!out.includes(canonical)) out.push(canonical)
   } catch {
     // Stale root (deleted directory etc.) — silently skip. Orphan
