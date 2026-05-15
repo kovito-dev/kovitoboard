@@ -25,6 +25,7 @@ import express from 'express'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import lockfile from 'proper-lockfile'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

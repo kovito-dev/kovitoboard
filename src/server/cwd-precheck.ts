@@ -174,6 +174,7 @@ const REASON_TO_HTTP_ERROR: Record<
   Extract<ValidateCwdResult, { ok: false }>['reason'],
   string
 > = {
+  not_absolute: 'cwd_not_absolute',
   not_found: 'cwd_not_found',
   not_directory: 'cwd_not_directory',
   symlink_loop: 'cwd_symlink_loop',
@@ -186,6 +187,8 @@ const REASON_TO_MESSAGE: Record<
   Extract<ValidateCwdResult, { ok: false }>['reason'],
   string
 > = {
+  not_absolute:
+    'The requested cwd is not an absolute path; absolute paths are required to make the allow-list boundary independent of server process state.',
   not_found: 'The requested cwd does not exist.',
   not_directory: 'The requested cwd is not a directory.',
   symlink_loop: 'The requested cwd resolves through a symlink loop.',

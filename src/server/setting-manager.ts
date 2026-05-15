@@ -283,7 +283,25 @@ export function writeSettingCas(
 
   let release: (() => void) | null = null
   try {
-    release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
+    try {
+      release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
+    } catch (lockErr) {
+      // Lock contention surfaces as `ELOCKED` from `proper-lockfile`.
+      // Convert it to `SettingConflictError` so the explicit-CAS
+      // caller's retry policy (`/api/work-roots` POST / DELETE)
+      // handles contention as a 409 retriable conflict rather than
+      // letting it fall through to the generic 500 `write_error`
+      // path (CodeX PR #38 Attempt 7 MED 2).
+      const code = (lockErr as NodeJS.ErrnoException).code
+      if (code === 'ELOCKED') {
+        // We never observed the on-disk revision (the lock was
+        // unavailable), so we cannot report the actual revision —
+        // signal "conflict, retry" by mirroring the caller's
+        // expected value.
+        throw new SettingConflictError(expectedRevision, expectedRevision)
+      }
+      throw lockErr
+    }
     // We hold the lock; suppress migration write-back so
     // `tryMigrationWriteBack()` does not re-take the lock (same-process
     // recursive lock would surface as `ELOCKED`).

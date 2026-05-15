@@ -286,6 +286,40 @@ describe('validateCwd — success', () => {
 // --- validateCwd: failure reasons -------------------------------------
 
 describe('validateCwd — failure reasons', () => {
+  // CodeX PR #38 Attempt 7 MED 1 regression — `validateCwd()` must
+  // reject relative paths before calling realpathSync(), otherwise
+  // values like '.' or 'subdir' would be resolved against the Node
+  // process cwd and silently pass the allow-list boundary.
+  it('not_absolute when the requested cwd is a bare dot', () => {
+    const result = validateCwd('.', projectRoot, [], metaFor([projectRoot]), fs)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('not_absolute')
+    }
+  })
+
+  it('not_absolute when the requested cwd is a relative subdir', () => {
+    const result = validateCwd(
+      'subdir',
+      projectRoot,
+      [],
+      metaFor([projectRoot]),
+      fs,
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('not_absolute')
+    }
+  })
+
+  it('not_absolute when the requested cwd is an empty string', () => {
+    const result = validateCwd('', projectRoot, [], metaFor([projectRoot]), fs)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('not_absolute')
+    }
+  })
+
   it('not_found when the path does not exist', () => {
     const result = validateCwd(
       join(tmpRoot, 'missing'),

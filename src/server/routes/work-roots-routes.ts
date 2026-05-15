@@ -297,12 +297,18 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
           attempt++
           continue
         }
+        // Log the raw exception (which can contain filesystem paths,
+        // lock-library platform details, etc.) but surface only a
+        // fixed client-safe message to the renderer. The WorkRootsPage
+        // displays `body.message` verbatim, so leaking `err.message`
+        // would surface absolute paths / internal state to the UI
+        // (CodeX PR #38 Attempt 7 LOW 3).
         workRootsLog.error({ err }, '[work-roots] write failed')
         sendError(
           res,
           500,
           'write_error',
-          err instanceof Error ? err.message : String(err),
+          'Failed to update work roots. See server logs for details.',
           input,
         )
         return
@@ -393,12 +399,15 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
           attempt++
           continue
         }
+        // Same client-safe envelope as the POST path. Internal
+        // exception details stay in the server log only (CodeX PR
+        // #38 Attempt 7 LOW 3).
         workRootsLog.error({ err }, '[work-roots] delete write failed')
         sendError(
           res,
           500,
           'write_error',
-          err instanceof Error ? err.message : String(err),
+          'Failed to update work roots. See server logs for details.',
           input,
         )
         return

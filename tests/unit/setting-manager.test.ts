@@ -17,6 +17,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import lockfile from 'proper-lockfile'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -678,6 +679,43 @@ describe('writeSettingCas (explicit CAS)', () => {
           5,
         ),
       ).toThrow(SettingConflictError)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  // CodeX PR #38 Attempt 7 MED 2 regression — lock contention
+  // (`ELOCKED` from `proper-lockfile.lockSync()`) must surface as
+  // `SettingConflictError` so the explicit-CAS caller's retry
+  // policy (`/api/work-roots` POST / DELETE) handles it as a 409
+  // retriable conflict, rather than falling through to a 500
+  // `write_error`.
+  it('converts ELOCKED into SettingConflictError so callers can retry', async () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      // Seed the setting + lockfile so we can grab the lock first.
+      await writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      const lockPath = join(ctx.dir, '.kovitoboard', 'setting.json.lock')
+
+      // Hold the lock externally to simulate a concurrent writer.
+      // `realpath: false` + a short `stale` matches the production
+      // LOCK_OPTIONS so the underlying contention path matches the
+      // real one.
+      const release = lockfile.lockSync(lockPath, { realpath: false, stale: 5000 })
+      try {
+        // Now writeSettingCas should hit `ELOCKED` on its lockSync
+        // call and convert it to SettingConflictError.
+        expect(() =>
+          writeSettingCas(
+            fs,
+            { ...validSetting, project: { ...validSetting.project, path: ctx.dir }, locale: 'en' },
+            1,
+          ),
+        ).toThrow(SettingConflictError)
+      } finally {
+        release()
+      }
     } finally {
       ctx.cleanup()
     }

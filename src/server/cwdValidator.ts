@@ -45,6 +45,7 @@ export type RootKind = 'project_root' | 'additional_work_root'
 /** Failure reasons for `validateCwd`. See §6.4 for the HTTP envelope mapping. */
 export type ValidateCwdReason =
   | 'not_allowed'
+  | 'not_absolute'
   | 'not_found'
   | 'not_directory'
   | 'symlink_loop'
@@ -248,6 +249,11 @@ export interface ValidateCwdOptions {
  * Validate a request cwd against the allow-list (§6.3 / §7.1 SSOT).
  *
  * Algorithm:
+ *   0. Reject non-absolute paths with `not_absolute` before any
+ *      filesystem call. Without this guard, relative inputs like `.`
+ *      or `subdir` would be resolved against the Node process cwd
+ *      inside `realpathSync()`, making the allow-list boundary
+ *      depend on server startup state (CodeX PR #38 Attempt 7 MED 1).
  *   1. Resolve via `realpathSync` to the canonical form. ENOENT /
  *      ELOOP / EACCES map to dedicated reasons (`not_found` /
  *      `symlink_loop` / `permission_denied`). We deliberately skip an
@@ -276,6 +282,15 @@ export function validateCwd(
   fs: FileAccessLayer,
   options?: ValidateCwdOptions,
 ): ValidateCwdResult {
+  // 0. Absolute-only precondition. `realpathSync()` resolves
+  //    relative inputs against `process.cwd()`, which would make
+  //    the allow-list boundary depend on server startup state and
+  //    silently accept inputs like `.` or `subdir`. Reject before
+  //    touching the filesystem (CodeX PR #38 Attempt 7 MED 1).
+  if (!isAbsolute(requestedCwd)) {
+    return { ok: false, reason: 'not_absolute' }
+  }
+
   // 1. realpath, errno-aware. We no longer pre-check with
   //    `fs.existsSync()`: it returns `false` for both ENOENT and
   //    paths that fail with EACCES / ELOOP, which would flatten the
