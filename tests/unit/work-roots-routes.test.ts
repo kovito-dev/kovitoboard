@@ -105,6 +105,35 @@ describe('GET /api/work-roots', () => {
     expect(body).toEqual({ additionalWorkRoots: [] })
   })
 
+  // CodeX PR #38 Attempt 10 LOW 2 regression — GET must
+  // differentiate "setting.json does not exist yet" (200 [] is
+  // correct) from "setting.json exists but is malformed" (must
+  // surface as a non-2xx error so the renderer's load-error path
+  // fires instead of the empty-state copy).
+  it('returns 200 + empty allow-list when setting.json does not exist (onboarding pending)', async () => {
+    const { rmSync: rm } = await import('node:fs')
+    const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
+    rm(settingPath, { force: true })
+
+    const res = await fetch(`${baseUrl}/api/work-roots`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ additionalWorkRoots: [] })
+  })
+
+  it('returns 500 read_error when setting.json exists but is malformed', async () => {
+    const { writeFileSync } = await import('node:fs')
+    const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
+    // Intentionally invalid JSON so readSettingWithRevision() returns
+    // null even though the file exists.
+    writeFileSync(settingPath, '{ this is not json')
+
+    const res = await fetch(`${baseUrl}/api/work-roots`)
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toBe('read_error')
+  })
+
   it('reflects roots added via POST', async () => {
     const extra = mkdtempSync(join(tmpdir(), 'kb-work-extra-'))
     try {

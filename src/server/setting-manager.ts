@@ -62,7 +62,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { lazyChildLogger } from './logger'
 
 const settingLog = lazyChildLogger('setting-manager')
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 import { getKovitoboardDir } from './paths'
 import type { FileAccessLayer } from './fs-layer'
 import type {
@@ -458,10 +458,20 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   // guaranteed-initialised (§6.1 SSOT). Accept missing for forward
   // compatibility with hand-edited files (will be backfilled on next
   // write).
+  //
+  // Each entry MUST be an absolute path. The downstream
+  // `ensureWorkRootMetadata()` / `validateCwd()` pipeline passes
+  // these strings to `realpathSync()`, which resolves relative
+  // inputs against the server process cwd. A hand-edited or
+  // malformed `setting.json` carrying a relative entry would
+  // therefore turn into an unintended allowed root and reintroduce
+  // the security regression we already closed for the HTTP
+  // boundary (CodeX PR #38 Attempt 11 MED 1).
   if (obj.additionalWorkRoots !== undefined) {
     if (!Array.isArray(obj.additionalWorkRoots)) return false
     for (const entry of obj.additionalWorkRoots) {
       if (typeof entry !== 'string' || entry.length === 0) return false
+      if (!isAbsolute(entry)) return false
     }
   }
 

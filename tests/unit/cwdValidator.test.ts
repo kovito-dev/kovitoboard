@@ -96,6 +96,26 @@ describe('normaliseCanonical', () => {
     expect(normaliseCanonical('/PROJ/Sub', false)).toBe('/proj/sub')
     expect(normaliseCanonical('/PROJ/Sub', true)).toBe('/PROJ/Sub')
   })
+
+  // CodeX PR #38 Attempt 11 LOW 2 regression — canonically
+  // equivalent Unicode spellings (NFD vs NFC) must compare equal.
+  // Legacy macOS HFS+ surfaces NFD; APFS / ext4 surface NFC; a
+  // hand-edited setting.json can contain either form.
+  it('folds NFD into NFC so equivalent Unicode spellings compare equal', () => {
+    // U+00E9 'é' (NFC, 1 codepoint) vs U+0065 + U+0301 'e' + combining
+    // acute (NFD, 2 codepoints) — same character, different encoding.
+    const nfc = '/proj/café'
+    const nfd = '/proj/café'
+    expect(nfc).not.toBe(nfd) // sanity: distinct strings on input
+    expect(normaliseCanonical(nfd, true)).toBe(normaliseCanonical(nfc, true))
+    // Verify the chosen canonical form is NFC.
+    expect(normaliseCanonical(nfd, true)).toBe(nfc)
+  })
+
+  it('preserves an already-NFC path unchanged (other than slash/case folding)', () => {
+    const nfc = '/proj/already-nfc'
+    expect(normaliseCanonical(nfc, true)).toBe(nfc)
+  })
 })
 
 // --- isSubtree ---------------------------------------------------------

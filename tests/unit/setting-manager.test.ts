@@ -88,6 +88,53 @@ describe('validateSetting (post-migration v1.2)', () => {
     ).toBe(false)
   })
 
+  // CodeX PR #38 Attempt 11 MED 1 regression — hand-edited or
+  // malformed setting.json with relative additionalWorkRoots
+  // entries must be rejected. The downstream realpathSync() would
+  // resolve them against the server process cwd otherwise, turning
+  // a stored "relative-folder" into an unintended allowed root.
+  it('rejects additionalWorkRoots entries that are not absolute paths', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['relative/folder'],
+      }),
+    ).toBe(false)
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['./dot-relative'],
+      }),
+    ).toBe(false)
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['../parent-relative'],
+      }),
+    ).toBe(false)
+    // Bare path-component (no leading slash) is the most common
+    // hand-edit error.
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['my-folder'],
+      }),
+    ).toBe(false)
+  })
+
+  it('accepts absolute additionalWorkRoots entries', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['/absolute/folder', '/another/folder'],
+        workRootsMetadata: {
+          '/absolute/folder': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+          '/another/folder': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+        },
+      }),
+    ).toBe(true)
+  })
+
   it('rejects workRootsMetadata entry missing caseSensitive', () => {
     expect(
       validateSetting({

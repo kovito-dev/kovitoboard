@@ -43,6 +43,7 @@ import {
   readSettingWithRevision,
   writeSettingCas,
   SettingConflictError,
+  getSettingPath,
 } from '../setting-manager'
 import { isDenylisted, getDenylistAnchors } from '../cwdValidator'
 import { probeWorkRoot } from '../fs-probe'
@@ -84,9 +85,33 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
 
   // GET /api/work-roots
   router.get('/', (_req, res) => {
+    // Differentiate "setting.json does not exist yet" (onboarding
+    // not completed — empty allow-list is the correct contract)
+    // from "setting.json exists but cannot be read" (parse error,
+    // schema invalid — an operational failure that the UI must
+    // surface). Collapsing both into 200 [] hides a broken security
+    // configuration behind the same empty-state copy the renderer
+    // shows for a fresh install (CodeX PR #38 Attempt 10 LOW 2).
+    const settingPath = getSettingPath(fs)
+    if (!fs.existsSync(settingPath)) {
+      res.json({ additionalWorkRoots: [] })
+      return
+    }
     const result = readSettingWithRevision(fs)
+    if (!result) {
+      workRootsLog.error(
+        { settingPath },
+        '[work-roots] setting.json exists but readSettingWithRevision returned null (parse or schema failure)',
+      )
+      res.status(500).json({
+        error: 'read_error',
+        message:
+          'Failed to read the current work roots. The settings file may be malformed; see server logs for details.',
+      })
+      return
+    }
     res.json({
-      additionalWorkRoots: result?.setting.additionalWorkRoots ?? [],
+      additionalWorkRoots: result.setting.additionalWorkRoots ?? [],
     })
   })
 
@@ -128,7 +153,13 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
     // `symlink_loop` error cases (CodeX Attempt 2 LOW 4).
     let canonical: string
     try {
-      canonical = fs.realpathSync(input)
+      // NFC-normalise the realpath output so the on-disk allow-list
+      // stores a single canonical Unicode form (CodeX PR #38
+      // Attempt 11 LOW 2). Without this step a legacy HFS+ mount
+      // would return NFD and `existingRoots.includes(canonical)` /
+      // `normaliseCanonical()` could mismatch the same path
+      // depending on which side performed the realpath.
+      canonical = fs.realpathSync(input).normalize('NFC')
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code === 'ENOENT') {
@@ -217,6 +248,18 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
         `Cannot add more than ${MAX_WORK_ROOTS} additional work roots`,
         input,
       )
+      return
+    }
+    // Short-circuit duplicate detection BEFORE running the
+    // filesystem probe. Repeatedly POSTing an already-added path
+    // used to re-run `probeWorkRoot()` (which writes a sentinel
+    // file into the user-supplied directory) each time, which is a
+    // DoS amplification path on slow / remote / network-mounted
+    // filesystems. The race-safe duplicate check still runs inside
+    // the CAS loop below as a backstop for concurrent adds (CodeX
+    // PR #38 Attempt 10 MED 1).
+    if ((precheck.setting.additionalWorkRoots ?? []).includes(canonical)) {
+      sendError(res, 400, 'duplicate', 'Path is already in additionalWorkRoots', input)
       return
     }
 
@@ -351,17 +394,18 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
     }
 
     // Canonicalise the delete input so it matches the form stored by
-    // POST (`realpathSync`). Without this step a trailing slash, a
-    // symlink form, or a case-variant on a case-insensitive FS would
-    // miss the stored entry and silently leave the work root active
-    // (CodeX PR #38 Attempt 4 LOW 3).
+    // POST (`realpathSync` + NFC). Without this step a trailing
+    // slash, a symlink form, or a case-variant on a case-insensitive
+    // FS would miss the stored entry and silently leave the work
+    // root active (CodeX PR #38 Attempt 4 LOW 3 + Attempt 11 LOW 2
+    // Unicode form symmetry).
     //
     // If `realpath` fails (the underlying directory is gone since
     // the entry was added) we fall back to the verbatim input so
     // stale entries can still be revoked.
     let lookupKey = input
     try {
-      lookupKey = fs.realpathSync(input)
+      lookupKey = fs.realpathSync(input).normalize('NFC')
     } catch {
       lookupKey = input
     }

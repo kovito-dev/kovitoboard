@@ -89,6 +89,12 @@ const WINDOWS_DRIVE_RE = /^[a-zA-Z]:[\\/]/
  * Normalise a path to its canonical comparison form, governed by the
  * per-root case-sensitivity captured at probe time (§7.6 SSOT).
  *
+ *   - Applies Unicode NFC normalisation so canonically equivalent
+ *     spellings (e.g. macOS HFS+ NFD vs APFS NFC, or hand-edited
+ *     entries) compare equal (CodeX PR #38 Attempt 11 LOW 2).
+ *     `realpath` on Linux + APFS already returns NFC, but legacy
+ *     HFS+ targets / hand-edited `setting.json` entries can hold
+ *     NFD; folding them at the comparison layer fixes the mismatch.
  *   - Unifies `\\` -> `/` so Windows paths compare against allow-list
  *     entries that were captured via `realpath`.
  *   - Lowercases the drive letter on Windows (`C:/` -> `c:/`).
@@ -96,12 +102,9 @@ const WINDOWS_DRIVE_RE = /^[a-zA-Z]:[\\/]/
  *     `/` itself is preserved).
  *   - Lowercases the entire path on case-insensitive FS so `/Proj`
  *     matches `/proj`.
- *
- * Unicode NFC normalisation is delegated to the caller's input —
- * `realpath` on Linux / macOS APFS already returns NFC.
  */
 export function normaliseCanonical(input: string, caseSensitive: boolean): string {
-  let p = input.replace(/\\/g, '/')
+  let p = input.normalize('NFC').replace(/\\/g, '/')
   if (WINDOWS_DRIVE_RE.test(p)) {
     p = p[0].toLowerCase() + p.slice(1)
   }
