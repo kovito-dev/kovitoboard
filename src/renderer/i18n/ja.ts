@@ -258,6 +258,26 @@ const ja = {
   'nav.menu.agents': 'エージェント',
   'nav.menu.sessions': 'セッション',
   'nav.menu.recipes': 'アプリレシピ',
+  'nav.menu.workRoots': '作業ルート',
+
+  // 作業ルート設定画面（仕様 cwd-allowlist.md v1.0 §7.4）。
+  // プロジェクトルート以外で Claude Code に作業させるフォルダを
+  // 追加・削除できる。フォルダを追加すると Claude Code がその中で
+  // ファイル書き込みを行えるため、文言は注意を促す調子で揃える。
+  'workRoots.title': '作業ルート',
+  'workRoots.description':
+    'KovitoBoard が Claude Code の作業ディレクトリとして利用できるフォルダの一覧です。プロジェクトルートは常に含まれており、それ以外のルートを以下で追加・削除できます。',
+  'workRoots.addSection.title': '作業ルートを追加',
+  'workRoots.addSection.help':
+    '絶対パスを入力してください。システムディレクトリや KovitoBoard 自身の repo root は安全のため追加できません。',
+  'workRoots.addButton': '追加',
+  'workRoots.adding': '追加中…',
+  'workRoots.listSection.title': '追加済みの作業ルート',
+  'workRoots.listSection.empty': '追加済みの作業ルートはまだありません。',
+  'workRoots.deleteConfirm.title': 'この作業ルートを削除しますか？',
+  'workRoots.deleteConfirm.body':
+    'KovitoBoard は今後このフォルダ配下で新しい Claude Code セッションを開始しません。実行中のセッションは終了するまでそのまま継続します。',
+  'workRoots.errorCodeLabel': 'エラーコード',
 
   // エージェント（デフォルト）
   'agent.default.name': 'デフォルト',
