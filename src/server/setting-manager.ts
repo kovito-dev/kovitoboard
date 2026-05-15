@@ -24,6 +24,38 @@
  *     CAS for callers that need to drive their own retry policy
  *     (e.g. `/api/work-roots`) and stays sync because it performs no
  *     internal sleeps.
+ *
+ * CAS scope (deliberate, v1.1 §5.3): the CAS protocol guarantees
+ * **field-scoped non-clobber** for the cwd-allowlist subsystem
+ * (`additionalWorkRoots[]` / `workRootsMetadata`). `writeSetting()`
+ * carries those fields forward from the on-disk read under the
+ * lock via `preserveAllowListFields()`, so a stale legacy snapshot
+ * cannot erase a concurrent `/api/work-roots` mutation. For every
+ * OTHER field (`user.*` / `project.*` / `locale` /
+ * `claudeCodeSettingsWarning` / `onboarding` / etc) the caller's
+ * snapshot is authoritative; concurrent writers touching different
+ * non-allowlist fields can still lose updates to each other. This
+ * matches the pre-v1.1 ergonomics of the four legacy callers
+ * (`config-routes`, `security-routes`, `user-avatar-routes`, the
+ * `/api/settings/basic` PUT in `index.ts`), each of which targets
+ * a different sub-tree in practice. Broader read-modify-write
+ * semantics across the whole settings document is deferred to a
+ * future minor revision when there is a concrete cross-field
+ * collision to motivate it.
+ *
+ * Lock primitive (deliberate, v1.1 §5.3 trade-off): `proper-lockfile`
+ * acquires its lock through the host filesystem (`fs.realpathSync` /
+ * direct mkdir on the lockfile target) rather than through the
+ * injected `FileAccessLayer`. The layer abstracts the **read / write
+ * surface** so tests and dry-run modes can intercept content I/O;
+ * OS-level lock primitives (which need real-FS semantics like inode
+ * ownership and stale-PID detection) are intentionally out of that
+ * abstraction. The two production backends today are `DirectFsLayer`
+ * and the same layer under test fixtures — both backed by the real
+ * filesystem, so the boundary stays consistent in practice. A
+ * future in-memory `FileAccessLayer` backend would need either a
+ * dedicated `lock()` extension on the layer or a runtime guard
+ * that rejects non-FS backends.
  */
 import lockfile from 'proper-lockfile'
 import { setTimeout as sleep } from 'node:timers/promises'
