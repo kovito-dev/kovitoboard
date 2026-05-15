@@ -46,11 +46,22 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 
 // --- Type definitions ---
 
-/** Abstracted stat info (minimal fields extracted from Node.js fs.Stats) */
+/**
+ * Abstracted stat info (minimal fields extracted from Node.js fs.Stats).
+ *
+ * `isFile` / `isDirectory` were added in the cwd-allowlist work so the
+ * validator (`cwdValidator.ts`) can ask "is this a directory?" without
+ * reaching past the fs-layer abstraction. They are captured at
+ * stat-time and are stable for the duration of the FileStat — race
+ * conditions between stat and a follow-up use are handled at the
+ * call-site (see `cwdValidator` resolvedCwd contract).
+ */
 export interface FileStat {
   size: number
   mtime: Date
   mtimeMs: number
+  isFile: boolean
+  isDirectory: boolean
 }
 
 /**
@@ -68,7 +79,6 @@ export interface FileStat {
  */
 export interface FileLstat extends FileStat {
   isSymbolicLink: boolean
-  isFile: boolean
 }
 
 /** Abstracted watch event (subset of chokidar) */
@@ -535,7 +545,13 @@ export class DirectFsLayer implements FileAccessLayer {
 
   statSync(path: string): FileStat {
     const s = fsStatSync(path)
-    return { size: s.size, mtime: s.mtime, mtimeMs: s.mtimeMs }
+    return {
+      size: s.size,
+      mtime: s.mtime,
+      mtimeMs: s.mtimeMs,
+      isFile: s.isFile(),
+      isDirectory: s.isDirectory(),
+    }
   }
 
   lstatSync(path: string): FileLstat {
@@ -549,6 +565,7 @@ export class DirectFsLayer implements FileAccessLayer {
       // is never reported as a regular file).
       isSymbolicLink: s.isSymbolicLink(),
       isFile: s.isFile(),
+      isDirectory: s.isDirectory(),
     }
   }
 
