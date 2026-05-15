@@ -174,9 +174,57 @@ export interface ClaudeMdGuidanceSetting {
   lastInjectedAt?: string
 }
 
-/** Type definition for the KovitoBoard settings file (.kovitoboard/setting.json) */
+/**
+ * Per-work-root filesystem metadata persisted under
+ * `workRootsMetadata[<canonical-path>]` (spec `cwd-allowlist.md` v1.0 §6.1 /
+ * §7.6 SSOT).
+ *
+ * `caseSensitive` is determined by an on-disk probe (§7.6 runtime capability
+ * detection). The result is fail-closed: if probing fails, the surrounding
+ * work-root entry stays "probe pending" and `validateCwd()` rejects
+ * subsequent cwd checks with `probe_failed` (HIGH 2 fix in CodeX Attempt 1).
+ */
+export interface WorkRootMetadata {
+  /** Whether the FS is case-sensitive (probe result, §7.6 SSOT). */
+  caseSensitive: boolean
+  /** ISO 8601 UTC timestamp recorded when the probe ran. */
+  probedAt: string
+}
+
+/**
+ * Type definition for the KovitoBoard settings file
+ * (.kovitoboard/setting.json).
+ *
+ * Schema version SSOT (spec `cwd-allowlist.md` v1.0 §6.1):
+ *   - In-memory representation always carries `version: '1.2'`. Readers may
+ *     assume `revision` / `additionalWorkRoots` / `workRootsMetadata` are
+ *     guaranteed-initialized after `readSetting()` returns, because
+ *     migration-on-read (§7.7) normalises legacy v1.0 / v1.1 files into
+ *     v1.2 before this validator sees them.
+ *   - `additionalWorkRoots?` / `workRootsMetadata?` are syntactically
+ *     optional only for backward compatibility with legacy `KovitoboardSetting`
+ *     literals in tests; the runtime migration guarantees their presence on
+ *     real reads (§6.1 normative SSOT, CodeX Attempt 1 MEDIUM 4 fix).
+ */
 export interface KovitoboardSetting {
-  version: '1.1'
+  version: '1.2'
+  /**
+   * Monotonic counter used as a compare-and-swap (CAS) token (spec §7.5).
+   * Incremented on every successful write; readers can use the value paired
+   * with `readSettingWithRevision()` to detect concurrent updates.
+   */
+  revision: number
+  /**
+   * User-added work roots beyond the project root (spec §6.1 / §7.2).
+   * Each element is an absolute canonical path (symlink-resolved, NFC
+   * normalised). Migration backfills `[]` for legacy files.
+   */
+  additionalWorkRoots?: string[]
+  /**
+   * Per-root FS metadata keyed by canonical path (spec §6.1 / §7.6).
+   * Migration backfills `{}` for legacy files.
+   */
+  workRootsMetadata?: Record<string, WorkRootMetadata>
   user: {
     displayName: string
     avatar: string | null

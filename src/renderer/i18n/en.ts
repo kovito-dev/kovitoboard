@@ -261,6 +261,29 @@ const en: Record<MessageKey, string> = {
   'nav.menu.agents': 'Agents',
   'nav.menu.sessions': 'Sessions',
   'nav.menu.recipes': 'App recipes',
+  'nav.menu.workRoots': 'Work roots',
+
+  // Work roots settings page (spec cwd-allowlist.md v1.0 §7.4). The
+  // page lists / adds / removes the cwd allow-list entries that sit
+  // outside the project root. Wording is deliberately calm —
+  // adding a folder lets Claude Code write inside it, which is the
+  // single biggest security trade-off in this screen.
+  'workRoots.title': 'Work roots',
+  'workRoots.description':
+    'Folders KovitoBoard is allowed to use as the working directory for Claude Code. The project root is always included; additional roots are listed below.',
+  'workRoots.addSection.title': 'Add a work root',
+  'workRoots.addSection.help':
+    'Enter an absolute path. KovitoBoard will refuse system directories and the KovitoBoard repo root itself for safety.',
+  'workRoots.addButton': 'Add',
+  'workRoots.adding': 'Adding…',
+  'workRoots.listSection.title': 'Additional work roots',
+  'workRoots.listSection.empty': 'No additional work roots yet.',
+  'workRoots.listSection.loadError':
+    'Failed to load the current work roots. The list shown above may be incomplete. See server logs for details and reload to retry.',
+  'workRoots.deleteConfirm.title': 'Remove this work root?',
+  'workRoots.deleteConfirm.body':
+    'KovitoBoard will refuse to start new Claude Code sessions under this folder. In-flight sessions will keep running until they exit on their own.',
+  'workRoots.errorCodeLabel': 'Error code',
 
   // Agent (default)
   'agent.default.name': 'Default',

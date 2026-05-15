@@ -27,6 +27,7 @@ import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
 import { RecipesPage } from './pages/RecipesPage'
+import WorkRootsPage from './pages/WorkRootsPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import { RecipePageHost } from './app-host/RecipePageHost'
 import type { AppMenuEntry } from './types/app-types'
@@ -57,6 +58,11 @@ const menuEntries: MenuEntry[] = [
     id: 'recipes',
     label: t('nav.menu.recipes'),
     icon: Icons.seeds,
+  },
+  {
+    id: 'work-roots',
+    label: t('nav.menu.workRoots'),
+    icon: Icons.settings,
   },
 ]
 
@@ -140,6 +146,7 @@ export function App() {
   const activeMenuId = useMemo(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
     if (location.pathname.startsWith('/recipes')) return 'recipes'
+    if (location.pathname.startsWith('/work-roots')) return 'work-roots'
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
@@ -439,6 +446,7 @@ export function App() {
               />
             } />
             <Route path="/sessions" element={<SessionsPage defaultSessionId={selectedId} />} />
+            <Route path="/work-roots" element={<WorkRootsPage />} />
             <Route path="/sessions/:id" element={
               <SessionDetailPage
                 sessions={sessions}

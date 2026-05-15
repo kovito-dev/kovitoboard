@@ -8,79 +8,555 @@
  *
  * Designed to receive a FileAccessLayer.
  * Validation is implemented manually (without zod).
+ *
+ * Schema versioning SSOT — `cwd-allowlist.md` v1.0 §6.1 / §7.5 / §7.7:
+ *   - In-memory representation always carries `version: '1.2'`.
+ *   - Legacy v1.0 (no `project.path`) and v1.1 files are normalised at
+ *     read time via `migrateSettingObject()` so callers can rely on
+ *     `revision` / `additionalWorkRoots` / `workRootsMetadata` being
+ *     present.
+ *   - Concurrent writers are serialised through `proper-lockfile`, and
+ *     `revision` acts as a compare-and-swap (CAS) token (§7.5).
+ *     `writeSetting()` auto-bumps the revision and retries collisions
+ *     internally with an async backoff (spec v1.1 §7.5 — the sync
+ *     shape with `Atomics.wait` was retired to remove a server-side
+ *     event-loop DoS vector). `writeSettingCas()` exposes explicit
+ *     CAS for callers that need to drive their own retry policy
+ *     (e.g. `/api/work-roots`) and stays sync because it performs no
+ *     internal sleeps.
+ *
+ * CAS scope (deliberate, v1.1 §5.3): the CAS protocol guarantees
+ * **field-scoped non-clobber** for the cwd-allowlist subsystem
+ * (`additionalWorkRoots[]` / `workRootsMetadata`). `writeSetting()`
+ * carries those fields forward from the on-disk read under the
+ * lock via `preserveAllowListFields()`, so a stale legacy snapshot
+ * cannot erase a concurrent `/api/work-roots` mutation. For every
+ * OTHER field (`user.*` / `project.*` / `locale` /
+ * `claudeCodeSettingsWarning` / `onboarding` / etc) the caller's
+ * snapshot is authoritative; concurrent writers touching different
+ * non-allowlist fields can still lose updates to each other. This
+ * matches the pre-v1.1 ergonomics of the four legacy callers
+ * (`config-routes`, `security-routes`, `user-avatar-routes`, the
+ * `/api/settings/basic` PUT in `index.ts`), each of which targets
+ * a different sub-tree in practice. Broader read-modify-write
+ * semantics across the whole settings document is deferred to a
+ * future minor revision when there is a concrete cross-field
+ * collision to motivate it.
+ *
+ * Lock primitive (deliberate, v1.1 §5.3 trade-off): `proper-lockfile`
+ * acquires its lock through the host filesystem (`fs.realpathSync` /
+ * direct mkdir on the lockfile target) rather than through the
+ * injected `FileAccessLayer`. The layer abstracts the **read / write
+ * surface** so tests and dry-run modes can intercept content I/O;
+ * OS-level lock primitives (which need real-FS semantics like inode
+ * ownership and stale-PID detection) are intentionally out of that
+ * abstraction. The two production backends today are `DirectFsLayer`
+ * and the same layer under test fixtures — both backed by the real
+ * filesystem, so the boundary stays consistent in practice. A
+ * future in-memory `FileAccessLayer` backend would need either a
+ * dedicated `lock()` extension on the layer or a runtime guard
+ * that rejects non-FS backends.
  */
+import lockfile from 'proper-lockfile'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { lazyChildLogger } from './logger'
 
 const settingLog = lazyChildLogger('setting-manager')
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 import { getKovitoboardDir } from './paths'
 import type { FileAccessLayer } from './fs-layer'
-import type { KovitoboardSetting } from '../shared/setting-types'
+import type {
+  KovitoboardSetting,
+  WorkRootMetadata,
+} from '../shared/setting-types'
 
 const SETTING_FILENAME = 'setting.json'
+
+/**
+ * Maximum number of internal retries when `writeSetting()` encounters a
+ * CAS collision. Matches spec §7.5 (up to 3 retries) with exponential
+ * backoff.
+ */
+const CAS_MAX_RETRIES = 3
+const CAS_BACKOFF_MS = [50, 100, 200] as const
+
+/**
+ * Resource limits on `additionalWorkRoots[]` (CodeX PR #38 Attempt 4
+ * MED 2 + Attempt 13 MED 1). Enforced at both the HTTP boundary
+ * (`/api/work-roots` POST in `work-roots-routes.ts`) **and** at
+ * read time (`validateSetting()` below). The read-time enforcement
+ * is what stops a hand-edited or migrated `setting.json` from
+ * carrying thousands of entries (or megabyte-sized paths) past the
+ * write-time caps and re-introducing the DoS vector on every
+ * subsequent `ensureWorkRootMetadata()` / `validateCwd()` call.
+ *
+ * - `MAX_WORK_ROOTS`: ceiling on `additionalWorkRoots.length`. 32 is
+ *   well above any realistic individual-developer workload (typical
+ *   users have 1–5 active project trees) while keeping the per-spawn
+ *   fan-out bounded.
+ * - `MAX_WORK_ROOT_PATH_LENGTH`: per-entry path length cap. 4096
+ *   matches Linux `PATH_MAX`; Windows long-path support is out of
+ *   scope here.
+ */
+export const MAX_WORK_ROOTS = 32
+export const MAX_WORK_ROOT_PATH_LENGTH = 4096
+
+/**
+ * `proper-lockfile.lockSync` options. The sync entrypoint does not
+ * accept a `retries` profile (the underlying adapter throws "Cannot use
+ * retries with the sync api"), so callers are responsible for retrying
+ * — `writeSetting` already does so as part of the CAS loop, and
+ * `writeSettingCas` surfaces lock failures as `SettingConflictError` so
+ * the HTTP layer can retry. `stale` is intentionally short so a crashed
+ * writer cannot wedge subsequent attempts.
+ */
+const LOCK_OPTIONS = {
+  realpath: false as const,
+  stale: 5000,
+} as const
+
+/** Suffix appended to the setting path for the dedicated lockfile. */
+const LOCKFILE_SUFFIX = '.lock'
+
+/**
+ * Thrown by `writeSettingCas()` when the on-disk revision no longer
+ * matches the caller's `expectedRevision`. Callers translate this to
+ * HTTP 409 (`setting_collision`) once their own retry budget is
+ * exhausted (spec §6.2.2 / §7.5).
+ */
+export class SettingConflictError extends Error {
+  readonly expectedRevision: number
+  readonly actualRevision: number
+  constructor(expectedRevision: number, actualRevision: number) {
+    super(
+      `Setting revision mismatch: expected ${expectedRevision}, got ${actualRevision}`,
+    )
+    this.name = 'SettingConflictError'
+    this.expectedRevision = expectedRevision
+    this.actualRevision = actualRevision
+  }
+}
 
 /** Return the path to .kovitoboard/setting.json */
 export function getSettingPath(fs: FileAccessLayer): string {
   return join(getKovitoboardDir(fs), SETTING_FILENAME)
 }
 
-/** Read the settings file. Returns null if the file does not exist */
+/**
+ * Return the path to the dedicated lockfile sitting alongside the
+ * setting file (`<setting.json>.lock`). We use a separate lockfile —
+ * not `setting.json` itself — so the lock can be acquired even before
+ * `setting.json` exists, which is what makes the create path race-safe
+ * (CodeX PR #38 Attempt 3 MEDIUM 2).
+ */
+function getLockfilePath(fs: FileAccessLayer): string {
+  return getSettingPath(fs) + LOCKFILE_SUFFIX
+}
+
+/**
+ * Ensure the dedicated lockfile exists so `lockfile.lockSync()` can
+ * target it. Returns the lockfile path.
+ *
+ * `proper-lockfile.lockSync` requires its target to exist on disk
+ * (the underlying adapter checks the path before installing the
+ * platform-specific lock primitive). By touching a zero-byte
+ * `<setting.json>.lock` we make the lock available regardless of
+ * whether `setting.json` has been created yet, so two concurrent
+ * first-writes serialise on the lockfile instead of both observing
+ * "missing file" and both writing revision 1.
+ */
+function ensureLockfile(fs: FileAccessLayer): string {
+  ensureDir(fs)
+  const lockPath = getLockfilePath(fs)
+  if (!fs.existsSync(lockPath)) {
+    fs.writeFileSync(lockPath, '')
+  }
+  return lockPath
+}
+
+/**
+ * Read the settings file. Returns null if the file does not exist or is
+ * malformed. Applies migration-on-read (§7.7) for legacy v1.0 / v1.1
+ * schemas.
+ */
 export function readSetting(fs: FileAccessLayer): KovitoboardSetting | null {
+  const result = readSettingInternal(fs)
+  return result?.setting ?? null
+}
+
+/**
+ * Read the settings file together with its current CAS token (§7.5).
+ * Returns null with the same fail-quiet contract as `readSetting`.
+ */
+export function readSettingWithRevision(
+  fs: FileAccessLayer,
+): { setting: KovitoboardSetting; revision: number } | null {
+  const result = readSettingInternal(fs)
+  if (!result) return null
+  return { setting: result.setting, revision: result.setting.revision }
+}
+
+/**
+ * Write the settings data with automatic CAS bump (§7.5). Reads the
+ * current revision under lock, increments it, and writes atomically.
+ * Retries up to `CAS_MAX_RETRIES` on collision before throwing the
+ * underlying error to the caller.
+ *
+ * Async API (spec v1.1 §7.5): the four legacy callers (`config-routes`,
+ * `security-routes`, `user-avatar-routes`, the `/api/settings/basic`
+ * PUT in `index.ts`) `await` this function inside their HTTP handlers.
+ * The previous sync shape used `Atomics.wait()` between retries, which
+ * blocked the Node event loop for up to 350 ms (50 + 100 + 200) on
+ * write contention — a server-side DoS vector flagged by CodeX
+ * Attempt 1 MED 2 + Attempt 3 MED 1. The async sleep yields the event
+ * loop instead. The value in `data.revision` is still discarded; the
+ * new revision is always derived from disk state.
+ */
+export async function writeSetting(
+  fs: FileAccessLayer,
+  data: KovitoboardSetting,
+): Promise<void> {
   const settingPath = getSettingPath(fs)
-  if (!fs.existsSync(settingPath)) return null
+  // Touch the dedicated lockfile so both the create path and the
+  // CAS-update path serialise on the same lock target (CodeX PR #38
+  // Attempt 3 MEDIUM 2). Skipping the lock for first-write would let
+  // two concurrent callers both observe "missing file" and both write
+  // revision 1, silently clobbering one another.
+  const lockPath = ensureLockfile(fs)
 
-  try {
-    const raw = fs.readFileSync(settingPath, 'utf-8')
-    const data = JSON.parse(raw) as Record<string, unknown>
-
-    // 1.0 -> 1.1 migration: backfill project.path with process.cwd()
-    if (data.version === '1.0') {
-      data.version = '1.1'
-      const project = (data.project ?? {}) as Record<string, unknown>
-      project.path = project.path ?? process.cwd()
-      data.project = project
-      try {
-        writeSetting(fs, data as unknown as KovitoboardSetting)
-        settingLog.info('[setting-manager] Migrated setting.json: 1.0 -> 1.1')
-      } catch (writeErr) {
-        settingLog.warn({ err: writeErr }, '[setting-manager] Migration write-back failed')
+  let attempt = 0
+  let lastErr: unknown
+  while (attempt < CAS_MAX_RETRIES) {
+    let release: (() => void) | null = null
+    try {
+      release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
+      // We hold the lock, so suppress migration write-back to avoid
+      // `tryMigrationWriteBack()` re-taking the same lock (which would
+      // throw `ELOCKED` and silently abort the migration).
+      const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
+      if (!fs.existsSync(settingPath)) {
+        // First-write path, now executed under the lock so concurrent
+        // first-writers serialise here instead of racing on revision 1.
+        // We also force `additionalWorkRoots[]` / `workRootsMetadata`
+        // to empty so a caller (e.g. `PUT /api/config/setting`
+        // during onboarding) cannot seed allow-list state through
+        // this path. Spec `cwd-allowlist.md` v1.0 §5.3 / §6.2 SSOT —
+        // allow-list mutations MUST flow through `/api/work-roots`
+        // (probe + denylist + count/length validation). Without this
+        // scrub, an attacker who reaches the onboarding API can plant
+        // an arbitrary cwd allow-list before the user runs the
+        // wizard (CodeX PR #38 Attempt 12 HIGH 1).
+        writeAtomic(fs, normaliseV12(scrubAllowListFields(data), 1))
+        return
+      }
+      const currentRevision = current?.setting.revision ?? 0
+      // Protect cwd-allowlist subsystem fields against stale-snapshot
+      // overwrites from the four legacy callers (`config-routes`,
+      // `security-routes`, `user-avatar-routes`, the `/api/settings/basic`
+      // PUT inside `index.ts`). Spec `cwd-allowlist.md` v1.0 §5.3
+      // designates `additionalWorkRoots[]` / `workRootsMetadata` as
+      // "protected fields" — only `writeSettingCas()` (driven by
+      // `/api/work-roots`) owns mutations. Carrying the on-disk values
+      // forward here means a legacy caller whose in-memory snapshot
+      // pre-dates a concurrent allow-list edit can never erase that
+      // edit (CodeX Attempt 2 MEDIUM 1).
+      const preserved = preserveAllowListFields(data, current?.setting)
+      writeAtomic(fs, normaliseV12(preserved, currentRevision + 1))
+      return
+    } catch (err) {
+      // Only retry on transient lock contention. Non-retriable I/O
+      // failures (ENOSPC, EACCES, etc.) escape immediately so the
+      // caller sees the real error without paying for an extra
+      // 50 + 100 + 200 = 350 ms of cumulative backoff sleep across
+      // multiple HTTP handlers (CodeX PR #38 Attempt 9 MED 1).
+      if (!isTransientContentionError(err)) {
+        throw err
+      }
+      lastErr = err
+      settingLog.warn(
+        { err, attempt },
+        '[setting-manager] writeSetting attempt failed (lock contention), will retry',
+      )
+    } finally {
+      if (release) {
+        try {
+          release()
+        } catch (releaseErr) {
+          settingLog.warn(
+            { err: releaseErr },
+            '[setting-manager] Lock release failed',
+          )
+        }
       }
     }
-
-    if (!validateSetting(data)) {
-      settingLog.warn('[setting-manager] Invalid setting file, returning null')
-      return null
+    attempt++
+    if (attempt < CAS_MAX_RETRIES) {
+      // Async backoff between CAS retries (spec v1.1 §7.5). Yields
+      // the event loop so concurrent traffic is not blocked while
+      // we wait for the lock-holder to release. We skip the sleep
+      // on the terminal attempt — there is no next iteration to
+      // benefit from the wait (CodeX PR #38 Attempt 9 LOW 2 same
+      // pattern in the explicit-CAS routes).
+      await sleep(CAS_BACKOFF_MS[Math.min(attempt - 1, CAS_BACKOFF_MS.length - 1)])
     }
-    return data
-  } catch (err) {
-    settingLog.error({ err }, '[setting-manager] Failed to read setting:')
-    return null
   }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error('[setting-manager] writeSetting failed after retries')
 }
 
-/** Write the settings data as JSON */
-export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): void {
+/**
+ * Classify an error from the `writeSetting` CAS loop as transient
+ * lock contention (retry worthwhile) or non-retriable (give up
+ * immediately). `proper-lockfile` surfaces contention as `ELOCKED`;
+ * anything else (ENOSPC / EACCES / EROFS / bug in our own code) is
+ * treated as permanent so a storage fault cannot turn into a
+ * cumulative sleep tax across multiple HTTP handlers.
+ */
+function isTransientContentionError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false
+  const code = (err as NodeJS.ErrnoException).code
+  return code === 'ELOCKED'
+}
+
+/**
+ * Compare-and-swap write (§7.5). Throws `SettingConflictError` when the
+ * on-disk revision differs from `expectedRevision`. Callers own the
+ * retry policy — `/api/work-roots` retries up to 3× with exponential
+ * backoff and surfaces HTTP 409 / `setting_collision` once exhausted
+ * (spec §6.2.2).
+ */
+export function writeSettingCas(
+  fs: FileAccessLayer,
+  data: KovitoboardSetting,
+  expectedRevision: number,
+): void {
   const settingPath = getSettingPath(fs)
+  // Acquire the dedicated lockfile before the existence check so the
+  // create path serialises with concurrent first-writers (CodeX PR #38
+  // Attempt 3 MEDIUM 2). Two callers each with `expectedRevision === 0`
+  // would otherwise both see "missing file" and both write revision 1.
+  const lockPath = ensureLockfile(fs)
 
-  // Create .kovitoboard/ directory if it does not exist
-  const dir = getKovitoboardDir(fs)
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
+  let release: (() => void) | null = null
+  try {
+    try {
+      release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
+    } catch (lockErr) {
+      // Lock contention surfaces as `ELOCKED` from `proper-lockfile`.
+      // Convert it to `SettingConflictError` so the explicit-CAS
+      // caller's retry policy (`/api/work-roots` POST / DELETE)
+      // handles contention as a 409 retriable conflict rather than
+      // letting it fall through to the generic 500 `write_error`
+      // path (CodeX PR #38 Attempt 7 MED 2).
+      const code = (lockErr as NodeJS.ErrnoException).code
+      if (code === 'ELOCKED') {
+        // We never observed the on-disk revision (the lock was
+        // unavailable), so we cannot report the actual revision —
+        // signal "conflict, retry" by mirroring the caller's
+        // expected value.
+        throw new SettingConflictError(expectedRevision, expectedRevision)
+      }
+      throw lockErr
+    }
+    // We hold the lock; suppress migration write-back so
+    // `tryMigrationWriteBack()` does not re-take the lock (same-process
+    // recursive lock would surface as `ELOCKED`).
+    if (!fs.existsSync(settingPath)) {
+      // First-write path under the lock. `expectedRevision === 0`
+      // means "I read no file"; any other value indicates the caller
+      // expected an existing revision, so surface a conflict.
+      if (expectedRevision !== 0) {
+        throw new SettingConflictError(expectedRevision, 0)
+      }
+      // Mirror the scrub from `writeSetting()` — even the explicit
+      // CAS first-write path must not seed `additionalWorkRoots[]`
+      // / `workRootsMetadata` from caller-supplied data. `/api/work-roots`
+      // POST never reaches this branch because its precheck rejects
+      // a missing setting.json with `no_setting`; this guard exists
+      // for any other caller (e.g. tests, future onboarding flows)
+      // that might attempt an explicit-CAS first write (CodeX PR #38
+      // Attempt 12 HIGH 1 defence-in-depth).
+      writeAtomic(fs, normaliseV12(scrubAllowListFields(data), 1))
+      return
+    }
+    const current = readSettingInternal(fs, { skipMigrationWriteBack: true })
+    const currentRevision = current?.setting.revision ?? 0
+    if (currentRevision !== expectedRevision) {
+      throw new SettingConflictError(expectedRevision, currentRevision)
+    }
+    writeAtomic(fs, normaliseV12(data, currentRevision + 1))
+  } finally {
+    if (release) {
+      try {
+        release()
+      } catch (releaseErr) {
+        settingLog.warn(
+          { err: releaseErr },
+          '[setting-manager] Lock release failed',
+        )
+      }
+    }
   }
-
-  // Atomic replace: setting.json is read on every boot; a partial
-  // write would invalidate onboarding state and force a recovery flow.
-  fs.writeFileAtomic(settingPath, JSON.stringify(data, null, 2) + '\n')
 }
 
-/** Manual validation (without zod) */
+/**
+ * Migrate a raw parsed setting object to the v1.2 schema. Pure function
+ * (no I/O). Normative migration rules — spec `cwd-allowlist.md` v1.0
+ * §7.7:
+ *   - v1.0 inputs gain a backfilled `project.path` (legacy behaviour
+ *     preserved).
+ *   - v1.0 / v1.1 inputs are rewritten to `version: '1.2'`.
+ *   - Missing `revision` / `additionalWorkRoots` / `workRootsMetadata`
+ *     are backfilled regardless of the source version so newer fields
+ *     introduced inside v1.2 future minor revs do not break legacy
+ *     readers.
+ *   - Returns `{ migrated, changed }` so the caller decides whether to
+ *     write-back the normalised form.
+ *
+ * Exported for unit testing.
+ */
+export function migrateSettingObject(
+  raw: Record<string, unknown>,
+): { migrated: Record<string, unknown>; changed: boolean } {
+  let changed = false
+  const out: Record<string, unknown> = { ...raw }
+
+  // v1.0 → v1.1: backfill project.path before bumping further.
+  if (out.version === '1.0') {
+    const project = (out.project ?? {}) as Record<string, unknown>
+    if (typeof project.path !== 'string' || project.path.length === 0) {
+      project.path = process.cwd()
+    }
+    out.project = project
+    out.version = '1.1'
+    changed = true
+  }
+
+  // Normalise version to '1.2'. Any other unknown / missing version is
+  // treated as "needs migration" so a hand-edited file with a missing
+  // field is repaired instead of rejected.
+  if (out.version !== '1.2') {
+    out.version = '1.2'
+    changed = true
+  }
+
+  // revision: monotonic positive integer; default 1 when missing /
+  // malformed.
+  if (
+    typeof out.revision !== 'number' ||
+    !Number.isFinite(out.revision) ||
+    out.revision < 1 ||
+    !Number.isInteger(out.revision)
+  ) {
+    out.revision = 1
+    changed = true
+  }
+
+  if (!Array.isArray(out.additionalWorkRoots)) {
+    out.additionalWorkRoots = []
+    changed = true
+  }
+
+  if (
+    out.workRootsMetadata === undefined ||
+    out.workRootsMetadata === null ||
+    typeof out.workRootsMetadata !== 'object' ||
+    Array.isArray(out.workRootsMetadata)
+  ) {
+    out.workRootsMetadata = {}
+    changed = true
+  }
+
+  return { migrated: out, changed }
+}
+
+/** Manual validation (without zod) — accepts only the post-migration v1.2 shape. */
 export function validateSetting(data: unknown): data is KovitoboardSetting {
   if (data === null || typeof data !== 'object') return false
 
   const obj = data as Record<string, unknown>
 
-  // version
-  if (obj.version !== '1.1') return false
+  // version: must be the post-migration form. Raw v1.0 / v1.1 files are
+  // accepted by `readSetting()` via migration; `validateSetting()` runs
+  // after migration so the only valid version here is '1.2'.
+  if (obj.version !== '1.2') return false
+
+  // revision: monotonic positive integer (§6.1).
+  if (
+    typeof obj.revision !== 'number' ||
+    !Number.isFinite(obj.revision) ||
+    obj.revision < 1 ||
+    !Number.isInteger(obj.revision)
+  ) {
+    return false
+  }
+
+  // additionalWorkRoots: optional in TS, but post-migration it is
+  // guaranteed-initialised (§6.1 SSOT). Accept missing for forward
+  // compatibility with hand-edited files (will be backfilled on next
+  // write).
+  //
+  // Each entry MUST be an absolute path. The downstream
+  // `ensureWorkRootMetadata()` / `validateCwd()` pipeline passes
+  // these strings to `realpathSync()`, which resolves relative
+  // inputs against the server process cwd. A hand-edited or
+  // malformed `setting.json` carrying a relative entry would
+  // therefore turn into an unintended allowed root and reintroduce
+  // the security regression we already closed for the HTTP
+  // boundary (CodeX PR #38 Attempt 11 MED 1).
+  //
+  // Enforce the same `MAX_WORK_ROOTS` count / `MAX_WORK_ROOT_PATH_LENGTH`
+  // per-entry caps that `/api/work-roots` POST applies at write
+  // time. Without these read-time gates, a hand-edited
+  // `setting.json` with thousands of (or extremely long) entries
+  // would slip past the HTTP boundary and re-introduce the DoS
+  // amplification on every guarded spawn/tmux path (CodeX PR #38
+  // Attempt 13 MED 1).
+  if (obj.additionalWorkRoots !== undefined) {
+    if (!Array.isArray(obj.additionalWorkRoots)) return false
+    if (obj.additionalWorkRoots.length > MAX_WORK_ROOTS) return false
+    for (const entry of obj.additionalWorkRoots) {
+      if (typeof entry !== 'string' || entry.length === 0) return false
+      if (entry.length > MAX_WORK_ROOT_PATH_LENGTH) return false
+      if (!isAbsolute(entry)) return false
+    }
+  }
+
+  // workRootsMetadata: same optionality contract as above.
+  //
+  // Enforce the same caps as `additionalWorkRoots`. Without these,
+  // a hand-edited `setting.json` could carry thousands of metadata
+  // entries (or megabyte-sized keys) that pass validation and then
+  // get copied / spread by every `ensureWorkRootMetadata()` call
+  // and every write — a DoS surface the per-route POST caps were
+  // meant to close (CodeX PR #38 Attempt 14 MED 1).
+  //
+  // The count ceiling is `MAX_WORK_ROOTS + 1` to allow one entry
+  // per additional root plus an optional entry for the project
+  // root path itself (`ensureWorkRootMetadata()` populates probe
+  // metadata for both).
+  if (obj.workRootsMetadata !== undefined) {
+    if (
+      obj.workRootsMetadata === null ||
+      typeof obj.workRootsMetadata !== 'object' ||
+      Array.isArray(obj.workRootsMetadata)
+    ) {
+      return false
+    }
+    const entries = Object.entries(
+      obj.workRootsMetadata as Record<string, unknown>,
+    )
+    if (entries.length > MAX_WORK_ROOTS + 1) return false
+    for (const [key, meta] of entries) {
+      if (key.length === 0 || key.length > MAX_WORK_ROOT_PATH_LENGTH) return false
+      if (!isAbsolute(key)) return false
+      if (meta === null || typeof meta !== 'object') return false
+      const m = meta as Record<string, unknown>
+      if (typeof m.caseSensitive !== 'boolean') return false
+      if (typeof m.probedAt !== 'string' || m.probedAt.length === 0) return false
+    }
+  }
 
   // user
   if (obj.user === null || typeof obj.user !== 'object') return false
@@ -194,3 +670,212 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
 
   return true
 }
+
+// --- internal helpers ---------------------------------------------------
+
+/**
+ * Options for the internal reader.
+ *
+ * `skipMigrationWriteBack` is set by `writeSetting()` / `writeSettingCas()`
+ * which are *already* holding the setting-file lock when they invoke
+ * `readSettingInternal()`. `tryMigrationWriteBack()` re-takes the same
+ * lock via `proper-lockfile.lockSync`, which would surface as `ELOCKED`
+ * inside the same process and abort the migration. Suppressing the
+ * write-back from those call sites keeps the write paths deadlock-free;
+ * the migration still happens on the next plain `readSetting()` call.
+ */
+type ReadSettingOptions = { skipMigrationWriteBack?: boolean }
+
+function readSettingInternal(
+  fs: FileAccessLayer,
+  options: ReadSettingOptions = {},
+): { setting: KovitoboardSetting } | null {
+  const settingPath = getSettingPath(fs)
+  if (!fs.existsSync(settingPath)) return null
+
+  let raw: Record<string, unknown>
+  try {
+    const text = fs.readFileSync(settingPath, 'utf-8')
+    raw = JSON.parse(text) as Record<string, unknown>
+  } catch (err) {
+    settingLog.error({ err }, '[setting-manager] Failed to read setting:')
+    return null
+  }
+
+  const previousVersion = raw.version
+  const { migrated, changed } = migrateSettingObject(raw)
+
+  if (changed && !options.skipMigrationWriteBack) {
+    tryMigrationWriteBack(fs, settingPath, previousVersion, migrated)
+  }
+
+  if (!validateSetting(migrated)) {
+    settingLog.warn(
+      '[setting-manager] Invalid setting file after migration, returning null',
+    )
+    return null
+  }
+  return { setting: migrated }
+}
+
+/**
+ * Persist the migrated form back to disk under the same `proper-lockfile`
+ * lock that the write paths use. Re-reads the on-disk file *inside* the
+ * lock; if another writer has already promoted the file to v1.2 we
+ * abandon the write-back rather than clobbering newer state (CodeX
+ * Attempt 1 HIGH 1). The cwd allow-list — `additionalWorkRoots[]` /
+ * `workRootsMetadata` / `revision` — is persisted here, so a stale
+ * migration overwrite would be a security-relevant state loss.
+ *
+ * Failures are swallowed: callers continue with the in-memory migrated
+ * form, matching the prior best-effort contract of migration-on-read.
+ */
+function tryMigrationWriteBack(
+  fs: FileAccessLayer,
+  settingPath: string,
+  previousVersion: unknown,
+  migrated: Record<string, unknown>,
+): void {
+  let release: (() => void) | null = null
+  try {
+    // Use the dedicated lockfile so we serialise with `writeSetting`
+    // / `writeSettingCas` (which now lock the same path).
+    const lockPath = ensureLockfile(fs)
+    release = lockfile.lockSync(lockPath, LOCK_OPTIONS)
+
+    // Re-read under lock. If the file is already v1.2, another writer
+    // has migrated it in the meantime — abandon our write-back so we
+    // do not roll their `additionalWorkRoots` / `workRootsMetadata` /
+    // `revision` back to the migration default.
+    let currentRaw: Record<string, unknown>
+    try {
+      const text = fs.readFileSync(settingPath, 'utf-8')
+      currentRaw = JSON.parse(text) as Record<string, unknown>
+    } catch (readErr) {
+      settingLog.warn(
+        { err: readErr },
+        '[setting-manager] Migration write-back skipped: re-read under lock failed',
+      )
+      return
+    }
+    if (currentRaw.version === '1.2') {
+      settingLog.debug(
+        '[setting-manager] Migration write-back skipped: concurrent writer already promoted file to v1.2',
+      )
+      return
+    }
+
+    writeAtomic(fs, migrated as unknown as KovitoboardSetting)
+    settingLog.info(
+      { fromVersion: previousVersion, toVersion: '1.2' },
+      '[setting-manager] Migrated setting.json',
+    )
+  } catch (writeErr) {
+    settingLog.warn(
+      { err: writeErr },
+      '[setting-manager] Migration write-back failed; continuing in memory',
+    )
+  } finally {
+    if (release) {
+      try {
+        release()
+      } catch (releaseErr) {
+        settingLog.warn(
+          { err: releaseErr },
+          '[setting-manager] Lock release failed',
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Construct the canonical v1.2 form of the supplied setting, overriding
+ * `version` / `revision` and ensuring the new fields are present. The
+ * `additionalWorkRoots` / `workRootsMetadata` fields are preserved
+ * verbatim when supplied so write-paths that legitimately update them
+ * (e.g. `/api/work-roots`) round-trip cleanly.
+ */
+function normaliseV12(
+  data: KovitoboardSetting,
+  revision: number,
+): KovitoboardSetting {
+  const next: KovitoboardSetting = {
+    ...data,
+    version: '1.2',
+    revision,
+  }
+  if (next.additionalWorkRoots === undefined) {
+    next.additionalWorkRoots = []
+  }
+  if (next.workRootsMetadata === undefined) {
+    next.workRootsMetadata = {} as Record<string, WorkRootMetadata>
+  }
+  return next
+}
+
+function ensureDir(fs: FileAccessLayer): void {
+  const dir = getKovitoboardDir(fs)
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
+}
+
+function writeAtomic(fs: FileAccessLayer, data: KovitoboardSetting): void {
+  const settingPath = getSettingPath(fs)
+  ensureDir(fs)
+  fs.writeFileAtomic(settingPath, JSON.stringify(data, null, 2) + '\n')
+}
+
+/**
+ * Force the cwd-allowlist subsystem fields to safe empty defaults
+ * before the first write. Spec `cwd-allowlist.md` v1.0 §5.3 / §6.2
+ * SSOT — only `/api/work-roots` may mutate `additionalWorkRoots[]`
+ * / `workRootsMetadata`, and the route runs the 7-step validation
+ * (absolute / exists / directory / realpath / denylist / duplicate
+ * / probe) before persisting an entry. Letting first-write callers
+ * (typically the onboarding `PUT /api/config/setting` flow) seed
+ * those fields from the caller's payload would bypass every check.
+ * The scrub is unconditional on first-write because the spec also
+ * mandates that the initial setting.json carry empty allow-list
+ * state (CodeX PR #38 Attempt 12 HIGH 1).
+ */
+function scrubAllowListFields(data: KovitoboardSetting): KovitoboardSetting {
+  return {
+    ...data,
+    additionalWorkRoots: [],
+    workRootsMetadata: {} as Record<string, WorkRootMetadata>,
+  }
+}
+
+/**
+ * Carry the cwd-allowlist subsystem fields from the on-disk setting
+ * into the caller-supplied snapshot before the write. The four legacy
+ * `writeSetting()` callers do not edit these fields (spec §5.3 marks
+ * them as protected and routes mutations through `/api/work-roots` →
+ * `writeSettingCas()`), so preserving them is always safe and prevents
+ * a stale snapshot from silently erasing concurrent allow-list state.
+ *
+ * Falls back to the caller's value (or the spec defaults) when the
+ * on-disk read returned nothing (e.g. fresh install before
+ * `writeSetting` ran).
+ */
+function preserveAllowListFields(
+  data: KovitoboardSetting,
+  onDisk: KovitoboardSetting | undefined,
+): KovitoboardSetting {
+  if (!onDisk) return data
+  return {
+    ...data,
+    additionalWorkRoots:
+      onDisk.additionalWorkRoots ?? data.additionalWorkRoots ?? [],
+    workRootsMetadata:
+      onDisk.workRootsMetadata ?? data.workRootsMetadata ?? {},
+  }
+}
+
+// `sleepSync()` (Atomics.wait-based blocking sleep) was removed in
+// spec v1.1 §7.5 along with the sync shape of `writeSetting()`. The
+// async CAS backoff now uses `node:timers/promises#setTimeout` so the
+// event loop is free between retry attempts (CodeX PR #38 Attempt 1
+// MED 2 + Attempt 3 MED 1).

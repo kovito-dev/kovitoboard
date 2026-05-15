@@ -56,7 +56,10 @@ const ALLOWED_CONTENT_TYPES: Record<string, string> = {
  * earlier setup. Returns false when no setting file exists yet
  * (the operator should finish onboarding first).
  */
-function updateSettingAvatar(fs: FileAccessLayer, avatarRelative: string | null): boolean {
+async function updateSettingAvatar(
+  fs: FileAccessLayer,
+  avatarRelative: string | null,
+): Promise<boolean> {
   const existing = readSetting(fs)
   if (!existing) return false
   const next = {
@@ -66,7 +69,9 @@ function updateSettingAvatar(fs: FileAccessLayer, avatarRelative: string | null)
       avatar: avatarRelative,
     },
   }
-  writeSetting(fs, next)
+  // `writeSetting()` is async since spec cwd-allowlist.md v1.1 §7.5
+  // (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS backoff).
+  await writeSetting(fs, next)
   return true
 }
 
@@ -76,7 +81,7 @@ export function createUserAvatarRouter(fs: FileAccessLayer): Router {
   router.post(
     '/avatar',
     express.raw({ type: ['image/*', 'image/svg+xml'], limit: '1mb' }),
-    (req, res) => {
+    async (req, res) => {
       const body = req.body as Buffer
       if (!body || body.length === 0) {
         res.status(400).json({ error: 'Empty file' })
@@ -111,7 +116,7 @@ export function createUserAvatarRouter(fs: FileAccessLayer): Router {
         fs.writeFileSync(filePath, body)
 
         const relative = `user/${USER_AVATAR_FILE_STEM}${ext}`
-        const persisted = updateSettingAvatar(fs, relative)
+        const persisted = await updateSettingAvatar(fs, relative)
         if (!persisted) {
           // Roll back the file so the on-disk state stays in sync
           // with `setting.json` (avoids a "saved" indicator that
@@ -132,13 +137,13 @@ export function createUserAvatarRouter(fs: FileAccessLayer): Router {
     },
   )
 
-  router.delete('/avatar', (_req, res) => {
+  router.delete('/avatar', async (_req, res) => {
     try {
       const deleted = deleteUserAvatar(fs)
       // Always clear the persisted path so the renderer falls back
       // to the auto-generated SVG, even if no file was on disk
       // (e.g. setting.json drifted because of a manual edit).
-      const persisted = updateSettingAvatar(fs, null)
+      const persisted = await updateSettingAvatar(fs, null)
       if (!persisted) {
         res
           .status(409)

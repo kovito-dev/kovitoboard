@@ -11,6 +11,38 @@ import { resolveProjectRoot } from './config'
 import type { FileAccessLayer } from './fs-layer'
 import { TRUST_FOOTER_PATTERNS } from './trust-prompt-detector'
 import { tmuxLogger } from './logger'
+import { validateCwd } from './cwdValidator'
+import { ensureWorkRootMetadata } from './cwd-precheck'
+
+/**
+ * Run the cwd allow-list gate for a `cwd` argument passed to one of
+ * the tmux-bridge entrypoints (consumer #4 / #5 in spec
+ * `cwd-allowlist.md` v1.0 §5.2). Spec §7.1 prescribes a throw — the
+ * boundary-external helper contract (`app-directory-extension.md`
+ * v1.4.5 §5.0) hands enforcement back to the embedded-app caller,
+ * which is expected to catch and surface the error itself.
+ *
+ * Returns the canonical `resolvedCwd` so callers can satisfy the
+ * §8.3 TOCTOU defence by passing it (rather than the raw input) to
+ * `tmux -c …`.
+ */
+function gateCwd(fs: FileAccessLayer, cwd: string): string {
+  const projectRoot = resolveProjectRoot(fs)
+  const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+  const result = validateCwd(
+    cwd,
+    projectRoot,
+    snapshot.additionalWorkRoots,
+    snapshot.workRootsMetadata,
+    fs,
+  )
+  if (!result.ok) {
+    throw new Error(
+      `cwd not in allowed work roots (reason=${result.reason})`,
+    )
+  }
+  return result.resolvedCwd
+}
 
 /**
  * Validate a string as a tmux window name / agent ID.
@@ -453,7 +485,29 @@ export class TmuxBridge {
     if (windowName && !isValidTmuxName(windowName)) {
       return { success: false, error: `Invalid window name: "${windowName}"` }
     }
-    const workDir = cwd || resolveProjectRoot(this.fs)
+    // cwd allow-list gate — consumer #4 in spec `cwd-allowlist.md`
+    // v1.0 §5.2 (embedded-app entrypoint, boundary-external).
+    //
+    // The condition uses `cwd !== undefined` rather than the truthy
+    // `if (cwd)` form: an empty string `""` is a *supplied* value and
+    // must be validated (and rejected as `not_absolute`) instead of
+    // silently falling back to `projectRoot`. The HTTP entry points
+    // already reject `""` at the boundary; this guard matches that
+    // contract for the boundary-external entrypoint (CodeX PR #38
+    // Attempt 14 MED 2).
+    let workDir: string
+    if (cwd !== undefined) {
+      try {
+        workDir = gateCwd(this.fs, cwd)
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    } else {
+      workDir = resolveProjectRoot(this.fs)
+    }
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === name)) {
@@ -495,7 +549,25 @@ export class TmuxBridge {
     if (!isValidTmuxName(windowName)) {
       return { success: false, error: `Invalid window name: "${windowName}"` }
     }
-    const workDir = cwd || resolveProjectRoot(this.fs)
+    // cwd allow-list gate — consumer #5 in spec `cwd-allowlist.md`
+    // v1.0 §5.2 (job-window entrypoint, boundary-external).
+    //
+    // Same `cwd !== undefined` guard as `startAgent` above — empty
+    // strings are validated and rejected, not silently widened into
+    // the project root (CodeX PR #38 Attempt 14 MED 2).
+    let workDir: string
+    if (cwd !== undefined) {
+      try {
+        workDir = gateCwd(this.fs, cwd)
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    } else {
+      workDir = resolveProjectRoot(this.fs)
+    }
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === windowName)) {
