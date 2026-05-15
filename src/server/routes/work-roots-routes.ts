@@ -56,6 +56,26 @@ const CAS_MAX_RETRIES = 3
 const CAS_BACKOFF_MS = [50, 100, 200] as const
 
 /**
+ * Resource limits on `additionalWorkRoots[]` (CodeX PR #38 Attempt 4
+ * MED 2 — unbounded allow-list amplifies every guarded spawn/tmux
+ * path into O(n) disk work via `ensureWorkRootMetadata()` /
+ * `validateCwd()`. Without a ceiling, a caller can grow the array
+ * indefinitely and turn each future session-start into a slow
+ * fan-out across stale entries — a durable server-side DoS vector).
+ *
+ * - `MAX_WORK_ROOTS`: ceiling on `additionalWorkRoots.length`. 32 is
+ *   well above any realistic individual-developer workload (typical
+ *   KB users have 1–5 active project trees) while keeping the
+ *   per-spawn fan-out bounded.
+ * - `MAX_WORK_ROOT_PATH_LENGTH`: per-entry path length cap. 4096 matches
+ *   Linux `PATH_MAX`; Windows long-path support (32k) is out of scope
+ *   here because the cwd allow-list itself is only used for `claude`
+ *   spawn cwd and tmux `-c`, both of which the OS clamps anyway.
+ */
+const MAX_WORK_ROOTS = 32
+const MAX_WORK_ROOT_PATH_LENGTH = 4096
+
+/**
  * Build the work-roots router. The router is mounted at
  * `/api/work-roots` by `src/server/index.ts`.
  */
@@ -75,6 +95,23 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
     const input = req.body?.path
     if (typeof input !== 'string') {
       sendError(res, 400, 'not_absolute', 'Path must be a string', input)
+      return
+    }
+
+    // Step 0: per-entry path-length cap. We check this before any I/O
+    // so an oversized path is rejected without touching the disk —
+    // half of the allow-list resource-exhaustion mitigation (CodeX
+    // PR #38 Attempt 4 MED 2). The complementary count cap is
+    // enforced inside the CAS loop after we have a fresh setting
+    // snapshot.
+    if (input.length > MAX_WORK_ROOT_PATH_LENGTH) {
+      sendError(
+        res,
+        400,
+        'path_too_long',
+        `Path exceeds the per-entry length cap (${MAX_WORK_ROOT_PATH_LENGTH} chars)`,
+        input,
+      )
       return
     }
 
@@ -148,6 +185,41 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
       return
     }
 
+    // Step 6 precondition: confirm `setting.json` exists *before*
+    // running the probe. The probe writes a sentinel file into the
+    // user-supplied directory to detect FS case sensitivity, so
+    // running it for a request that will subsequently return
+    // `no_setting` would leak a filesystem side effect on an
+    // attacker-controlled path before the endpoint has even
+    // confirmed that allow-list mutation is currently legal (CodeX
+    // PR #38 Attempt 4 MED 1).
+    const precheck = readSettingWithRevision(fs)
+    if (!precheck) {
+      sendError(
+        res,
+        400,
+        'no_setting',
+        'Settings file is not initialised; complete onboarding first',
+        input,
+      )
+      return
+    }
+    // Resource-exhaustion ceiling on `additionalWorkRoots[]`. We
+    // check the current count outside the CAS loop so an oversized
+    // allow-list short-circuits before the probe is run. The
+    // canonical, race-tolerant check still happens inside the loop
+    // below — this one is best-effort but covers the common case.
+    if ((precheck.setting.additionalWorkRoots ?? []).length >= MAX_WORK_ROOTS) {
+      sendError(
+        res,
+        400,
+        'too_many_roots',
+        `Cannot add more than ${MAX_WORK_ROOTS} additional work roots`,
+        input,
+      )
+      return
+    }
+
     // Step 7 (run before the CAS loop so a probe failure short-
     // circuits without paying for repeated reads). The probe is
     // FS-state-dependent but does not modify the allow-list, so
@@ -171,9 +243,9 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
     while (attempt < CAS_MAX_RETRIES) {
       const current = readSettingWithRevision(fs)
       if (!current) {
-        // Setting file does not exist yet — onboarding has not run.
-        // Block the add: there is no baseline to attach the work
-        // root to, and the wizard is the canonical place to seed it.
+        // Setting file vanished between the precheck and the CAS
+        // loop (e.g. a `setting.json` deletion concurrent with our
+        // request). Treat as `no_setting` rather than crashing.
         sendError(
           res,
           400,
@@ -186,6 +258,18 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
 
       const setting = current.setting
       const existingRoots = setting.additionalWorkRoots ?? []
+      // Race-tolerant count ceiling: re-check inside the lock so two
+      // concurrent POSTs cannot both squeeze past `MAX_WORK_ROOTS - 1`.
+      if (existingRoots.length >= MAX_WORK_ROOTS) {
+        sendError(
+          res,
+          400,
+          'too_many_roots',
+          `Cannot add more than ${MAX_WORK_ROOTS} additional work roots`,
+          input,
+        )
+        return
+      }
       if (existingRoots.includes(canonical)) {
         sendError(res, 400, 'duplicate', 'Path is already in additionalWorkRoots', input)
         return
@@ -242,6 +326,22 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
       return
     }
 
+    // Canonicalise the delete input so it matches the form stored by
+    // POST (`realpathSync`). Without this step a trailing slash, a
+    // symlink form, or a case-variant on a case-insensitive FS would
+    // miss the stored entry and silently leave the work root active
+    // (CodeX PR #38 Attempt 4 LOW 3).
+    //
+    // If `realpath` fails (the underlying directory is gone since
+    // the entry was added) we fall back to the verbatim input so
+    // stale entries can still be revoked.
+    let lookupKey = input
+    try {
+      lookupKey = fs.realpathSync(input)
+    } catch {
+      lookupKey = input
+    }
+
     let attempt = 0
     while (attempt < CAS_MAX_RETRIES) {
       const current = readSettingWithRevision(fs)
@@ -251,25 +351,39 @@ export function createWorkRootsRouter(fs: FileAccessLayer): Router {
       }
       const setting = current.setting
       const existingRoots = setting.additionalWorkRoots ?? []
-      if (!existingRoots.includes(input)) {
+      // Try the canonicalised form first, then fall back to the
+      // verbatim input. The fallback covers two edge cases:
+      //   - the lookup `realpath` failed above (stale entry); the
+      //     stored value may match the user's exact input
+      //   - the entry pre-dates the POST canonicalisation contract
+      const targetKey = existingRoots.includes(lookupKey)
+        ? lookupKey
+        : existingRoots.includes(input)
+          ? input
+          : null
+      if (targetKey === null) {
         sendError(res, 404, 'not_found', 'Path is not in additionalWorkRoots', input)
         return
       }
 
       const existingMeta = setting.workRootsMetadata ?? {}
       const nextMeta: Record<string, (typeof existingMeta)[string]> = { ...existingMeta }
-      delete nextMeta[input]
+      delete nextMeta[targetKey]
 
       const next = {
         ...setting,
-        additionalWorkRoots: existingRoots.filter((p) => p !== input),
+        additionalWorkRoots: existingRoots.filter((p) => p !== targetKey),
         workRootsMetadata: nextMeta,
       }
 
       try {
         writeSettingCas(fs, next, current.revision)
         res.status(200).json({
-          removedPath: input,
+          // Report the actual stored entry we removed (post-realpath),
+          // not the verbatim caller input — the renderer relies on
+          // this to refresh its list view (CodeX PR #38 Attempt 4
+          // LOW 3 follow-through).
+          removedPath: targetKey,
           additionalWorkRoots: next.additionalWorkRoots,
         })
         return

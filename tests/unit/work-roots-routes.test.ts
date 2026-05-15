@@ -226,6 +226,90 @@ describe('POST /api/work-roots — failure envelopes', () => {
     expect(body.path).toBe('/etc')
   })
 
+  // CodeX PR #38 Attempt 4 MED 2 regression — path-length cap.
+  it('rejects a path longer than the per-entry cap with path_too_long', async () => {
+    // 4097 chars: one over MAX_WORK_ROOT_PATH_LENGTH. The value
+    // happens to be absolute (leading slash) so we exercise the
+    // length check specifically rather than the not_absolute branch.
+    const longPath = '/' + 'a'.repeat(4096)
+    const res = await fetch(`${baseUrl}/api/work-roots`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: longPath }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe('path_too_long')
+  })
+
+  // CodeX PR #38 Attempt 4 MED 2 regression — count cap.
+  it('rejects POST when the allow-list is already at MAX_WORK_ROOTS with too_many_roots', async () => {
+    // Pre-seed `additionalWorkRoots` with 32 synthetic entries
+    // directly via the on-disk setting (we avoid 32 real-FS probes
+    // here — the test is about the ceiling check, not about
+    // canonicalization).
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
+    const setting = JSON.parse(readFileSync(settingPath, 'utf-8'))
+    setting.additionalWorkRoots = Array.from(
+      { length: 32 },
+      (_v, i) => `/tmp/synthetic-root-${i}`,
+    )
+    setting.workRootsMetadata = Object.fromEntries(
+      setting.additionalWorkRoots.map((p: string) => [
+        p,
+        { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+      ]),
+    )
+    writeFileSync(settingPath, JSON.stringify(setting, null, 2))
+
+    const extra = mkdtempSync(join(tmpdir(), 'kb-work-cap-'))
+    try {
+      const res = await fetch(`${baseUrl}/api/work-roots`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: extra }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toBe('too_many_roots')
+    } finally {
+      rmSync(extra, { recursive: true, force: true })
+    }
+  })
+
+  // CodeX PR #38 Attempt 4 MED 1 regression — probe runs only after
+  // the setting precheck, so a request that will return `no_setting`
+  // never writes the probe sentinel into the user-supplied directory.
+  it('returns no_setting (before running the probe) when setting.json is absent', async () => {
+    const { rmSync: rmSyncFn, readdirSync } = await import('node:fs')
+    const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
+    rmSyncFn(settingPath, { force: true })
+
+    const extra = mkdtempSync(join(tmpdir(), 'kb-work-no-setting-'))
+    try {
+      const before = readdirSync(extra)
+      expect(before).toEqual([])
+
+      const res = await fetch(`${baseUrl}/api/work-roots`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: extra }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toBe('no_setting')
+
+      // Probe sentinel must NOT have been written into the supplied
+      // directory: the precheck rejected the request before the
+      // probe could touch the filesystem.
+      const after = readdirSync(extra)
+      expect(after).toEqual([])
+    } finally {
+      rmSync(extra, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a duplicate add with duplicate', async () => {
     const extra = mkdtempSync(join(tmpdir(), 'kb-work-dup-'))
     try {
@@ -298,6 +382,38 @@ describe('DELETE /api/work-roots', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toBe('invalid_path')
+  })
+
+  // CodeX PR #38 Attempt 4 LOW 3 regression — DELETE canonicalises
+  // the input via realpath so a trailing-slash form (or any other
+  // equivalent form) successfully matches the stored canonical entry.
+  it('canonicalises the DELETE input so a trailing-slash form removes the canonical entry', async () => {
+    const extra = mkdtempSync(join(tmpdir(), 'kb-work-canon-del-'))
+    try {
+      const post = await fetch(`${baseUrl}/api/work-roots`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: extra }),
+      })
+      const canonical = (await post.json()).addedPath as string
+
+      // Issue DELETE with a trailing slash — pre-fix this verbatim
+      // form would miss the canonical entry; post-fix realpath strips
+      // the slash and the lookup succeeds.
+      const withSlash = canonical + '/'
+      const del = await fetch(`${baseUrl}/api/work-roots`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: withSlash }),
+      })
+      expect(del.status).toBe(200)
+      const body = await del.json()
+      // `removedPath` reports the actual stored entry (canonical form).
+      expect(body.removedPath).toBe(canonical)
+      expect(body.additionalWorkRoots).not.toContain(canonical)
+    } finally {
+      rmSync(extra, { recursive: true, force: true })
+    }
   })
 
   it('cleans up workRootsMetadata when the root is removed', async () => {
