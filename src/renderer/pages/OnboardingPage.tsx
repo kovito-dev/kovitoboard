@@ -151,8 +151,17 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     }
 
     // Save setting via API
+    //
+    // `revision` / `additionalWorkRoots` / `workRootsMetadata` are
+    // initialised here so the v1.2 type contract (cwd-allowlist.md
+    // v1.0 §6.1) is satisfied at wizard-completion time. The server
+    // will reset `revision` to the CAS-derived value on write, but we
+    // emit `1` for clarity; new files start at revision 1 (§7.5).
     const setting: KovitoboardSetting = {
-      version: '1.1',
+      version: '1.2',
+      revision: 1,
+      additionalWorkRoots: [],
+      workRootsMetadata: {},
       user: { displayName, avatar: null },
       project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,

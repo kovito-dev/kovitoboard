@@ -4,32 +4,111 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Unit tests for setting-manager
+ * Unit tests for setting-manager.
  *
- * validateSetting: v1.1 schema validation (project.path required)
- * readSetting: 1.0 -> 1.1 migration
+ * - validateSetting accepts the post-migration v1.2 shape only; legacy
+ *   raw v1.0 / v1.1 inputs are normalised by `readSetting()` via
+ *   `migrateSettingObject()` (spec `cwd-allowlist.md` v1.0 §7.7).
+ * - migrateSettingObject backfills `version` / `revision` /
+ *   `additionalWorkRoots` / `workRootsMetadata` for any legacy input.
+ * - writeSetting auto-bumps the revision and serialises concurrent
+ *   writers via `proper-lockfile`.
+ * - writeSettingCas throws `SettingConflictError` on revision mismatch.
  */
 import { describe, it, expect } from 'vitest'
-import { validateSetting } from '../../src/server/setting-manager'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  validateSetting,
+  migrateSettingObject,
+  readSetting,
+  readSettingWithRevision,
+  writeSetting,
+  writeSettingCas,
+  SettingConflictError,
+} from '../../src/server/setting-manager'
+import { DirectFsLayer } from '../../src/server/fs-layer'
+import { _resetProjectRootCache } from '../../src/server/config'
 
+/**
+ * Post-migration v1.2 setting used as the baseline for `validateSetting`
+ * positive cases. Includes the three v1.2 fields required by the
+ * cwd-allowlist subsystem spec.
+ */
 const validSetting = {
-  version: '1.1',
-  user: { displayName: 'テスト', avatar: null },
-  project: { name: 'test-project', description: '概要', path: '/tmp/test' },
+  version: '1.2',
+  revision: 1,
+  additionalWorkRoots: [],
+  workRootsMetadata: {},
+  user: { displayName: 'tester', avatar: null },
+  project: { name: 'test-project', description: 'description', path: '/tmp/test' },
   locale: 'ja',
   onboarding: { completedAt: null, wizardVersion: '0.1.0' },
 }
 
-describe('validateSetting', () => {
-  it('正常な v1.1 設定を受け入れる', () => {
+describe('validateSetting (post-migration v1.2)', () => {
+  it('accepts the canonical v1.2 setting', () => {
     expect(validateSetting(validSetting)).toBe(true)
   })
 
-  it('v1.0 は拒否する（マイグレーション前）', () => {
+  it('rejects v1.1 raw input (pre-migration)', () => {
+    expect(validateSetting({ ...validSetting, version: '1.1' })).toBe(false)
+  })
+
+  it('rejects v1.0 raw input (pre-migration)', () => {
     expect(validateSetting({ ...validSetting, version: '1.0' })).toBe(false)
   })
 
-  it('project.path が必須', () => {
+  it('rejects revision missing', () => {
+    const noRev = { ...validSetting } as Record<string, unknown>
+    delete noRev.revision
+    expect(validateSetting(noRev)).toBe(false)
+  })
+
+  it('rejects revision <= 0', () => {
+    expect(validateSetting({ ...validSetting, revision: 0 })).toBe(false)
+    expect(validateSetting({ ...validSetting, revision: -1 })).toBe(false)
+  })
+
+  it('rejects revision non-integer', () => {
+    expect(validateSetting({ ...validSetting, revision: 1.5 })).toBe(false)
+  })
+
+  it('rejects malformed additionalWorkRoots (non-array)', () => {
+    expect(
+      validateSetting({ ...validSetting, additionalWorkRoots: '/etc' }),
+    ).toBe(false)
+  })
+
+  it('rejects additionalWorkRoots entries that are not strings', () => {
+    expect(
+      validateSetting({ ...validSetting, additionalWorkRoots: ['/ok', 123] }),
+    ).toBe(false)
+  })
+
+  it('rejects workRootsMetadata entry missing caseSensitive', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        workRootsMetadata: { '/tmp/x': { probedAt: '2026-05-15T00:00:00Z' } },
+      }),
+    ).toBe(false)
+  })
+
+  it('accepts workRootsMetadata with valid per-root entry', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        additionalWorkRoots: ['/tmp/x'],
+        workRootsMetadata: {
+          '/tmp/x': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects missing project.path', () => {
     const noPath = {
       ...validSetting,
       project: { name: 'test', description: '' },
@@ -37,127 +116,398 @@ describe('validateSetting', () => {
     expect(validateSetting(noPath)).toBe(false)
   })
 
-  it('project.path が空文字は拒否', () => {
-    const emptyPath = {
+  it('rejects empty project.path', () => {
+    const empty = {
       ...validSetting,
       project: { name: 'test', description: '', path: '' },
     }
-    expect(validateSetting(emptyPath)).toBe(false)
+    expect(validateSetting(empty)).toBe(false)
   })
 
-  it('avatar が string の場合も受け入れる', () => {
-    const withAvatar = {
-      ...validSetting,
-      user: { displayName: 'テスト', avatar: '/path/to/avatar.png' },
-    }
-    expect(validateSetting(withAvatar)).toBe(true)
+  it('accepts user.avatar as string', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        user: { displayName: 'tester', avatar: '/path/to/avatar.png' },
+      }),
+    ).toBe(true)
   })
 
-  it('completedAt が string の場合も受け入れる', () => {
-    const completed = {
-      ...validSetting,
-      onboarding: { completedAt: '2026-04-18T00:00:00Z', wizardVersion: '0.1.0' },
-    }
-    expect(validateSetting(completed)).toBe(true)
-  })
-
-  it('null を拒否する', () => {
+  it('rejects null', () => {
     expect(validateSetting(null)).toBe(false)
   })
 
-  it('undefined を拒否する', () => {
+  it('rejects undefined', () => {
     expect(validateSetting(undefined)).toBe(false)
   })
 
-  it('不正な locale を拒否する', () => {
+  it('rejects unknown locale', () => {
     expect(validateSetting({ ...validSetting, locale: 'fr' })).toBe(false)
   })
 
-  // claudeMdGuidance is optional (claude-md-guidance-injection.md
-  // §7.1). The schema is type-only here; the route handler additionally
-  // strips the server-managed `lastInjectedAt` from request bodies so
-  // a crafted PUT cannot persist a forged audit timestamp.
-
+  // claudeMdGuidance — same semantics as the legacy tests, retained.
   it('accepts a setting without claudeMdGuidance (defaults apply)', () => {
     expect(validateSetting({ ...validSetting })).toBe(true)
   })
 
   it('accepts claudeMdGuidance with disabled boolean only', () => {
-    const withFlag = {
-      ...validSetting,
-      claudeMdGuidance: { disabled: true },
-    }
-    expect(validateSetting(withFlag)).toBe(true)
+    expect(
+      validateSetting({ ...validSetting, claudeMdGuidance: { disabled: true } }),
+    ).toBe(true)
   })
 
   it('accepts claudeMdGuidance with lastInjectedAt string', () => {
-    const withTimestamp = {
-      ...validSetting,
-      claudeMdGuidance: { lastInjectedAt: '2026-05-10T03:14:25.123Z' },
-    }
-    expect(validateSetting(withTimestamp)).toBe(true)
+    expect(
+      validateSetting({
+        ...validSetting,
+        claudeMdGuidance: { lastInjectedAt: '2026-05-10T03:14:25.123Z' },
+      }),
+    ).toBe(true)
   })
 
   it('rejects claudeMdGuidance with non-boolean disabled', () => {
-    const bad = {
-      ...validSetting,
-      claudeMdGuidance: { disabled: 'yes' },
-    }
-    expect(validateSetting(bad)).toBe(false)
+    expect(
+      validateSetting({ ...validSetting, claudeMdGuidance: { disabled: 'yes' } }),
+    ).toBe(false)
   })
 
-  it('rejects claudeMdGuidance with non-string lastInjectedAt (e.g. number)', () => {
-    const bad = {
-      ...validSetting,
-      claudeMdGuidance: { lastInjectedAt: 1234567890 },
-    }
-    expect(validateSetting(bad)).toBe(false)
+  it('rejects claudeMdGuidance with non-string lastInjectedAt', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        claudeMdGuidance: { lastInjectedAt: 1234567890 },
+      }),
+    ).toBe(false)
   })
 
   it('rejects claudeMdGuidance set to null', () => {
-    const bad = {
-      ...validSetting,
-      claudeMdGuidance: null,
-    }
-    expect(validateSetting(bad)).toBe(false)
+    expect(
+      validateSetting({ ...validSetting, claudeMdGuidance: null }),
+    ).toBe(false)
   })
 
-  // CodeX attempt 11 — defense-in-depth: a persisted dismiss snapshot
-  // must capture a non-fail-closed check result. Otherwise an
-  // on-disk edit can silence "unreadable settings" warnings.
   it('rejects claudeCodeSettingsWarning whose dismissedResult.reason is not "ok"', () => {
-    const bad = {
-      ...validSetting,
-      claudeCodeSettingsWarning: {
-        dismissedAt: '2026-05-13T11:00:00Z',
-        dismissedResult: {
-          permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
-          denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
-          bypassMode: { active: false, ok: false },
-          overallOk: false,
-          reason: 'read-error',
-          settingsFilePath: null,
+    expect(
+      validateSetting({
+        ...validSetting,
+        claudeCodeSettingsWarning: {
+          dismissedAt: '2026-05-13T11:00:00Z',
+          dismissedResult: {
+            permissionMode: { current: '__unreadable__', recommended: 'default', ok: false },
+            denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
+            bypassMode: { active: false, ok: false },
+            overallOk: false,
+            reason: 'read-error',
+            settingsFilePath: null,
+          },
         },
-      },
-    }
-    expect(validateSetting(bad)).toBe(false)
+      }),
+    ).toBe(false)
   })
 
   it('accepts claudeCodeSettingsWarning with reason="ok"', () => {
-    const good = {
-      ...validSetting,
-      claudeCodeSettingsWarning: {
-        dismissedAt: '2026-05-13T11:00:00Z',
-        dismissedResult: {
-          permissionMode: { current: 'default', recommended: 'default', ok: true },
-          denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
-          bypassMode: { active: false, ok: true },
-          overallOk: false,
-          reason: 'ok',
-          settingsFilePath: null,
+    expect(
+      validateSetting({
+        ...validSetting,
+        claudeCodeSettingsWarning: {
+          dismissedAt: '2026-05-13T11:00:00Z',
+          dismissedResult: {
+            permissionMode: { current: 'default', recommended: 'default', ok: true },
+            denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: 'add' },
+            bypassMode: { active: false, ok: true },
+            overallOk: false,
+            reason: 'ok',
+            settingsFilePath: null,
+          },
         },
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('migrateSettingObject (v1.0 / v1.1 -> v1.2)', () => {
+  it('migrates v1.0 to v1.2 (backfills project.path + new fields)', () => {
+    const raw = {
+      version: '1.0',
+      user: { displayName: 'old', avatar: null },
+      project: { name: 'p', description: 'd' }, // no path
+      locale: 'ja',
+      onboarding: { completedAt: null, wizardVersion: '0.0' },
+    }
+    const { migrated, changed } = migrateSettingObject(raw)
+    expect(changed).toBe(true)
+    expect(migrated.version).toBe('1.2')
+    expect(migrated.revision).toBe(1)
+    expect(migrated.additionalWorkRoots).toEqual([])
+    expect(migrated.workRootsMetadata).toEqual({})
+    const project = migrated.project as Record<string, unknown>
+    expect(typeof project.path).toBe('string')
+    expect((project.path as string).length).toBeGreaterThan(0)
+  })
+
+  it('migrates v1.1 to v1.2 (preserves project.path, adds new fields)', () => {
+    const raw = {
+      version: '1.1',
+      user: { displayName: 'u', avatar: null },
+      project: { name: 'p', description: 'd', path: '/keep/me' },
+      locale: 'en',
+      onboarding: { completedAt: null, wizardVersion: '0.1.0' },
+    }
+    const { migrated, changed } = migrateSettingObject(raw)
+    expect(changed).toBe(true)
+    expect(migrated.version).toBe('1.2')
+    expect(migrated.revision).toBe(1)
+    expect(migrated.additionalWorkRoots).toEqual([])
+    expect(migrated.workRootsMetadata).toEqual({})
+    const project = migrated.project as Record<string, unknown>
+    expect(project.path).toBe('/keep/me')
+  })
+
+  it('is idempotent on already-v1.2 input (no changes)', () => {
+    const v12 = {
+      ...validSetting,
+      additionalWorkRoots: ['/tmp/x'],
+      workRootsMetadata: {
+        '/tmp/x': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
       },
     }
-    expect(validateSetting(good)).toBe(true)
+    const { migrated, changed } = migrateSettingObject(v12)
+    expect(changed).toBe(false)
+    expect(migrated.version).toBe('1.2')
+    expect(migrated.revision).toBe(1)
+    expect(migrated.additionalWorkRoots).toEqual(['/tmp/x'])
+  })
+
+  it('backfills missing v1.2 fields even when version is already 1.2', () => {
+    const raw = {
+      version: '1.2',
+      user: { displayName: 'u', avatar: null },
+      project: { name: 'p', description: 'd', path: '/x' },
+      locale: 'en',
+      onboarding: { completedAt: null, wizardVersion: '0.1.0' },
+      // revision / additionalWorkRoots / workRootsMetadata absent
+    }
+    const { migrated, changed } = migrateSettingObject(raw)
+    expect(changed).toBe(true)
+    expect(migrated.revision).toBe(1)
+    expect(migrated.additionalWorkRoots).toEqual([])
+    expect(migrated.workRootsMetadata).toEqual({})
+  })
+
+  it('repairs malformed revision (negative / non-integer)', () => {
+    const r1 = migrateSettingObject({ ...validSetting, revision: -5 })
+    expect(r1.migrated.revision).toBe(1)
+    expect(r1.changed).toBe(true)
+
+    const r2 = migrateSettingObject({ ...validSetting, revision: 'oops' })
+    expect(r2.migrated.revision).toBe(1)
+    expect(r2.changed).toBe(true)
+  })
+})
+
+// --- I/O integration tests ---------------------------------------------
+
+/**
+ * Set up a temporary directory that behaves like a project root. We
+ * point `KOVITOBOARD_PROJECT_ROOT` at it and reset the config cache so
+ * `getKovitoboardDir()` resolves to `<tmp>/.kovitoboard/`.
+ */
+function setupTempRoot(): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'kb-setting-manager-test-'))
+  mkdirSync(join(dir, '.kovitoboard'), { recursive: true })
+  const previous = process.env.KOVITOBOARD_PROJECT_ROOT
+  process.env.KOVITOBOARD_PROJECT_ROOT = dir
+  _resetProjectRootCache()
+  return {
+    dir,
+    cleanup: () => {
+      if (previous === undefined) {
+        delete process.env.KOVITOBOARD_PROJECT_ROOT
+      } else {
+        process.env.KOVITOBOARD_PROJECT_ROOT = previous
+      }
+      _resetProjectRootCache()
+      rmSync(dir, { recursive: true, force: true })
+    },
+  }
+}
+
+describe('readSetting + migration-on-read', () => {
+  it('migrates a legacy v1.1 file to v1.2 on read', () => {
+    const ctx = setupTempRoot()
+    try {
+      const settingPath = join(ctx.dir, '.kovitoboard', 'setting.json')
+      const legacy = {
+        version: '1.1',
+        user: { displayName: 'legacy', avatar: null },
+        project: { name: 'p', description: 'd', path: ctx.dir },
+        locale: 'ja',
+        onboarding: { completedAt: null, wizardVersion: '0.1.0' },
+      }
+      writeFileSync(settingPath, JSON.stringify(legacy, null, 2))
+
+      const fs = new DirectFsLayer()
+      const setting = readSetting(fs)
+      expect(setting).not.toBeNull()
+      expect(setting!.version).toBe('1.2')
+      expect(setting!.revision).toBe(1)
+      expect(setting!.additionalWorkRoots).toEqual([])
+      expect(setting!.workRootsMetadata).toEqual({})
+
+      // Write-back must have happened (changed=true path).
+      const persisted = JSON.parse(readFileSync(settingPath, 'utf-8'))
+      expect(persisted.version).toBe('1.2')
+      expect(persisted.revision).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('returns null when file is absent', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      expect(readSetting(fs)).toBeNull()
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('returns null when file is malformed JSON', () => {
+    const ctx = setupTempRoot()
+    try {
+      const settingPath = join(ctx.dir, '.kovitoboard', 'setting.json')
+      writeFileSync(settingPath, '{ not json')
+      const fs = new DirectFsLayer()
+      expect(readSetting(fs)).toBeNull()
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('readSettingWithRevision returns the current CAS token', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      const result = readSettingWithRevision(fs)
+      expect(result).not.toBeNull()
+      expect(result!.revision).toBeGreaterThanOrEqual(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+})
+
+describe('writeSetting (auto-CAS)', () => {
+  it('initial write seeds revision = 1', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      const result = readSettingWithRevision(fs)
+      expect(result!.revision).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('subsequent writes bump revision monotonically', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
+      writeSetting(fs, base)
+      writeSetting(fs, { ...base, locale: 'en' })
+      writeSetting(fs, { ...base, locale: 'ja' })
+      const result = readSettingWithRevision(fs)
+      expect(result!.revision).toBe(3)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('ignores caller-supplied revision (server is authoritative)', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      writeSetting(fs, {
+        ...validSetting,
+        revision: 999, // caller value should be ignored
+        project: { ...validSetting.project, path: ctx.dir },
+      })
+      const result = readSettingWithRevision(fs)
+      expect(result!.revision).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+})
+
+describe('writeSettingCas (explicit CAS)', () => {
+  it('succeeds when expectedRevision matches', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
+      writeSetting(fs, base)
+      const current = readSettingWithRevision(fs)!
+
+      writeSettingCas(fs, { ...base, locale: 'en' }, current.revision)
+      const next = readSettingWithRevision(fs)!
+      expect(next.revision).toBe(current.revision + 1)
+      expect(next.setting.locale).toBe('en')
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('throws SettingConflictError when expectedRevision is stale', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
+      writeSetting(fs, base)
+      writeSetting(fs, { ...base, locale: 'en' })
+      const current = readSettingWithRevision(fs)!
+
+      expect(() =>
+        writeSettingCas(fs, { ...base, locale: 'ja' }, current.revision - 1),
+      ).toThrow(SettingConflictError)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('allows initial create with expectedRevision = 0', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      writeSettingCas(
+        fs,
+        { ...validSetting, project: { ...validSetting.project, path: ctx.dir } },
+        0,
+      )
+      const result = readSettingWithRevision(fs)!
+      expect(result.revision).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  it('rejects initial create when expectedRevision != 0', () => {
+    const ctx = setupTempRoot()
+    try {
+      const fs = new DirectFsLayer()
+      expect(() =>
+        writeSettingCas(
+          fs,
+          { ...validSetting, project: { ...validSetting.project, path: ctx.dir } },
+          5,
+        ),
+      ).toThrow(SettingConflictError)
+    } finally {
+      ctx.cleanup()
+    }
   })
 })
