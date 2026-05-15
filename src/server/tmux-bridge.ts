@@ -487,8 +487,16 @@ export class TmuxBridge {
     }
     // cwd allow-list gate — consumer #4 in spec `cwd-allowlist.md`
     // v1.0 §5.2 (embedded-app entrypoint, boundary-external).
+    //
+    // The condition uses `cwd !== undefined` rather than the truthy
+    // `if (cwd)` form: an empty string `""` is a *supplied* value and
+    // must be validated (and rejected as `not_absolute`) instead of
+    // silently falling back to `projectRoot`. The HTTP entry points
+    // already reject `""` at the boundary; this guard matches that
+    // contract for the boundary-external entrypoint (CodeX PR #38
+    // Attempt 14 MED 2).
     let workDir: string
-    if (cwd) {
+    if (cwd !== undefined) {
       try {
         workDir = gateCwd(this.fs, cwd)
       } catch (err) {
@@ -543,8 +551,12 @@ export class TmuxBridge {
     }
     // cwd allow-list gate — consumer #5 in spec `cwd-allowlist.md`
     // v1.0 §5.2 (job-window entrypoint, boundary-external).
+    //
+    // Same `cwd !== undefined` guard as `startAgent` above — empty
+    // strings are validated and rejected, not silently widened into
+    // the project root (CodeX PR #38 Attempt 14 MED 2).
     let workDir: string
-    if (cwd) {
+    if (cwd !== undefined) {
       try {
         workDir = gateCwd(this.fs, cwd)
       } catch (err) {

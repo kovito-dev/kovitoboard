@@ -185,6 +185,52 @@ describe('validateSetting (post-migration v1.2)', () => {
     ).toBe(false)
   })
 
+  // CodeX PR #38 Attempt 14 MED 1 regression — workRootsMetadata
+  // must enforce the same count / key-length / absolute-key caps
+  // as additionalWorkRoots, otherwise a hand-edited setting.json
+  // can carry an unbounded metadata map past validation and
+  // expose the same DoS surface the POST caps were meant to close.
+  it('rejects workRootsMetadata with more than MAX_WORK_ROOTS + 1 entries', () => {
+    // MAX_WORK_ROOTS = 32, ceiling = 33 (one extra for the project
+    // root's probe metadata). 34 entries must fail.
+    const oversized: Record<string, { caseSensitive: boolean; probedAt: string }> = {}
+    for (let i = 0; i < 34; i++) {
+      oversized[`/tmp/meta-${i}`] = {
+        caseSensitive: true,
+        probedAt: '2026-05-15T00:00:00Z',
+      }
+    }
+    expect(
+      validateSetting({
+        ...validSetting,
+        workRootsMetadata: oversized,
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects workRootsMetadata keys that are relative paths', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        workRootsMetadata: {
+          'relative/key': { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+        },
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects workRootsMetadata keys longer than MAX_WORK_ROOT_PATH_LENGTH', () => {
+    const longKey = '/' + 'a'.repeat(4096)
+    expect(
+      validateSetting({
+        ...validSetting,
+        workRootsMetadata: {
+          [longKey]: { caseSensitive: true, probedAt: '2026-05-15T00:00:00Z' },
+        },
+      }),
+    ).toBe(false)
+  })
+
   it('rejects workRootsMetadata entry missing caseSensitive', () => {
     expect(
       validateSetting({

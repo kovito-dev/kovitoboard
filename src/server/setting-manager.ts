@@ -524,6 +524,18 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   }
 
   // workRootsMetadata: same optionality contract as above.
+  //
+  // Enforce the same caps as `additionalWorkRoots`. Without these,
+  // a hand-edited `setting.json` could carry thousands of metadata
+  // entries (or megabyte-sized keys) that pass validation and then
+  // get copied / spread by every `ensureWorkRootMetadata()` call
+  // and every write — a DoS surface the per-route POST caps were
+  // meant to close (CodeX PR #38 Attempt 14 MED 1).
+  //
+  // The count ceiling is `MAX_WORK_ROOTS + 1` to allow one entry
+  // per additional root plus an optional entry for the project
+  // root path itself (`ensureWorkRootMetadata()` populates probe
+  // metadata for both).
   if (obj.workRootsMetadata !== undefined) {
     if (
       obj.workRootsMetadata === null ||
@@ -532,9 +544,13 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
     ) {
       return false
     }
-    for (const meta of Object.values(
+    const entries = Object.entries(
       obj.workRootsMetadata as Record<string, unknown>,
-    )) {
+    )
+    if (entries.length > MAX_WORK_ROOTS + 1) return false
+    for (const [key, meta] of entries) {
+      if (key.length === 0 || key.length > MAX_WORK_ROOT_PATH_LENGTH) return false
+      if (!isAbsolute(key)) return false
       if (meta === null || typeof meta !== 'object') return false
       const m = meta as Record<string, unknown>
       if (typeof m.caseSensitive !== 'boolean') return false
