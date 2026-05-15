@@ -63,6 +63,7 @@ import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
 import { createAuditRouter } from './routes/audit-routes'
 import { createSecurityRouter } from './routes/security-routes'
+import { createWorkRootsRouter } from './routes/work-roots-routes'
 import {
   checkClaudeCodeSettings,
   logCheckResult,
@@ -406,6 +407,12 @@ app.use(
 // onboarding-scenarios §9.5, logging-baseline §12.7.
 // Mounted before the SPA fallback so /api/security/* resolves here.
 app.use('/api/security', createSecurityRouter(fs, projectRoot))
+
+// --- /api/work-roots (cwd-allowlist.md v1.0 §5.3) ---
+// The work-roots router owns additionalWorkRoots[] / workRootsMetadata
+// mutations. Mounting it before the SPA fallback so DELETE / POST
+// resolve here instead of becoming a static-asset 404.
+app.use('/api/work-roots', createWorkRootsRouter(fs))
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
