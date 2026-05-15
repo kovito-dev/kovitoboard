@@ -80,12 +80,12 @@ afterAll(async () => {
   rmSync(loggerRoot, { recursive: true, force: true })
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), 'kb-work-roots-proj-'))
   mkdirSync(join(projectRoot, '.kovitoboard'), { recursive: true })
   process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
   _resetProjectRootCache()
-  writeSetting(fsLayer, baseSetting())
+  await writeSetting(fsLayer, baseSetting())
 })
 
 afterEach(() => {

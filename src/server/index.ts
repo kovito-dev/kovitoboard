@@ -1069,7 +1069,7 @@ app.get('/api/settings/basic', (_req, res) => {
  * `project.path` cannot be edited from this surface — projects are
  * switched via a future "open another project" UI (v0.1.1 backlog).
  */
-app.put('/api/settings/basic', (req, res) => {
+app.put('/api/settings/basic', async (req, res) => {
   const body = (req.body ?? {}) as {
     displayName?: unknown
     locale?: unknown
@@ -1136,7 +1136,9 @@ app.put('/api/settings/basic', (req, res) => {
   }
 
   try {
-    writeSetting(fs, next)
+    // `writeSetting()` is async since spec cwd-allowlist.md v1.1 §7.5
+    // (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS backoff).
+    await writeSetting(fs, next)
     apiLogger.info({ displayName: next.user.displayName, locale: next.locale }, 'Basic settings updated')
     res.json({ success: true })
   } catch (err) {

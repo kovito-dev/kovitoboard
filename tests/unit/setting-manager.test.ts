@@ -385,11 +385,11 @@ describe('readSetting + migration-on-read', () => {
     }
   })
 
-  it('readSettingWithRevision returns the current CAS token', () => {
+  it('readSettingWithRevision returns the current CAS token', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
-      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      await writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
       const result = readSettingWithRevision(fs)
       expect(result).not.toBeNull()
       expect(result!.revision).toBeGreaterThanOrEqual(1)
@@ -473,11 +473,11 @@ describe('readSetting + migration-on-read', () => {
 })
 
 describe('writeSetting (auto-CAS)', () => {
-  it('initial write seeds revision = 1', () => {
+  it('initial write seeds revision = 1', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
-      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      await writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
       const result = readSettingWithRevision(fs)
       expect(result!.revision).toBe(1)
     } finally {
@@ -485,14 +485,14 @@ describe('writeSetting (auto-CAS)', () => {
     }
   })
 
-  it('subsequent writes bump revision monotonically', () => {
+  it('subsequent writes bump revision monotonically', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
       const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
-      writeSetting(fs, base)
-      writeSetting(fs, { ...base, locale: 'en' })
-      writeSetting(fs, { ...base, locale: 'ja' })
+      await writeSetting(fs, base)
+      await writeSetting(fs, { ...base, locale: 'en' })
+      await writeSetting(fs, { ...base, locale: 'ja' })
       const result = readSettingWithRevision(fs)
       expect(result!.revision).toBe(3)
     } finally {
@@ -500,11 +500,11 @@ describe('writeSetting (auto-CAS)', () => {
     }
   })
 
-  it('ignores caller-supplied revision (server is authoritative)', () => {
+  it('ignores caller-supplied revision (server is authoritative)', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
-      writeSetting(fs, {
+      await writeSetting(fs, {
         ...validSetting,
         revision: 999, // caller value should be ignored
         project: { ...validSetting.project, path: ctx.dir },
@@ -526,7 +526,7 @@ describe('writeSetting (auto-CAS)', () => {
   // for `proper-lockfile.lockSync()` to function at all on the
   // create path. (Cross-process serialization is exercised by L1
   // E2E in `tests/e2e/cwd-allowlist-deny.spec.ts`.)
-  it('first-write creates the dedicated lockfile alongside setting.json', () => {
+  it('first-write creates the dedicated lockfile alongside setting.json', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
@@ -536,7 +536,7 @@ describe('writeSetting (auto-CAS)', () => {
       // Lockfile must not exist before the first write.
       expect(() => readFileSync(lockPath, 'utf-8')).toThrow()
 
-      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
+      await writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir } })
 
       // After the first write the lockfile target must exist so
       // future first-write concurrents can lock it. Content is
@@ -545,7 +545,7 @@ describe('writeSetting (auto-CAS)', () => {
       expect(lockContents).toBe('')
 
       // A second write must not corrupt or remove the lockfile.
-      writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir }, locale: 'en' })
+      await writeSetting(fs, { ...validSetting, project: { ...validSetting.project, path: ctx.dir }, locale: 'en' })
       expect(readFileSync(lockPath, 'utf-8')).toBe('')
 
       // The revision must monotonically progress (no clobber-on-create).
@@ -567,14 +567,14 @@ describe('writeSetting (auto-CAS)', () => {
   //      snapshot (no additionalWorkRoots, only the field they meant
   //      to update — e.g. locale)
   //   4. asserting the on-disk additionalWorkRoots survives.
-  it('preserves additionalWorkRoots from concurrent writeSettingCas() update', () => {
+  it('preserves additionalWorkRoots from concurrent writeSettingCas() update', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
       const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
 
       // Step 1: legacy caller seeds the file.
-      writeSetting(fs, base)
+      await writeSetting(fs, base)
       const beforeCas = readSettingWithRevision(fs)
       expect(beforeCas!.setting.additionalWorkRoots).toEqual([])
 
@@ -596,7 +596,7 @@ describe('writeSetting (auto-CAS)', () => {
 
       // Step 3: legacy caller now calls writeSetting() with their
       // *stale* in-memory snapshot (their copy still has empty roots).
-      writeSetting(fs, { ...base, locale: 'en' })
+      await writeSetting(fs, { ...base, locale: 'en' })
 
       // Step 4: the live allow-list state must survive.
       const persisted = readSettingWithRevision(fs)
@@ -617,12 +617,12 @@ describe('writeSetting (auto-CAS)', () => {
 })
 
 describe('writeSettingCas (explicit CAS)', () => {
-  it('succeeds when expectedRevision matches', () => {
+  it('succeeds when expectedRevision matches', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
       const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
-      writeSetting(fs, base)
+      await writeSetting(fs, base)
       const current = readSettingWithRevision(fs)!
 
       writeSettingCas(fs, { ...base, locale: 'en' }, current.revision)
@@ -634,13 +634,13 @@ describe('writeSettingCas (explicit CAS)', () => {
     }
   })
 
-  it('throws SettingConflictError when expectedRevision is stale', () => {
+  it('throws SettingConflictError when expectedRevision is stale', async () => {
     const ctx = setupTempRoot()
     try {
       const fs = new DirectFsLayer()
       const base = { ...validSetting, project: { ...validSetting.project, path: ctx.dir } }
-      writeSetting(fs, base)
-      writeSetting(fs, { ...base, locale: 'en' })
+      await writeSetting(fs, base)
+      await writeSetting(fs, { ...base, locale: 'en' })
       const current = readSettingWithRevision(fs)!
 
       expect(() =>

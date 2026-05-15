@@ -18,11 +18,15 @@
  *   - Concurrent writers are serialised through `proper-lockfile`, and
  *     `revision` acts as a compare-and-swap (CAS) token (§7.5).
  *     `writeSetting()` auto-bumps the revision and retries collisions
- *     internally so existing callers keep their sync ergonomics.
- *     `writeSettingCas()` exposes explicit CAS for callers that need to
- *     drive their own retry policy (e.g. `/api/work-roots`).
+ *     internally with an async backoff (spec v1.1 §7.5 — the sync
+ *     shape with `Atomics.wait` was retired to remove a server-side
+ *     event-loop DoS vector). `writeSettingCas()` exposes explicit
+ *     CAS for callers that need to drive their own retry policy
+ *     (e.g. `/api/work-roots`) and stays sync because it performs no
+ *     internal sleeps.
  */
 import lockfile from 'proper-lockfile'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { lazyChildLogger } from './logger'
 
 const settingLog = lazyChildLogger('setting-manager')
@@ -143,13 +147,22 @@ export function readSettingWithRevision(
  * Write the settings data with automatic CAS bump (§7.5). Reads the
  * current revision under lock, increments it, and writes atomically.
  * Retries up to `CAS_MAX_RETRIES` on collision before throwing the
- * underlying error to the caller. Existing 4 callers
- * (`config-routes`, `security-routes`, `user-avatar-routes`, the
- * `/api/setting` PUT in `index.ts`) keep their synchronous call shape;
- * the only behavioural change is that the value in `data.revision` is
- * discarded — the new revision is always derived from disk state.
+ * underlying error to the caller.
+ *
+ * Async API (spec v1.1 §7.5): the four legacy callers (`config-routes`,
+ * `security-routes`, `user-avatar-routes`, the `/api/settings/basic`
+ * PUT in `index.ts`) `await` this function inside their HTTP handlers.
+ * The previous sync shape used `Atomics.wait()` between retries, which
+ * blocked the Node event loop for up to 350 ms (50 + 100 + 200) on
+ * write contention — a server-side DoS vector flagged by CodeX
+ * Attempt 1 MED 2 + Attempt 3 MED 1. The async sleep yields the event
+ * loop instead. The value in `data.revision` is still discarded; the
+ * new revision is always derived from disk state.
  */
-export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): void {
+export async function writeSetting(
+  fs: FileAccessLayer,
+  data: KovitoboardSetting,
+): Promise<void> {
   const settingPath = getSettingPath(fs)
   // Touch the dedicated lockfile so both the create path and the
   // CAS-update path serialise on the same lock target (CodeX PR #38
@@ -177,14 +190,14 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
       const currentRevision = current?.setting.revision ?? 0
       // Protect cwd-allowlist subsystem fields against stale-snapshot
       // overwrites from the four legacy callers (`config-routes`,
-      // `security-routes`, `user-avatar-routes`, the `/api/setting` PUT
-      // inside `index.ts`). Spec `cwd-allowlist.md` v1.0 §5.3 designates
-      // `additionalWorkRoots[]` / `workRootsMetadata` as "protected
-      // fields" — only `writeSettingCas()` (driven by `/api/work-roots`)
-      // owns mutations. Carrying the on-disk values forward here means
-      // a legacy caller whose in-memory snapshot pre-dates a concurrent
-      // allow-list edit can never erase that edit (CodeX Attempt 2
-      // MEDIUM 1).
+      // `security-routes`, `user-avatar-routes`, the `/api/settings/basic`
+      // PUT inside `index.ts`). Spec `cwd-allowlist.md` v1.0 §5.3
+      // designates `additionalWorkRoots[]` / `workRootsMetadata` as
+      // "protected fields" — only `writeSettingCas()` (driven by
+      // `/api/work-roots`) owns mutations. Carrying the on-disk values
+      // forward here means a legacy caller whose in-memory snapshot
+      // pre-dates a concurrent allow-list edit can never erase that
+      // edit (CodeX Attempt 2 MEDIUM 1).
       const preserved = preserveAllowListFields(data, current?.setting)
       writeAtomic(fs, normaliseV12(preserved, currentRevision + 1))
       return
@@ -206,7 +219,10 @@ export function writeSetting(fs: FileAccessLayer, data: KovitoboardSetting): voi
         }
       }
     }
-    sleepSync(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
+    // Async backoff between CAS retries (spec v1.1 §7.5). Yields the
+    // event loop so concurrent traffic is not blocked while we wait
+    // for the lock-holder to release.
+    await sleep(CAS_BACKOFF_MS[Math.min(attempt, CAS_BACKOFF_MS.length - 1)])
     attempt++
   }
   throw lastErr instanceof Error
@@ -686,27 +702,8 @@ function preserveAllowListFields(
   }
 }
 
-/**
- * Synchronous sleep used only between CAS retries inside the legacy
- * `writeSetting()` path to give the lock-holder a chance to release the
- * lock. `Atomics.wait` blocks the thread without burning CPU and is the
- * recommended pattern for the tiny waits we want (≤ 200 ms).
- *
- * Why sync (instead of `await setTimeout`):
- *   `writeSetting()` is sync by contract (spec `cwd-allowlist.md` v1.0
- *   §7.5 — "writeSetting() keeps its synchronous shape"), preserving
- *   the call shape of the four pre-existing callers (`config-routes`,
- *   `security-routes`, `user-avatar-routes`, the setting PUT inside
- *   `index.ts`). The blocking window is bounded — total sleep across
- *   the CAS budget is 50 + 100 + 200 = 350 ms max.
- *
- *   New explicit-CAS callers (`/api/work-roots`) use the async retry
- *   helper inside `work-roots-routes.ts` so contention there does not
- *   stall the event loop.
- */
-function sleepSync(ms: number): void {
-  if (ms <= 0) return
-  const shared = new SharedArrayBuffer(4)
-  const view = new Int32Array(shared)
-  Atomics.wait(view, 0, 0, ms)
-}
+// `sleepSync()` (Atomics.wait-based blocking sleep) was removed in
+// spec v1.1 §7.5 along with the sync shape of `writeSetting()`. The
+// async CAS backoff now uses `node:timers/promises#setTimeout` so the
+// event loop is free between retry attempts (CodeX PR #38 Attempt 1
+// MED 2 + Attempt 3 MED 1).

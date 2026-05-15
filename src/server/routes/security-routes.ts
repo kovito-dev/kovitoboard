@@ -77,7 +77,7 @@ export function createSecurityRouter(
   })
 
   // POST /api/security/dismiss
-  router.post('/dismiss', (_req, res) => {
+  router.post('/dismiss', async (_req, res) => {
     const setting = readSetting(fs)
     if (!setting) {
       res.status(409).json({
@@ -121,7 +121,9 @@ export function createSecurityRouter(
       claudeCodeSettingsWarning: buildDismissRecord(current),
     }
     try {
-      writeSetting(fs, updated)
+      // `writeSetting()` is async since spec cwd-allowlist.md v1.1 §7.5
+      // (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS backoff).
+      await writeSetting(fs, updated)
     } catch (err) {
       log.error({ err }, 'Failed to persist dismiss state')
       res.status(500).json({ error: 'Failed to persist dismiss state' })
