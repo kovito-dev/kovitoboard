@@ -150,6 +150,29 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     expect(readFileSync(target)).toEqual(payload)
   })
 
+  it('rejects forceMode with a non-exclusive flag (TypeError)', () => {
+    // `forceMode: true` combined with `'w'` / `'a'` / `'r+'` would
+    // turn this option into a generic "chmod an existing file"
+    // primitive, broader than the tmpfile-hardening requirement
+    // and a future authz footgun if reused outside `tmux-bridge`.
+    // The implementation rejects it structurally; this test pins
+    // that the constraint is enforced at runtime rather than just
+    // documented.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'reject-non-exclusive.txt')
+
+    for (const badFlag of ['w', 'w+', 'a', 'ax', 'a+', 'r+'] as const) {
+      expect(() => {
+        fs.writeFileSync(target, 'data', {
+          encoding: 'utf-8',
+          mode: 0o600,
+          flag: badFlag,
+          forceMode: true,
+        })
+      }).toThrowError(TypeError)
+    }
+  })
+
   it('defaults encoding to utf-8 when options omit it for a string', () => {
     // Match the legacy 3-arg form's default so callers can switch to
     // the options form purely to add `mode` / `flag` without losing

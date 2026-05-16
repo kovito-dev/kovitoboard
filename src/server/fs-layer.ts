@@ -177,10 +177,20 @@ export interface WriteFileSyncOptions {
    *
    * Requires `mode` to be set; ignored when `mode` is undefined.
    *
-   * Implementation note: pairs with `flag: 'wx'` for the
-   * tmpfile-hardening pattern — the `wx` open prevents reuse of an
-   * attacker-planted path, and the subsequent `fchmod` ensures the
-   * fresh descriptor lands with the exact mode the spec demands.
+   * **`flag` MUST be `'wx'` or `'wx+'`** (an exclusive-create flag).
+   * Allowing `forceMode` together with `'w'` / `'a'` / `'r+'` would
+   * turn this option into a generic "chmod an existing file"
+   * primitive — broader than the tmpfile-hardening requirement and
+   * a future authz footgun if reused outside `tmux-bridge`. The
+   * implementation rejects non-exclusive flags with a thrown
+   * `TypeError` so the constraint is structural, not just
+   * documentary.
+   *
+   * Implementation note: pairs naturally with `flag: 'wx'` for the
+   * tmpfile-hardening pattern — the exclusive open prevents reuse
+   * of an attacker-planted path, and the subsequent `fchmod`
+   * ensures the fresh descriptor lands with the exact mode the
+   * spec demands.
    */
   forceMode?: boolean
 }
@@ -445,7 +455,20 @@ export class DirectFsLayer implements FileAccessLayer {
     // on-disk mode equals what the spec demands rather than what
     // `mode & ~umask` happens to produce.
     if (encodingOrOptions.forceMode && encodingOrOptions.mode !== undefined) {
-      const openFlag: WriteOpenFlag = encodingOrOptions.flag ?? 'w'
+      const openFlag: WriteOpenFlag = encodingOrOptions.flag ?? 'wx'
+      // Reject non-exclusive flags so `forceMode` cannot be misused
+      // as a generic "chmod an existing file" primitive. The
+      // `fchmod(2)` we run below would otherwise rewrite the
+      // permission bits of whatever file the caller's flag opened
+      // — including pre-existing user content with `'w'` / `'r+'`
+      // / `'a'`. Restricting to exclusive-create flags keeps the
+      // override scoped to tmpfile-hardening callers that own the
+      // descriptor outright.
+      if (openFlag !== 'wx' && openFlag !== 'wx+') {
+        throw new TypeError(
+          `WriteFileSyncOptions.forceMode requires an exclusive-create flag ('wx' or 'wx+'); got ${JSON.stringify(openFlag)}.`,
+        )
+      }
       const explicitMode = encodingOrOptions.mode
       // The `mode` passed to `openSync` still goes through `umask`;
       // we rely on `fchmodSync` below to set the exact bits. We
