@@ -441,29 +441,31 @@ export class TmuxBridge {
 
       // Spool the paste body to a same-UID-only tmpfile.
       //
-      // - `mode: 0o600`: only the KB process owner can read the file.
-      //   `/tmp` is world-readable with the sticky bit, so the
-      //   Node.js default of `0o666 & ~umask` would otherwise leave
-      //   the buffer exposed to other local accounts for the few
-      //   milliseconds between the write and `unlinkSync`.
-      // - `flag: 'wx'`: open with `O_CREAT | O_EXCL` so an attacker
-      //   who pre-created the path (despite the `randomUUID()` name)
+      // `writePrivateExclusiveFileSync` bakes in three properties
+      // we need from the tmpfile, all enforced inside the fs-layer
+      // (`session-management.md` §7.1 normative, Codex Review §15):
+      //
+      // - Mode `0o600`: only the KB process owner can read the
+      //   spool body. `/tmp` is world-readable with the sticky
+      //   bit, so the Node default (`0o666 & ~umask`) would
+      //   otherwise leave the paste exposed to other local UIDs
+      //   for the few milliseconds between the write and the
+      //   `unlinkSync` in `finally`.
+      // - `O_CREAT | O_EXCL` (`'wx'` flag): an attacker who
+      //   pre-created the predicted path (despite `randomUUID()`)
       //   gets EEXIST instead of having us truncate their file or
       //   write into a planted symlink target.
-      // - `forceMode: true`: apply the requested mode verbatim via
-      //   `fchmod(2)` so the spec contract in
-      //   `session-management.md` §7.1 ("normative `0o600`") holds
-      //   regardless of the operator's process umask. A hardened
-      //   shell that masks owner bits (e.g. `umask 0o477`) would
-      //   otherwise turn the spool file unreadable to the very
-      //   `tmux load-buffer` call we are about to make, turning
-      //   the hardening into an availability regression.
-      this.fs.writeFileSync(tmpFile, sanitized, {
-        encoding: 'utf-8',
-        mode: 0o600,
-        flag: 'wx',
-        forceMode: true,
-      })
+      // - `fchmod(0o600)` on the fresh descriptor: a hardened
+      //   operator shell with e.g. `umask 0o477` would otherwise
+      //   strip owner-read from the file and turn the very
+      //   `tmux load-buffer` call below into EACCES — an
+      //   availability regression on top of the security fix.
+      //
+      // The narrow shape of that helper (no parameters for mode /
+      // flag) keeps this umask-bypass capability confined to the
+      // call sites the spec lists, instead of being exposed as a
+      // generic option on `writeFileSync`.
+      this.fs.writePrivateExclusiveFileSync(tmpFile, sanitized)
 
       execFileSync('tmux', [
         'load-buffer', tmpFile,

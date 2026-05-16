@@ -18,15 +18,31 @@ import { DirectFsLayer } from '../../src/server/fs-layer.js'
 
 /**
  * Tests for the `WriteFileSyncOptions` form of
- * `FileAccessLayer.writeFileSync`.
+ * `FileAccessLayer.writeFileSync` plus the dedicated
+ * `writePrivateExclusiveFileSync` helper.
  *
  * Motivation: `tmux-bridge.sendViaBuffer` writes the paste body to a
  * `/tmp/kovitoboard-tmux-<uuid>.txt` tmpfile. Codex Review §15 flagged
  * that the previous 3-arg form went through Node's default mode
  * (`0o666 & ~umask`) on a world-readable `/tmp`, leaving the paste
- * exposed to other local accounts for the lifetime of the file. The
- * fix is to pass `{ mode: 0o600, flag: 'wx' }` so the file is created
- * owner-only and refuses a pre-existing path.
+ * exposed to other local accounts for the lifetime of the file.
+ *
+ * The fix lives in two API surfaces that intentionally do not
+ * overlap:
+ *
+ *   - `writeFileSync` keeps its generic shape and gains a typed
+ *     `WriteFileSyncOptions` form (`encoding` / `mode` / `flag`).
+ *     `flag` is narrowed to `WriteOpenFlag` so invalid / read-only
+ *     flags are rejected at compile time. This path still honors
+ *     the process `umask` — i.e. `{ mode }` is a defence-in-depth
+ *     ceiling, not an exact contract.
+ *   - `writePrivateExclusiveFileSync` is the spec-grade umask-
+ *     independent path. It bakes `O_CREAT | O_EXCL` + `0o600` +
+ *     `fchmod(2)` into a single tightly-scoped helper used only
+ *     for tmpfile hardening callers like
+ *     `tmux-bridge.sendViaBuffer`. The narrow shape keeps the
+ *     umask-bypass capability from leaking into the generic
+ *     `writeFileSync` API.
  */
 
 describe('DirectFsLayer.writeFileSync (options form)', () => {
@@ -51,14 +67,15 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     expect(readFileSync(target, 'utf-8')).toBe('hello')
   })
 
-  it('applies mode 0o600 subject to umask when forceMode is omitted', () => {
-    // Without `forceMode`, the requested `mode` still passes through
-    // the process `umask`, so we cannot assert the full 0o600 bit
-    // pattern. What we CAN guarantee is the security invariant
-    // ("no group / world access"): any umask only tightens the
-    // file further, never opens it up.
+  it('applies mode 0o600 subject to umask on the options-form path', () => {
+    // The options form goes through Node's regular `writeFileSync`,
+    // which honors the process `umask`. We can guarantee the
+    // security invariant ("no group / world access") because any
+    // umask only tightens the file further — but we cannot pin
+    // the exact 0o600 bit pattern here. That guarantee belongs
+    // to `writePrivateExclusiveFileSync` below.
     const fs = new DirectFsLayer()
-    const target = join(dir, 'hardened-no-force.txt')
+    const target = join(dir, 'hardened-options-form.txt')
 
     fs.writeFileSync(target, 'secret', {
       encoding: 'utf-8',
@@ -71,41 +88,6 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     expect(readFileSync(target, 'utf-8')).toBe('secret')
   })
 
-  it('applies mode 0o600 verbatim when forceMode: true (umask bypass)', () => {
-    // `forceMode: true` is the spec-grade path used by
-    // `tmux-bridge.sendViaBuffer` (Codex Review §15,
-    // `session-management.md` §7.1). The implementation MUST apply
-    // the requested mode via `fchmod(2)` so the on-disk mode equals
-    // exactly `0o600` regardless of the operator's `umask`. Without
-    // this, a hardened shell that masks owner bits (e.g.
-    // `umask 0o477`) would turn the spool file unreadable to the
-    // subsequent `tmux load-buffer` call — an availability
-    // regression on top of a security fix.
-    //
-    // Simulate that scenario inside the test: set a hostile umask
-    // around the write and confirm the file still lands at 0o600.
-    const fs = new DirectFsLayer()
-    const target = join(dir, 'hardened-force.txt')
-
-    const previousUmask = process.umask(0o477)
-    try {
-      fs.writeFileSync(target, 'secret', {
-        encoding: 'utf-8',
-        mode: 0o600,
-        flag: 'wx',
-        forceMode: true,
-      })
-    } finally {
-      process.umask(previousUmask)
-    }
-
-    const stat = statSync(target)
-    // Exact bit pattern — fchmod bypassed umask, so we get every
-    // bit we asked for and no more.
-    expect(stat.mode & 0o777).toBe(0o600)
-    expect(readFileSync(target, 'utf-8')).toBe('secret')
-  })
-
   it("rejects pre-existing paths when flag is 'wx' (EEXIST)", () => {
     // The `O_CREAT | O_EXCL` flag combination defends against the
     // "attacker pre-created the path" attack. With `randomUUID()`
@@ -115,7 +97,6 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     const fs = new DirectFsLayer()
     const target = join(dir, 'preexisting.txt')
 
-    // Plant a file at the target path first.
     writeFileSync(target, 'planted', 'utf-8')
 
     expect(() => {
@@ -126,84 +107,116 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
       })
     }).toThrowError(/EEXIST/)
 
-    // Original content must be intact (no truncation, no overwrite).
     expect(readFileSync(target, 'utf-8')).toBe('planted')
   })
 
   it('writes Buffer content with options without forcing encoding', () => {
-    // `sendViaBuffer` only writes strings today, but the abstraction
-    // must keep the Buffer path working so future callers (binary
-    // tmpfiles) can also harden their mode.
+    // The abstraction must keep the Buffer path working so future
+    // callers (binary tmpfiles) can also harden their mode through
+    // the options form, even though strings are the only shape
+    // exercised in production today.
     const fs = new DirectFsLayer()
     const target = join(dir, 'binary.bin')
     const payload = Buffer.from([0x00, 0x01, 0x02, 0xff])
 
     fs.writeFileSync(target, payload, { mode: 0o600, flag: 'wx' })
 
-    // Same security-invariant style as the string case above —
-    // assert "no group / world access" and leave the owner-bit
-    // direction unchecked, because any umask the platform applies
-    // only tightens the file further than the production code
-    // requested.
     const stat = statSync(target)
     expect(stat.mode & 0o077).toBe(0)
     expect(readFileSync(target)).toEqual(payload)
   })
 
-  it('rejects forceMode with a non-0o600 mode (TypeError)', () => {
-    // The umask-bypass capability is intentionally scoped to the
-    // ONE on-disk mode KovitoBoard currently has a normative spec
-    // contract for (`session-management.md` §7.1, Codex Review §15
-    // — `0o600`). Widening this allowlist must be a conscious spec
-    // change rather than a silent expansion of the umask-bypass
-    // surface, so the implementation rejects every other mode
-    // value at runtime.
-    const fs = new DirectFsLayer()
-    const target = join(dir, 'reject-bad-mode.txt')
-
-    for (const badMode of [0o644, 0o666, 0o400, 0o700, 0o755, 0]) {
-      expect(() => {
-        fs.writeFileSync(target, 'data', {
-          encoding: 'utf-8',
-          mode: badMode,
-          flag: 'wx',
-          forceMode: true,
-        })
-      }).toThrowError(TypeError)
-    }
-  })
-
-  it('rejects forceMode with a non-exclusive flag (TypeError)', () => {
-    // `forceMode: true` combined with `'w'` / `'a'` / `'r+'` would
-    // turn this option into a generic "chmod an existing file"
-    // primitive, broader than the tmpfile-hardening requirement
-    // and a future authz footgun if reused outside `tmux-bridge`.
-    // The implementation rejects it structurally; this test pins
-    // that the constraint is enforced at runtime rather than just
-    // documented.
-    const fs = new DirectFsLayer()
-    const target = join(dir, 'reject-non-exclusive.txt')
-
-    for (const badFlag of ['w', 'w+', 'a', 'ax', 'a+', 'r+'] as const) {
-      expect(() => {
-        fs.writeFileSync(target, 'data', {
-          encoding: 'utf-8',
-          mode: 0o600,
-          flag: badFlag,
-          forceMode: true,
-        })
-      }).toThrowError(TypeError)
-    }
-  })
-
   it('defaults encoding to utf-8 when options omit it for a string', () => {
-    // Match the legacy 3-arg form's default so callers can switch to
-    // the options form purely to add `mode` / `flag` without losing
-    // their implicit encoding contract.
+    // Match the legacy 3-arg form's default so callers can switch
+    // to the options form purely to add `mode` / `flag` without
+    // losing their implicit encoding contract.
     const fs = new DirectFsLayer()
     const target = join(dir, 'default-enc.txt')
 
     fs.writeFileSync(target, 'こんにちは', { mode: 0o600, flag: 'wx' })
+
+    expect(readFileSync(target, 'utf-8')).toBe('こんにちは')
+  })
+})
+
+describe('DirectFsLayer.writePrivateExclusiveFileSync (§15 spec-grade path)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fs-layer-private-excl-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('creates the file with mode 0o600 even under a hostile umask', () => {
+    // The whole point of the dedicated helper is that it gives a
+    // normative-grade guarantee for `0o600` regardless of the
+    // operator's process `umask`. Simulate a hardened shell that
+    // masks owner-read (`umask 0o477`) around the write and pin
+    // the exact bit pattern; without the in-helper `fchmod` this
+    // would land at `0o100` and break `tmux load-buffer`.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'private.txt')
+
+    const previousUmask = process.umask(0o477)
+    try {
+      fs.writePrivateExclusiveFileSync(target, 'secret')
+    } finally {
+      process.umask(previousUmask)
+    }
+
+    const stat = statSync(target)
+    expect(stat.mode & 0o777).toBe(0o600)
+    expect(readFileSync(target, 'utf-8')).toBe('secret')
+  })
+
+  it('refuses a pre-existing path with EEXIST and leaves it intact', () => {
+    // The exclusive-create flag is the second leg of the threat
+    // model (Codex Review §15): even if an attacker pre-created
+    // the predicted UUID path, we must not silently truncate
+    // their file or write into a planted symlink target. The
+    // helper bakes `O_CREAT | O_EXCL` in so this property cannot
+    // be opted out of by a caller.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'preexisting.txt')
+
+    writeFileSync(target, 'planted', 'utf-8')
+
+    expect(() => {
+      fs.writePrivateExclusiveFileSync(target, 'fresh')
+    }).toThrowError(/EEXIST/)
+
+    // Original content + mode must be unchanged: the failed
+    // exclusive open never touched the file.
+    expect(readFileSync(target, 'utf-8')).toBe('planted')
+  })
+
+  it('writes Buffer content without forcing an encoding', () => {
+    // tmux-bridge writes strings, but the helper supports Buffer
+    // for parity with the rest of the layer. We exercise that
+    // path here so a future binary-spool caller (if any) doesn't
+    // need to rediscover the contract.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'private-binary.bin')
+    const payload = Buffer.from([0x00, 0x01, 0x02, 0xff])
+
+    fs.writePrivateExclusiveFileSync(target, payload)
+
+    const stat = statSync(target)
+    expect(stat.mode & 0o777).toBe(0o600)
+    expect(readFileSync(target)).toEqual(payload)
+  })
+
+  it('defaults encoding to utf-8 for string content', () => {
+    // Match the rest of the layer so the helper does not become
+    // a sharp-edged exception that needs special remembering at
+    // every call site.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'private-utf8.txt')
+
+    fs.writePrivateExclusiveFileSync(target, 'こんにちは')
 
     expect(readFileSync(target, 'utf-8')).toBe('こんにちは')
   })
