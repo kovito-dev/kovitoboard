@@ -184,9 +184,30 @@ function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
       // is still warming up is the only soft-tolerated case and is
       // handled in the catch below — it cannot reach the status
       // check because the request itself rejects.
+      // Resolve the target server fail-closed: the dismiss POST is
+      // mutating (`writeSetting` on the project's setting.json), so
+      // we must not let a missing or mis-typed `sessionName` fall
+      // back to the default server and cross-contaminate another
+      // playwright project.
       const meta = testInfo.project.metadata as { sessionName?: string }
-      const sessionName = meta.sessionName ?? 'kb-e2e-shared-default'
-      const apiPort = SESSION_TO_PORT[sessionName] ?? 3001
+      const sessionName = meta.sessionName
+      if (!sessionName) {
+        throw new Error(
+          `[l1-per-test-setup] testInfo.project.metadata.sessionName is ` +
+            `missing — every L1 playwright project must declare its ` +
+            `sessionName so the helper can route the dismiss POST to the ` +
+            `correct webServer.`,
+        )
+      }
+      const apiPort = SESSION_TO_PORT[sessionName]
+      if (apiPort === undefined) {
+        throw new Error(
+          `[l1-per-test-setup] no SESSION_TO_PORT mapping for sessionName ` +
+            `'${sessionName}' — update SESSION_TO_PORT in this file when ` +
+            `adding new playwright projects so the dismiss POST does not ` +
+            `silently target the wrong server.`,
+        )
+      }
       const launchToken = process.env.KB_LAUNCH_TOKEN ?? ''
       const dismissUrl = `http://127.0.0.1:${apiPort}/api/security/dismiss`
       try {
@@ -195,17 +216,29 @@ function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
         })
         const status = r.status()
         if (status !== 200 && status !== 409) {
-          const body = await r.text().catch(() => '<unavailable>')
+          // Cap the body snippet at 200 bytes so a verbose 5xx /
+          // diagnostic payload (e.g. an Express stack trace) cannot
+          // pollute CI logs with sensitive paths or large dumps.
+          const bodySnippet = await r
+            .text()
+            .then((b) => (b.length > 200 ? `${b.slice(0, 200)}…` : b))
+            .catch(() => '<unavailable>')
           throw new Error(
-            `[l1-per-test-setup] security dismiss returned ${status}: ${body}`,
+            `[l1-per-test-setup] security dismiss returned ${status}: ${bodySnippet}`,
           )
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (msg.includes('security dismiss returned')) throw err
-        // Network-level failures (ECONNREFUSED while the webServer is
-        // still warming up) are tolerated — same posture as the
-        // test-reset-state POST in `kbFixture`.
+        // Soft-tolerate only the documented warm-up case (the
+        // webServer has not yet accepted connections). Any other
+        // transport-level failure — timeouts, aborted requests,
+        // DNS / socket errors — is re-thrown so it surfaces at
+        // fixture setup rather than as a flaky UI failure later.
+        const isConnectionRefused =
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('connect ECONNREFUSED')
+        if (!isConnectionRefused) throw err
       }
     }
 
