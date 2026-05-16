@@ -439,7 +439,22 @@ export class TmuxBridge {
 
       tmuxLogger.info({ chars: sanitized.length }, 'Preparing to send')
 
-      this.fs.writeFileSync(tmpFile, sanitized, 'utf-8')
+      // Spool the paste body to a same-UID-only tmpfile.
+      //
+      // - `mode: 0o600`: only the KB process owner can read the file.
+      //   `/tmp` is world-readable with the sticky bit, so the
+      //   Node.js default of `0o666 & ~umask` would otherwise leave
+      //   the buffer exposed to other local accounts for the few
+      //   milliseconds between `writeFileSync` and `unlinkSync`.
+      // - `flag: 'wx'`: open with `O_CREAT | O_EXCL` so an attacker
+      //   who pre-created the path (despite the `randomUUID()` name)
+      //   gets EEXIST instead of having us truncate their file or
+      //   write into a planted symlink target.
+      this.fs.writeFileSync(tmpFile, sanitized, {
+        encoding: 'utf-8',
+        mode: 0o600,
+        flag: 'wx',
+      })
 
       execFileSync('tmux', [
         'load-buffer', tmpFile,

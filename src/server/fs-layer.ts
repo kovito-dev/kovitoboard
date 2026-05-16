@@ -103,6 +103,41 @@ export interface WatchOptions {
   depth?: number
 }
 
+/**
+ * Options for non-atomic `writeFileSync` callers that need to control
+ * `mode` / `flag` directly (e.g. tmpfile writes that MUST be created
+ * with `O_CREAT | O_EXCL` + restrictive mode to defend against same-UID
+ * pre-creation in `/tmp`).
+ *
+ * Most callers can keep passing a plain `BufferEncoding` string for
+ * back-compat. Pass this object form only when `mode` or `flag` is
+ * actually needed; otherwise the legacy string form keeps the
+ * intent obvious.
+ */
+export interface WriteFileSyncOptions {
+  /**
+   * Encoding for string content. Ignored for `Buffer` content.
+   * Defaults to `'utf-8'` to match the legacy 3-arg form.
+   */
+  encoding?: BufferEncoding
+  /**
+   * File mode applied at open(2). Honors the process umask unless the
+   * caller wants exact bits via `fchmod`. For tmpfile hardening
+   * (Codex Review §15, `tmux-bridge.sendViaBuffer`) callers pass
+   * `0o600` together with `flag: 'wx'` so the file is created with
+   * owner-only read/write and EEXIST is raised if an attacker
+   * pre-created the path.
+   */
+  mode?: number
+  /**
+   * Open flag (e.g. `'wx'` for `O_CREAT | O_EXCL`). When omitted,
+   * Node.js defaults to `'w'` which truncates an existing file.
+   * Use `'wx'` for security-sensitive tmpfile writes that must
+   * refuse a pre-existing path.
+   */
+  flag?: string
+}
+
 /** Options for `writeFileAtomic`. */
 export interface WriteFileAtomicOptions {
   /**
@@ -179,7 +214,18 @@ export interface FileAccessLayer {
     | { oversized: false; notRegular: true }
 
   // --- Write ---
-  writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
+  /**
+   * Non-atomic write. Pass a `BufferEncoding` string for the legacy
+   * 3-arg form, or a `WriteFileSyncOptions` object when `mode` / `flag`
+   * matter (e.g. tmpfile hardening — Codex Review §15 / `tmux-bridge`
+   * `sendViaBuffer` uses `{ mode: 0o600, flag: 'wx' }` so the spool
+   * file is created owner-only and rejects pre-existing paths).
+   */
+  writeFileSync(
+    path: string,
+    content: string | Buffer,
+    encodingOrOptions?: BufferEncoding | WriteFileSyncOptions,
+  ): void
   /**
    * Atomically replace the destination file's contents.
    *
@@ -333,13 +379,29 @@ export class DirectFsLayer implements FileAccessLayer {
   writeFileSync(
     path: string,
     content: string | Buffer,
-    encoding: BufferEncoding = 'utf-8'
+    encodingOrOptions: BufferEncoding | WriteFileSyncOptions = 'utf-8',
   ): void {
-    if (typeof content === 'string') {
-      fsWriteFileSync(path, content, encoding)
-    } else {
-      fsWriteFileSync(path, content)
+    // Legacy 3-arg form: third arg is a BufferEncoding string. Keep
+    // the exact previous behavior (no mode / no flag, Node defaults).
+    if (typeof encodingOrOptions === 'string') {
+      if (typeof content === 'string') {
+        fsWriteFileSync(path, content, encodingOrOptions)
+      } else {
+        fsWriteFileSync(path, content)
+      }
+      return
     }
+    // Options-object form. Build a single options object so a missing
+    // field falls back to Node's default rather than to undefined.
+    const opts: { encoding?: BufferEncoding; mode?: number; flag?: string } = {}
+    if (typeof content === 'string') {
+      opts.encoding = encodingOrOptions.encoding ?? 'utf-8'
+    } else if (encodingOrOptions.encoding !== undefined) {
+      opts.encoding = encodingOrOptions.encoding
+    }
+    if (encodingOrOptions.mode !== undefined) opts.mode = encodingOrOptions.mode
+    if (encodingOrOptions.flag !== undefined) opts.flag = encodingOrOptions.flag
+    fsWriteFileSync(path, content, opts)
   }
 
   writeFileAtomic(
