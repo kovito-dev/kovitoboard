@@ -101,15 +101,34 @@ function resolveProjectRoot(sessionName: string): string {
   return value
 }
 
-export const test = base.extend<{ kbFixture: KbFixture }>({
-  // Seed the renderer's i18n localStorage key so the UI under test
-  // renders in Japanese. The renderer defaults to `en` when no locale
-  // is persisted (`src/renderer/i18n/index.ts` `FALLBACK_LOCALE`),
-  // and the existing E2E selectors / assertions are written against
-  // the Japanese copy. Setting it via `addInitScript` runs the seed
-  // before every navigation in this context, so each `page.goto` in
-  // a test is greeted by ja text from the very first paint.
-  page: async ({ page }, use) => {
+/**
+ * Build the `page` fixture body. Both `test` and `testWithSecurityToast`
+ * use this, the only knob being whether to pre-dismiss the
+ * SecurityRecommendationsToast (BL-2026-160).
+ *
+ * The `page` fixture is preferred over `kbFixture` for the dismiss POST
+ * because Playwright fixtures are lazy — `kbFixture` is only
+ * instantiated when a test destructures it, and several L1 specs
+ * (recipe-create-app.spec.ts among them) never do. The `page` fixture
+ * runs for every test that uses Playwright's browser context, which is
+ * the universal denominator we need.
+ *
+ * Two responsibilities:
+ *   1. Seed `kb.locale = 'ja'` in localStorage so the renderer's i18n
+ *      uses Japanese from first paint. Existing E2E selectors and
+ *      assertions are written against the Japanese copy.
+ *   2. POST `/api/security/dismiss` so the
+ *      SecurityRecommendationsToast does not overlay the right-aligned
+ *      header / sidebar buttons and intercept their pointer events
+ *      (BL-2026-160). See the dismiss block below for the detailed
+ *      rationale.
+ */
+function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
+  return async (
+    { page }: { page: import('@playwright/test').Page },
+    use: (value: import('@playwright/test').Page) => Promise<void>,
+    testInfo: import('@playwright/test').TestInfo,
+  ) => {
     await page.addInitScript(() => {
       try {
         window.localStorage.setItem('kb.locale', 'ja')
@@ -117,9 +136,88 @@ export const test = base.extend<{ kbFixture: KbFixture }>({
         /* localStorage unavailable */
       }
     })
+
+    if (opts.dismissSecurityToast) {
+      // BL-2026-160: pre-dismiss the SecurityRecommendationsToast.
+      //
+      // The toast (`src/renderer/components/SecurityRecommendationsToast.tsx`
+      // L176, `<div class="fixed top-4 right-4 z-50 ...">`) is rendered
+      // as soon as `/api/security/settings-check` returns
+      // `overallOk: false`. The L1 fixture project root lives under
+      // `/tmp/kb-e2e-template-XXX`, which is outside `~`, so the
+      // bounded settings reader falls back to Claude Code's documented
+      // default (`permissionMode: 'default'`, empty deny set). That
+      // yields `denyPattern.ok === false` and therefore
+      // `overallOk: false` — pinned in
+      // `tests/e2e/security-recommendations.spec.ts:67` as the
+      // deterministic L1 behaviour. The resulting toast sits over the
+      // right edge of the header / sidebar and Playwright reports
+      // `subtree intercepts pointer events` on every right-aligned
+      // button click (recipe-create-app S14 13 / s12-ambient-sidebar 4
+      // / s13-version-display 2 / url-routing 1 = 20 failures pre-fix).
+      //
+      // POSTing `/api/security/dismiss` writes a dismiss record into
+      // `.kovitoboard/setting.json::claudeCodeSettingsWarning` with a
+      // 24h cooldown. The per-test snapshot/restore step in
+      // `kbFixture` wipes `.kovitoboard/` before each test, so we
+      // need to re-dismiss every run — that is exactly what this
+      // block does.
+      //
+      // `security-recommendations.spec.ts` verifies the toast's
+      // surface/dismiss behaviour directly and must therefore NOT be
+      // pre-dismissed. It imports `testWithSecurityToast` (declared
+      // at the bottom of this file), which skips this block.
+      //
+      // Status codes:
+      //   - 200 — dismiss persisted (the expected L1 path).
+      //   - 409 — refused by design (`overallOk: true`, bypass mode
+      //           active, or `reason !== 'ok'`). The L1 fixture is
+      //           not in any of these states, but we accept 409 so
+      //           the helper stays robust against future fixture
+      //           changes.
+      //   - 5xx — bubble up as a hard failure.
+      const meta = testInfo.project.metadata as { sessionName?: string }
+      const sessionName = meta.sessionName ?? 'kb-e2e-shared-default'
+      const apiPort = SESSION_TO_PORT[sessionName] ?? 3001
+      const launchToken = process.env.KB_LAUNCH_TOKEN ?? ''
+      const dismissUrl = `http://127.0.0.1:${apiPort}/api/security/dismiss`
+      try {
+        const r = await page.request.post(dismissUrl, {
+          headers: { 'X-Kovitoboard-Token': launchToken },
+        })
+        if (r.status() >= 500) {
+          const body = await r.text().catch(() => '<unavailable>')
+          throw new Error(
+            `[l1-per-test-setup] security dismiss returned ${r.status()}: ${body}`,
+          )
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('returned 5')) throw err
+        // Network-level failures (ECONNREFUSED while the webServer is
+        // still warming up) are tolerated — same posture as the
+        // test-reset-state POST in `kbFixture`.
+      }
+    }
+
     await use(page)
-  },
-  kbFixture: async ({ request }, use, testInfo) => {
+  }
+}
+
+/**
+ * Build the kbFixture body. Unlike the `page` fixture (which both
+ * `test` and `testWithSecurityToast` share via `buildPageFixture`),
+ * the kbFixture body is a single shared definition — pre-dismiss of
+ * the SecurityRecommendationsToast (BL-2026-160) is owned by the
+ * `page` fixture so it runs even for specs that do not destructure
+ * `kbFixture`.
+ */
+function buildKbFixture() {
+  return async (
+    { request }: { request: import('@playwright/test').APIRequestContext },
+    use: (value: KbFixture) => Promise<void>,
+    testInfo: import('@playwright/test').TestInfo,
+  ) => {
     const meta = testInfo.project.metadata as { sessionName?: string }
     const sessionName = meta.sessionName ?? 'kb-e2e-shared-default'
     const projectRoot = resolveProjectRoot(sessionName)
@@ -298,7 +396,44 @@ export const test = base.extend<{ kbFixture: KbFixture }>({
         )
       }
     }
-  },
+  }
+}
+
+/**
+ * Default L1 test fixture. The `page` fixture pre-dismisses the
+ * SecurityRecommendationsToast so right-aligned UI targets
+ * (recipe-create-app button, ambient-sidebar toggle, server status,
+ * sessions sidebar entry) are not intercepted by the toast overlay
+ * (BL-2026-160). Use this for every L1 spec except the one whose
+ * contract is to verify the toast itself.
+ *
+ * `kbFixture` is marked `{ auto: true }` so the per-test snapshot /
+ * restore of `.kovitoboard/` runs for every test, including specs
+ * that do not destructure it (recipe-create-app.spec.ts,
+ * s12-ambient-sidebar.spec.ts, …). Without auto, the dismiss record
+ * persisted by the `page` fixture would leak across specs and break
+ * `security-recommendations.spec.ts` (BL-2026-160 follow-up).
+ */
+export const test = base.extend<{ kbFixture: KbFixture }>({
+  page: buildPageFixture({ dismissSecurityToast: true }),
+  kbFixture: [buildKbFixture(), { auto: true }],
+})
+
+/**
+ * Opt-out variant of `test` that does NOT pre-dismiss the
+ * SecurityRecommendationsToast. This exists for exactly one spec —
+ * `tests/e2e/security-recommendations.spec.ts` — which verifies that
+ * the toast surfaces and dismisses correctly. Importing this from any
+ * other spec is almost certainly a mistake: the toast will block
+ * right-aligned UI targets and the test will fail with `subtree
+ * intercepts pointer events` (BL-2026-160).
+ *
+ * Same `auto: true` rationale as `test` — keeps the snapshot/restore
+ * contract uniform.
+ */
+export const testWithSecurityToast = base.extend<{ kbFixture: KbFixture }>({
+  page: buildPageFixture({ dismissSecurityToast: false }),
+  kbFixture: [buildKbFixture(), { auto: true }],
 })
 
 export { expect } from '@playwright/test'
