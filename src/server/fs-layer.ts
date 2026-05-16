@@ -21,6 +21,7 @@ import { constants as fsConstants } from 'fs'
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
+  writeSync as fsWriteSync,
   appendFileSync as fsAppendFileSync,
   renameSync as fsRenameSync,
   existsSync as fsExistsSync,
@@ -103,6 +104,70 @@ export interface WatchOptions {
   depth?: number
 }
 
+/**
+ * Write-capable open flags accepted by Node's `fs.writeFileSync`.
+ * Narrowed from Node's `OpenMode` (`string | number`) so:
+ *
+ *   - the numeric form (which `writeFileSync` rejects at runtime)
+ *     is caught at compile time; and
+ *   - read-only flags like `'r'` are caught at compile time too,
+ *     instead of failing later with EBADF on the underlying write.
+ *
+ * The union mirrors the values documented under "File system flags"
+ * in the Node.js docs, restricted to the ones that are valid for
+ * a write.
+ */
+export type WriteOpenFlag =
+  | 'a'
+  | 'ax'
+  | 'a+'
+  | 'ax+'
+  | 'as'
+  | 'as+'
+  | 'r+'
+  | 'rs+'
+  | 'w'
+  | 'wx'
+  | 'w+'
+  | 'wx+'
+
+/**
+ * Options for non-atomic `writeFileSync` callers that need to control
+ * `mode` / `flag` directly (e.g. tmpfile writes that MUST be created
+ * with `O_CREAT | O_EXCL` + restrictive mode to defend against same-UID
+ * pre-creation in `/tmp`).
+ *
+ * Most callers can keep passing a plain `BufferEncoding` string for
+ * back-compat. Pass this object form only when `mode` or `flag` is
+ * actually needed; otherwise the legacy string form keeps the
+ * intent obvious.
+ */
+export interface WriteFileSyncOptions {
+  /**
+   * Encoding for string content. Ignored for `Buffer` content.
+   * Defaults to `'utf-8'` to match the legacy 3-arg form.
+   */
+  encoding?: BufferEncoding
+  /**
+   * File mode applied at open(2). By default Node honors the process
+   * `umask` on top of this value, so the on-disk mode can be tighter
+   * than what is requested. Combine with `forceMode: true` (below)
+   * when the caller needs an exact mode irrespective of the operator
+   * umask — for instance to satisfy a normative spec contract
+   * like Codex Review §15 ("`0o600`" in `session-management.md`
+   * §7.1, `tmux-bridge.sendViaBuffer`).
+   */
+  mode?: number
+  /**
+   * Open flag. Pass `'wx'` (= `O_CREAT | O_EXCL`) for
+   * security-sensitive tmpfile writes that must refuse a pre-existing
+   * path. The type is the `WriteOpenFlag` literal union so invalid
+   * (or read-only) flags are rejected statically rather than at
+   * `open(2)` / `write(2)` time.
+   */
+  flag?: WriteOpenFlag
+}
+
 /** Options for `writeFileAtomic`. */
 export interface WriteFileAtomicOptions {
   /**
@@ -179,7 +244,54 @@ export interface FileAccessLayer {
     | { oversized: false; notRegular: true }
 
   // --- Write ---
-  writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
+  /**
+   * Non-atomic write. Pass a `BufferEncoding` string for the legacy
+   * 3-arg form, or a `WriteFileSyncOptions` object when `mode` /
+   * `flag` matter. Note that Node's `{ mode }` still passes through
+   * the process `umask`; callers that need an exact on-disk mode
+   * irrespective of umask (e.g. tmpfile hardening for Codex Review
+   * §15 / `tmux-bridge.sendViaBuffer`) MUST use
+   * `writePrivateExclusiveFileSync` instead.
+   */
+  writeFileSync(
+    path: string,
+    content: string | Buffer,
+    encodingOrOptions?: BufferEncoding | WriteFileSyncOptions,
+  ): void
+  /**
+   * Exclusive-create a fresh file with strict owner-only permissions
+   * (mode `0o600`) that ignores the process `umask`. Used by
+   * `tmux-bridge.sendViaBuffer` to spool the paste body to a
+   * same-UID-only tmpfile (Codex Review §15, `session-management.md`
+   * §7.1 normative).
+   *
+   * Semantics:
+   *
+   * - Open `path` with `O_CREAT | O_EXCL | O_WRONLY` (the `'wx'`
+   *   flag). `EEXIST` is thrown if anything is already at `path`,
+   *   defending against an attacker pre-creating the predicted
+   *   path (or planting a symlink there).
+   * - `fchmod(fd, 0o600)` is called on the fresh descriptor BEFORE
+   *   any write, so the on-disk mode is exactly `0o600` regardless
+   *   of operator hardening profiles (e.g. `umask 0o477` that would
+   *   otherwise clear owner-read and turn a `tmux load-buffer` call
+   *   into an EACCES).
+   * - Content is written through that descriptor; the descriptor is
+   *   then closed in a `finally`.
+   *
+   * Scope is deliberately tight: this is NOT a generic "create a
+   * file with exact permissions" helper. The `0o600` mode and
+   * `O_CREAT | O_EXCL` flag are baked in so the umask-bypass
+   * capability cannot be widened by a future caller without a
+   * conscious extension here (and the matching spec change). Other
+   * exact-mode workflows MUST add their own helper rather than
+   * parametrising this one.
+   */
+  writePrivateExclusiveFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding?: BufferEncoding,
+  ): void
   /**
    * Atomically replace the destination file's contents.
    *
@@ -333,12 +445,66 @@ export class DirectFsLayer implements FileAccessLayer {
   writeFileSync(
     path: string,
     content: string | Buffer,
-    encoding: BufferEncoding = 'utf-8'
+    encodingOrOptions: BufferEncoding | WriteFileSyncOptions = 'utf-8',
   ): void {
+    // Legacy 3-arg form: third arg is a BufferEncoding string. Keep
+    // the exact previous behavior (no mode / no flag, Node defaults).
+    if (typeof encodingOrOptions === 'string') {
+      if (typeof content === 'string') {
+        fsWriteFileSync(path, content, encodingOrOptions)
+      } else {
+        fsWriteFileSync(path, content)
+      }
+      return
+    }
+    // Options-object form. Build a single options object so a missing
+    // field falls back to Node's default rather than to undefined.
+    const opts: { encoding?: BufferEncoding; mode?: number; flag?: WriteOpenFlag } = {}
     if (typeof content === 'string') {
-      fsWriteFileSync(path, content, encoding)
-    } else {
-      fsWriteFileSync(path, content)
+      opts.encoding = encodingOrOptions.encoding ?? 'utf-8'
+    } else if (encodingOrOptions.encoding !== undefined) {
+      opts.encoding = encodingOrOptions.encoding
+    }
+    if (encodingOrOptions.mode !== undefined) opts.mode = encodingOrOptions.mode
+    if (encodingOrOptions.flag !== undefined) opts.flag = encodingOrOptions.flag
+    fsWriteFileSync(path, content, opts)
+  }
+
+  writePrivateExclusiveFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding: BufferEncoding = 'utf-8',
+  ): void {
+    // Open with O_CREAT | O_EXCL | O_WRONLY (the 'wx' flag). The
+    // requested mode is passed to `openSync` as a defence-in-depth
+    // ceiling — Node combines it with umask on creation, so the
+    // descriptor never temporarily exists in a more permissive
+    // state than `0o600` even before the `fchmod` below runs.
+    const fd = fsOpenSync(path, 'wx', 0o600)
+    try {
+      // Force the exact bits the spec demands, ignoring the process
+      // umask. Hardening profiles like `umask 0o477` would otherwise
+      // strip owner-read from the descriptor and turn the tmpfile
+      // unreadable to the subsequent `tmux load-buffer` call.
+      fsFchmodSync(fd, 0o600)
+      if (typeof content === 'string') {
+        // Materialize the string as a Buffer once so we can use the
+        // (fd, buffer, offset, length) overload of `writeSync`,
+        // which has a stable shape across Node versions and lets
+        // us loop on short writes if the kernel splits the call.
+        const buf = Buffer.from(content, encoding)
+        let written = 0
+        while (written < buf.length) {
+          written += fsWriteSync(fd, buf, written, buf.length - written)
+        }
+      } else {
+        let written = 0
+        while (written < content.length) {
+          written += fsWriteSync(fd, content, written, content.length - written)
+        }
+      }
+    } finally {
+      fsCloseSync(fd)
     }
   }
 
