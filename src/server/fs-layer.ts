@@ -175,16 +175,22 @@ export interface WriteFileSyncOptions {
    * further, so callers must justify the override in code comments
    * and in the relevant spec.
    *
-   * Requires `mode` to be set; ignored when `mode` is undefined.
+   * Three structural constraints keep this from becoming a generic
+   * "bypass umask for anything you want" primitive. All three are
+   * enforced at runtime, not just documented:
    *
-   * **`flag` MUST be `'wx'` or `'wx+'`** (an exclusive-create flag).
-   * Allowing `forceMode` together with `'w'` / `'a'` / `'r+'` would
-   * turn this option into a generic "chmod an existing file"
-   * primitive — broader than the tmpfile-hardening requirement and
-   * a future authz footgun if reused outside `tmux-bridge`. The
-   * implementation rejects non-exclusive flags with a thrown
-   * `TypeError` so the constraint is structural, not just
-   * documentary.
+   *   1. **`flag` MUST be `'wx'` or `'wx+'`** (exclusive-create).
+   *      Allowing `forceMode` together with `'w'` / `'a'` / `'r+'`
+   *      would turn this option into a generic "chmod an existing
+   *      file" primitive.
+   *   2. **`mode` MUST be exactly `0o600`** — the only on-disk mode
+   *      KovitoBoard currently has a normative spec contract for
+   *      (`session-management.md` §7.1, Codex Review §15). Future
+   *      callers that need a different exact mode have to extend
+   *      this allowlist with a conscious decision and a spec
+   *      change, instead of silently widening the umask-bypass
+   *      surface.
+   *   3. `mode` must be set (forceMode is ignored otherwise).
    *
    * Implementation note: pairs naturally with `flag: 'wx'` for the
    * tmpfile-hardening pattern — the exclusive open prevents reuse
@@ -470,6 +476,18 @@ export class DirectFsLayer implements FileAccessLayer {
         )
       }
       const explicitMode = encodingOrOptions.mode
+      // Reject any mode other than 0o600 so a future caller cannot
+      // turn this into "open a fresh file with mode 0o666 and have
+      // the platform umask ignored." 0o600 is the only mode
+      // KovitoBoard has a normative spec contract for today
+      // (`session-management.md` §7.1, Codex Review §15); widening
+      // this allowlist must be a conscious spec change rather than
+      // a silent expansion of the umask-bypass surface.
+      if (explicitMode !== 0o600) {
+        throw new TypeError(
+          `WriteFileSyncOptions.forceMode is currently only permitted with mode 0o600; got 0o${explicitMode.toString(8)}. Extending this allowlist requires a spec change.`,
+        )
+      }
       // The `mode` passed to `openSync` still goes through `umask`;
       // we rely on `fchmodSync` below to set the exact bits. We
       // still pass the requested `mode` here so that, even on

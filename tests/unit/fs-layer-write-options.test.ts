@@ -150,6 +150,29 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     expect(readFileSync(target)).toEqual(payload)
   })
 
+  it('rejects forceMode with a non-0o600 mode (TypeError)', () => {
+    // The umask-bypass capability is intentionally scoped to the
+    // ONE on-disk mode KovitoBoard currently has a normative spec
+    // contract for (`session-management.md` §7.1, Codex Review §15
+    // — `0o600`). Widening this allowlist must be a conscious spec
+    // change rather than a silent expansion of the umask-bypass
+    // surface, so the implementation rejects every other mode
+    // value at runtime.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'reject-bad-mode.txt')
+
+    for (const badMode of [0o644, 0o666, 0o400, 0o700, 0o755, 0]) {
+      expect(() => {
+        fs.writeFileSync(target, 'data', {
+          encoding: 'utf-8',
+          mode: badMode,
+          flag: 'wx',
+          forceMode: true,
+        })
+      }).toThrowError(TypeError)
+    }
+  })
+
   it('rejects forceMode with a non-exclusive flag (TypeError)', () => {
     // `forceMode: true` combined with `'w'` / `'a'` / `'r+'` would
     // turn this option into a generic "chmod an existing file"
