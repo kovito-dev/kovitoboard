@@ -125,9 +125,9 @@ let nowProvider: () => number = Date.now
  *   3. Set installs the new entry at the tail (newest insertion order).
  *
  * TTL boundary: strictly less than `TRUST_DEDUP_TTL_MS` is "still live".
- * At-or-past the TTL is treated as expired, matching the spec phrase
- * "5 分以上開けた同一 promptId 再 claim は新規扱い" — `5 分以上` is inclusive,
- * so a re-claim arriving exactly at `now - existing === TTL` already
+ * At-or-past the TTL is treated as expired, matching the spec rule that a
+ * re-claim 5+ minutes (inclusive) after the original is treated as a new
+ * claim, so a re-claim arriving exactly at `now - existing === TTL` already
  * succeeds as a fresh claim rather than being absorbed as a duplicate.
  *
  * Performance note: the TTL eviction in step (2) walks the full ledger. With
