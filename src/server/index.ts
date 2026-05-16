@@ -2444,7 +2444,13 @@ app.post('/api/agents/:id/restart', async (req, res) => {
     res.json({ ok: true, result })
   } catch (err) {
     adminLogger.error({ err, agentId }, 'Agent restart failed')
-    res.status(500).json({ ok: false, error: String(err) })
+    // Client-safe envelope: do NOT echo `String(err)` / `err.message` / `err.stack`
+    // / `err.cause` to the 5xx body — that path becomes a side-channel for
+    // probing absolute paths, errno, or internal layout. The full detail is
+    // preserved in the `adminLogger.error({ err, ... }, ...)` call above for
+    // operator diagnosis via the pino sink.
+    // See: docs/specs/http-api-contract.md v1.6 §8.6 (supplementary §S15, v0.2.0).
+    res.status(500).json({ ok: false, error: 'Agent restart failed' })
   }
 })
 
