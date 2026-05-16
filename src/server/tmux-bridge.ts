@@ -445,15 +445,24 @@ export class TmuxBridge {
       //   `/tmp` is world-readable with the sticky bit, so the
       //   Node.js default of `0o666 & ~umask` would otherwise leave
       //   the buffer exposed to other local accounts for the few
-      //   milliseconds between `writeFileSync` and `unlinkSync`.
+      //   milliseconds between the write and `unlinkSync`.
       // - `flag: 'wx'`: open with `O_CREAT | O_EXCL` so an attacker
       //   who pre-created the path (despite the `randomUUID()` name)
       //   gets EEXIST instead of having us truncate their file or
       //   write into a planted symlink target.
+      // - `forceMode: true`: apply the requested mode verbatim via
+      //   `fchmod(2)` so the spec contract in
+      //   `session-management.md` §7.1 ("normative `0o600`") holds
+      //   regardless of the operator's process umask. A hardened
+      //   shell that masks owner bits (e.g. `umask 0o477`) would
+      //   otherwise turn the spool file unreadable to the very
+      //   `tmux load-buffer` call we are about to make, turning
+      //   the hardening into an availability regression.
       this.fs.writeFileSync(tmpFile, sanitized, {
         encoding: 'utf-8',
         mode: 0o600,
         flag: 'wx',
+        forceMode: true,
       })
 
       execFileSync('tmux', [

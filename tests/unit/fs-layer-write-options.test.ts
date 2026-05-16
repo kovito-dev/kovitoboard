@@ -51,26 +51,14 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     expect(readFileSync(target, 'utf-8')).toBe('hello')
   })
 
-  it('applies mode 0o600 verbatim when supplied via options', () => {
-    // The hardened tmpfile path (Codex Review §15) must produce a
-    // file that is NOT readable by anyone other than the owner.
-    // We assert the security invariant directly — "no group / world
-    // access" — rather than the exact 0o600 bit pattern, because
-    // Node's `fs.writeFileSync(..., { mode })` still passes the
-    // requested mode through the process `umask`. A CI runner or
-    // hardened user shell could set a `umask` (e.g. `0o277` for a
-    // read-only style hardening) that clears bits we asked for on
-    // the owner side as well, and a strict-equality check would
-    // then fail spuriously even though the security property holds.
-    //
-    // The owner-bit direction is left unchecked on purpose: any
-    // umask the platform applies only makes the file MORE
-    // restrictive than the production code requested, and a file
-    // KovitoBoard wrote with owner bits cleared is still strictly
-    // tighter than the original threat (other-UID readability)
-    // demanded.
+  it('applies mode 0o600 subject to umask when forceMode is omitted', () => {
+    // Without `forceMode`, the requested `mode` still passes through
+    // the process `umask`, so we cannot assert the full 0o600 bit
+    // pattern. What we CAN guarantee is the security invariant
+    // ("no group / world access"): any umask only tightens the
+    // file further, never opens it up.
     const fs = new DirectFsLayer()
-    const target = join(dir, 'hardened.txt')
+    const target = join(dir, 'hardened-no-force.txt')
 
     fs.writeFileSync(target, 'secret', {
       encoding: 'utf-8',
@@ -79,7 +67,42 @@ describe('DirectFsLayer.writeFileSync (options form)', () => {
     })
 
     const stat = statSync(target)
-    expect(stat.mode & 0o077).toBe(0) // no group / world access
+    expect(stat.mode & 0o077).toBe(0)
+    expect(readFileSync(target, 'utf-8')).toBe('secret')
+  })
+
+  it('applies mode 0o600 verbatim when forceMode: true (umask bypass)', () => {
+    // `forceMode: true` is the spec-grade path used by
+    // `tmux-bridge.sendViaBuffer` (Codex Review §15,
+    // `session-management.md` §7.1). The implementation MUST apply
+    // the requested mode via `fchmod(2)` so the on-disk mode equals
+    // exactly `0o600` regardless of the operator's `umask`. Without
+    // this, a hardened shell that masks owner bits (e.g.
+    // `umask 0o477`) would turn the spool file unreadable to the
+    // subsequent `tmux load-buffer` call — an availability
+    // regression on top of a security fix.
+    //
+    // Simulate that scenario inside the test: set a hostile umask
+    // around the write and confirm the file still lands at 0o600.
+    const fs = new DirectFsLayer()
+    const target = join(dir, 'hardened-force.txt')
+
+    const previousUmask = process.umask(0o477)
+    try {
+      fs.writeFileSync(target, 'secret', {
+        encoding: 'utf-8',
+        mode: 0o600,
+        flag: 'wx',
+        forceMode: true,
+      })
+    } finally {
+      process.umask(previousUmask)
+    }
+
+    const stat = statSync(target)
+    // Exact bit pattern — fchmod bypassed umask, so we get every
+    // bit we asked for and no more.
+    expect(stat.mode & 0o777).toBe(0o600)
     expect(readFileSync(target, 'utf-8')).toBe('secret')
   })
 

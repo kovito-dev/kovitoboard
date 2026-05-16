@@ -21,6 +21,7 @@ import { constants as fsConstants } from 'fs'
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
+  writeSync as fsWriteSync,
   appendFileSync as fsAppendFileSync,
   renameSync as fsRenameSync,
   existsSync as fsExistsSync,
@@ -104,6 +105,33 @@ export interface WatchOptions {
 }
 
 /**
+ * Write-capable open flags accepted by Node's `fs.writeFileSync`.
+ * Narrowed from Node's `OpenMode` (`string | number`) so:
+ *
+ *   - the numeric form (which `writeFileSync` rejects at runtime)
+ *     is caught at compile time; and
+ *   - read-only flags like `'r'` are caught at compile time too,
+ *     instead of failing later with EBADF on the underlying write.
+ *
+ * The union mirrors the values documented under "File system flags"
+ * in the Node.js docs, restricted to the ones that are valid for
+ * a write.
+ */
+export type WriteOpenFlag =
+  | 'a'
+  | 'ax'
+  | 'a+'
+  | 'ax+'
+  | 'as'
+  | 'as+'
+  | 'r+'
+  | 'rs+'
+  | 'w'
+  | 'wx'
+  | 'w+'
+  | 'wx+'
+
+/**
  * Options for non-atomic `writeFileSync` callers that need to control
  * `mode` / `flag` directly (e.g. tmpfile writes that MUST be created
  * with `O_CREAT | O_EXCL` + restrictive mode to defend against same-UID
@@ -121,21 +149,40 @@ export interface WriteFileSyncOptions {
    */
   encoding?: BufferEncoding
   /**
-   * File mode applied at open(2). Honors the process umask unless the
-   * caller wants exact bits via `fchmod`. For tmpfile hardening
-   * (Codex Review §15, `tmux-bridge.sendViaBuffer`) callers pass
-   * `0o600` together with `flag: 'wx'` so the file is created with
-   * owner-only read/write and EEXIST is raised if an attacker
-   * pre-created the path.
+   * File mode applied at open(2). By default Node honors the process
+   * `umask` on top of this value, so the on-disk mode can be tighter
+   * than what is requested. Combine with `forceMode: true` (below)
+   * when the caller needs an exact mode irrespective of the operator
+   * umask — for instance to satisfy a normative spec contract
+   * like Codex Review §15 ("`0o600`" in `session-management.md`
+   * §7.1, `tmux-bridge.sendViaBuffer`).
    */
   mode?: number
   /**
-   * Open flag (e.g. `'wx'` for `O_CREAT | O_EXCL`). When omitted,
-   * Node.js defaults to `'w'` which truncates an existing file.
-   * Use `'wx'` for security-sensitive tmpfile writes that must
-   * refuse a pre-existing path.
+   * Open flag. Pass `'wx'` (= `O_CREAT | O_EXCL`) for
+   * security-sensitive tmpfile writes that must refuse a pre-existing
+   * path. The type is the `WriteOpenFlag` literal union so invalid
+   * (or read-only) flags are rejected statically rather than at
+   * `open(2)` / `write(2)` time.
    */
-  flag?: string
+  flag?: WriteOpenFlag
+  /**
+   * When `true`, the requested `mode` is enforced verbatim via
+   * `fchmod(2)` on the freshly opened descriptor, bypassing the
+   * process `umask`. Use this only when an exact mode is part of the
+   * security contract: it intentionally defeats operator-level
+   * hardening profiles that would otherwise tighten the file
+   * further, so callers must justify the override in code comments
+   * and in the relevant spec.
+   *
+   * Requires `mode` to be set; ignored when `mode` is undefined.
+   *
+   * Implementation note: pairs with `flag: 'wx'` for the
+   * tmpfile-hardening pattern — the `wx` open prevents reuse of an
+   * attacker-planted path, and the subsequent `fchmod` ensures the
+   * fresh descriptor lands with the exact mode the spec demands.
+   */
+  forceMode?: boolean
 }
 
 /** Options for `writeFileAtomic`. */
@@ -391,9 +438,51 @@ export class DirectFsLayer implements FileAccessLayer {
       }
       return
     }
-    // Options-object form. Build a single options object so a missing
-    // field falls back to Node's default rather than to undefined.
-    const opts: { encoding?: BufferEncoding; mode?: number; flag?: string } = {}
+    // forceMode path (Codex Review §15, `tmux-bridge.sendViaBuffer`):
+    // the caller asked for the requested `mode` to bypass the process
+    // umask. Open the file, `fchmod` it to the exact requested bits,
+    // then write — this gives a normative-grade guarantee that the
+    // on-disk mode equals what the spec demands rather than what
+    // `mode & ~umask` happens to produce.
+    if (encodingOrOptions.forceMode && encodingOrOptions.mode !== undefined) {
+      const openFlag: WriteOpenFlag = encodingOrOptions.flag ?? 'w'
+      const explicitMode = encodingOrOptions.mode
+      // The `mode` passed to `openSync` still goes through `umask`;
+      // we rely on `fchmodSync` below to set the exact bits. We
+      // still pass the requested `mode` here so that, even on
+      // descriptor leak between open and fchmod, the file is never
+      // more permissive than what the caller asked for.
+      const fd = fsOpenSync(path, openFlag, explicitMode)
+      try {
+        fsFchmodSync(fd, explicitMode)
+        if (typeof content === 'string') {
+          const encoding = encodingOrOptions.encoding ?? 'utf-8'
+          // Materialize the string as a Buffer once so we can use
+          // the (fd, buffer) overload of writeSync, which has a
+          // stable shape across Node versions. `fs.writeSync(fd,
+          // string, position?, encoding?)` exists too, but its
+          // signature is overloaded with the buffer form and we
+          // prefer the explicit Buffer path here.
+          const buf = Buffer.from(content, encoding)
+          let written = 0
+          while (written < buf.length) {
+            written += fsWriteSync(fd, buf, written, buf.length - written)
+          }
+        } else {
+          let written = 0
+          while (written < content.length) {
+            written += fsWriteSync(fd, content, written, content.length - written)
+          }
+        }
+      } finally {
+        fsCloseSync(fd)
+      }
+      return
+    }
+    // Options-object form (no forceMode). Build a single options
+    // object so a missing field falls back to Node's default rather
+    // than to undefined.
+    const opts: { encoding?: BufferEncoding; mode?: number; flag?: WriteOpenFlag } = {}
     if (typeof content === 'string') {
       opts.encoding = encodingOrOptions.encoding ?? 'utf-8'
     } else if (encodingOrOptions.encoding !== undefined) {
