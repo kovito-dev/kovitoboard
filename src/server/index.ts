@@ -26,6 +26,11 @@ import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
+import {
+  tryClaimTrustResponded,
+  releaseTrustClaim,
+  shouldEmitDuplicateLog,
+} from './trust-prompt-respond-dedup'
 import { AgentActivityMonitor } from './agent-activity-monitor'
 import { createHeartbeatTracker } from './ws-heartbeat'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest, SessionOrigin } from './types'
@@ -2542,27 +2547,84 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
 
   const { promptId, windowName, response } = payload
 
+  // Phase 1 (payload shape) has already passed above. The branches below
+  // implement Phase 2 (mode-specific validation), Phase 3 (dedup claim),
+  // and Phase 4 (detector dispatch) per trust-prompt-relay.md v1.5 §8.1.1.
+  //
+  // Why dedup *after* Phase 2: the spec requires mode validation to run
+  // first so that an invalid payload (missing choiceId, oversize rawKeys,
+  // etc.) does not consume a `(windowName, promptId)` slot. A consumed
+  // slot would lock out the legitimate respond that arrives next with the
+  // same identifiers.
+  //
+  // Why dedup *before* Phase 4: the race the ledger defends against is
+  // exactly two responds racing through `respondChoice` / `respondRawKeys`
+  // in `state.lastDetectedKind === 'pattern'`. Once dispatch fires, the
+  // tmux keystroke is already in flight.
+
   if (response.mode === 'choice') {
-    // Validate choiceId is a non-empty string
+    // Phase 2 (mode-specific): choiceId is a non-empty string.
     if (typeof response.choiceId !== 'string' || response.choiceId.length === 0) {
       wsLogger.warn('trust_prompt_respond: choiceId must be a non-empty string')
       return
     }
-    // The UI sends only choiceId; the actual key sequence conversion is performed
-    // by the detector using choices (state.lastChoices) from the most recent notification.
-    // This design prevents the UI from injecting arbitrary keys.
+    // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
+    if (!tryClaimTrustResponded(windowName, promptId)) {
+      // One-shot warn per claimed slot to keep a hostile / buggy client's
+      // duplicate flood from amplifying into unbounded pino sink writes.
+      // Spec §8.1.1 mandates a `warn` log on duplicate — we emit it the
+      // first time and suppress subsequent hammering against the same
+      // slot until it expires / is released / is evicted.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'choice' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
+      return
+    }
+    // Phase 4 (detector dispatch). The UI sends only choiceId; the actual
+    // key sequence conversion is performed by the detector using
+    // `state.lastChoices` from the most recent notification. This design
+    // prevents the UI from injecting arbitrary keys.
     const ok = trustPromptDetector.respondChoice(windowName, promptId, response.choiceId)
     if (!ok) {
+      // Phase 5 (rollback). Dispatch failed before any tmux keystroke was
+      // delivered (semantic validation inside the detector — unknown
+      // choiceId / TOCTOU promptId mismatch / window vanished — returns
+      // false without side effects). Release the dedup slot so a buggy
+      // or hostile client that sent a semantically invalid response
+      // cannot occupy the slot for the full TTL and DoS the legitimate
+      // respond that follows.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (choice) failed')
     }
   } else if (response.mode === 'raw-keys') {
-    // Validate rawKeys is a string within the allowed length range
+    // Phase 2 (mode-specific): rawKeys is a string of length 1..500.
     if (typeof response.rawKeys !== 'string' || response.rawKeys.length < 1 || response.rawKeys.length > 500) {
       wsLogger.warn('trust_prompt_respond: rawKeys must be a string (1-500 chars)')
       return
     }
+    // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
+    if (!tryClaimTrustResponded(windowName, promptId)) {
+      // One-shot warn per claimed slot — see choice-branch comment above.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'raw-keys' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
+      return
+    }
+    // Phase 4 (detector dispatch).
     const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
     if (!ok) {
+      // Phase 5 (rollback). See the choice-branch comment above for
+      // rationale — `respondRawKeys` reaches `tmux.sendTrustPromptKeys`
+      // only after passing TOCTOU + length checks, so a false return
+      // here means no keystroke was delivered and the slot is safe to
+      // release.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (raw-keys) failed')
     }
   } else {
