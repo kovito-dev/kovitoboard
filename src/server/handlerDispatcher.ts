@@ -554,7 +554,14 @@ async function dispatchInner(
       projectRoot,
     )
 
-    return handlerError('Internal', `Handler execution failed: ${err instanceof Error ? err.message : String(err)}`)
+    // Client-safe envelope: the `Internal` envelope's `message` MUST be a fixed
+    // string. Do NOT echo `err.message` / `err.stack` / `err.cause` / `String(err)`
+    // — recipe code receives this envelope over WebSocket, so a verbatim caught-
+    // error string becomes a side-channel for probing absolute paths, errno, or
+    // internal layout. The full detail is preserved in `serverLogger.error({ err }, ...)`
+    // above for operator diagnosis via the pino sink.
+    // See: docs/specs/handler-dispatch.md v1.3 §7 (supplementary §S16, v0.2.0).
+    return handlerError('Internal', 'Handler execution failed')
   }
 }
 
