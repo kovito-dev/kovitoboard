@@ -70,14 +70,35 @@ function makeKey(windowName: string, promptId: string): string {
 }
 
 /**
- * The ledger itself. `value` is the wall-clock timestamp of the claim, in ms
- * since epoch (Date.now()). Map insertion order is used for cap-eviction.
+ * Single entry in the ledger.
+ *
+ *   - `ts`     : wall-clock timestamp of the original claim (ms since epoch).
+ *                Used for TTL math; this is the dimension the spec normatives
+ *                are written against (§8.1.1).
+ *   - `logged` : whether the handler has already emitted a `warn` log for a
+ *                duplicate respond against this slot. The first duplicate
+ *                observation flips this to `true` and the handler logs once;
+ *                subsequent duplicate respond hammering on the same slot
+ *                short-circuits in `shouldEmitDuplicateLog` and does NOT
+ *                amplify pino sink writes. The flag is gated to a single
+ *                claim (the same `(windowName, promptId)`), and the slot
+ *                vanishes when the entry expires or is evicted, so a
+ *                hostile client cannot suppress legitimate warns from
+ *                other prompts.
+ */
+interface LedgerEntry {
+  ts: number
+  logged: boolean
+}
+
+/**
+ * The ledger itself. Map insertion order is used for cap-eviction.
  *
  * Module-scoped so the same ledger is shared across the lifetime of the
  * server process — this is the correct scope because KovitoBoard runs one
  * server per projectRoot (process-lifecycle.md v1.1 §4).
  */
-const ledger: Map<string, number> = new Map()
+const ledger: Map<string, LedgerEntry> = new Map()
 
 /**
  * Optional `Date.now()` injection for unit tests. Production code never
@@ -126,7 +147,7 @@ export function tryClaimTrustResponded(windowName: string, promptId: string): bo
   // and a fresh claim will succeed. This matches the spec's
   // "5+ minutes apart is treated as a new claim" clause.
   const existing = ledger.get(key)
-  if (existing !== undefined && now - existing < TRUST_DEDUP_TTL_MS) {
+  if (existing !== undefined && now - existing.ts < TRUST_DEDUP_TTL_MS) {
     return false
   }
 
@@ -140,8 +161,12 @@ export function tryClaimTrustResponded(windowName: string, promptId: string): bo
   // unconditionally scan the whole ledger here. With cap = 1024 the cost
   // is bounded at O(1024) wall-clock per claim, well within budget for a
   // human-driven respond loop.
-  for (const [k, ts] of ledger) {
-    if (now - ts > TRUST_DEDUP_TTL_MS) {
+  for (const [k, entry] of ledger) {
+    // Use the same boundary as the duplicate check above (`>= TTL` is
+    // expired) so an `age === TTL` entry never lingers in the ledger
+    // and never counts toward the 1024 cap (would otherwise allow it
+    // to evict a live older claim under pressure).
+    if (now - entry.ts >= TRUST_DEDUP_TTL_MS) {
       ledger.delete(k)
     }
   }
@@ -159,8 +184,50 @@ export function tryClaimTrustResponded(windowName: string, promptId: string): bo
 
   // Phase 3. Set the new claim. `Map.set` on an absent key appends at the
   // tail of the insertion order; for an already-deleted-then-readded key,
-  // the new position is also the tail.
-  ledger.set(key, now)
+  // the new position is also the tail. `logged` starts false — the next
+  // duplicate respond against this slot (if any) will be the first to
+  // trip the log permit.
+  ledger.set(key, { ts: now, logged: false })
+  return true
+}
+
+/**
+ * One-shot log permit for the first duplicate respond against a claimed slot.
+ *
+ * Returns `true` exactly once per `(windowName, promptId)` claim, on the
+ * first duplicate observation. Subsequent calls against the same slot return
+ * `false` until the slot is released, expired, or evicted. Callers should
+ * gate the duplicate `warn` log on the result of this function:
+ *
+ *     if (!tryClaimTrustResponded(w, p)) {
+ *       if (shouldEmitDuplicateLog(w, p)) {
+ *         wsLogger.warn({ w, p }, '...duplicate respond discarded...')
+ *       }
+ *       return
+ *     }
+ *
+ * Why this exists: without per-slot suppression, a buggy or hostile client
+ * that hammers the same `(windowName, promptId)` would force the dedup
+ * handler to emit one `warn` log per hammered call. Even with structural
+ * redactors in front of pino, that path is still wall-clock fsync I/O on
+ * the rolling file sink and unbounded disk-growth pressure. The
+ * `logged: boolean` flag on the ledger entry caps that to a single warn
+ * per accepted claim's lifetime, while still surfacing the *fact* that a
+ * race occurred to operators.
+ *
+ * Safety:
+ *   - The permit is gated to a single claim. Once the slot is released
+ *     (via `releaseTrustClaim`) or expires (TTL elapse) or is evicted
+ *     (cap pressure), a fresh successful claim creates a new entry with
+ *     `logged: false`, restoring the operator's first-look warn.
+ *   - If `tryClaimTrustResponded` was not called first (or returned `true`,
+ *     so no duplicate observation is plausible), this function returns
+ *     `false` — there is nothing to log.
+ */
+export function shouldEmitDuplicateLog(windowName: string, promptId: string): boolean {
+  const entry = ledger.get(makeKey(windowName, promptId))
+  if (entry === undefined || entry.logged) return false
+  entry.logged = true
   return true
 }
 

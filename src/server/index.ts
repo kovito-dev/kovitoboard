@@ -26,7 +26,11 @@ import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
-import { tryClaimTrustResponded, releaseTrustClaim } from './trust-prompt-respond-dedup'
+import {
+  tryClaimTrustResponded,
+  releaseTrustClaim,
+  shouldEmitDuplicateLog,
+} from './trust-prompt-respond-dedup'
 import { AgentActivityMonitor } from './agent-activity-monitor'
 import { createHeartbeatTracker } from './ws-heartbeat'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest, SessionOrigin } from './types'
@@ -2566,10 +2570,17 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
     }
     // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
     if (!tryClaimTrustResponded(windowName, promptId)) {
-      wsLogger.warn(
-        { windowName, promptId, mode: 'choice' },
-        'trust_prompt_respond: duplicate respond discarded by dedup ledger',
-      )
+      // One-shot warn per claimed slot to keep a hostile / buggy client's
+      // duplicate flood from amplifying into unbounded pino sink writes.
+      // Spec §8.1.1 mandates a `warn` log on duplicate — we emit it the
+      // first time and suppress subsequent hammering against the same
+      // slot until it expires / is released / is evicted.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'choice' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
       return
     }
     // Phase 4 (detector dispatch). The UI sends only choiceId; the actual
@@ -2596,10 +2607,13 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
     }
     // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
     if (!tryClaimTrustResponded(windowName, promptId)) {
-      wsLogger.warn(
-        { windowName, promptId, mode: 'raw-keys' },
-        'trust_prompt_respond: duplicate respond discarded by dedup ledger',
-      )
+      // One-shot warn per claimed slot — see choice-branch comment above.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'raw-keys' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
       return
     }
     // Phase 4 (detector dispatch).

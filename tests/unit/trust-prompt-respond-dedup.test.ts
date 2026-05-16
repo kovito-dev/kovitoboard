@@ -26,6 +26,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   tryClaimTrustResponded,
   releaseTrustClaim,
+  shouldEmitDuplicateLog,
   TRUST_DEDUP_TTL_MS,
   TRUST_DEDUP_MAX_ENTRIES,
   _resetTrustDedupLedgerForTests,
@@ -144,6 +145,24 @@ describe('tryClaimTrustResponded — TTL expiration', () => {
     // TTL eviction sub-phase before the new entry was inserted.
     expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
   })
+
+  it('sweep boundary is consistent with the claim boundary (entry at exactly TTL is reaped, not lingering)', () => {
+    // The claim check uses `< TTL` (so age === TTL is "expired for
+    // claim purposes"). If the sweep used `> TTL` instead of `>= TTL`,
+    // an entry at exactly TTL would be accepted as a fresh claim but
+    // would also still be physically present, double-counting toward
+    // the 1024 cap and potentially evicting a live older claim under
+    // pressure. This test pins the boundary consistency.
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
+    // Advance to exactly the TTL boundary, then claim a different key
+    // to trigger the sweep.
+    advanceVirtualNow(TRUST_DEDUP_TTL_MS)
+    expect(tryClaimTrustResponded('win-b', 'prompt-2')).toBe(true)
+    // (win-a, prompt-1) at age === TTL must have been swept, so the
+    // ledger holds only (win-b, prompt-2).
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
+  })
 })
 
 // =========================================================================
@@ -206,6 +225,63 @@ describe('tryClaimTrustResponded — size cap eviction', () => {
     expect(tryClaimTrustResponded('win', 'prompt-overflow')).toBe(false)
     expect(tryClaimTrustResponded('win', 'prompt-1')).toBe(false)
     expect(tryClaimTrustResponded('win', `prompt-${TRUST_DEDUP_MAX_ENTRIES - 1}`)).toBe(false)
+  })
+})
+
+// =========================================================================
+// One-shot duplicate log permit (DoS-resistance against log amplification)
+// =========================================================================
+
+describe('shouldEmitDuplicateLog — one-shot log permit per claimed slot', () => {
+  it('returns true exactly once after the first duplicate observation', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    // First duplicate observed by the handler — permit granted.
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(true)
+    // Subsequent duplicates against the same slot are silent.
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(false)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(false)
+  })
+
+  it('returns false when no claim is held for the slot (no-op for un-claimed key)', () => {
+    expect(shouldEmitDuplicateLog('win-unknown', 'prompt-unknown')).toBe(false)
+  })
+
+  it('a release-then-re-claim resets the permit (next duplicate logs again)', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(false)
+
+    // Release the slot (handler rollback path), then a fresh claim
+    // succeeds with `logged: false` on the new entry.
+    releaseTrustClaim('win-a', 'prompt-1')
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(true)
+  })
+
+  it('a TTL elapse resets the permit (next duplicate logs again)', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(false)
+
+    // Cross the TTL boundary, then a fresh claim succeeds.
+    advanceVirtualNow(TRUST_DEDUP_TTL_MS + 1)
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(shouldEmitDuplicateLog('win-a', 'prompt-1')).toBe(true)
+  })
+
+  it('flood of duplicates on one slot does not amplify log permits', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    // Simulate a hostile client hammering Phase 3 with the same slot.
+    // The handler would call `shouldEmitDuplicateLog` after every
+    // `tryClaimTrustResponded` returning false. We expect a single
+    // `true` and then thousands of `false`s.
+    let trueCount = 0
+    for (let i = 0; i < 4096; i++) {
+      if (shouldEmitDuplicateLog('win-a', 'prompt-1')) {
+        trueCount++
+      }
+    }
+    expect(trueCount).toBe(1)
   })
 })
 
