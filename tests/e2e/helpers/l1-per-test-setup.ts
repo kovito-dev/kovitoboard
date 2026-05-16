@@ -216,15 +216,18 @@ function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
         })
         const status = r.status()
         if (status !== 200 && status !== 409) {
-          // Cap the body snippet at 200 bytes so a verbose 5xx /
-          // diagnostic payload (e.g. an Express stack trace) cannot
-          // pollute CI logs with sensitive paths or large dumps.
-          const bodySnippet = await r
-            .text()
-            .then((b) => (b.length > 200 ? `${b.slice(0, 200)}…` : b))
-            .catch(() => '<unavailable>')
+          // Do NOT include the response body in the thrown error.
+          // The server can emit Express stack traces or other
+          // diagnostic payloads on 4xx / 5xx and those would leak
+          // filesystem paths, usernames, or internal IDs into CI
+          // logs. The status code plus a stable error label is
+          // enough to attribute the regression; full diagnostics
+          // belong in `~/test/kb-latest/.kovitoboard/logs/server.log`
+          // (the L1 server logger).
           throw new Error(
-            `[l1-per-test-setup] security dismiss returned ${status}: ${bodySnippet}`,
+            `[l1-per-test-setup] security dismiss returned unexpected ` +
+              `status ${status} (expected 200 or 409); see the L1 ` +
+              `server log for details.`,
           )
         }
       } catch (err) {
