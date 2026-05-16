@@ -26,7 +26,7 @@ import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
-import { tryClaimTrustResponded } from './trust-prompt-respond-dedup'
+import { tryClaimTrustResponded, releaseTrustClaim } from './trust-prompt-respond-dedup'
 import { AgentActivityMonitor } from './agent-activity-monitor'
 import { createHeartbeatTracker } from './ws-heartbeat'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest, SessionOrigin } from './types'
@@ -2578,6 +2578,14 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
     // prevents the UI from injecting arbitrary keys.
     const ok = trustPromptDetector.respondChoice(windowName, promptId, response.choiceId)
     if (!ok) {
+      // Phase 5 (rollback). Dispatch failed before any tmux keystroke was
+      // delivered (semantic validation inside the detector — unknown
+      // choiceId / TOCTOU promptId mismatch / window vanished — returns
+      // false without side effects). Release the dedup slot so a buggy
+      // or hostile client that sent a semantically invalid response
+      // cannot occupy the slot for the full TTL and DoS the legitimate
+      // respond that follows.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (choice) failed')
     }
   } else if (response.mode === 'raw-keys') {
@@ -2597,6 +2605,12 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
     // Phase 4 (detector dispatch).
     const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
     if (!ok) {
+      // Phase 5 (rollback). See the choice-branch comment above for
+      // rationale — `respondRawKeys` reaches `tmux.sendTrustPromptKeys`
+      // only after passing TOCTOU + length checks, so a false return
+      // here means no keystroke was delivered and the slot is safe to
+      // release.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (raw-keys) failed')
     }
   } else {

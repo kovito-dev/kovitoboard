@@ -103,6 +103,12 @@ let nowProvider: () => number = Date.now
  *      have room for one more).
  *   3. Set installs the new entry at the tail (newest insertion order).
  *
+ * TTL boundary: strictly less than `TRUST_DEDUP_TTL_MS` is "still live".
+ * At-or-past the TTL is treated as expired, matching the spec phrase
+ * "5 分以上開けた同一 promptId 再 claim は新規扱い" — `5 分以上` is inclusive,
+ * so a re-claim arriving exactly at `now - existing === TTL` already
+ * succeeds as a fresh claim rather than being absorbed as a duplicate.
+ *
  * Performance note: the TTL eviction in step (2) walks the full ledger. With
  * `TRUST_DEDUP_MAX_ENTRIES = 1024` and respond rates measured in single
  * digits per second, this is a non-issue in practice. If respond rates ever
@@ -120,7 +126,7 @@ export function tryClaimTrustResponded(windowName: string, promptId: string): bo
   // and a fresh claim will succeed. This matches the spec's
   // "5+ minutes apart is treated as a new claim" clause.
   const existing = ledger.get(key)
-  if (existing !== undefined && now - existing <= TRUST_DEDUP_TTL_MS) {
+  if (existing !== undefined && now - existing < TRUST_DEDUP_TTL_MS) {
     return false
   }
 
@@ -156,6 +162,35 @@ export function tryClaimTrustResponded(windowName: string, promptId: string): bo
   // the new position is also the tail.
   ledger.set(key, now)
   return true
+}
+
+/**
+ * Release a previously successful claim for `(windowName, promptId)`. Intended
+ * to be called from the handler's rollback path: when `tryClaimTrustResponded`
+ * returned `true` but the subsequent detector dispatch returned `false` (for
+ * example because `choiceId` did not match any entry in `state.lastChoices`,
+ * or because of a TOCTOU `promptId` mismatch in the detector), no key sequence
+ * was actually delivered to the tmux pane — so the slot must be vacated so
+ * the legitimate next respond can claim it.
+ *
+ * Without this rollback, a shape-valid but semantically invalid response
+ * (unknown `choiceId`, e.g. from a buggy or hostile client) would occupy the
+ * slot for the full TTL window and block the legitimate operator response
+ * for 5 minutes — that turns the dedup ledger into an availability DoS.
+ *
+ * Safety notes:
+ *   - This is a single-thread operation: Node's event loop guarantees that
+ *     `handleTrustPromptRespond`'s Phase 3 (claim) and Phase 4 (dispatch)
+ *     run atomically with respect to each other. No other claim can sneak
+ *     into the slot between the claim and the rollback, so unconditional
+ *     `Map.delete` is safe — there is nobody else's entry to clobber.
+ *   - Callers MUST only invoke this when their own preceding claim returned
+ *     `true`. Calling it without a matching successful claim is harmless
+ *     (the key is simply absent and `delete` is a no-op) but indicates a
+ *     handler bug.
+ */
+export function releaseTrustClaim(windowName: string, promptId: string): void {
+  ledger.delete(makeKey(windowName, promptId))
 }
 
 // -----------------------------------------------------------------------

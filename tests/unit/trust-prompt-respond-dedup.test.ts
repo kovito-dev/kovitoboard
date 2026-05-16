@@ -25,6 +25,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 
 import {
   tryClaimTrustResponded,
+  releaseTrustClaim,
   TRUST_DEDUP_TTL_MS,
   TRUST_DEDUP_MAX_ENTRIES,
   _resetTrustDedupLedgerForTests,
@@ -109,26 +110,28 @@ describe('tryClaimTrustResponded — key dimensions', () => {
 // =========================================================================
 
 describe('tryClaimTrustResponded — TTL expiration', () => {
-  it('re-claim within TTL → false (the active entry is still live)', () => {
+  it('re-claim strictly within TTL → false (the active entry is still live)', () => {
     expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
     advanceVirtualNow(TRUST_DEDUP_TTL_MS - 1)
     expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(false)
   })
 
-  it('re-claim at exactly TTL → still false (TTL boundary is inclusive)', () => {
-    // The implementation uses `now - existing <= TTL` so the boundary
-    // value (`now - existing === TTL`) is still considered a live claim.
+  it('re-claim at exactly TTL → true (spec: "5 分以上" is inclusive at the boundary)', () => {
+    // The implementation uses `now - existing < TTL` so `now - existing
+    // === TTL` is already "expired" and a fresh claim succeeds.
+    // Spec wording: "5 分以上開けた同一 promptId 再 claim は新規扱い".
     expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
     advanceVirtualNow(TRUST_DEDUP_TTL_MS)
-    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(false)
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    // The expired entry is removed during the eviction phase of the second
+    // claim, leaving exactly one live entry (the new one).
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
   })
 
   it('re-claim strictly past TTL → true (the slot is treated as vacant)', () => {
     expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
     advanceVirtualNow(TRUST_DEDUP_TTL_MS + 1)
     expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
-    // The expired entry is removed during the eviction phase of the second
-    // claim, leaving exactly one live entry (the new one).
     expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
   })
 
@@ -203,6 +206,80 @@ describe('tryClaimTrustResponded — size cap eviction', () => {
     expect(tryClaimTrustResponded('win', 'prompt-overflow')).toBe(false)
     expect(tryClaimTrustResponded('win', 'prompt-1')).toBe(false)
     expect(tryClaimTrustResponded('win', `prompt-${TRUST_DEDUP_MAX_ENTRIES - 1}`)).toBe(false)
+  })
+})
+
+// =========================================================================
+// Rollback — releaseTrustClaim makes a slot reclaimable
+// =========================================================================
+
+describe('releaseTrustClaim — handler rollback path', () => {
+  // The handler in `index.ts` calls `releaseTrustClaim` after Phase 4
+  // (detector dispatch) returns false — meaning no tmux keystroke was
+  // delivered, so the slot is safe to vacate so a buggy / hostile client
+  // that sent a shape-valid but semantically invalid response (unknown
+  // choiceId, TOCTOU promptId mismatch, etc.) cannot occupy the slot for
+  // the full TTL window and DoS the legitimate next respond.
+
+  it('release after a successful claim makes the slot reclaimable immediately', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    // Without release, the very next claim is rejected as a duplicate.
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(false)
+
+    releaseTrustClaim('win-a', 'prompt-1')
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(0)
+
+    // After release, the same (windowName, promptId) is claimable again
+    // even though no TTL elapsed.
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(1)
+  })
+
+  it('release does not affect other entries', () => {
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+    expect(tryClaimTrustResponded('win-b', 'prompt-2')).toBe(true)
+    expect(tryClaimTrustResponded('win-a', 'prompt-3')).toBe(true)
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(3)
+
+    // Roll back only the first.
+    releaseTrustClaim('win-a', 'prompt-1')
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(2)
+
+    // The other two entries still lock.
+    expect(tryClaimTrustResponded('win-b', 'prompt-2')).toBe(false)
+    expect(tryClaimTrustResponded('win-a', 'prompt-3')).toBe(false)
+    // And the released one is reclaimable.
+    expect(tryClaimTrustResponded('win-a', 'prompt-1')).toBe(true)
+  })
+
+  it('release of a never-claimed slot is a harmless no-op', () => {
+    // Calling release without a matching successful claim should not
+    // throw; it simply observes a missing entry and returns.
+    expect(() => releaseTrustClaim('win-a', 'never-claimed')).not.toThrow()
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(0)
+  })
+
+  it('release-then-re-claim cannot be exploited as a duplicate-flood DoS', () => {
+    // Plant two legitimate older entries.
+    expect(tryClaimTrustResponded('win-x', 'legit-1')).toBe(true)
+    expect(tryClaimTrustResponded('win-y', 'legit-2')).toBe(true)
+
+    // Imagine a hostile client that hammers (claim → release → claim → ...)
+    // on a single key. Each release vacates the slot, but the cycle does
+    // NOT inflate the ledger past 1 entry for that key, and does NOT
+    // evict legitimate older entries (the size cap is nowhere near
+    // triggered — at most 3 entries live at any moment).
+    for (let i = 0; i < 1024; i++) {
+      expect(tryClaimTrustResponded('win-hostile', 'p')).toBe(true)
+      releaseTrustClaim('win-hostile', 'p')
+    }
+
+    // Legitimate entries still locked.
+    expect(tryClaimTrustResponded('win-x', 'legit-1')).toBe(false)
+    expect(tryClaimTrustResponded('win-y', 'legit-2')).toBe(false)
+    // Ledger holds exactly the two legitimate entries (hostile released
+    // its own claim each iteration).
+    expect(_getTrustDedupLedgerSizeForTests()).toBe(2)
   })
 })
 
