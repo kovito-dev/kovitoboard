@@ -168,14 +168,22 @@ function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
       // pre-dismissed. It imports `testWithSecurityToast` (declared
       // at the bottom of this file), which skips this block.
       //
-      // Status codes:
+      // Accepted status codes (anything else is a hard fixture
+      // setup failure):
       //   - 200 — dismiss persisted (the expected L1 path).
       //   - 409 — refused by design (`overallOk: true`, bypass mode
       //           active, or `reason !== 'ok'`). The L1 fixture is
-      //           not in any of these states, but we accept 409 so
-      //           the helper stays robust against future fixture
-      //           changes.
-      //   - 5xx — bubble up as a hard failure.
+      //           not in any of these states, but accept 409 so the
+      //           helper stays robust against future fixture changes.
+      //
+      // Any other response (401 / 403 / 404 / other 4xx / 5xx) is
+      // thrown so an auth, routing, or server regression on the
+      // dismiss endpoint surfaces here at fixture setup time rather
+      // than later as a flaky "subtree intercepts pointer events"
+      // failure in the spec body. ECONNREFUSED while the webServer
+      // is still warming up is the only soft-tolerated case and is
+      // handled in the catch below — it cannot reach the status
+      // check because the request itself rejects.
       const meta = testInfo.project.metadata as { sessionName?: string }
       const sessionName = meta.sessionName ?? 'kb-e2e-shared-default'
       const apiPort = SESSION_TO_PORT[sessionName] ?? 3001
@@ -185,15 +193,16 @@ function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
         const r = await page.request.post(dismissUrl, {
           headers: { 'X-Kovitoboard-Token': launchToken },
         })
-        if (r.status() >= 500) {
+        const status = r.status()
+        if (status !== 200 && status !== 409) {
           const body = await r.text().catch(() => '<unavailable>')
           throw new Error(
-            `[l1-per-test-setup] security dismiss returned ${r.status()}: ${body}`,
+            `[l1-per-test-setup] security dismiss returned ${status}: ${body}`,
           )
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        if (msg.includes('returned 5')) throw err
+        if (msg.includes('security dismiss returned')) throw err
         // Network-level failures (ECONNREFUSED while the webServer is
         // still warming up) are tolerated — same posture as the
         // test-reset-state POST in `kbFixture`.
