@@ -26,7 +26,12 @@
  * Unit tests (tests/unit/claude-code-settings-check.test.ts) cover
  * the happy paths and other reasons.
  */
-import { test, expect } from './helpers/l1-per-test-setup'
+// BL-2026-160: this spec verifies the SecurityRecommendationsToast's
+// own surface / dismiss behaviour, so it must NOT inherit the default
+// `test` fixture's pre-dismiss step. `testWithSecurityToast` is the
+// opt-out variant declared in the helper; every other L1 spec should
+// continue to import the default `test`.
+import { testWithSecurityToast as test, expect } from './helpers/l1-per-test-setup'
 
 const API_BASE = 'http://127.0.0.1:3001'
 
