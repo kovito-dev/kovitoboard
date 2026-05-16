@@ -23,7 +23,7 @@
  *
  * @see recipe-backend-implementation-plan.md Phase H
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -37,6 +37,7 @@ import {
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { registerHandler, clearRegistry } from '../../src/server/handlers/registry'
 import { DirectFsLayer } from '../../src/server/fs-layer'
+import { initLogger } from '../../src/server/logger'
 
 // handler imports
 import { listFilesHandler } from '../../src/server/handlers/categoryA/listFiles'
@@ -50,7 +51,15 @@ import { notifyHandler } from '../../src/server/handlers/categoryA/notify'
 import { exportFileHandler } from '../../src/server/handlers/categoryA/exportFile'
 
 import type { RecipeManifest } from '../../src/server/recipe/apiTypes'
-import type { Scope } from '../../src/server/handlers/types'
+import type {
+  Scope,
+  HandlerDef,
+  NotifyInput,
+  NotifyOk,
+  HandlerContext,
+  HandlerResponse,
+} from '../../src/server/handlers/types'
+import { HANDLER_REQUIRED_SCOPES } from '../../src/server/handlers/types'
 
 // =========================================
 // Test setup
@@ -137,7 +146,7 @@ function readAuditLog(): Array<Record<string, unknown>> {
 // Lifecycle
 // =========================================
 
-beforeAll(() => {
+beforeAll(async () => {
   // Create temporary directory
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-handler-test-'))
   projectRoot = path.join(tmpDir, 'project')
@@ -167,6 +176,16 @@ beforeAll(() => {
   fs.writeFileSync(path.join(projectRoot, '.env.production'), 'PROD_SECRET=yyy')
   fs.mkdirSync(path.join(projectRoot, '.git'), { recursive: true })
   fs.writeFileSync(path.join(projectRoot, '.git', 'HEAD'), 'ref: refs/heads/main')
+
+  // Initialize the root logger so registry-collision warns (and any
+  // dispatcher-side `serverLogger.error({ err }, ...)` paths exercised by
+  // T10 redaction tests) can resolve `getRootLogger()` without throwing.
+  // `null` setting falls through to default LogConfig; the file sink
+  // writes under `<projectRoot>/.kovitoboard/logs/`, so that dir must
+  // exist before `initLogger`. Matches the convention used by other
+  // handler-side unit tests (e.g. manifest-grandfather-migration).
+  fs.mkdirSync(path.join(kovitoboardDir, 'logs'), { recursive: true })
+  await initLogger(projectRoot, null)
 
   // Register handlers in the registry
   clearRegistry()
@@ -1212,5 +1231,143 @@ describe('T-mutex: per-appId dispatch serialization', () => {
       `enter:${secondTag}`,
       `exit:${secondTag}`,
     ])
+  })
+})
+
+// =========================================
+// T10: Internal error envelope redaction
+//   (supplementary §S16, v0.2.0 B option, handler-dispatch.md v1.3 §7)
+// =========================================
+//
+// When a handler throws, the dispatcher MUST return an `Internal` envelope
+// whose `message` is the fixed string `'Handler execution failed'`. The
+// caught error's `message` / `stack` / `cause` / `String(err)` MUST NOT be
+// echoed into the client response — recipe code receives this envelope over
+// WebSocket, so any verbatim caught-error string becomes a side-channel for
+// probing absolute paths, errno values, or internal layout. The full detail
+// is preserved in `serverLogger.error({ err }, ...)` for operator diagnosis.
+
+describe('T10: Internal error envelope redaction (補完 §S16, v0.2.0)', () => {
+  // A sentinel payload carefully constructed to look like the kinds of detail
+  // a real handler-thrown error would expose: an absolute filesystem path, an
+  // errno, and a marker token. If any of these substrings ever appears in the
+  // client-facing envelope, the regression is unambiguous.
+  const SECRET_PATH = '/home/sensitive/path/secret.key'
+  const ERRNO_MARKER = 'errno=EACCES(13)'
+  const STACK_MARKER = 'KB_INTERNAL_STACK_TOKEN_b9f1c2'
+  const THROWN_MESSAGE = `${SECRET_PATH} ${ERRNO_MARKER} ${STACK_MARKER}`
+
+  /**
+   * Throwing replacement for the real `notify` handler. We piggyback on the
+   * `notify` name so the existing test manifest's `send-notification` call
+   * (handler: 'notify', requiredScopes: project-read | own-data) resolves to
+   * this throwing version without needing a new handler name in
+   * `CategoryAHandlerName` / `HANDLER_REQUIRED_SCOPES`.
+   */
+  const throwingNotifyHandler: HandlerDef<NotifyInput, NotifyOk> = {
+    name: 'notify',
+    requiredScopes: HANDLER_REQUIRED_SCOPES['notify'],
+    validate: () => null,
+    execute: async (
+      _input: NotifyInput,
+      _context: HandlerContext,
+    ): Promise<HandlerResponse<NotifyOk>> => {
+      throw new Error(THROWN_MESSAGE)
+    },
+  }
+
+  beforeEach(() => {
+    // Overwrite the registry slot for `notify` with the throwing version.
+    // `registerHandler` is documented to overwrite on name collision.
+    registerHandler(throwingNotifyHandler)
+  })
+
+  afterEach(() => {
+    // Restore the real `notify` so subsequent tests / file reruns are not
+    // contaminated by the throwing version. We re-register the genuine
+    // handler at the same name slot.
+    registerHandler(notifyHandler)
+  })
+
+  it('handler が throw した場合、Internal envelope の message は固定文字列 "Handler execution failed" になる', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('Internal')
+    expect(result.error.message).toBe('Handler execution failed')
+  })
+
+  it('handler が throw した場合、Internal envelope は err.message 由来の絶対パス / errno / stack トークンを含まない', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    // Each sentinel substring from the thrown `err.message` MUST be absent
+    // from the client-facing envelope. Together they cover the three common
+    // leakage axes the redaction is designed to defend against:
+    //   - absolute filesystem path (probe internal layout)
+    //   - errno + symbolic code (probe ambient OS state)
+    //   - opaque stack-correlation token (probe stack frames)
+    expect(result.error.message).not.toContain(SECRET_PATH)
+    expect(result.error.message).not.toContain(ERRNO_MARKER)
+    expect(result.error.message).not.toContain(STACK_MARKER)
+    // And the full thrown payload as a whole must not appear.
+    expect(result.error.message).not.toContain(THROWN_MESSAGE)
+  })
+
+  it('handler が throw した場合でも、監査ログには Internal error code が記録される（運用診断は維持される）', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    const last = readAuditLog().at(-1)
+    expect(last?.result).toBe('error')
+    expect(last?.errorCode).toBe('Internal')
+    expect(last?.handler).toBe('notify')
+    // The audit log captures the handler name and a duration, but the
+    // structural redactor / pino sink — not the audit JSONL itself — is
+    // where the verbose `err` lives. The audit row must not embed the
+    // thrown-message detail either.
+    const audit = JSON.stringify(last)
+    expect(audit).not.toContain(SECRET_PATH)
+    expect(audit).not.toContain(STACK_MARKER)
   })
 })
