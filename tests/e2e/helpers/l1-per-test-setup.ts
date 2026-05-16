@@ -125,10 +125,30 @@ function resolveProjectRoot(sessionName: string): string {
  */
 function buildPageFixture(opts: { dismissSecurityToast: boolean }) {
   return async (
-    { page }: { page: import('@playwright/test').Page },
+    {
+      page,
+      kbFixture,
+    }: {
+      page: import('@playwright/test').Page
+      kbFixture: KbFixture
+    },
     use: (value: import('@playwright/test').Page) => Promise<void>,
     testInfo: import('@playwright/test').TestInfo,
   ) => {
+    // The `page` fixture depends on `kbFixture` purely to encode an
+    // explicit setup-order edge in Playwright's fixture graph: the
+    // snapshot of `.kovitoboard/` (and the matching teardown
+    // restore) must be in place before this fixture issues its
+    // mutating `POST /api/security/dismiss`. Without this dependency
+    // the order is implicit, and a future Playwright change to its
+    // fixture scheduler could let the restore step wipe the dismiss
+    // record between the POST and the test body — re-introducing
+    // the toast-interception failures this helper is meant to
+    // eliminate. The `kbFixture` value itself is not consumed
+    // here, only its lifecycle is. The `void` is what suppresses
+    // the "unused" lint warning while still pinning the dependency.
+    void kbFixture
+
     await page.addInitScript(() => {
       try {
         window.localStorage.setItem('kb.locale', 'ja')
