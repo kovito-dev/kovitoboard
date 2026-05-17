@@ -102,10 +102,12 @@ jobs:
 
   l1-e2e:
     name: L1 E2E
-    # TODO(BL-2026-083, DEC-022): Re-enable after v0.1.0 release.
-    # Temporarily disabled during v0.1.0 focused fixes period (2026-05-02-).
-    # Local L1 full pass is required before manual integration test on release day.
-    if: false
+    # Branch-scoped execution: run only on pushes to the integration branches
+    # (staging / main) as a post-merge integration check. Pull requests keep
+    # the fast feedback matrix (typecheck / build / unit tests / hygiene);
+    # pre-merge required-status-check enforcement is configured via repo
+    # branch protection, not in this workflow.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     needs: typecheck
     timeout-minutes: 10
