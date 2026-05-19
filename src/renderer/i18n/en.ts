@@ -71,7 +71,7 @@ const en: Record<MessageKey, string> = {
   'onboarding.security.acknowledge.denyPattern': 'I have reviewed the deny pattern setting',
   'onboarding.security.allOk': 'All recommended settings are satisfied.',
   'onboarding.security.failClosed': 'Could not read your Claude Code settings file.',
-  'onboarding.security.failClosedRemediation': 'Edit the Claude Code settings file to fix the problem. Check the terminal log for details.',
+  'onboarding.security.failClosedRemediation': 'Edit the Claude Code settings file or check that the KovitoBoard server is reachable. See the terminal log for details.',
   'onboarding.security.failClosedCandidatePath': 'Settings file path: ~/.claude/settings.json (user-level) or <projectRoot>/.claude/settings.json (project-level)',
   'onboarding.security.recheck': 'Recheck',
   'onboarding.security.permissionMode.label': 'permissionMode = default',

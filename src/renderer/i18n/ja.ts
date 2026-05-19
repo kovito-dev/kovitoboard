@@ -67,7 +67,7 @@ const ja = {
   'onboarding.security.acknowledge.denyPattern': 'deny pattern の設定を確認しました',
   'onboarding.security.allOk': 'すべての推奨設定が満たされています。',
   'onboarding.security.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。',
-  'onboarding.security.failClosedRemediation': 'Claude Code の設定ファイルを編集して問題を修正してください。詳細はターミナルログを確認してください。',
+  'onboarding.security.failClosedRemediation': 'Claude Code の設定ファイルを編集するか、KovitoBoard サーバーへの接続を確認してください。詳細はターミナルログを確認してください。',
   'onboarding.security.failClosedCandidatePath': '設定ファイルパス: `~/.claude/settings.json` (user-level) または `<projectRoot>/.claude/settings.json` (project-level)',
   'onboarding.security.recheck': '再チェック',
   'onboarding.security.permissionMode.label': 'permissionMode = default',

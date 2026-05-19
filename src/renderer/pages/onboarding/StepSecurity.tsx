@@ -136,6 +136,38 @@ export function createStepSecurityResetState(): StepSecurityResetState {
   }
 }
 
+/**
+ * Pure loader for `/api/security/settings-check`. Returns a normalised
+ * `SecurityCheckResponse` either way:
+ *
+ *   - happy path: server JSON that passes the `isSecurityCheckResponse`
+ *     runtime guard;
+ *   - shape-drifted JSON, non-2xx response, or thrown fetch error:
+ *     `buildFetchFailureResponse()` — a synthetic fail-closed payload.
+ *
+ * Cancellation is the caller's responsibility (CodeX attempt 3 —
+ * duplicated async flow). The initial-mount call site in
+ * `StepSecurity` wraps the returned promise in a local `cancelled`
+ * flag so a strict-mode double-mount or a fast unmount cannot land a
+ * stale `setState`; the Recheck call site relies on the spec v1.6
+ * §9.5.2.3 in-flight semantics instead — the Recheck button is
+ * structurally unmounted on `setState(null)`, so a second concurrent
+ * invocation cannot reach this loader.
+ */
+async function fetchSettingsCheck(): Promise<SecurityCheckResponse> {
+  try {
+    const r = await kbFetch('/api/security/settings-check')
+    if (!r.ok) throw new Error(`status ${r.status}`)
+    const data: unknown = await r.json()
+    if (!isSecurityCheckResponse(data)) {
+      return buildFetchFailureResponse()
+    }
+    return data
+  } catch {
+    return buildFetchFailureResponse()
+  }
+}
+
 export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
   // Per-item acknowledgements (CodeX attempt 19 — security UX
@@ -171,33 +203,15 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
 
   useEffect(() => {
     let cancelled = false
-    kbFetch('/api/security/settings-check')
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`)
-        return r.json()
-      })
-      .then((data: unknown) => {
-        if (cancelled) return
-        // Runtime guard against shape-drifted payloads (CodeX
-        // attempt 27 — runtime type safety). Mismatched shapes
-        // collapse into the fail-closed banner so the wizard never
-        // crashes on a malformed response.
-        if (!isSecurityCheckResponse(data)) {
-          setState(buildFetchFailureResponse())
-          return
-        }
-        setState(data)
-      })
-      .catch(() => {
-        // Fail-closed: when the server-side check itself failed to
-        // reach us, render the v1.6 amber banner + Recheck button so
-        // the wizard does not get stuck in a perpetual loading state
-        // (CodeX review attempt 1) and the user has a clear recovery
-        // affordance — repair the settings file, hit Recheck, the
-        // useEffect-equivalent in `handleRecheck` re-runs the same
-        // shape-guarded fetch.
-        if (!cancelled) setState(buildFetchFailureResponse())
-      })
+    fetchSettingsCheck().then((data) => {
+      // Local cancellation gate: a strict-mode double-mount or a fast
+      // unmount must not land a stale `setState`. The loader itself
+      // is unconditional (cancellation is the caller's job, see the
+      // helper's JSDoc), so we drop the result here when the effect
+      // has already torn down.
+      if (cancelled) return
+      setState(data)
+    })
     return () => {
       cancelled = true
     }
@@ -338,21 +352,14 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     setRuleOfTwoClosedAt(reset.ruleOfTwoClosedAt)
     setWhyOpen(reset.whyOpen)
     setState(null)
-    kbFetch('/api/security/settings-check')
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`)
-        return r.json()
-      })
-      .then((data: unknown) => {
-        if (!isSecurityCheckResponse(data)) {
-          setState(buildFetchFailureResponse())
-          return
-        }
-        setState(data)
-      })
-      .catch(() => {
-        setState(buildFetchFailureResponse())
-      })
+    // No local cancellation flag — spec v1.6 §9.5.2.3 in-flight
+    // semantics: the Recheck button is structurally unmounted once
+    // `setState(null)` drives us back into the loading branch, so a
+    // second concurrent recheck cannot enter this handler. The
+    // shared `fetchSettingsCheck` loader already collapses errors
+    // into a fail-closed payload, so the amber banner re-surfaces
+    // if the new fetch also fails.
+    fetchSettingsCheck().then((data) => setState(data))
   }, [])
 
   /**
