@@ -275,11 +275,41 @@ export function runPreflightChecks(
 }
 
 /**
+ * ASCII rule used as the top, middle, and bottom of the FAIL banner.
+ * Plain `=` is intentional: the banner is the last thing the user
+ * sees before the supervisor tears down, and we want the box to
+ * render unambiguously over SSH / piped stderr / log forwarders that
+ * may not pass U+2550 (`═`) cleanly. Width 60 fits comfortably inside
+ * an 80-column terminal alongside the leading shell prompt.
+ */
+const FAIL_BANNER_RULE = '='.repeat(60)
+
+/**
+ * Emit the failure banner. The FAIL / HINT lines stay flush-left so
+ * they keep their machine-readable shape:
+ * `/^\[kb-preflight\] (FAIL PF-\d+|HINT):/` — operators and CI shell
+ * scripts already grep for this prefix per logging-baseline.md v1.3
+ * §9.9 + supervisor-startup.md v1.3 §6.9.3-6. The rules and header
+ * line wrap the block so the diagnostic is visually unmissable next
+ * to the rest of the boot output without breaking that contract.
+ */
+function emitFailBanner(failures: PreflightFailure[]): void {
+  bootstrapStderr(FAIL_BANNER_RULE)
+  bootstrapStderr('[!] KovitoBoard Preflight Check FAILED [!]')
+  bootstrapStderr(FAIL_BANNER_RULE)
+  for (const failure of failures) {
+    bootstrapStderr(`[kb-preflight] FAIL ${failure.id}: ${failure.message}`)
+    bootstrapStderr(`[kb-preflight] HINT: ${failure.hint}`)
+  }
+  bootstrapStderr(FAIL_BANNER_RULE)
+}
+
+/**
  * Enforce the preflight result. On success, returns immediately;
  * if the result was skipped via the env escape hatch, emits a
  * single warn line so operators can still see the bypass in
- * bootstrap output. On failure, logs each failure + hint and calls
- * `process.exit(1)`.
+ * bootstrap output. On failure, logs each failure + hint inside a
+ * visually-bracketed banner and calls `process.exit(1)`.
  *
  * The supervisor (kb-start.mjs) detects the non-zero child exit and
  * tears down (supervisor-startup.md §6.9.3 step 3).
@@ -293,9 +323,6 @@ export function enforcePreflight(result: PreflightResult): void {
     }
     return
   }
-  for (const failure of result.failures) {
-    bootstrapStderr(`[kb-preflight] FAIL ${failure.id}: ${failure.message}`)
-    bootstrapStderr(`[kb-preflight] HINT: ${failure.hint}`)
-  }
+  emitFailBanner(result.failures)
   process.exit(1)
 }

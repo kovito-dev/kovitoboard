@@ -403,7 +403,7 @@ describe('enforcePreflight', () => {
     expect(writes).toEqual([])
   })
 
-  it('exits 1 with FAIL + HINT lines when failures are present', () => {
+  it('exits 1 with FAIL + HINT lines wrapped in a banner when failures are present', () => {
     const failure: PreflightFailure = {
       id: 'PF-1',
       message: 'tmux 3.4+ required (detected: 3.2)',
@@ -413,15 +413,42 @@ describe('enforcePreflight', () => {
       enforcePreflight({ ok: false, failures: [failure] }),
     ).toThrow(/process\.exit\(1\)/)
     expect(exitSpy).toHaveBeenCalledWith(1)
+    // Machine-readable line stays flush-left (no leading whitespace)
+    // so operator / CI greps for `^\[kb-preflight\] FAIL PF-\d+:` keep
+    // working. Banner header / rules wrap the block for visibility.
     expect(writes).toContain(
       '[kb-preflight] FAIL PF-1: tmux 3.4+ required (detected: 3.2)',
     )
     expect(writes).toContain(
       '[kb-preflight] HINT: Install / upgrade tmux 3.4+. ...',
     )
+    expect(writes).toContain('[!] KovitoBoard Preflight Check FAILED [!]')
+    // Three rule lines: top, between header and entries, and bottom.
+    expect(writes.filter((l) => /^=+$/.test(l))).toHaveLength(3)
   })
 
-  it('flushes all FAIL/HINT lines before invoking process.exit', () => {
+  it('keeps the FAIL line in a grep-compatible flush-left shape', () => {
+    // Documented contract per logging-baseline.md v1.3 §9.9 +
+    // supervisor-startup.md v1.3 §6.9.3-6: external tooling pattern-
+    // matches `^\[kb-preflight\] FAIL PF-\d+:` on stderr. The banner
+    // hardening must not break that contract by indenting the line.
+    const failure: PreflightFailure = {
+      id: 'PF-2',
+      message: 'Node.js 20+ required (detected: v18.20.0)',
+      hint: 'node hint',
+    }
+    expect(() =>
+      enforcePreflight({ ok: false, failures: [failure] }),
+    ).toThrow(/process\.exit\(1\)/)
+    const failLine = writes.find((l) => /^\[kb-preflight\] FAIL PF-\d+:/.test(l))
+    expect(failLine).toBe(
+      '[kb-preflight] FAIL PF-2: Node.js 20+ required (detected: v18.20.0)',
+    )
+    const hintLine = writes.find((l) => /^\[kb-preflight\] HINT:/.test(l))
+    expect(hintLine).toBe('[kb-preflight] HINT: node hint')
+  })
+
+  it('flushes the entire banner before invoking process.exit', () => {
     // Every bootstrap write must land before the process.exit call so
     // the diagnostics survive a piped/supervised stderr that does not
     // drain the libuv stream layer before termination.
@@ -438,8 +465,8 @@ describe('enforcePreflight', () => {
     expect(() =>
       enforcePreflight({ ok: false, failures: [failure] }),
     ).toThrow(/process\.exit\(1\)/)
-    // 1 FAIL line + 1 HINT line = 2 writes captured before exit fires.
-    expect(writesAtExit).toBe(2)
+    // Top rule + header + middle rule + FAIL + HINT + bottom rule = 6.
+    expect(writesAtExit).toBe(6)
   })
 
   it('emits a single warn line when result carries skippedReason', () => {
@@ -464,5 +491,8 @@ describe('enforcePreflight', () => {
     )
     expect(writes).toContain('[kb-preflight] FAIL PF-1: tmux not found on PATH')
     expect(writes).toContain('[kb-preflight] FAIL PF-3: claude not found on PATH')
+    // Both entries sit inside the same banner — still exactly three
+    // rule lines even when several failures are present.
+    expect(writes.filter((l) => /^=+$/.test(l))).toHaveLength(3)
   })
 })
