@@ -337,10 +337,12 @@ export function App() {
           nav={
             // Wrap NavMenu + ProjectRootBanner in a single column so
             // the banner pins to the bottom of the nav rail. The
-            // banner itself uses `mt-auto`, so the wrapper just
-            // provides the flex context and forwards the NavMenu's
-            // own `w-*` width.
-            <div className="flex flex-col">
+            // banner uses `mt-auto`, which only takes effect when the
+            // flex container has a resolved height — `h-full` makes
+            // the wrapper consume the parent Layout's nav slot so the
+            // banner sits inside the nav rail rather than being
+            // pushed outside it (KB-2026-05 hardening).
+            <div className="flex flex-col h-full">
               <NavMenu
                 entries={allMenuEntries}
                 activeId={activeMenuId}

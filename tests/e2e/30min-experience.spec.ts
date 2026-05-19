@@ -322,19 +322,30 @@ test.describe('S1: Onboarding 6-step completion @preonboarding', () => {
     await page.getByRole('button', { name: 'あとで追加する' }).click()
 
     // Step 5: Security recommendations (handoff v1.1 §3.4 /
-    // onboarding-scenarios v1.2 §9.5). Acknowledge the warning when
-    // violations surface; the L1 fixture project root is outside
-    // ~/.claude so the check helper returns the fail-closed surface
-    // and a banner is shown — accept the banner and proceed.
+    // onboarding-scenarios v1.6 §9.5). The L1 fixture's ENOENT on
+    // both settings files routes through the "missing entry" path,
+    // so the typical outcome is `reason: 'ok' && overallOk: false`
+    // — the violation path with three per-row acks. Handle all
+    // three v1.6 branches symmetrically so a future fixture change
+    // does not silently break this flow.
     const stepSecurity = page.getByTestId('onboarding-step-security')
     await expect(stepSecurity).toBeVisible()
-    // CodeX attempt 19 — per-item acknowledgement. Tick whichever
-    // row checkboxes are visible, plus the shared fail-closed box
-    // when present, before advancing.
-    const sharedAck = page.getByTestId('security-acknowledge')
-    if (await sharedAck.isVisible().catch(() => false)) {
-      await sharedAck.check()
+
+    // v1.6 §9.5.2.3 example clause 2: fail-closed surface blocks
+    // progress until Recheck returns reason: 'ok'. Click Recheck
+    // once if the surface lands on this branch; if it persists
+    // afterwards, fail fast instead of hanging on the disabled
+    // Next button (CodeX attempt 7 — test reliability).
+    const failClosed = page.getByTestId('security-fail-closed')
+    if (await failClosed.isVisible().catch(() => false)) {
+      await page.getByTestId('security-recheck').click()
+      await expect(failClosed).toHaveCount(0, { timeout: 5000 })
     }
+
+    // Violation path: every visible per-row ack must be ticked.
+    // The allOk branch renders no boxes and enables Next on its
+    // own; the v1.5 shared `security-acknowledge` checkbox is
+    // banned on this surface and we do not look for it.
     for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
       const box = page.getByTestId(`row-${row}-acknowledge`)
       if (await box.isVisible().catch(() => false)) {

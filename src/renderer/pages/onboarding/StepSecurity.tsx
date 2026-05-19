@@ -6,28 +6,55 @@
 /**
  * StepSecurity — onboarding step that surfaces Claude Code recommended-
  * settings violations for non-onboarded users (spec
- * `onboarding-scenarios.md` v1.2 §9.5; handoffs
+ * `onboarding-scenarios.md` v1.6 §9.5.2.3; handoffs
  * `v02x-phase1-claude-code-recommended-settings-check-request.md` v1.1
  * §3.4 + `v02x-phase1-rule-of-two-warning-implementation-request.md`
  * v1.1 §3.2 + §3.5 + §8).
  *
- * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 / threat-
- * model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
+ * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 v1.6 /
+ * threat-model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
  *   - Checkboxes are stacked vertically (no horizontal layout that
  *     invites a "tick everything in one swipe" gesture).
  *   - Each row has its own "Why?" link that opens a modal explaining
  *     the recommendation; no "Approve All" button.
+ *   - Each of the three recommendation BOXes carries its own
+ *     individual acknowledgement checkbox INSIDE the BOX — see
+ *     onboarding-scenarios.md v1.6 §9.5.2.3 normative pin. A single
+ *     shared "I have reviewed these recommendations" checkbox at the
+ *     wrapper level is explicitly banned: it makes one click defeat
+ *     the per-recommendation review intent (CodeX attempt 19 / spec
+ *     v1.3 → v1.4 escalate-revision). The "Next" gate is the AND of
+ *     all three per-BOX acks on the violation path, so each
+ *     recommendation always demands its own deliberate tick when a
+ *     violation is present.
+ *   - v1.5 exception clause 1 (allOk path, threat surface absent):
+ *     when `overallOk === true && reason === 'ok'`, the green-banner
+ *     branch renders no per-row BOX, so per-BOX ack is structurally
+ *     unnecessary and Next enables immediately. The three-BOX gate
+ *     only applies on the violation path (`overallOk === false &&
+ *     reason === 'ok'`).
+ *   - v1.6 exception clause 2 (failClosed path, block until fixed):
+ *     when `reason !== 'ok'` (the structural settings read failed
+ *     with one of `read-error` / `parse-error` / `schema-mismatch` /
+ *     `path-resolution-rejected` / `file-too-large`), the amber-
+ *     banner branch renders alone with a Recheck button. Next is
+ *     fully disabled until the user repairs the settings file and
+ *     a fresh fetch returns `reason: 'ok'`. The v1.5-era single-ack
+ *     reuse of `acknowledged.permissionMode` was withdrawn — a
+ *     promised "I will review settings manually" tick let the user
+ *     wave through Phase 1 prompt-injection mitigation ② without
+ *     any structural enforcement (PR #44 CodeX attempt 2 Finding 1
+ *     / option δ' adopted 2026-05-19).
  *   - When bypass mode is active, the bypass row is replaced by a
- *     prominent <RuleOfTwoViolationCard> with its own accept gate:
+ *     prominent <RuleOfTwoViolationCard> whose internal acknowledge-
+ *     ment doubles as the bypassMode BOX's per-item ack and carries
+ *     the existing accept gate:
  *       - Accept stays disabled until the RuleOfTwoExplanation modal
  *         has been opened at least once (T-4-2 / I-6).
  *       - A minimum 2-second idle delay is enforced after the modal
  *         closes before accept enables (T-4-2 / D-E).
  *       - The accept handler refuses non-trusted (programmatic) click
  *         events via `event.isTrusted` (T-4-1 / I-6).
- *   - For non-bypass rows the legacy per-row acknowledge checkbox is
- *     retained — the rubber-stamp risk for those rows is already
- *     handled by separate `Why?` modals + per-row ack (handoff ② v1.1).
  *
  * Out of scope:
  *   - `window.kb` ambient API audit (T-4-1 b): already enforced at the
@@ -38,9 +65,9 @@
  *     `event.isTrusted` gate below + the App-level onboarding gate
  *     that refuses recipe page mounts before completion (T-4-1 a).
  */
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
-import { t } from '../../i18n'
+import { t, type MessageKey } from '../../i18n'
 import type { SettingsCheckResult } from '../../../shared/setting-types'
 import {
   type SecurityCheckResponse,
@@ -73,6 +100,73 @@ type WhyKey = 'permissionMode' | 'denyPattern' | 'bypassMode' | null
  * modal-open + accept-tick combo in a single keystroke burst.
  */
 const RULE_OF_TWO_ACCEPT_IDLE_MS = 2000
+
+/**
+ * Local review state that must return to its initial values whenever
+ * the user requests a fresh settings-check via the Recheck button
+ * (spec onboarding-scenarios.md v1.6 §9.5.2.3 example clause 2 —
+ * fail-closed path 4-state reset rule).
+ *
+ * Exported as a pure factory so the reset contract can be unit-tested
+ * without spinning up React. The handler in `StepSecurity` consumes
+ * this shape via individual `setX(...)` calls; centralising the
+ * source of truth here means a future change cannot silently drop
+ * one of the four fields and leave a bypass-mode T-4-1 / T-4-2 /
+ * I-6 gate carry-over escape in place.
+ */
+export interface StepSecurityResetState {
+  acknowledged: { permissionMode: false; denyPattern: false; bypassMode: false }
+  ruleOfTwoEverOpened: false
+  ruleOfTwoClosedAt: null
+  whyOpen: null
+}
+
+/**
+ * Build the canonical "fresh local review state" snapshot used after
+ * a Recheck. All four fields the spec §9.5.2.3 4-state reset rule
+ * names must appear here; tests assert literal-`false`/`null` so the
+ * factory cannot drift away from the spec.
+ */
+export function createStepSecurityResetState(): StepSecurityResetState {
+  return {
+    acknowledged: { permissionMode: false, denyPattern: false, bypassMode: false },
+    ruleOfTwoEverOpened: false,
+    ruleOfTwoClosedAt: null,
+    whyOpen: null,
+  }
+}
+
+/**
+ * Pure loader for `/api/security/settings-check`. Returns a normalised
+ * `SecurityCheckResponse` either way:
+ *
+ *   - happy path: server JSON that passes the `isSecurityCheckResponse`
+ *     runtime guard;
+ *   - shape-drifted JSON, non-2xx response, or thrown fetch error:
+ *     `buildFetchFailureResponse()` — a synthetic fail-closed payload.
+ *
+ * Cancellation is the caller's responsibility (CodeX attempt 3 —
+ * duplicated async flow). The initial-mount call site in
+ * `StepSecurity` wraps the returned promise in a local `cancelled`
+ * flag so a strict-mode double-mount or a fast unmount cannot land a
+ * stale `setState`; the Recheck call site relies on the spec v1.6
+ * §9.5.2.3 in-flight semantics instead — the Recheck button is
+ * structurally unmounted on `setState(null)`, so a second concurrent
+ * invocation cannot reach this loader.
+ */
+async function fetchSettingsCheck(): Promise<SecurityCheckResponse> {
+  try {
+    const r = await kbFetch('/api/security/settings-check')
+    if (!r.ok) throw new Error(`status ${r.status}`)
+    const data: unknown = await r.json()
+    if (!isSecurityCheckResponse(data)) {
+      return buildFetchFailureResponse()
+    }
+    return data
+  } catch {
+    return buildFetchFailureResponse()
+  }
+}
 
 export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
@@ -107,34 +201,43 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
    */
   const [now, setNow] = useState<number>(() => Date.now())
 
+  /**
+   * `true` while the component is mounted. Flipped to `false` by the
+   * teardown effect below so any in-flight `fetchSettingsCheck()`
+   * promise can short-circuit before calling `setState` on a torn-
+   * down component (CodeX attempt 4 — async state lifecycle gap on
+   * the Recheck path). The initial mount effect carries its own
+   * closure-local `cancelled` flag because that scope wants to gate
+   * a single strict-mode double-mount as well as a real unmount; the
+   * Recheck handler only needs the unmount signal, so it reads this
+   * shared ref instead of allocating a per-call closure flag.
+   */
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    // Re-arm on every effect setup, not just on the initial mount.
+    // React 18 StrictMode runs every effect "setup → cleanup →
+    // setup" twice during development, so without this assignment
+    // the ref would stay `false` after the dev double-mount and
+    // `handleRecheck()` would silently drop every successful fetch
+    // result — leaving the security step stuck in the loading
+    // state (CodeX attempt 5 — React lifecycle).
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
-    kbFetch('/api/security/settings-check')
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`)
-        return r.json()
-      })
-      .then((data: unknown) => {
-        if (cancelled) return
-        // Runtime guard against shape-drifted payloads (CodeX
-        // attempt 27 — runtime type safety). Mismatched shapes
-        // collapse into the fail-closed banner so the wizard never
-        // crashes on a malformed response.
-        if (!isSecurityCheckResponse(data)) {
-          setState(buildFetchFailureResponse())
-          return
-        }
-        setState(data)
-      })
-      .catch(() => {
-        // Fail-closed: when the server-side check itself failed to
-        // reach us, render the fail-closed banner + acknowledge flow
-        // so the user can still proceed once they confirm they will
-        // review the settings manually. Previously a fetch error
-        // kept the wizard in a perpetual loading state with Next
-        // disabled (CodeX review attempt 1).
-        if (!cancelled) setState(buildFetchFailureResponse())
-      })
+    fetchSettingsCheck().then((data) => {
+      // Local cancellation gate: a strict-mode double-mount or a fast
+      // unmount must not land a stale `setState`. The loader itself
+      // is unconditional (cancellation is the caller's job, see the
+      // helper's JSDoc), so we drop the result here when the effect
+      // has already torn down.
+      if (cancelled) return
+      setState(data)
+    })
     return () => {
       cancelled = true
     }
@@ -174,23 +277,68 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     return now - ruleOfTwoClosedAt < RULE_OF_TWO_ACCEPT_IDLE_MS
   }, [bypassActive, ruleOfTwoEverOpened, whyOpen, ruleOfTwoClosedAt, now])
 
-  // Gate the Next button on per-item acknowledgement of EVERY
-  // violated row (CodeX attempt 19). A row that is already OK does
-  // not need a tick, so the user only needs to acknowledge what they
-  // are accepting risk on. The fail-closed banner branch keeps its
-  // own single-item gate via the legacy boolean below because there
-  // is no per-row violation to render.
-  const allOk = state?.result.overallOk === true
+  // Gate the Next button per onboarding-scenarios.md v1.6 §9.5.2.3.
+  // The wizard has three mutually exclusive states once the settings
+  // check has resolved, and each has its own gate:
+  //
+  //   1. `allOk` (= `overallOk === true && reason === 'ok'`) — v1.5
+  //      exception clause 1. The green banner renders alone; no per-
+  //      row BOX exists, so per-BOX ack is structurally unnecessary
+  //      and Next enables immediately. The rubber-stamp threat surface
+  //      is absent (no violation to wave through), and the CodeX
+  //      attempt 19 per-item ack reversal targeted "multiple
+  //      violations flushed by one tick" — inapplicable here.
+  //
+  //   2. `failClosed` (= `reason !== 'ok'`) — v1.6 exception clause
+  //      2. The amber banner + Recheck button renders alone with NO
+  //      per-row BOX and NO acknowledgement. Next is *fully disabled*
+  //      until the user repairs the settings file and a fresh fetch
+  //      (driven by `handleRecheck`) returns `reason: 'ok'`. The v1.5
+  //      single-ack reuse of `acknowledged.permissionMode` was
+  //      withdrawn — a tick that just promises "I will review
+  //      manually" let the user wave through Phase 1 prompt-injection
+  //      mitigation ② without enforcement (PR #44 CodeX attempt 2
+  //      Finding 1 / option δ' adopted 2026-05-19).
+  //
+  //   3. Violation path (= `overallOk === false && reason === 'ok'`) —
+  //      the default. The three BOXes render, and Next enables only
+  //      when every per-BOX ack is true. Mixed result states where
+  //      one row is OK and another is violated still demand all three
+  //      ticks; the deliberate tick IS the rubber-stamp prevention.
+  //
+  // `allOk` mirrors the spec's AND of `overallOk === true` and
+  // `reason === 'ok'`. Without the reason check, a malformed /
+  // inconsistent server payload like `{ overallOk: true, reason:
+  // 'read-error' }` would steer the wizard into the green-banner
+  // fast path even though the underlying settings read was fail-
+  // closed (CodeX attempt 2 — response invariant validation).
+  //
+  // Defensive cross-check against summary-vs-detail drift: if the
+  // backend ever returns `overallOk: true && reason: 'ok'` while one
+  // detailed row reports `ok: false`, the green banner would
+  // suppress all three boxes and let the user skip the 3-ack gate.
+  // Demand every row report `ok: true` as well, so an inconsistent
+  // payload falls through to the violation path instead of the
+  // fast path (CodeX attempt 6 — same class as attempt 2, this time
+  // at the row-flag layer).
+  const allOk =
+    state?.result.overallOk === true &&
+    state?.result.reason === 'ok' &&
+    state?.result.permissionMode.ok === true &&
+    state?.result.denyPattern.ok === true &&
+    state?.result.bypassMode.ok === true
   const failClosed = state?.result.reason !== 'ok' && state !== null
   const allRequiredAcknowledged = (() => {
     if (!state) return false
-    if (allOk) return true
-    if (failClosed) return acknowledged.permissionMode // reuse one box for the banner branch
-    const violations: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = []
-    if (!state.result.permissionMode.ok) violations.push('permissionMode')
-    if (!state.result.denyPattern.ok) violations.push('denyPattern')
-    if (!state.result.bypassMode.ok) violations.push('bypassMode')
-    return violations.every((row) => acknowledged[row])
+    if (allOk) return true // v1.5 exception clause 1 — green banner, no BOX
+    if (failClosed) return false // v1.6 exception clause 2 — block until fixed
+    // Violation path — 3-ack AND across every BOX (v1.4 normative pin
+    // applies here, not on the two exception clauses above).
+    return (
+      acknowledged.bypassMode &&
+      acknowledged.permissionMode &&
+      acknowledged.denyPattern
+    )
   })()
   const nextEnabled = allRequiredAcknowledged
 
@@ -206,6 +354,63 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
       : null
     onNext(reviewed)
   }, [nextEnabled, state, onNext])
+
+  /**
+   * v1.6 §9.5.2.3 exception clause 2 — Recheck handler.
+   *
+   * Drives the wizard back to a fresh settings-check after the user
+   * (we hope) has repaired the underlying settings file. Three
+   * normative obligations the spec pins:
+   *
+   *   1. 4-state reset (`acknowledged` 3-field + `ruleOfTwoEverOpened`
+   *      + `ruleOfTwoClosedAt` + `whyOpen`). Without this, a
+   *      previously-ticked bypass-mode acknowledgement or a satisfied
+   *      "modal opened + 2 s idle" gate would survive the fail-closed
+   *      → violation transition, letting the user skip the T-4-1 /
+   *      T-4-2 / I-6 gate with stale local state.
+   *
+   *   2. `setState(null)` returns the component to the loading
+   *      branch BEFORE the new fetch resolves. The fail-closed JSX
+   *      (with this very Recheck button) unmounts as a result, so a
+   *      duplicate click is structurally impossible until the next
+   *      response either re-mounts a fail-closed banner or advances
+   *      the wizard. No `isRechecking` flag, no `disabled` attribute,
+   *      no debounce needed (spec explicitly forbids those variants
+   *      as "half-measure mount maintenance").
+   *
+   *   3. Re-fetch with the same fail-closed-on-error posture as the
+   *      initial useEffect — a network failure or shape-drifted
+   *      payload collapses back to `buildFetchFailureResponse()` so
+   *      the amber banner re-surfaces and the user can try again.
+   *      Infinite loop is allowed; only user action terminates it.
+   */
+  const handleRecheck = useCallback(() => {
+    const reset = createStepSecurityResetState()
+    setAcknowledged(reset.acknowledged)
+    setRuleOfTwoEverOpened(reset.ruleOfTwoEverOpened)
+    setRuleOfTwoClosedAt(reset.ruleOfTwoClosedAt)
+    setWhyOpen(reset.whyOpen)
+    setState(null)
+    // No per-call cancellation flag: spec v1.6 §9.5.2.3 in-flight
+    // semantics guarantee the Recheck button is structurally
+    // unmounted once `setState(null)` drives us back into the
+    // loading branch, so a second concurrent recheck cannot enter
+    // this handler. The shared `fetchSettingsCheck` loader already
+    // collapses errors into a fail-closed payload, so the amber
+    // banner re-surfaces if the new fetch also fails.
+    //
+    // The `mountedRef` gate is a separate concern (CodeX attempt 4
+    // — async state lifecycle): if the user navigates away from
+    // the onboarding step while the recheck fetch is still in
+    // flight, we must not call `setState` on the torn-down
+    // component. The in-flight-semantics pin solves the duplicate-
+    // click case structurally; the unmount case needs an explicit
+    // guard.
+    fetchSettingsCheck().then((data) => {
+      if (!mountedRef.current) return
+      setState(data)
+    })
+  }, [])
 
   /**
    * T-4-1 / I-6 — refuse synthetic / programmatic click events for the
@@ -293,11 +498,45 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
           ✓ {t('onboarding.security.allOk')}
         </div>
       ) : failClosed ? (
+        // v1.6 §9.5.2.3 exception clause 2 — block-until-fixed UX.
+        // The amber banner replaces every per-row BOX and every
+        // acknowledgement; the user must repair the settings file
+        // and click Recheck before onboarding continues. Partial
+        // data on the response (e.g. `bypassMode.active`) is fully
+        // suppressed at this level — no per-row BOX, no rule-of-two
+        // card, no Why? modal — because a fail-closed read cannot
+        // honestly report any individual recommendation status.
         <div
           data-testid="security-fail-closed"
-          className="rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-400 dark:border-amber-700 p-3 text-amber-900 dark:text-amber-100"
+          className="rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-400 dark:border-amber-700 p-3 text-amber-900 dark:text-amber-100 flex flex-col gap-2"
         >
-          ⚠ {t('onboarding.security.failClosed')}
+          <p className="font-semibold">
+            ⚠ {t('onboarding.security.failClosed')}
+          </p>
+          <p className="text-sm">
+            {t('onboarding.security.failClosedRemediation')}
+          </p>
+          {/*
+            The candidate path block is a *fixed* literal, not a
+            render of `state.result.settingsFilePath`. The server-side
+            `publicResult()` always redacts that field to `null` for
+            information-disclosure reasons (CodeX attempt 7), so the
+            renderer can never show a resolved absolute path; v1.6
+            normative pin uses the two well-known candidates instead.
+          */}
+          <p className="text-xs font-mono whitespace-pre-wrap">
+            {t('onboarding.security.failClosedCandidatePath')}
+          </p>
+          <div>
+            <button
+              type="button"
+              data-testid="security-recheck"
+              onClick={handleRecheck}
+              className="mt-1 rounded-md border border-amber-500 dark:border-amber-600 px-3 py-1 text-sm font-medium hover:bg-amber-100 dark:hover:bg-amber-900/40"
+            >
+              {t('onboarding.security.recheck')}
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -324,6 +563,17 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
                     className="mt-0.5"
                   />
                   <span className="flex flex-col gap-0.5">
+                    {/*
+                      The rule-of-two accept text doubles as the
+                      bypassMode BOX's per-item ack (spec v1.4
+                      §9.5.2.3): it accepts the rule-of-two violation
+                      AND records the bypassMode-BOX acknowledgement.
+                      We render the rule-of-two-specific accept copy
+                      here so the user sees the threat-model framing,
+                      not the generic "I have reviewed" label; the
+                      generic per-BOX label is reserved for the
+                      non-bypass SecurityRow render path below.
+                    */}
                     <span>{t('ruleOfTwo.violation.accept')}</span>
                     {ruleOfTwoAcceptDisabled && (
                       <span
@@ -348,6 +598,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
                 acknowledged={acknowledged.bypassMode}
                 onAcknowledgeChange={(v) => setRowAck('bypassMode', v)}
                 onWhy={() => setWhyOpen('bypassMode')}
+                ackLabelKey="onboarding.security.acknowledge.bypassMode"
               />
             )}
             <SecurityRow
@@ -359,6 +610,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               acknowledged={acknowledged.permissionMode}
               onAcknowledgeChange={(v) => setRowAck('permissionMode', v)}
               onWhy={() => setWhyOpen('permissionMode')}
+              ackLabelKey="onboarding.security.acknowledge.permissionMode"
             />
             <SecurityRow
               testId="row-denyPattern"
@@ -369,6 +621,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               acknowledged={acknowledged.denyPattern}
               onAcknowledgeChange={(v) => setRowAck('denyPattern', v)}
               onWhy={() => setWhyOpen('denyPattern')}
+              ackLabelKey="onboarding.security.acknowledge.denyPattern"
             />
           </div>
         </>
@@ -427,6 +680,13 @@ interface SecurityRowProps {
   acknowledged: boolean
   onAcknowledgeChange: (next: boolean) => void
   onWhy: () => void
+  /**
+   * i18n key for this BOX's individual acknowledgement label. Each
+   * SecurityRow owns its own label rather than reusing a shared
+   * "I have reviewed these recommendations" string so the per-BOX
+   * scope is visible at the UI per spec §9.5.2.3 v1.4.
+   */
+  ackLabelKey: MessageKey
 }
 
 function SecurityRow({
@@ -438,6 +698,7 @@ function SecurityRow({
   acknowledged,
   onAcknowledgeChange,
   onWhy,
+  ackLabelKey,
 }: SecurityRowProps) {
   const accentClass = violated
     ? severity === 'high'
@@ -462,21 +723,22 @@ function SecurityRow({
         </button>
       </div>
       <p className="text-xs text-[var(--text-dim)]">{description}</p>
-      {violated && (
-        // Per-item acknowledgement (CodeX attempt 19). Each violated
-        // row gets its own checkbox so a single tick cannot clear all
-        // warnings at once.
-        <label className="flex items-start gap-2 text-xs mt-1 text-[var(--text-primary)]">
-          <input
-            type="checkbox"
-            data-testid={`${testId}-acknowledge`}
-            checked={acknowledged}
-            onChange={(e) => onAcknowledgeChange(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>{t('onboarding.security.acknowledge')}</span>
-        </label>
-      )}
+      {/*
+        Per-BOX individual acknowledgement. v1.4 spec §9.5.2.3 makes
+        this unconditional: even when the recommendation already
+        evaluates as OK, the BOX still asks for an explicit tick so
+        one rubber-stamp gesture cannot clear all three rows.
+      */}
+      <label className="flex items-start gap-2 text-xs mt-1 text-[var(--text-primary)]">
+        <input
+          type="checkbox"
+          data-testid={`${testId}-acknowledge`}
+          checked={acknowledged}
+          onChange={(e) => onAcknowledgeChange(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>{t(ackLabelKey)}</span>
+      </label>
     </div>
   )
 }
