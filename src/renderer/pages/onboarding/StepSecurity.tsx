@@ -214,6 +214,14 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
    */
   const mountedRef = useRef(true)
   useEffect(() => {
+    // Re-arm on every effect setup, not just on the initial mount.
+    // React 18 StrictMode runs every effect "setup → cleanup →
+    // setup" twice during development, so without this assignment
+    // the ref would stay `false` after the dev double-mount and
+    // `handleRecheck()` would silently drop every successful fetch
+    // result — leaving the security step stuck in the loading
+    // state (CodeX attempt 5 — React lifecycle).
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
     }
