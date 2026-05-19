@@ -312,8 +312,21 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   // 'read-error' }` would steer the wizard into the green-banner
   // fast path even though the underlying settings read was fail-
   // closed (CodeX attempt 2 — response invariant validation).
+  //
+  // Defensive cross-check against summary-vs-detail drift: if the
+  // backend ever returns `overallOk: true && reason: 'ok'` while one
+  // detailed row reports `ok: false`, the green banner would
+  // suppress all three boxes and let the user skip the 3-ack gate.
+  // Demand every row report `ok: true` as well, so an inconsistent
+  // payload falls through to the violation path instead of the
+  // fast path (CodeX attempt 6 — same class as attempt 2, this time
+  // at the row-flag layer).
   const allOk =
-    state?.result.overallOk === true && state?.result.reason === 'ok'
+    state?.result.overallOk === true &&
+    state?.result.reason === 'ok' &&
+    state?.result.permissionMode.ok === true &&
+    state?.result.denyPattern.ok === true &&
+    state?.result.bypassMode.ok === true
   const failClosed = state?.result.reason !== 'ok' && state !== null
   const allRequiredAcknowledged = (() => {
     if (!state) return false

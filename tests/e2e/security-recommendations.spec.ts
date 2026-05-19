@@ -237,18 +237,14 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
     // individual acknowledgement checkbox inside the BOX. The Next
     // button is gated by the AND of all three per-BOX acks so a
     // single rubber-stamp gesture cannot cover multiple BOXes. The
-    // fail-closed branch no longer carries any acknowledgement
-    // (v1.6 withdrew the single-shared-ack reuse in favour of a
-    // block-until-fixed + Recheck button UX); the `sharedAck`
-    // fallback below stays as a defensive safety net only — under
-    // v1.6 it is structurally never visible on this fixture.
-    const sharedAck = page.getByTestId('security-acknowledge')
-    if (await sharedAck.isVisible().catch(() => false)) {
-      await expect(next).toBeDisabled()
-      await sharedAck.check()
-      await expect(next).toBeEnabled()
-      return
-    }
+    // v1.5 single-shared-ack reuse was withdrawn (the fail-closed
+    // branch now uses block-until-fixed + Recheck, not a shared
+    // ack), so the v1.6 spec forbids the `security-acknowledge`
+    // testid on this surface entirely. Assert its absence so a
+    // future reintroduction trips the regression here instead of
+    // silently re-enabling a one-click rubber stamp (CodeX attempt
+    // 6 — test regression masking).
+    await expect(page.getByTestId('security-acknowledge')).toHaveCount(0)
     // Three per-BOX acks must all be ticked. With bypass mode
     // inactive in this scenario, the bypass row is rendered as a
     // plain SecurityRow (bypass-disabled display) and exposes the
