@@ -58,6 +58,13 @@ const ja = {
   'onboarding.security.subtitle': '安全に KovitoBoard を使うため、Claude Code の推奨設定を確認します。',
   'onboarding.security.intro': 'プロンプトインジェクション対策として、Claude Code 側で以下の設定を有効にすることを推奨します。',
   'onboarding.security.acknowledge': '内容を確認しました',
+  // 各 BOX 個別の確認 label。「内容を確認しました」一括 tick で 3 BOX
+  // 全体を rubber-stamp 通過することを避けるため、各 BOX 内に配置する
+  // checkbox には対応する BOX を限定する文言を用いる（spec §9.5.2.3
+  // v1.4 normative pin、外側 wrapper 1 つ統合配置禁止）。
+  'onboarding.security.acknowledge.bypassMode': 'bypass モードの設定を確認しました',
+  'onboarding.security.acknowledge.permissionMode': 'permissionMode の設定を確認しました',
+  'onboarding.security.acknowledge.denyPattern': 'deny pattern の設定を確認しました',
   'onboarding.security.allOk': 'すべての推奨設定が満たされています。',
   'onboarding.security.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。設定を手動で確認してください。',
   'onboarding.security.permissionMode.label': 'permissionMode = default',

@@ -51,8 +51,10 @@ async function skipSecurityStep(
 ): Promise<void> {
   const securityStep = page.getByTestId('onboarding-step-security')
   await expect(securityStep).toBeVisible({ timeout: 5000 })
-  // CodeX attempt 19 — per-item acknowledgement. Tick every visible
-  // row checkbox so the Next button enables.
+  // onboarding-scenarios.md v1.4 §9.5.2.3 — every BOX has its own
+  // ack checkbox rendered unconditionally, and the Next button is
+  // gated by the 3-ack AND. The shared `security-acknowledge` box
+  // only shows up in the fail-closed banner branch.
   const sharedAck = page.getByTestId('security-acknowledge')
   if (await sharedAck.isVisible().catch(() => false)) {
     await sharedAck.check()

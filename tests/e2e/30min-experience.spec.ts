@@ -328,9 +328,10 @@ test.describe('S1: Onboarding 6-step completion @preonboarding', () => {
     // and a banner is shown — accept the banner and proceed.
     const stepSecurity = page.getByTestId('onboarding-step-security')
     await expect(stepSecurity).toBeVisible()
-    // CodeX attempt 19 — per-item acknowledgement. Tick whichever
-    // row checkboxes are visible, plus the shared fail-closed box
-    // when present, before advancing.
+    // onboarding-scenarios.md v1.4 §9.5.2.3 — every BOX renders an
+    // ack checkbox unconditionally and the Next button needs the
+    // 3-ack AND. The shared `security-acknowledge` box only shows
+    // up in the fail-closed banner branch.
     const sharedAck = page.getByTestId('security-acknowledge')
     if (await sharedAck.isVisible().catch(() => false)) {
       await sharedAck.check()

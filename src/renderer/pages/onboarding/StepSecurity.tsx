@@ -6,28 +6,37 @@
 /**
  * StepSecurity — onboarding step that surfaces Claude Code recommended-
  * settings violations for non-onboarded users (spec
- * `onboarding-scenarios.md` v1.2 §9.5; handoffs
+ * `onboarding-scenarios.md` v1.4 §9.5.2.3; handoffs
  * `v02x-phase1-claude-code-recommended-settings-check-request.md` v1.1
  * §3.4 + `v02x-phase1-rule-of-two-warning-implementation-request.md`
  * v1.1 §3.2 + §3.5 + §8).
  *
- * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 / threat-
- * model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
+ * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 v1.4 /
+ * threat-model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
  *   - Checkboxes are stacked vertically (no horizontal layout that
  *     invites a "tick everything in one swipe" gesture).
  *   - Each row has its own "Why?" link that opens a modal explaining
  *     the recommendation; no "Approve All" button.
+ *   - Each of the three recommendation BOXes carries its own
+ *     individual acknowledgement checkbox INSIDE the BOX — see
+ *     onboarding-scenarios.md v1.4 §9.5.2.3 normative pin. A single
+ *     shared "I have reviewed these recommendations" checkbox at the
+ *     wrapper level is explicitly banned: it makes one click defeat
+ *     the per-recommendation review intent (CodeX attempt 19 / spec
+ *     v1.3 → v1.4 escalate-revision). The "Next" gate is the AND of
+ *     all three per-BOX acks, so each recommendation always demands
+ *     its own deliberate tick even when the recommendation already
+ *     evaluates as OK on the user's settings.
  *   - When bypass mode is active, the bypass row is replaced by a
- *     prominent <RuleOfTwoViolationCard> with its own accept gate:
+ *     prominent <RuleOfTwoViolationCard> whose internal acknowledge-
+ *     ment doubles as the bypassMode BOX's per-item ack and carries
+ *     the existing accept gate:
  *       - Accept stays disabled until the RuleOfTwoExplanation modal
  *         has been opened at least once (T-4-2 / I-6).
  *       - A minimum 2-second idle delay is enforced after the modal
  *         closes before accept enables (T-4-2 / D-E).
  *       - The accept handler refuses non-trusted (programmatic) click
  *         events via `event.isTrusted` (T-4-1 / I-6).
- *   - For non-bypass rows the legacy per-row acknowledge checkbox is
- *     retained — the rubber-stamp risk for those rows is already
- *     handled by separate `Why?` modals + per-row ack (handoff ② v1.1).
  *
  * Out of scope:
  *   - `window.kb` ambient API audit (T-4-1 b): already enforced at the
@@ -40,7 +49,7 @@
  */
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
-import { t } from '../../i18n'
+import { t, type MessageKey } from '../../i18n'
 import type { SettingsCheckResult } from '../../../shared/setting-types'
 import {
   type SecurityCheckResponse,
@@ -174,23 +183,29 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     return now - ruleOfTwoClosedAt < RULE_OF_TWO_ACCEPT_IDLE_MS
   }, [bypassActive, ruleOfTwoEverOpened, whyOpen, ruleOfTwoClosedAt, now])
 
-  // Gate the Next button on per-item acknowledgement of EVERY
-  // violated row (CodeX attempt 19). A row that is already OK does
-  // not need a tick, so the user only needs to acknowledge what they
-  // are accepting risk on. The fail-closed banner branch keeps its
-  // own single-item gate via the legacy boolean below because there
-  // is no per-row violation to render.
+  // Gate the Next button on a per-BOX acknowledgement of all THREE
+  // recommendations (onboarding-scenarios.md v1.4 §9.5.2.3 normative
+  // pin / spec v1.3 → v1.4 escalate-revision). The user must tick
+  // every BOX's own checkbox even when the recommendation already
+  // evaluates as OK, so a single rubber-stamp gesture cannot cover
+  // multiple recommendations at once. The fail-closed banner branch
+  // keeps its single shared ack because no per-row BOX is rendered
+  // in that case (the structural settings read failed wholesale).
   const allOk = state?.result.overallOk === true
   const failClosed = state?.result.reason !== 'ok' && state !== null
   const allRequiredAcknowledged = (() => {
     if (!state) return false
     if (allOk) return true
     if (failClosed) return acknowledged.permissionMode // reuse one box for the banner branch
-    const violations: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = []
-    if (!state.result.permissionMode.ok) violations.push('permissionMode')
-    if (!state.result.denyPattern.ok) violations.push('denyPattern')
-    if (!state.result.bypassMode.ok) violations.push('bypassMode')
-    return violations.every((row) => acknowledged[row])
+    // 3-ack AND across every BOX, regardless of which rows reported
+    // a violation. v1.4 spec made "every BOX demands its own tick"
+    // normative so an OK row cannot be skipped — the deliberate
+    // tick IS the rubber-stamp prevention.
+    return (
+      acknowledged.bypassMode &&
+      acknowledged.permissionMode &&
+      acknowledged.denyPattern
+    )
   })()
   const nextEnabled = allRequiredAcknowledged
 
@@ -324,6 +339,17 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
                     className="mt-0.5"
                   />
                   <span className="flex flex-col gap-0.5">
+                    {/*
+                      The rule-of-two accept text doubles as the
+                      bypassMode BOX's per-item ack (spec v1.4
+                      §9.5.2.3): it accepts the rule-of-two violation
+                      AND records the bypassMode-BOX acknowledgement.
+                      We render the rule-of-two-specific accept copy
+                      here so the user sees the threat-model framing,
+                      not the generic "I have reviewed" label; the
+                      generic per-BOX label is reserved for the
+                      non-bypass SecurityRow render path below.
+                    */}
                     <span>{t('ruleOfTwo.violation.accept')}</span>
                     {ruleOfTwoAcceptDisabled && (
                       <span
@@ -348,6 +374,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
                 acknowledged={acknowledged.bypassMode}
                 onAcknowledgeChange={(v) => setRowAck('bypassMode', v)}
                 onWhy={() => setWhyOpen('bypassMode')}
+                ackLabelKey="onboarding.security.acknowledge.bypassMode"
               />
             )}
             <SecurityRow
@@ -359,6 +386,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               acknowledged={acknowledged.permissionMode}
               onAcknowledgeChange={(v) => setRowAck('permissionMode', v)}
               onWhy={() => setWhyOpen('permissionMode')}
+              ackLabelKey="onboarding.security.acknowledge.permissionMode"
             />
             <SecurityRow
               testId="row-denyPattern"
@@ -369,6 +397,7 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
               acknowledged={acknowledged.denyPattern}
               onAcknowledgeChange={(v) => setRowAck('denyPattern', v)}
               onWhy={() => setWhyOpen('denyPattern')}
+              ackLabelKey="onboarding.security.acknowledge.denyPattern"
             />
           </div>
         </>
@@ -427,6 +456,13 @@ interface SecurityRowProps {
   acknowledged: boolean
   onAcknowledgeChange: (next: boolean) => void
   onWhy: () => void
+  /**
+   * i18n key for this BOX's individual acknowledgement label. Each
+   * SecurityRow owns its own label rather than reusing a shared
+   * "I have reviewed these recommendations" string so the per-BOX
+   * scope is visible at the UI per spec §9.5.2.3 v1.4.
+   */
+  ackLabelKey: MessageKey
 }
 
 function SecurityRow({
@@ -438,6 +474,7 @@ function SecurityRow({
   acknowledged,
   onAcknowledgeChange,
   onWhy,
+  ackLabelKey,
 }: SecurityRowProps) {
   const accentClass = violated
     ? severity === 'high'
@@ -462,21 +499,22 @@ function SecurityRow({
         </button>
       </div>
       <p className="text-xs text-[var(--text-dim)]">{description}</p>
-      {violated && (
-        // Per-item acknowledgement (CodeX attempt 19). Each violated
-        // row gets its own checkbox so a single tick cannot clear all
-        // warnings at once.
-        <label className="flex items-start gap-2 text-xs mt-1 text-[var(--text-primary)]">
-          <input
-            type="checkbox"
-            data-testid={`${testId}-acknowledge`}
-            checked={acknowledged}
-            onChange={(e) => onAcknowledgeChange(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>{t('onboarding.security.acknowledge')}</span>
-        </label>
-      )}
+      {/*
+        Per-BOX individual acknowledgement. v1.4 spec §9.5.2.3 makes
+        this unconditional: even when the recommendation already
+        evaluates as OK, the BOX still asks for an explicit tick so
+        one rubber-stamp gesture cannot clear all three rows.
+      */}
+      <label className="flex items-start gap-2 text-xs mt-1 text-[var(--text-primary)]">
+        <input
+          type="checkbox"
+          data-testid={`${testId}-acknowledge`}
+          checked={acknowledged}
+          onChange={(e) => onAcknowledgeChange(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>{t(ackLabelKey)}</span>
+      </label>
     </div>
   )
 }

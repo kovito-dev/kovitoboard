@@ -153,10 +153,14 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
     await expect(securityStep).toBeVisible({ timeout: 5000 })
 
     const next = page.getByTestId('security-next')
-    // CodeX attempt 19 — per-item acknowledgement: every violated
-    // row gets its own checkbox, so the gate is "every visible row
-    // checkbox is ticked." A single shared box only exists on the
-    // fail-closed banner branch.
+    // Spec onboarding-scenarios.md v1.4 §9.5.2.3: every BOX
+    // (bypassMode, permissionMode, denyPattern) renders its own
+    // individual acknowledgement checkbox inside the BOX, regardless
+    // of whether the recommendation reports ok / violated. The Next
+    // button is gated by the AND of all three per-BOX acks so a
+    // single rubber-stamp gesture cannot cover multiple BOXes. The
+    // single shared `security-acknowledge` checkbox only exists in
+    // the fail-closed banner branch.
     const sharedAck = page.getByTestId('security-acknowledge')
     if (await sharedAck.isVisible().catch(() => false)) {
       await expect(next).toBeDisabled()
@@ -164,24 +168,21 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
       await expect(next).toBeEnabled()
       return
     }
-    // Otherwise tick every per-row checkbox that is rendered.
+    // Three per-BOX acks must all be ticked. With bypass mode
+    // inactive in this scenario, the bypass row is rendered as a
+    // plain SecurityRow (bypass-disabled display) and exposes the
+    // same `row-bypassMode-acknowledge` testid as the others.
     const rowIds: Array<'permissionMode' | 'denyPattern' | 'bypassMode'> = [
       'permissionMode',
       'denyPattern',
       'bypassMode',
     ]
-    let anyVisible = false
+    await expect(next).toBeDisabled()
     for (const row of rowIds) {
       const box = page.getByTestId(`row-${row}-acknowledge`)
-      if (await box.isVisible().catch(() => false)) {
-        anyVisible = true
-        await box.check()
-      }
+      await expect(box).toBeVisible()
+      await box.check()
     }
-    if (anyVisible) {
-      await expect(next).toBeEnabled()
-    } else {
-      await expect(next).toBeEnabled()
-    }
+    await expect(next).toBeEnabled()
   })
 })

@@ -325,18 +325,17 @@ test.describe('@preonboarding Rule of Two onboarding step', () => {
     await expect(accept).toBeEnabled({ timeout: 4000 })
     await accept.check()
 
-    // The bypass-active mock also reports a denyPattern violation, so
-    // that row's per-item ack is still required to unlock Next.
+    // Spec onboarding-scenarios.md v1.4 §9.5.2.3: every BOX surfaces
+    // its own ack checkbox unconditionally, so denyPattern and
+    // permissionMode must each be ticked regardless of whether the
+    // mocked settings reported them as ok or violated. The
+    // rule-of-two accept above doubles as the bypassMode BOX ack.
     const denyAck = page.getByTestId('row-denyPattern-acknowledge')
-    if (await denyAck.isVisible().catch(() => false)) {
-      await denyAck.check()
-    }
-    // permissionMode violation row also surfaces independently (since
-    // permissionMode = bypassPermissions is non-default) — tick it too.
+    await expect(denyAck).toBeVisible()
+    await denyAck.check()
     const pmAck = page.getByTestId('row-permissionMode-acknowledge')
-    if (await pmAck.isVisible().catch(() => false)) {
-      await pmAck.check()
-    }
+    await expect(pmAck).toBeVisible()
+    await pmAck.check()
 
     await expect(page.getByTestId('security-next')).toBeEnabled()
   })
