@@ -41,24 +41,43 @@ function ensureNoClaudeMd(projectRoot: string): string {
 }
 
 /** Skip past the Security recommendations onboarding step (handoff
- *  v1.1 §3.4 / spec onboarding-scenarios v1.2 §9.5). The L1 fixture
- *  project root lives in /tmp so the check helper returns a fail-
- *  closed surface; check the acknowledge box when it surfaces, then
- *  proceed. */
+ *  v1.1 §3.4 / spec onboarding-scenarios v1.6 §9.5). The L1 fixture
+ *  project root lives in /tmp; ENOENT on the settings file is
+ *  treated as "missing entry" by the check helper, so the typical
+ *  outcome is `reason: 'ok' && overallOk: false` — the violation
+ *  path with three per-row acks. The helper handles all three
+ *  v1.6 branches:
+ *    - allOk: only the green banner is rendered, Next enables itself
+ *    - violation: tick every per-row ack, then click Next
+ *    - fail-closed: click Recheck once to recover, then fall through
+ *      to the violation/allOk branch (if the surface persists, the
+ *      assertion below fails fast instead of hanging on a disabled
+ *      Next button). */
 async function skipSecurityStep(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   page: any,
 ): Promise<void> {
   const securityStep = page.getByTestId('onboarding-step-security')
   await expect(securityStep).toBeVisible({ timeout: 5000 })
-  // onboarding-scenarios.md v1.4 §9.5.2.3 — every BOX has its own
-  // ack checkbox rendered unconditionally, and the Next button is
-  // gated by the 3-ack AND. The shared `security-acknowledge` box
-  // only shows up in the fail-closed banner branch.
-  const sharedAck = page.getByTestId('security-acknowledge')
-  if (await sharedAck.isVisible().catch(() => false)) {
-    await sharedAck.check()
+
+  // v1.6 §9.5.2.3 example clause 2: fail-closed surface blocks
+  // progress until the user clicks Recheck and the next response
+  // returns reason: 'ok'. The L1 fixture returns reason: 'ok'
+  // deterministically, so a single recheck cycle suffices; callers
+  // that need to hit fail-closed repeatedly must mock
+  // /api/security/settings-check explicitly (CodeX attempt 7 —
+  // test reliability).
+  const failClosed = page.getByTestId('security-fail-closed')
+  if (await failClosed.isVisible().catch(() => false)) {
+    await page.getByTestId('security-recheck').click()
+    await expect(failClosed).toHaveCount(0, { timeout: 5000 })
   }
+
+  // v1.6 §9.5.2.3 — every per-row BOX ack must be ticked on the
+  // violation path; the green-banner allOk branch renders no boxes
+  // and enables Next immediately. The v1.5 shared `security-
+  // acknowledge` checkbox is forbidden on this surface, so we do
+  // not look for it.
   for (const row of ['permissionMode', 'denyPattern', 'bypassMode'] as const) {
     const box = page.getByTestId(`row-${row}-acknowledge`)
     if (await box.isVisible().catch(() => false)) {
