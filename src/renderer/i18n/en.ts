@@ -60,8 +60,20 @@ const en: Record<MessageKey, string> = {
   'onboarding.security.subtitle': 'Review the recommended Claude Code settings before you continue.',
   'onboarding.security.intro': 'As a prompt-injection mitigation we recommend the following Claude Code configuration.',
   'onboarding.security.acknowledge': 'I have reviewed these recommendations',
+  // Per-BOX individual acknowledgement labels. Each label scopes to a
+  // single recommendation so the user cannot read "I have reviewed
+  // these recommendations" as a single rubber-stamp tick covering all
+  // three. Rendered inside the corresponding SecurityRow / bypass
+  // card per spec §9.5.2.3 (v1.4 normative pin) so the wrapper-level
+  // single checkbox pattern stays banned.
+  'onboarding.security.acknowledge.bypassMode': 'I have reviewed the bypass mode setting',
+  'onboarding.security.acknowledge.permissionMode': 'I have reviewed the permissionMode setting',
+  'onboarding.security.acknowledge.denyPattern': 'I have reviewed the deny pattern setting',
   'onboarding.security.allOk': 'All recommended settings are satisfied.',
-  'onboarding.security.failClosed': 'Could not read your Claude Code settings file. Please review the settings manually.',
+  'onboarding.security.failClosed': 'Could not read your Claude Code settings file.',
+  'onboarding.security.failClosedRemediation': 'Edit the Claude Code settings file or check that the KovitoBoard server is reachable. See the terminal log for details.',
+  'onboarding.security.failClosedCandidatePath': 'Settings file path: ~/.claude/settings.json (user-level) or <projectRoot>/.claude/settings.json (project-level)',
+  'onboarding.security.recheck': 'Recheck',
   'onboarding.security.permissionMode.label': 'permissionMode = default',
   'onboarding.security.permissionMode.description': 'Keep Claude Code in default permission mode. bypassPermissions skips the human-in-the-loop confirmation and violates the Rule of Two, so we discourage it.',
   'onboarding.security.denyPattern.label': 'Add .kovitoboard/ to deny pattern',
