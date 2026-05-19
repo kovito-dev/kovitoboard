@@ -65,7 +65,7 @@
  *     `event.isTrusted` gate below + the App-level onboarding gate
  *     that refuses recipe page mounts before completion (T-4-1 a).
  */
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { kbFetch } from '../../lib/kbFetch'
 import { t, type MessageKey } from '../../i18n'
 import type { SettingsCheckResult } from '../../../shared/setting-types'
@@ -200,6 +200,24 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
    * wizard's lifetime.
    */
   const [now, setNow] = useState<number>(() => Date.now())
+
+  /**
+   * `true` while the component is mounted. Flipped to `false` by the
+   * teardown effect below so any in-flight `fetchSettingsCheck()`
+   * promise can short-circuit before calling `setState` on a torn-
+   * down component (CodeX attempt 4 — async state lifecycle gap on
+   * the Recheck path). The initial mount effect carries its own
+   * closure-local `cancelled` flag because that scope wants to gate
+   * a single strict-mode double-mount as well as a real unmount; the
+   * Recheck handler only needs the unmount signal, so it reads this
+   * shared ref instead of allocating a per-call closure flag.
+   */
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -352,14 +370,25 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
     setRuleOfTwoClosedAt(reset.ruleOfTwoClosedAt)
     setWhyOpen(reset.whyOpen)
     setState(null)
-    // No local cancellation flag — spec v1.6 §9.5.2.3 in-flight
-    // semantics: the Recheck button is structurally unmounted once
-    // `setState(null)` drives us back into the loading branch, so a
-    // second concurrent recheck cannot enter this handler. The
-    // shared `fetchSettingsCheck` loader already collapses errors
-    // into a fail-closed payload, so the amber banner re-surfaces
-    // if the new fetch also fails.
-    fetchSettingsCheck().then((data) => setState(data))
+    // No per-call cancellation flag: spec v1.6 §9.5.2.3 in-flight
+    // semantics guarantee the Recheck button is structurally
+    // unmounted once `setState(null)` drives us back into the
+    // loading branch, so a second concurrent recheck cannot enter
+    // this handler. The shared `fetchSettingsCheck` loader already
+    // collapses errors into a fail-closed payload, so the amber
+    // banner re-surfaces if the new fetch also fails.
+    //
+    // The `mountedRef` gate is a separate concern (CodeX attempt 4
+    // — async state lifecycle): if the user navigates away from
+    // the onboarding step while the recheck fetch is still in
+    // flight, we must not call `setState` on the torn-down
+    // component. The in-flight-semantics pin solves the duplicate-
+    // click case structurally; the unmount case needs an explicit
+    // guard.
+    fetchSettingsCheck().then((data) => {
+      if (!mountedRef.current) return
+      setState(data)
+    })
   }, [])
 
   /**

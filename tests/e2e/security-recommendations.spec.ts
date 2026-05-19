@@ -32,6 +32,8 @@
 // opt-out variant declared in the helper; every other L1 spec should
 // continue to import the default `test`.
 import { testWithSecurityToast as test, expect } from './helpers/l1-per-test-setup'
+import type { SettingsCheckResult } from '../../src/shared/setting-types'
+import type { SecurityCheckResponse } from '../../src/renderer/lib/securityCheckResponse'
 
 const API_BASE = 'http://127.0.0.1:3001'
 
@@ -278,16 +280,13 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
  * still pass for the wrong reason.
  */
 test.describe('@preonboarding §9.5.2.3 fail-closed UX (block-until-fixed + Recheck, v1.6)', () => {
-  type SettingsCheckResultShape = {
-    overallOk: boolean
-    reason: 'ok' | 'read-error' | 'parse-error' | 'schema-mismatch' | 'path-resolution-rejected' | 'file-too-large'
-    permissionMode: { current: string; recommended: 'default'; ok: boolean }
-    denyPattern: { hasKovitoboardDeny: boolean; ok: boolean; remediation: string }
-    bypassMode: { active: boolean; ok: boolean }
-    settingsFilePath: string | null
-  }
+  // Reuse the production response shape so any drift in
+  // `SettingsCheckResult` / `SecurityCheckResponse` surfaces at
+  // compile time in these mocks too (CodeX attempt 4 — test contract
+  // drift). The earlier locally-redeclared shape kept compiling
+  // independently of the real contract.
 
-  function buildResult(overrides: Partial<SettingsCheckResultShape> = {}): SettingsCheckResultShape {
+  function buildResult(overrides: Partial<SettingsCheckResult> = {}): SettingsCheckResult {
     // Sensible defaults for the "all OK" path; tests override the
     // fields that drive the branch they exercise. Keeping the
     // helper in-file (rather than in a shared fixture) localises
@@ -303,7 +302,7 @@ test.describe('@preonboarding §9.5.2.3 fail-closed UX (block-until-fixed + Rech
     }
   }
 
-  function envelope(result: SettingsCheckResultShape) {
+  function envelope(result: SettingsCheckResult): SecurityCheckResponse {
     return {
       result,
       suppressToast: false,
