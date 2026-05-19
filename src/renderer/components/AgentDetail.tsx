@@ -574,11 +574,14 @@ function ActiveSessionConfirmDialog({
           {t('agent.detail.activeConfirm.startNew')}
         </button>
 
-        {/* Open active session */}
+        {/* Open active session — use the themed accent color so the
+            label keeps contrast against `--bg-surface` in both light
+            and dark themes. The previous hardcoded `text-blue-300`
+            collapsed to near-black on the light theme. */}
         <button
           onClick={onOpenActive}
           className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
-            bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-blue-300 border border-[var(--border)] transition-colors"
+            bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[var(--accent-text)] border border-[var(--border)] transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
