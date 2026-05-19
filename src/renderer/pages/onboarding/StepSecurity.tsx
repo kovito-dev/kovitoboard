@@ -213,7 +213,15 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   //   - `reason !== 'ok'` (fail-closed, structural settings read
   //     failed) — the amber banner branch uses a single shared
   //     ack because no per-row BOX is rendered in that case either.
-  const allOk = state?.result.overallOk === true
+  //
+  // `allOk` must mirror the spec's AND of `overallOk === true` and
+  // `reason === 'ok'`. Without the reason check, a malformed /
+  // inconsistent server payload like `{ overallOk: true, reason:
+  // 'read-error' }` would steer the wizard into the green-banner
+  // fast path even though the underlying settings read was fail-
+  // closed (CodeX attempt 2 — response invariant validation).
+  const allOk =
+    state?.result.overallOk === true && state?.result.reason === 'ok'
   const failClosed = state?.result.reason !== 'ok' && state !== null
   const allRequiredAcknowledged = (() => {
     if (!state) return false
