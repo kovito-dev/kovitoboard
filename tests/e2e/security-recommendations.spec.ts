@@ -139,6 +139,83 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
     await expect(securityStep).toBeVisible({ timeout: 5000 })
   })
 
+  test('@preonboarding overallOk: true で緑バナーが表示され ack 不要で次へ即進める (v1.5 §9.5.2.3 例外条項)', async ({ page }) => {
+    // Spec onboarding-scenarios.md v1.5 §9.5.2.3 exception clause:
+    // when `overallOk === true && reason === 'ok'`, the green-
+    // banner branch renders alone with NO per-row BOX. Per-BOX ack
+    // is structurally unnecessary (rubber-stamp threat surface is
+    // absent — there is nothing to "miss" when no recommendation
+    // is violated), and the Next button must enable immediately.
+    //
+    // The L1 fixture's deterministic outcome is `overallOk: false`
+    // (the `/tmp/kb-e2e-template-XXX` project root puts the deny
+    // pattern check out of compliance), so we mock the
+    // `/api/security/settings-check` endpoint here to reach the
+    // `allOk` branch the fixture cannot otherwise produce. The
+    // mock response shape is pinned against the
+    // `isSecurityCheckResponse` runtime guard.
+    await page.route('**/api/security/settings-check', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          result: {
+            overallOk: true,
+            reason: 'ok',
+            permissionMode: {
+              current: 'default',
+              recommended: 'default',
+              ok: true,
+            },
+            denyPattern: {
+              hasKovitoboardDeny: true,
+              ok: true,
+              remediation: '',
+            },
+            bypassMode: {
+              active: false,
+              ok: true,
+            },
+            settingsFilePath: null,
+          },
+          suppressToast: false,
+          dismissExpiresAt: null,
+        }),
+      })
+    })
+
+    await page.goto('/onboarding')
+    await page.waitForLoadState('networkidle')
+
+    await page.getByRole('button', { name: /Get Started|始める/ }).click()
+    await page.locator('input[type="text"]').first().fill('Tester')
+    await page.getByRole('button', { name: /Next|次へ/ }).click()
+    await page.getByRole('button', { name: /Next|次へ/ }).click()
+    await page.getByRole('button', { name: /Add later|あとで追加する/ }).click()
+
+    const securityStep = page.getByTestId('onboarding-step-security')
+    await expect(securityStep).toBeVisible({ timeout: 5000 })
+
+    // The `allOk` branch must render the green banner alone.
+    const allOkBanner = page.getByTestId('security-all-ok')
+    await expect(allOkBanner).toBeVisible()
+
+    // No per-row BOX is rendered, so none of the per-BOX ack
+    // checkboxes should exist in the DOM. The single shared
+    // `security-acknowledge` (fail-closed branch) is also absent.
+    await expect(page.getByTestId('row-bypassMode-acknowledge')).toHaveCount(0)
+    await expect(page.getByTestId('row-permissionMode-acknowledge')).toHaveCount(0)
+    await expect(page.getByTestId('row-denyPattern-acknowledge')).toHaveCount(0)
+    await expect(page.getByTestId('security-acknowledge')).toHaveCount(0)
+
+    // Next must enable immediately with zero acks (v1.5 §9.5.2.3
+    // exception clause). The rubber-stamp threat surface is absent
+    // because no recommendation is violated, so requiring deliberate
+    // ticks here would be over-defense outside the spec's intent.
+    const next = page.getByTestId('security-next')
+    await expect(next).toBeEnabled()
+  })
+
   test('@preonboarding 違反検出時、acknowledge なしで次へ進めない', async ({ page }) => {
     await page.goto('/onboarding')
     await page.waitForLoadState('networkidle')
@@ -153,7 +230,7 @@ test.describe('@preonboarding オンボーディング Security ステップ', (
     await expect(securityStep).toBeVisible({ timeout: 5000 })
 
     const next = page.getByTestId('security-next')
-    // Spec onboarding-scenarios.md v1.4 §9.5.2.3: every BOX
+    // Spec onboarding-scenarios.md v1.5 §9.5.2.3: every BOX
     // (bypassMode, permissionMode, denyPattern) renders its own
     // individual acknowledgement checkbox inside the BOX, regardless
     // of whether the recommendation reports ok / violated. The Next

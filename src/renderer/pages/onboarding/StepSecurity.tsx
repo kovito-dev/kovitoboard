@@ -6,12 +6,12 @@
 /**
  * StepSecurity — onboarding step that surfaces Claude Code recommended-
  * settings violations for non-onboarded users (spec
- * `onboarding-scenarios.md` v1.4 §9.5.2.3; handoffs
+ * `onboarding-scenarios.md` v1.5 §9.5.2.3; handoffs
  * `v02x-phase1-claude-code-recommended-settings-check-request.md` v1.1
  * §3.4 + `v02x-phase1-rule-of-two-warning-implementation-request.md`
  * v1.1 §3.2 + §3.5 + §8).
  *
- * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 v1.4 /
+ * Rubber-stamp prevention (handoff ② §3.4.2 / spec §9.5.2.3 v1.5 /
  * threat-model §4.3, plus handoff ④ §8 D-E rule-of-two specifics):
  *   - Checkboxes are stacked vertically (no horizontal layout that
  *     invites a "tick everything in one swipe" gesture).
@@ -19,14 +19,20 @@
  *     the recommendation; no "Approve All" button.
  *   - Each of the three recommendation BOXes carries its own
  *     individual acknowledgement checkbox INSIDE the BOX — see
- *     onboarding-scenarios.md v1.4 §9.5.2.3 normative pin. A single
+ *     onboarding-scenarios.md v1.5 §9.5.2.3 normative pin. A single
  *     shared "I have reviewed these recommendations" checkbox at the
  *     wrapper level is explicitly banned: it makes one click defeat
  *     the per-recommendation review intent (CodeX attempt 19 / spec
  *     v1.3 → v1.4 escalate-revision). The "Next" gate is the AND of
- *     all three per-BOX acks, so each recommendation always demands
- *     its own deliberate tick even when the recommendation already
- *     evaluates as OK on the user's settings.
+ *     all three per-BOX acks on the violation path, so each
+ *     recommendation always demands its own deliberate tick when a
+ *     violation is present.
+ *   - v1.5 exception clause (rubber-stamp threat surface absent):
+ *     when `overallOk === true && reason === 'ok'`, the green-banner
+ *     branch renders no per-row BOX, so per-BOX ack is structurally
+ *     unnecessary and Next enables immediately. The three-BOX gate
+ *     only applies when violations exist (or the read was fail-
+ *     closed); see L186-215 for the in-handler comment.
  *   - When bypass mode is active, the bypass row is replaced by a
  *     prominent <RuleOfTwoViolationCard> whose internal acknowledge-
  *     ment doubles as the bypassMode BOX's per-item ack and carries
@@ -184,23 +190,40 @@ export function StepSecurity({ onNext, onBack }: StepSecurityProps) {
   }, [bypassActive, ruleOfTwoEverOpened, whyOpen, ruleOfTwoClosedAt, now])
 
   // Gate the Next button on a per-BOX acknowledgement of all THREE
-  // recommendations (onboarding-scenarios.md v1.4 §9.5.2.3 normative
-  // pin / spec v1.3 → v1.4 escalate-revision). The user must tick
-  // every BOX's own checkbox even when the recommendation already
-  // evaluates as OK, so a single rubber-stamp gesture cannot cover
-  // multiple recommendations at once. The fail-closed banner branch
-  // keeps its single shared ack because no per-row BOX is rendered
-  // in that case (the structural settings read failed wholesale).
+  // recommendations (onboarding-scenarios.md v1.5 §9.5.2.3 — the
+  // v1.4 normative pin remained "next-enable = 3-ack AND", and v1.5
+  // added the exception clause that scopes that gate to the paths
+  // where the per-BOX BOXes actually render).
+  //
+  // v1.5 exception clause (rubber-stamp threat surface absent):
+  //   When `overallOk === true && reason === 'ok'`, the render tree
+  //   below (L303-309 `security-all-ok`) shows the green banner
+  //   alone with NO per-row BOX. Per-BOX ack is therefore
+  //   structurally unnecessary — there is nothing for the user to
+  //   "miss" when no recommendation is violated, and the CodeX
+  //   attempt 19 per-item ack reversal that targeted "multiple
+  //   violations being flushed by one tick" does not apply when
+  //   violations === 0. The `allOk` short-circuit below is the
+  //   normative implementation of that exception, NOT a regression
+  //   of the v1.4 per-BOX ack rule.
+  //
+  // The 3-ack AND gate applies only on:
+  //   - `overallOk === false` (at least one violation detected) — the
+  //     normal flow where all three BOXes render.
+  //   - `reason !== 'ok'` (fail-closed, structural settings read
+  //     failed) — the amber banner branch uses a single shared
+  //     ack because no per-row BOX is rendered in that case either.
   const allOk = state?.result.overallOk === true
   const failClosed = state?.result.reason !== 'ok' && state !== null
   const allRequiredAcknowledged = (() => {
     if (!state) return false
-    if (allOk) return true
+    if (allOk) return true // v1.5 exception clause — see comment above
     if (failClosed) return acknowledged.permissionMode // reuse one box for the banner branch
     // 3-ack AND across every BOX, regardless of which rows reported
     // a violation. v1.4 spec made "every BOX demands its own tick"
-    // normative so an OK row cannot be skipped — the deliberate
-    // tick IS the rubber-stamp prevention.
+    // normative for the violation path so an OK row cannot be
+    // skipped within a mixed-result state — the deliberate tick IS
+    // the rubber-stamp prevention.
     return (
       acknowledged.bypassMode &&
       acknowledged.permissionMode &&
