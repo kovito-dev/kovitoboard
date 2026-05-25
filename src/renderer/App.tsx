@@ -157,6 +157,16 @@ export function App() {
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
 
+  // Nav rail compact state — lifted out of NavMenu so the rail wrapper
+  // (`<div className="flex flex-col h-full ...">` in the Layout nav
+  // slot) can drive its own width and so ProjectRootBanner can be
+  // hidden when collapsed. Previously the state lived inside NavMenu,
+  // which left the wrapper unconstrained: ProjectRootBanner's natural
+  // (min-content) width then dictated the rail width, so the expanded
+  // rail showed dead space to the right of the menu and compact mode
+  // failed to shrink the rail at all (the banner kept it wide).
+  const [navCompact, setNavCompact] = useState(false)
+
   // App removal modal (DEC-024 #3 / DEC-024 #5, spec §F4 — opened via
   // the AmbientSidebar's per-app actions popover instead of the legacy
   // NavMenu actionSlot button).
@@ -342,14 +352,33 @@ export function App() {
             // the wrapper consume the parent Layout's nav slot so the
             // banner sits inside the nav rail rather than being
             // pushed outside it (KB-2026-05 hardening).
-            <div className="flex flex-col h-full">
+            //
+            // The width class lives on this wrapper (rather than on
+            // NavMenu alone) so the rail width is decided in exactly
+            // one place. Without a width here ProjectRootBanner's
+            // long path/source text would drive the wrapper's
+            // min-content width, leaving NavMenu (w-40) with dead
+            // space on its right and preventing compact mode from
+            // actually shrinking the rail.
+            <div
+              className={`flex flex-col h-full ${navCompact ? 'w-12' : 'w-40'} transition-[width] duration-200`}
+            >
               <NavMenu
                 entries={allMenuEntries}
                 activeId={activeMenuId}
                 onSelect={(id) => navigate(`/${id}`)}
+                compact={navCompact}
+                onToggleCompact={() => setNavCompact((prev) => !prev)}
                 actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
               />
-              <ProjectRootBanner />
+              {/* The banner stays mounted in compact mode as an
+                  icon-only surface so the shared-installation-
+                  prevention spec requirement to keep the project
+                  root continuously visible in the UI remains
+                  satisfied. The folder icon carries the hover
+                  tooltip for the full path, and a red dot signals
+                  the cwd-fallback warning state. */}
+              <ProjectRootBanner compact={navCompact} />
             </div>
           }
           sidebar={renderSidebar()}

@@ -152,6 +152,13 @@ interface NavMenuProps {
   activeId: string
   onSelect: (id: string) => void
   /**
+   * Compact (icon-only) mode. Controlled by the parent so the rail
+   * wrapper can collapse its width and hide ProjectRootBanner in
+   * sync. The collapse toggle below dispatches `onToggleCompact`.
+   */
+  compact: boolean
+  onToggleCompact: () => void
+  /**
    * Optional action buttons rendered above the menu entries. Used by
    * the v0.1.0 app removal flow to surface a "Remove app" button only
    * while the user is viewing an `/ext/<appId>` page (DEC-024 #3,
@@ -163,9 +170,7 @@ interface NavMenuProps {
   actionSlot?: ReactNode
 }
 
-export function NavMenu({ entries, activeId, onSelect, actionSlot }: NavMenuProps) {
-  // Compact mode (icon-only) state. Default is expanded
-  const [compact, setCompact] = useState(false)
+export function NavMenu({ entries, activeId, onSelect, compact, onToggleCompact, actionSlot }: NavMenuProps) {
   // Manage folder open/close state
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
 
@@ -187,11 +192,12 @@ export function NavMenu({ entries, activeId, onSelect, actionSlot }: NavMenuProp
   }
 
   return (
+    // Width is owned by the parent rail wrapper (see App.tsx nav
+    // slot), which also drives the width transition. NavMenu itself
+    // just stretches to fill the column.
     <div
       className={`
-        ${compact ? 'w-12' : 'w-40'}
-        bg-[var(--bg-nav)] border-r border-[var(--border)] flex flex-col py-2 gap-1 flex-1 min-h-0
-        transition-[width] duration-200
+        w-full bg-[var(--bg-nav)] border-r border-[var(--border)] flex flex-col py-2 gap-1 flex-1 min-h-0
         ${compact ? 'items-center' : ''}
       `}
     >
@@ -263,7 +269,7 @@ export function NavMenu({ entries, activeId, onSelect, actionSlot }: NavMenuProp
 
       {/* Compact toggle button */}
       <button
-        onClick={() => setCompact((prev) => !prev)}
+        onClick={onToggleCompact}
         title={compact ? 'Expand menu' : 'Collapse menu'}
         className="
           flex items-center justify-center w-full py-1.5
