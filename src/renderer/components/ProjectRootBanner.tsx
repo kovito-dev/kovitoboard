@@ -103,7 +103,10 @@ export function ProjectRootBanner({ compact = false }: ProjectRootBannerProps) {
 
   const isWarning = source === 'cwd-fallback'
   const display = shortenHome(projectRoot)
-  const tooltip = `${display}\n${sourceLabel(source)}${
+  // Tooltip surfaces the raw (un-collapsed) projectRoot so compact
+  // mode does not lose information relative to the expanded variant
+  // (which also uses the raw path in its title attribute).
+  const tooltip = `${projectRoot}\n${sourceLabel(source)}${
     isWarning ? `\n${t('projectRootBanner.cwdFallbackWarning')}` : ''
   }`
 
