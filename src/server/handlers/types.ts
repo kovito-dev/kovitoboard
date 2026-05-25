@@ -15,6 +15,8 @@
  * @stable v0.1.0
  */
 
+import type { TrustLevel } from '../recipe/apiTypes'
+
 // =========================================
 // Error codes
 // =========================================
@@ -69,15 +71,25 @@ export function handlerError<T = never>(
 
 /**
  * Definition of 7 scope types.
- * Represents permissions required for handler execution. Approved by the user at install time.
- * @see recipe-system.md §12-3
+ *
+ * Represents permissions required for handler execution. Approved by
+ * the user at install time.
+ *
+ * v0.2.x note (recipe-system.md v1.8 §6.5.3 final paragraph): the
+ * write opt-in scopes `agents-write` / `skills-write` defined in
+ * v1.8 §6.5.1 are intentionally **not** included here. The install
+ * path is disabled in v0.2.x (recipe-system.md §10.6), so writes to
+ * `.claude/agents/` / `.claude/skills/` stay uniformly blocked by
+ * the exclusion table until v0.3.0 reintroduces the opt-in flow.
+ *
+ * @see recipe-system.md v1.8 §6.5
  */
 export type Scope =
   | 'project-read'    // Read access under project root (excluding exclusion list)
   | 'project-write'   // Write access under project root (same exclusions)
   | 'agents-read'     // Read access under .claude/agents/
   | 'skills-read'     // Read access under .claude/skills/
-  | 'claude-md-read'  // Read access to various CLAUDE.md files
+  | 'claude-md-read'  // Read access to any nested CLAUDE.md / CLAUDE.local.md
   | 'kb-data-read'    // Read access under kovitoboard/data/
   | 'own-data'        // Read/write access under app/data/{appId}/
 
@@ -132,7 +144,7 @@ export interface HandlerContext {
    * KB-local app identifier — the dispatcher cache key, the
    * `app/<appId>/` directory key, and the `app/data/<appId>/` data
    * root. **All own-data path resolution uses this.**
-   * (DEC-024 D-1, recipe-system.md §13)
+   * (recipe-system.md §13)
    */
   appId: string
   /**
@@ -145,6 +157,18 @@ export interface HandlerContext {
   recipeId: string
   /** List of approved scopes for this recipe */
   approvedScopes: readonly Scope[]
+  /**
+   * Fully resolved absolute path computed by the dispatcher's scope
+   * validator from the handler's `input.path` argument. Set only for
+   * path-bound handlers (`list-files`, `read-file`, `write-file`)
+   * and undefined for scope-only handlers. Path-bound handlers
+   * **must** consume this value verbatim and **must not** re-derive
+   * a path from `projectRoot + input.path`; doing so re-opens the
+   * scope-escape gap that this field was added to close, and
+   * widens the symlink-swap race window between scope validation
+   * and the subsequent fs operation.
+   */
+  resolvedPath?: string
 }
 
 /**
@@ -360,26 +384,43 @@ export const HANDLER_LIMITS = {
   HANDLER_TIMEOUT_MS: 30_000,
 } as const
 
-// =========================================
-// Hardcoded exclusion patterns
-// =========================================
-
-/**
- * Hardcoded exclusion patterns — always denied regardless of scope.
- * Managed in a single location (scopeValidator.ts); individual handlers do not check these.
- * @see recipe-system.md §12-3-1
- */
-export const HARDCODED_EXCLUSIONS = [
-  '.env',               // Exact match for .env
-  '.env.*',             // .env.production, .env.local, etc.
-  '.git/**',            // Everything under .git/
-  'node_modules/**',    // Everything under node_modules/
-  '.claude/credentials*', // .claude/credentials, .claude/credentials.json, etc.
-] as const
+// `HARDCODED_EXCLUSIONS` was removed in v0.2.0. The constant was a
+// duplicated documentation copy of the exclusion list maintained in
+// `scopeValidator.ts`. It had no machine consumers (verified by
+// repo grep) and the v1.8 operation-aware shape — read+write
+// blocks, write-only blocks, read bypass scopes — does not fit a
+// flat `readonly string[]` typed export. The authoritative,
+// operation-aware table is `EXCLUSIONS` inside
+// `scopeValidator.ts`. Documentation about the table layout lives
+// in `recipe-system.md` v1.8 §6.6 / §6.6.4.
 
 // =========================================
 // Audit log types
 // =========================================
+
+/**
+ * Trust-axis value persisted on every handler-call audit entry.
+ *
+ * Superset of {@link TrustLevel} with an extra `'context-missing'`
+ * sentinel for the manifest-load-failure / context-bypass paths.
+ * Conflating those failure modes with the grandfather `'unknown'`
+ * value would lose attack-vector detection during forensic analysis
+ * (T-3-4 in the v1.1 trust-marker handoff supplement).
+ *
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis)
+ * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §8.4 (I-8)
+ * @stable v0.2.0
+ */
+export type AuditTrustLevel = TrustLevel | 'context-missing'
+
+/** All audit-trust enum values, exported for validation helpers. */
+export const AUDIT_TRUST_LEVELS: readonly AuditTrustLevel[] = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+  'context-missing',
+] as const
 
 /**
  * Schema for a single audit log entry.
@@ -410,6 +451,22 @@ export interface AuditLogEntry {
   errorCode?: HandlerErrorCode
   /** Processing duration (ms) */
   durationMs: number
+  /**
+   * Trust-axis value captured at handler dispatch time (v0.2.0).
+   *
+   * Required field — TypeScript compile-time enforcement guarantees
+   * every dispatch path threads the active manifest's `trustLevel`
+   * (or the `'context-missing'` sentinel when no manifest could be
+   * resolved) into the audit trail. Forensic analysis depends on the
+   * distinction between `'unknown'` (grandfather recipe ran as
+   * expected) and `'context-missing'` (manifest lookup failed, the
+   * audit entry exists but no trust signal is available).
+   *
+   * @see recipe-system.md v1.4 §6.10.5 (audit log trust injection)
+   * @see docs/design/handoffs/v02x-phase1-trust-marker-preamble-warning-request.md v1.1 §8 (T-3-4)
+   * @stable v0.2.0
+   */
+  trust: AuditTrustLevel
 }
 
 /**

@@ -62,6 +62,7 @@ Primary responsibilities:
 - Modify existing user code outside `app/` without consent
 - Declare "done" without verifying behavior
 - Mutate `.kovitoboard/` config files unexpectedly
+- For cross-cutting KovitoBoard rules (lifecycle / protected paths / self-termination prohibition), refer to the `<!-- KB:GUIDANCE_START -->` block in `<projectRoot>/CLAUDE.md` and `.kovitoboard/agent-ref/INDEX.md` chapters §11 / §12
 
 ## Typical Patterns
 
@@ -180,3 +181,7 @@ The user makes the final call; the agent's role is to propose designs.
 - Automatic test generation
 - Performance profiling and optimization suggestions
 - Cross-agent collaboration with Kobi and Secretary
+
+## KB lifecycle
+
+Refer to `docs/agent-ref/11-lifecycle.md` for KB start/stop and the in-KB self-stop prohibition. You run inside KB itself, so the §5 rule "do not stop KovitoBoard from inside" is mandatory (this is the same principle as the existing "Pattern D footer: do not restart KB" guidance).

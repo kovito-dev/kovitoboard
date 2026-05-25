@@ -1,7 +1,7 @@
 # KovitoBoard 仕様リファレンス（エージェント用）
 
-**対象 KB バージョン:** v0.1.0
-**最終更新:** 2026-04-18
+**対象 KB バージョン:** v0.1.0（§12 のみ v0.2.0）
+**最終更新:** 2026-05-09
 
 このドキュメントは、Kovito のコンシェルジュ「コビー」をはじめとするエージェントがユーザーの質問に答えるために参照する、KovitoBoard（以下 KB）仕様の目次です。
 
@@ -76,6 +76,19 @@
 - ユーザーエージェント向けプロトコル → [`10-upgrade.md`](./10-upgrade.md) §7
 - バージョン警告が出ているとき → [`06-troubleshooting.md`](./06-troubleshooting.md) §8
 
+### 🛡️ KB が保護する領域（直接編集禁止）
+- KB が管理するファイル一覧 → [`12-protected-paths.md`](./12-protected-paths.md) §2
+- 外部前提（.claude/agents 等）への規律 → [`12-protected-paths.md`](./12-protected-paths.md) §3
+- 動作中 runtime（tmux / ポート / 内部 API）の規律 → [`12-protected-paths.md`](./12-protected-paths.md) §4
+- 「保護領域に書きたい時の代替経路」一覧 → [`12-protected-paths.md`](./12-protected-paths.md) §7
+
+### 🚀 KB の起動・停止
+- KB を起動したい / 起動を頼まれた → [`11-lifecycle.md`](./11-lifecycle.md) §2
+- KB を停止したい / 停止を頼まれた → [`11-lifecycle.md`](./11-lifecycle.md) §3
+- 多重起動エラーが出ている → [`11-lifecycle.md`](./11-lifecycle.md) §4
+- KB の中のエージェント（コビー / 開発者 / 秘書）が KB を停止して良いか → [`11-lifecycle.md`](./11-lifecycle.md) §5
+- `kb-stop` の挙動・終了コードを知りたい → [`11-lifecycle.md`](./11-lifecycle.md) §6
+
 ---
 
 ## 章構成一覧
@@ -91,6 +104,8 @@
 | [`07-advanced.md`](./07-advanced.md) | スキル・自動化・高度な設定 | 200 |
 | [`09-data-handling.md`](./09-data-handling.md) | データ取扱いと注意事項（KB→Claude Code 経由のデータフロー、マスキング推奨） | 150 |
 | [`10-upgrade.md`](./10-upgrade.md) | KB のバージョンアップ手順とユーザーエージェント向けプロトコル | 350 |
+| [`11-lifecycle.md`](./11-lifecycle.md) | KB プロセスの起動・停止プロトコル（embedded model / `kb-stop` 仕様 / 自殺禁止原則） — 英語で記述 | 250 |
+| [`12-protected-paths.md`](./12-protected-paths.md) | KB が保護する領域（直接編集禁止）の SSOT — 英語で記述 | 200 |
 
 ---
 

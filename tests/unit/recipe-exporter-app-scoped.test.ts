@@ -67,6 +67,16 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
     mkdirSync: () => {},
     watch: () => ({ close: () => {} }),
     realpathSync: (path: string) => path,
+    // No symlinks in this in-memory layout; report every entry as a
+    // regular file so the per-entry symlink defence in `scanDir`
+    // never fires here.
+    lstatSync: () => ({
+      size: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      isSymbolicLink: false,
+      isFile: true,
+    }),
     chmodSync: () => {},
     rmSync: () => {},
     renameSync: () => {},
@@ -114,14 +124,21 @@ describe('scanAppDirectory(fs, appId)', () => {
     expect(result.artifacts.map((a) => a.path)).toEqual(['pages/FooPage.tsx'])
   })
 
-  it('includes api/*.ts (was excluded before the rework)', () => {
+  it('routes api/*.ts into customBeFiles instead of artifacts (recipe safety boundary)', () => {
+    // Recipe install rejects `api/`-prefixed artifacts at the
+    // path-prefix step, so packaging them into a recipe was always
+    // unsound. Backend handlers are now collected into a separate
+    // bucket so the export route can refuse them with a guidance
+    // message instead of pretending to ship them.
     const fs = makeFs({
       [`${PROJECT_ROOT}/app/foo/pages/FooPage.tsx`]: 'export {}',
       [`${PROJECT_ROOT}/app/foo/api/handler.ts`]: 'export {}',
     })
     const result = scanAppDirectory(fs, 'foo')
-    const paths = result.artifacts.map((a) => a.path).sort()
-    expect(paths).toEqual(['api/handler.ts', 'pages/FooPage.tsx'])
+    const artifactPaths = result.artifacts.map((a) => a.path).sort()
+    expect(artifactPaths).toEqual(['pages/FooPage.tsx'])
+    const beRelativePaths = result.customBeFiles.map((f) => f.relativePath).sort()
+    expect(beRelativePaths).toEqual(['api/handler.ts'])
   })
 
   it('strips the appId prefix from artifact paths', () => {
@@ -150,7 +167,14 @@ describe('scanAppDirectory(fs, appId)', () => {
   it('returns empty artifacts when the app directory does not exist', () => {
     const fs = makeFs({})
     const result = scanAppDirectory(fs, 'missing-app')
-    expect(result).toEqual({ artifacts: [], menu: [], totalSize: 0 })
+    expect(result).toEqual({
+      artifacts: [],
+      menu: [],
+      totalSize: 0,
+      customBeFiles: [],
+      customBeFilesCount: 0,
+      customBeFilesCountApproximate: false,
+    })
   })
 
   it('reports cumulative size in bytes', () => {
@@ -205,7 +229,18 @@ describe('parseMenuTsForApp', () => {
       "  { id: 'bar', label: 'Bar', icon: 'note', component: () => import('./bar/pages/BarPage') },",
     ].join('\n')
     expect(parseMenuTsForApp(content, 'bar')).toEqual([
-      { id: 'bar', label: 'Bar', icon: 'note', page: 'bar/pages/BarPage', pageAbsolutePath: null },
+      {
+        id: 'bar',
+        label: 'Bar',
+        icon: 'note',
+        page: 'bar/pages/BarPage',
+        pageAbsolutePath: null,
+        // `trustLevel` is filled in by `readUserMenuEntries` after a
+        // manifest-store lookup; the bare regex-based parser leaves it
+        // `null` so the trust marker hides itself for entries written
+        // outside the install flow.
+        trustLevel: null,
+      },
     ])
   })
 

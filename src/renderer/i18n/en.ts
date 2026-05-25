@@ -39,6 +39,8 @@ const en: Record<MessageKey, string> = {
   'onboarding.complete.talkToKobi': 'Talk to Kobi',
   'onboarding.complete.goToAgents': 'Go to agents',
   'onboarding.complete.preparing': 'Preparing...',
+  'onboarding.complete.skipClaudeMdGuidance': 'Skip CLAUDE.md guidance injection',
+  'onboarding.complete.skipClaudeMdGuidanceHint': "When checked, KovitoBoard will not write a guidance block into your project's CLAUDE.md. Choose this if you manage CLAUDE.md yourself.",
   'onboarding.welcome.start': 'Get Started',
   'onboarding.user.avatarHint': 'Avatar image (optional, max 1MB)',
   'onboarding.user.avatarSizeError': 'File size exceeds 1MB',
@@ -52,9 +54,88 @@ const en: Record<MessageKey, string> = {
   'onboarding.next': 'Next',
   'onboarding.back': 'Back',
   'onboarding.step': 'Step {current} / {total}',
+  // Phase 1 prompt injection ② Claude Code recommended settings
+  // (handoff v1.1 §3.4 / §3.7, onboarding-scenarios §9.5.2)
+  'onboarding.security.title': 'Security recommendations',
+  'onboarding.security.subtitle': 'Review the recommended Claude Code settings before you continue.',
+  'onboarding.security.intro': 'As a prompt-injection mitigation we recommend the following Claude Code configuration.',
+  'onboarding.security.acknowledge': 'I have reviewed these recommendations',
+  // Per-BOX individual acknowledgement labels. Each label scopes to a
+  // single recommendation so the user cannot read "I have reviewed
+  // these recommendations" as a single rubber-stamp tick covering all
+  // three. Rendered inside the corresponding SecurityRow / bypass
+  // card per spec §9.5.2.3 (v1.4 normative pin) so the wrapper-level
+  // single checkbox pattern stays banned.
+  'onboarding.security.acknowledge.bypassMode': 'I have reviewed the bypass mode setting',
+  'onboarding.security.acknowledge.permissionMode': 'I have reviewed the permissionMode setting',
+  'onboarding.security.acknowledge.denyPattern': 'I have reviewed the deny pattern setting',
+  'onboarding.security.allOk': 'All recommended settings are satisfied.',
+  'onboarding.security.failClosed': 'Could not read your Claude Code settings file.',
+  'onboarding.security.failClosedRemediation': 'Edit the Claude Code settings file or check that the KovitoBoard server is reachable. See the terminal log for details.',
+  'onboarding.security.failClosedCandidatePath': 'Settings file path: ~/.claude/settings.json (user-level) or <projectRoot>/.claude/settings.json (project-level)',
+  'onboarding.security.recheck': 'Recheck',
+  'onboarding.security.permissionMode.label': 'permissionMode = default',
+  'onboarding.security.permissionMode.description': 'Keep Claude Code in default permission mode. bypassPermissions skips the human-in-the-loop confirmation and violates the Rule of Two, so we discourage it.',
+  'onboarding.security.denyPattern.label': 'Add .kovitoboard/ to deny pattern',
+  'onboarding.security.denyPattern.description': 'Add ".kovitoboard/" to Claude Code permissions.deny so Claude Code itself cannot write into KovitoBoard internal state.',
+  'onboarding.security.bypassMode.label': 'Disable bypass mode',
+  'onboarding.security.bypassMode.description': 'When bypassPermissions is active, the Rule of Two (untrusted input + sensitive data + external state) is violated 3 of 3 and HITL is required.',
+  'onboarding.security.why': 'Why?',
+  'onboarding.security.whyModal.heading': 'Background',
+  'onboarding.security.whyModal.responsibility': 'Detecting and blocking prompt injection is the responsibility of Anthropic (Claude Code). KovitoBoard only checks whether the recommended settings are in place; it does not implement deny pattern matching itself.',
+  'onboarding.security.whyModal.ruleOfTwo': 'Rule of Two: when untrusted input + sensitive data access + external state change all line up, a human in the loop must approve the action.',
+  'onboarding.security.whyModal.close': 'Close',
+  // Phase 1 prompt injection ② startup warn toast
+  // (handoff v1.1 §3.3, trust-prompt-relay §10.5.4)
+  'security.toast.title': 'Security recommendations',
+  'security.toast.intro': 'Your Claude Code settings have non-recommended values:',
+  'security.toast.permissionMode.violation': 'permissionMode is {current} (recommended: default)',
+  'security.toast.denyPattern.violation': '.kovitoboard/ is not in Claude Code deny pattern',
+  'security.toast.bypassMode.violation': 'bypass mode is active (Rule of Two violation, HITL required)',
+  'security.toast.failClosed': 'Could not read your Claude Code settings file. Please review the settings manually.',
+  'security.toast.learnMore': 'Learn More',
+  'security.toast.dismiss': 'Dismiss (24h)',
+  // Phase 1 prompt injection ④ Rule of Two violation announcement
+  // (handoff v1.1 §3.2 / §3.5 / §3.6, prompt-injection-threat-model §4)
+  'ruleOfTwo.violation.title': 'Rule of Two Violation Detected',
+  'ruleOfTwo.violation.description': 'bypass mode is enabled — 3/3 violation',
+  'ruleOfTwo.violation.element.untrustedInput': '(A) untrusted input',
+  'ruleOfTwo.violation.element.sensitiveData': '(B) sensitive data access',
+  'ruleOfTwo.violation.element.externalState': '(C) external state change',
+  'ruleOfTwo.violation.elementStructurallyRequired': 'structurally required in a KB session',
+  'ruleOfTwo.violation.elementClaudeAccess': 'Claude can read ~/.ssh, ~/.aws, etc.',
+  'ruleOfTwo.violation.elementBypassConsequence': 'bypass mode allows git push / npm publish without confirmation',
+  'ruleOfTwo.violation.consequence': '→ HITL (Human-In-The-Loop) is required',
+  'ruleOfTwo.violation.accept': 'I understand the risk and accept HITL responsibility',
+  'ruleOfTwo.violation.acceptDisabledHint.modal': 'Open the Why? explanation before accepting',
+  'ruleOfTwo.violation.acceptDisabledHint.idle': 'Please take a moment (2 s) to absorb the explanation before accepting',
+  'ruleOfTwo.violation.why': 'Why is Rule of Two important?',
+  'ruleOfTwo.violation.changeMode': 'Change to default mode',
+  'ruleOfTwo.modal.heading': 'Why is the Rule of Two important?',
+  'ruleOfTwo.modal.intro': 'The Rule of Two is a structural criterion for the attack surface. If two or fewer of the elements (A), (B), (C) are present, an automated action retains a safety margin. When all three line up, the structural attack precondition is met and a human review (HITL) becomes mandatory.',
+  'ruleOfTwo.modal.element.untrustedInput.title': '(A) untrusted input',
+  'ruleOfTwo.modal.element.untrustedInput.detail': 'Arbitrary text or data ingested from outside: recipe output, web fetch results, file contents, etc.',
+  'ruleOfTwo.modal.element.sensitiveData.title': '(B) sensitive data access',
+  'ruleOfTwo.modal.element.sensitiveData.detail': 'API keys, SSH credentials, auth tokens, personal files, internal company data, etc.',
+  'ruleOfTwo.modal.element.externalState.title': '(C) external state change',
+  'ruleOfTwo.modal.element.externalState.detail': 'Actions with hard-to-revert side effects: git push, npm publish, API requests, file writes, and so on.',
+  'ruleOfTwo.modal.kbContext': 'In a KovitoBoard session, (A) and (B) are structurally required. Claude Code runs in the user environment with access to ~/.ssh and ~/.aws, and recipes / web fetches structurally ingest untrusted input.',
+  'ruleOfTwo.modal.cBlockMeaning': 'Therefore KovitoBoard relies on HITL to block (C) external state change, which avoids reaching the 3/3 attack precondition by design. bypass mode disables that (C) gate and is what produces the Rule of Two violation.',
+  'ruleOfTwo.modal.hitl': 'HITL (Human-In-The-Loop): the design that requires a human review before any (C) external state change. With bypass mode disabled, Claude Code surfaces a confirmation prompt before every (C) action.',
+  'ruleOfTwo.modal.boundary': 'Responsibility boundary: detecting a Rule of Two violation is the responsibility of Anthropic (Claude Code). KovitoBoard only surfaces the notice; it does not implement detection logic.',
+  'ruleOfTwo.modal.close': 'Close',
 
   // Navigation
   'nav.titleBar.settings': 'Settings',
+
+  // Project root banner (process-lifecycle.md v1.2 §3 / shared-installation-prevention §M-3)
+  'projectRootBanner.label': 'Project',
+  'projectRootBanner.source.cliArg': 'via --project-root',
+  'projectRootBanner.source.env': 'via KOVITOBOARD_PROJECT_ROOT',
+  'projectRootBanner.source.settingJson': 'restored from setting.json',
+  'projectRootBanner.source.cwdFallback': 'current directory (fallback)',
+  'projectRootBanner.source.unknown': 'unknown source',
+  'projectRootBanner.cwdFallbackWarning': 'KovitoBoard may be looking at the wrong project. Restart with --project-root <path>.',
 
   // Ambient Session Sidebar (DEC-020 / EU8)
   'ambientSidebar.heading': 'Sessions',
@@ -117,10 +198,38 @@ const en: Record<MessageKey, string> = {
   'recipe.button.createApp': 'Create new app',
   'recipe.code.button.expandAll': 'Expand all',
   'recipe.tab.sample': 'Sample recipes',
-  'recipe.tab.import': 'Import',
   'recipe.tab.history': 'History',
-  // recipe.tab.export was removed in DEC-024 #5 — recipe export now
-  // runs from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.export was retired earlier — recipe export now runs
+  // from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.import was retired in v0.2.x alongside the recipe
+  // install temporary disable (recipe-system.md §10.6).
+  'recipe.install.comingSoon':
+    'Recipe install is temporarily disabled in v0.2.x. The KovitoHub signed publisher model is planned for v0.3.0.',
+
+  // Capture capability approval (v0.2.0 Phase 1 prompt-injection ①,
+  // opt-in mechanism). The dialog itself does not render in v0.2.x
+  // because recipe install is disabled, but the keys are populated
+  // ahead of the v0.3.0 re-enable so the component does not ship
+  // with placeholder labels. See `app-directory-extension.md` v1.2
+  // §10.5.2 and the implementation handoff.
+  'recipe.capture.title': 'Capture Capability Approval',
+  'recipe.capture.description':
+    'This recipe requests the following capture capabilities. Approve each one individually before installing.',
+  'recipe.capture.kind.a11y': 'a11y (accessibility snapshot of UI)',
+  'recipe.capture.kind.exposed-context': 'exposed-context (window.kb.exposeContext)',
+  'recipe.capture.why.a11y':
+    'Allows the recipe to ask the server for a structured outline of the visible UI. KovitoBoard only shares element roles and accessible names — not raw HTML — but the agent can still infer what is on screen.',
+  'recipe.capture.why.exposed-context':
+    'Allows the recipe to ask the server to read the payload your app published via window.kb.exposeContext. Approve only when the recipe needs the app state your code has chosen to surface (selected ids, active filters, etc.).',
+  'recipe.capture.whyLink': 'Why?',
+  'recipe.capture.approveButton': 'Approve Selected',
+  'recipe.capture.error.notApproved':
+    "Capture '{kind}' is not approved for this recipe.",
+  // Normative warning text (spec v1.4 §10.5.5). Always-visible at
+  // approval point. Communicates the v0.2.x same-instance trust
+  // collapse to the user.
+  'recipe.capture.trustWarning':
+    'By approving capture for this recipe, you agree to trust all other recipes installed in this KovitoBoard instance. v0.2.x cannot structurally isolate one recipe from another. This is an experimental preview; future versions will close this gap.',
 
   // App creation modal (v0.1.0-app-creation-flow.md §7.4)
   'appCreate.modal.title': 'Create new app',
@@ -164,6 +273,29 @@ const en: Record<MessageKey, string> = {
   'nav.menu.agents': 'Agents',
   'nav.menu.sessions': 'Sessions',
   'nav.menu.recipes': 'App recipes',
+  'nav.menu.workRoots': 'Work roots',
+
+  // Work roots settings page (spec cwd-allowlist.md v1.0 §7.4). The
+  // page lists / adds / removes the cwd allow-list entries that sit
+  // outside the project root. Wording is deliberately calm —
+  // adding a folder lets Claude Code write inside it, which is the
+  // single biggest security trade-off in this screen.
+  'workRoots.title': 'Work roots',
+  'workRoots.description':
+    'Folders KovitoBoard is allowed to use as the working directory for Claude Code. The project root is always included; additional roots are listed below.',
+  'workRoots.addSection.title': 'Add a work root',
+  'workRoots.addSection.help':
+    'Enter an absolute path. KovitoBoard will refuse system directories and the KovitoBoard repo root itself for safety.',
+  'workRoots.addButton': 'Add',
+  'workRoots.adding': 'Adding…',
+  'workRoots.listSection.title': 'Additional work roots',
+  'workRoots.listSection.empty': 'No additional work roots yet.',
+  'workRoots.listSection.loadError':
+    'Failed to load the current work roots. The list shown above may be incomplete. See server logs for details and reload to retry.',
+  'workRoots.deleteConfirm.title': 'Remove this work root?',
+  'workRoots.deleteConfirm.body':
+    'KovitoBoard will refuse to start new Claude Code sessions under this folder. In-flight sessions will keep running until they exit on their own.',
+  'workRoots.errorCodeLabel': 'Error code',
 
   // Agent (default)
   'agent.default.name': 'Default',
@@ -224,36 +356,18 @@ const en: Record<MessageKey, string> = {
   'chat.topic.status.sending': 'Sending...',
   'chat.topic.button.start': 'Start',
 
-  // Sample recipes
+  // Sample recipes — read-only listing while recipe install is
+  // disabled in v0.2.x. Install / reinstall / warning / picker keys
+  // were retired alongside the disable; the `recipe.install.comingSoon`
+  // key above replaces the install CTAs on the sample page.
   'recipe.sample.status.loading': 'Loading sample recipes...',
-  'recipe.sample.status.installing': 'Installing...',
   'recipe.sample.button.reload': 'Reload',
-  'recipe.sample.button.install': 'Install',
   'recipe.sample.empty': 'No sample recipes',
   'recipe.sample.emptyHint': 'Add recipes to the recipes/ directory and they will appear here.',
   'recipe.sample.section.available': 'Available ({count})',
   'recipe.sample.section.installed': 'Installed ({count})',
   'recipe.sample.badge.installed': 'Installed',
   'recipe.sample.installedDate': 'Installed on',
-  'recipe.sample.justInstalled.title': 'Install complete',
-  'recipe.sample.justInstalled.body': 'A new entry has been added to the left navigation. No reload is needed.',
-  'recipe.sample.justInstalled.dismiss': 'Dismiss',
-  'recipe.sample.button.reinstall': 'Reinstall',
-  'recipe.sample.status.reinstalling': 'Reinstalling...',
-
-  // Recipe install v2.0 — non-declarative warning dialog
-  'recipe.install.warning.title': 'Warning: recipe contains non-declarative code',
-  'recipe.install.warning.body': 'Recipe "{name}" includes patterns that go beyond the declarative handler model:',
-  'recipe.install.warning.note': 'When the agent applies this recipe it may install code with full privileges. Continue only if you trust the source.',
-  'recipe.install.warning.continue': 'Continue',
-  'recipe.install.warning.cancel': 'Cancel',
-  'recipe.install.warning.pattern.express-router': 'Express Router usage',
-  'recipe.install.warning.pattern.direct-fetch': 'Direct HTTP via fetch()',
-  'recipe.install.warning.pattern.axios-import': 'HTTP via axios',
-  'recipe.install.warning.pattern.child-process': 'Shell / child process execution',
-  'recipe.install.warning.pattern.node-fs-direct': 'Direct Node.js fs API usage',
-  'recipe.install.warning.pattern.shell-exec': 'exec / spawn usage',
-  'recipe.install.warning.pattern.process-env-write': 'process.env writes',
 
   // App removal flow (DEC-024 #3)
   'nav.action.removeApp': 'Remove app',
@@ -274,13 +388,6 @@ const en: Record<MessageKey, string> = {
   'appRemoval.picker.button.confirm': 'Remove with this agent',
   'appRemoval.error.noAgents': 'No agents are defined. Create one from the Agents page first.',
   'appRemoval.error.sessionCreationFailed': 'Failed to create session: {error}',
-
-  // Recipe install v2.0 — agent picker
-  'recipe.install.picker.title': 'Choose an agent to install this recipe',
-  'recipe.install.picker.body': 'Select the agent that will install "{name}". The agent will walk you through the placement interactively.',
-  'recipe.install.picker.confirm': 'Install with this agent',
-  'recipe.install.picker.cancel': 'Cancel',
-  'recipe.install.picker.noAgents': 'No agents are defined. Create one from the Agents page first.',
 
   // Agent list
   'agent.list.title': 'Agents',
@@ -417,37 +524,11 @@ const en: Record<MessageKey, string> = {
   'recipe.export.error.appIdMissing': 'Cannot resolve appId. Make sure an app screen is open.',
   'recipe.export.error.recipeIdRequired': 'Recipe ID is required.',
   'recipe.export.error.recipeIdFormat': 'Recipe ID must contain only A-Z / a-z / 0-9 / _ / - / . / / / @ and be 1–256 characters.',
+  'recipe.export.error.customBeNotExportable':
+    'This app cannot be exported as a recipe: app/{appId}/api/ contains files ({files}) which fall outside the recipe safety boundary — recipe-inspector rejects every artifact whose path starts with api/, regardless of extension. To distribute this app, either rewrite the BE logic using Category A handlers (declarative api.calls + window.kb.call) or document the api/ part separately and ask recipients to implement it via agent assistance after recipe install.',
 
-  // Recipe import
-  'recipe.import.verdict.blocked': 'Blocked',
-  'recipe.import.verdict.warning': 'Warning',
-  'recipe.import.verdict.caution': 'Caution',
-  'recipe.import.verdict.safe': 'Safe',
-  'recipe.import.field.path': 'Recipe path',
-  'recipe.import.field.pathHint': 'Enter the path to a local recipe directory or .md file.',
-  'recipe.import.button.parse': 'Parse',
-  'recipe.import.button.apply': 'Apply',
-  'recipe.import.button.importAnother': 'Import another recipe',
-  'recipe.import.status.parsing': 'Parsing recipe...',
-  'recipe.import.status.applying': 'Applying...',
-  'recipe.import.findings.title': 'Inspection results ({count} items)',
-  'recipe.import.code.title': 'Artifact code',
-  'recipe.import.menu.title': 'Menu entries',
-  'recipe.import.hint.reviewRequired': 'Review all code before applying',
-  'recipe.import.applied.title': 'Recipe applied',
-  'recipe.import.applied.description': 'ID: {id} — The agent is creating files. Check progress on the sessions screen.',
-  // RC-3: file picker dialog
-  'recipe.import.upload.label': 'Pick a recipe',
-  'recipe.import.upload.button.file': 'Choose .md file',
-  'recipe.import.upload.button.dir': 'Choose directory',
-  'recipe.import.upload.hint': 'Select a single .md recipe or a recipe directory (with recipe.yaml). 5MB total max.',
-  'recipe.import.upload.noFiles': 'No file selected',
-  'recipe.import.upload.noSupportedFiles': 'No supported files in selection (.md / .markdown / .yaml / .ts / .tsx / .css / .json)',
-  'recipe.import.upload.tooManyFiles': 'Too many files (max {max})',
-  'recipe.import.upload.fileTooLarge': 'File too large: {name} (must be 1MB or less)',
-  'recipe.import.upload.totalTooLarge': 'Combined upload exceeds 5MB',
-  'recipe.import.upload.unsupportedExtension': 'Unsupported extension: {name}',
-  'recipe.import.advanced.toggle': 'Enter a path directly (advanced)',
+  // Recipe import — retired in v0.2.x alongside the recipe install
+  // temporary disable. Will return with the v0.3.0 sideload mode.
 
   // Agent structured field editor
   'agent.field.displayName.label': 'Display name',
@@ -508,6 +589,17 @@ const en: Record<MessageKey, string> = {
   'trust.tmux.copy': 'Copy',
   'trust.tmux.copied': 'Copied',
   'trust.rawBuffer.title': 'Actual message (tail)',
+
+  // Trust marker + preamble warning (recipe trust axis, v0.2.0)
+  'trust.level.kbTrusted': 'KB-trusted',
+  'trust.level.codeTrusted': 'Code-trusted (signed)',
+  'trust.level.codeTrustedSideloaded': 'Code-trusted (sideloaded)',
+  'trust.level.unknown': 'Unknown (grandfather)',
+  'trust.marker.ariaLabel': 'Recipe trust level: {label}',
+  'trust.unknown.reinstall': 'Re-install via KovitoHub (v0.3.0) to verify',
+  'trust.preamble.fromApp': 'This content originated from app: {appId}',
+  'trust.preamble.fromUserPaste': 'This content originated from user paste',
+  'trust.preamble.fromUnknown': 'This content originated from an unverified source',
 
   // Agent detail
   'agent.detail.tab.profile': 'Profile',

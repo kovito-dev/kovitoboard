@@ -36,3 +36,61 @@ _None at v0.1.0. This section is reserved for English-locale-specific guidance (
 - Recipes (for comparison) → [`./04-recipes.md`](./04-recipes.md)
 - **Logging from API handlers and pages** → [`./08-logging.md`](./08-logging.md) (server: `globalThis.kbContext.logger` / renderer: `window.kb.log`)
 - Advanced topics → [`./07-advanced.md`](./07-advanced.md)
+
+---
+
+## 11. Capture state survival across restart (v0.2.x)
+
+**Target KB version:** v0.2.x onwards (spec `app-directory-extension.md` §10.5.6).
+
+Recipes that use `window.kb.capture.<kind>` (a11y / exposed-context) MUST treat React state and other in-memory UI state as **lossy across restart-triggered reload events**. A KovitoBoard process restart (SIGUSR2 / Quit & relaunch) invalidates the per-launch internal token; the host renderer detects the resulting 401 from the capture-token endpoints, rejects every in-flight capture Promise with `RestartReloadError`, and triggers `window.location.reload()`.
+
+### Required pattern: persist + re-hydrate
+
+Capture work must be re-runnable from durable state. The recommended pattern is:
+
+```typescript
+// Persist any critical state BEFORE issuing the capture call.
+async function capturePageA11y() {
+  await window.kb.call('data:write', {
+    path: '_state.json',
+    content: JSON.stringify(currentState),
+  })
+  try {
+    const snapshot = await window.kb.capture.a11y()
+    return snapshot
+  } catch (e) {
+    if (e instanceof Error && e.name === 'RestartReloadError') {
+      // KB will reload momentarily; state is already persisted, so
+      // the re-mounted page will pick up from where the capture left
+      // off. Returning silently lets the reload run.
+      return
+    }
+    throw e
+  }
+}
+
+// Re-hydrate on next mount.
+useEffect(() => {
+  async function rehydrate() {
+    const persisted = await window.kb.call('data:read', { path: '_state.json' })
+    if (persisted) setState(JSON.parse(persisted))
+  }
+  void rehydrate()
+}, [])
+```
+
+### What the host promises
+
+- Pending capture Promises are rejected with `RestartReloadError` **before** the reload fires.
+- The reload is scheduled with `setTimeout(..., 0)` so the rejection handlers run first.
+- Recipe authors do **not** need to attach manual reload triggers — the host handles the navigation.
+
+### What recipe authors must NOT assume
+
+- React state across the reload (it is wiped).
+- That the same `mountId` / capture token will exist post-reload (both are fresh per mount).
+- Scroll position, modal open/closed state, expanded panels (all gone on reload).
+
+v0.3.0 isolation work will revisit state preservation (Service Worker / out-of-process renderer paths under design); until then, persist anything you cannot reconstruct from server-side state.
+

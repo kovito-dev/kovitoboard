@@ -23,15 +23,21 @@
  *
  * @see recipe-backend-implementation-plan.md Phase H
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-import { dispatch, resetRateLimiter } from '../../src/server/handlerDispatcher'
+import {
+  dispatch,
+  resetRateLimiter,
+  acquireAppLock,
+  resetAppLocks,
+} from '../../src/server/handlerDispatcher'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { registerHandler, clearRegistry } from '../../src/server/handlers/registry'
 import { DirectFsLayer } from '../../src/server/fs-layer'
+import { initLogger } from '../../src/server/logger'
 
 // handler imports
 import { listFilesHandler } from '../../src/server/handlers/categoryA/listFiles'
@@ -45,7 +51,15 @@ import { notifyHandler } from '../../src/server/handlers/categoryA/notify'
 import { exportFileHandler } from '../../src/server/handlers/categoryA/exportFile'
 
 import type { RecipeManifest } from '../../src/server/recipe/apiTypes'
-import type { Scope } from '../../src/server/handlers/types'
+import type {
+  Scope,
+  HandlerDef,
+  NotifyInput,
+  NotifyOk,
+  HandlerContext,
+  HandlerResponse,
+} from '../../src/server/handlers/types'
+import { HANDLER_REQUIRED_SCOPES } from '../../src/server/handlers/types'
 
 // =========================================
 // Test setup
@@ -65,6 +79,7 @@ const RECIPE_VERSION = '1.0.0'
 function createTestManifest(overrides?: {
   approvedScopes?: Scope[]
   calls?: RecipeManifest['api']['calls']
+  trustLevel?: RecipeManifest['trustLevel']
 }): RecipeManifest {
   return {
     appId: RECIPE_ID,
@@ -76,6 +91,9 @@ function createTestManifest(overrides?: {
       'project-read',
       'own-data',
     ],
+    captureRequires: [],
+    approvedCaptures: [],
+    trustLevel: overrides?.trustLevel ?? 'unknown',
     api: {
       scopes: overrides?.approvedScopes ?? ['project-read', 'own-data'],
       calls: overrides?.calls ?? [
@@ -128,7 +146,7 @@ function readAuditLog(): Array<Record<string, unknown>> {
 // Lifecycle
 // =========================================
 
-beforeAll(() => {
+beforeAll(async () => {
   // Create temporary directory
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-handler-test-'))
   projectRoot = path.join(tmpDir, 'project')
@@ -159,6 +177,16 @@ beforeAll(() => {
   fs.mkdirSync(path.join(projectRoot, '.git'), { recursive: true })
   fs.writeFileSync(path.join(projectRoot, '.git', 'HEAD'), 'ref: refs/heads/main')
 
+  // Initialize the root logger so registry-collision warns (and any
+  // dispatcher-side `serverLogger.error({ err }, ...)` paths exercised by
+  // T10 redaction tests) can resolve `getRootLogger()` without throwing.
+  // `null` setting falls through to default LogConfig; the file sink
+  // writes under `<projectRoot>/.kovitoboard/logs/`, so that dir must
+  // exist before `initLogger`. Matches the convention used by other
+  // handler-side unit tests (e.g. manifest-grandfather-migration).
+  fs.mkdirSync(path.join(kovitoboardDir, 'logs'), { recursive: true })
+  await initLogger(projectRoot, null)
+
   // Register handlers in the registry
   clearRegistry()
   registerHandler(listFilesHandler)
@@ -185,6 +213,9 @@ afterAll(() => {
 beforeEach(() => {
   // Reset rate limiter
   resetRateLimiter()
+  // Reset per-appId dispatch mutex so a test that intentionally
+  // parks the lock cannot leak into the next test.
+  resetAppLocks()
   // Clear audit log
   const logPath = path.join(projectRoot, 'app', 'data', RECIPE_ID, '_audit.log')
   if (fs.existsSync(logPath)) {
@@ -238,6 +269,28 @@ describe('T1: 正常系 — list-files 呼び出し', () => {
     // argsHash is 64-char hex
     expect(last.argsHash).toMatch(/^[0-9a-f]{64}$/)
     expect(typeof last.durationMs).toBe('number')
+    // T-3-4 regression — trust field is required on every audit
+    // entry the dispatcher emits. Grandfather recipes always carry
+    // `'unknown'`; the fallback `'context-missing'` is reserved for
+    // future bypass paths (handoff v1.1 §8.2 / §8.4 I-8).
+    expect(last.trust).toBe('unknown')
+  })
+
+  it('監査ログに manifest の trustLevel がそのまま伝搬する (v0.3.0 forward-compat)', async () => {
+    // v0.2.x's only legitimate runtime value is `'unknown'`, but the
+    // dispatcher must thread whatever the manifest carries — v0.3.0
+    // KovitoHub-signed installs will land here as `'code-trusted'`.
+    const manifest = createTestManifest({ trustLevel: 'code-trusted' })
+    manifestStore.save(manifest)
+
+    await dispatch(
+      { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+      manifestStore,
+      projectRoot,
+    )
+
+    const last = readAuditLog().at(-1)
+    expect(last?.trust).toBe('code-trusted')
   })
 })
 
@@ -422,7 +475,45 @@ describe('T4: 除外リスト → PathForbidden', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('".git/HEAD" への read-file で PathForbidden が返る', async () => {
+  it('".git/HEAD" への read-file は project-read 単体で PathForbidden が返る', async () => {
+    // recipe-system.md v1.8 §6.6.3 evaluation order: every matching
+    // scope is tried. Default createTestManifest carries
+    // `['project-read', 'own-data']`, so `own-data` re-interprets
+    // `.git/HEAD` relative to `app/data/<appId>/`, sails past the
+    // project-root exclusion table, and the handler reads (or fails)
+    // inside the recipe's own data root. To assert the
+    // `PathForbidden` outcome we restrict the recipe to
+    // `project-read`, which is the only scope that should ever try
+    // to reach `<projectRoot>/.git/HEAD`.
+    const manifest = createTestManifest({ approvedScopes: ['project-read'] })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'read-intel-report',
+        input: { path: '.git/HEAD' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('PathForbidden')
+  })
+
+  it('".git/HEAD" への read-file は default scopes でも PathForbidden を返す (read-fallback 制限)', async () => {
+    // Default scopes are `['project-read', 'own-data']`. With the
+    // v0.2.x read-fallback restriction, an exclusion hit on
+    // `project-read` is only allowed to fall through to a dedicated
+    // read-bypass scope (`agents-read` / `skills-read` /
+    // `claude-md-read`). `own-data` is **not** a read-bypass scope —
+    // it would only re-anchor `.git/HEAD` under
+    // `app/data/<appId>/.git/HEAD` and silently degrade the audit
+    // signal to `NotFound`. The validator therefore returns
+    // `PathForbidden` immediately, preserving the v0.1.0-style
+    // audit-meaningful outcome.
     const manifest = createTestManifest()
     manifestStore.save(manifest)
 
@@ -686,6 +777,140 @@ describe('T8: テンプレート展開', () => {
 })
 
 // =========================================
+// T9: Cross-scope path escape — own-data with relative path stays inside own-data root
+// =========================================
+//
+// Regression for the dispatcher resolving a path under one scope while
+// the handler re-derived the path from `projectRoot + input.path`.
+// Without the dispatcher-resolved path being threaded through
+// HandlerContext, an `own-data`-only manifest could read or write
+// arbitrary project files by passing a relative path that the
+// dispatcher accepted under `app/data/<appId>/<relative>` but the
+// handler then resolved against `projectRoot/<relative>`.
+
+describe('T9: クロススコープ path escape — own-data の相対 path は own-data ルート内にとどまる', () => {
+  it('own-data のみ承認 + read-file("README.md") は own-data ルート配下を見に行き、project root の README.md は読まれない', async () => {
+    // Sanity-check that the project-root file we want to *not* see
+    // is genuinely there, so the assertion below has teeth.
+    expect(fs.existsSync(path.join(projectRoot, 'README.md'))).toBe(true)
+
+    const ownDataReadme = path.join(projectRoot, 'app', 'data', RECIPE_ID, 'README.md')
+    if (fs.existsSync(ownDataReadme)) {
+      fs.unlinkSync(ownDataReadme)
+    }
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'read-relative',
+          handler: 'read-file',
+          args: { path: '${input.path}' },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      { appId: RECIPE_ID, callId: 'read-relative', input: { path: 'README.md' } },
+      manifestStore,
+      projectRoot,
+    )
+
+    // Pre-fix, dispatcher resolves under own-data root, but the
+    // handler joined input.path against projectRoot and returned
+    // the project README. With the dispatcher-resolved path now
+    // threaded through HandlerContext, the handler reads the
+    // own-data target instead and returns NotFound when it is
+    // missing.
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('NotFound')
+  })
+
+  it('own-data のみ承認 + write-file("escape.txt") は own-data ルート配下に書き込まれ、project root に作成されない', async () => {
+    const projectRootEscape = path.join(projectRoot, 'escape.txt')
+    if (fs.existsSync(projectRootEscape)) {
+      fs.unlinkSync(projectRootEscape)
+    }
+    const ownDataEscape = path.join(
+      projectRoot,
+      'app',
+      'data',
+      RECIPE_ID,
+      'escape.txt',
+    )
+    if (fs.existsSync(ownDataEscape)) {
+      fs.unlinkSync(ownDataEscape)
+    }
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'write-escape',
+          handler: 'write-file',
+          args: {
+            path: '${input.path}',
+            content: '${input.content}',
+            createDirs: true,
+          },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'write-escape',
+        input: { path: 'escape.txt', content: 'should land under own-data' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(true)
+    // Did NOT escape to project root.
+    expect(fs.existsSync(projectRootEscape)).toBe(false)
+    // DID land in own-data.
+    expect(fs.existsSync(ownDataEscape)).toBe(true)
+    expect(fs.readFileSync(ownDataEscape, 'utf-8')).toBe('should land under own-data')
+  })
+
+  it('own-data のみ承認 + list-files(".") は own-data ルート配下のみを返し、project root の README.md は出ない', async () => {
+    const ownDataDir = path.join(projectRoot, 'app', 'data', RECIPE_ID)
+    fs.writeFileSync(path.join(ownDataDir, 'marker.txt'), 'inside own-data')
+
+    const manifest = createTestManifest({
+      approvedScopes: ['own-data'],
+      calls: [
+        {
+          id: 'list-relative',
+          handler: 'list-files',
+          args: { path: '${input.path}' },
+        },
+      ],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      { appId: RECIPE_ID, callId: 'list-relative', input: { path: '.' } },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const data = result.data as { entries: Array<{ name: string }> }
+    const names = data.entries.map((e) => e.name)
+    expect(names).toContain('marker.txt')
+    // README.md sits at the project root, NOT inside own-data.
+    expect(names).not.toContain('README.md')
+  })
+})
+
+// =========================================
 // KV store integration tests
 // =========================================
 
@@ -823,7 +1048,15 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.error.code).toBe('PathForbidden')
   })
 
-  it('write-file で .claude/credentials に書き込もうとすると PathForbidden', async () => {
+  it('write-file で .claude/credentials は PathForbidden を返す (write は first-match short-circuit, spec v1.8)', async () => {
+    // spec v1.8 §6.6.3 evaluation order is asymmetric in v0.2.x:
+    // writes short-circuit on the first exclusion hit because no
+    // recipe-side write bypass exists yet (the `agents-write` /
+    // `skills-write` opt-in scopes stay deferred to v0.3.0).
+    // Falling through to `own-data` would only re-interpret the
+    // forbidden write target against the recipe's own data root,
+    // which is not an authorization escape but muddies the audit
+    // signal. The first-match `PathForbidden` keeps it crisp.
     const manifest = createTestManifest({
       approvedScopes: ['project-read', 'project-write', 'own-data'],
       calls: [
@@ -849,5 +1082,292 @@ describe('セキュリティ回帰テスト', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error.code).toBe('PathForbidden')
+  })
+})
+
+// =========================================
+// T-mutex: per-appId dispatch serialization (Codex supplementary S8)
+// =========================================
+//
+// Verifies that `dispatch()` waits on the per-appId mutex returned
+// by `acquireAppLock()`, so an in-flight handler cannot have its
+// app/<appId>/ tree torn out from under it by a concurrent removal
+// or reinstall flow that mutates the same appId.
+
+describe('T-mutex: per-appId dispatch serialization', () => {
+  it('dispatch waits when an external holder owns the appId lock', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on RECIPE_ID before dispatching. The dispatcher
+    // must observe the held lock and queue behind it.
+    const release = await acquireAppLock(RECIPE_ID)
+
+    const dispatchPromise = dispatch(
+      { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+      manifestStore,
+      projectRoot,
+    )
+
+    // Race the dispatch promise against a short timer. If the
+    // dispatcher had ignored the lock, it would resolve well before
+    // 50ms (handlers are in-process and fs ops here are tiny). The
+    // timer winning is the proof that dispatch is parked.
+    const settled = await Promise.race([
+      dispatchPromise.then(() => 'dispatched'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+    ])
+    expect(settled).toBe('timed-out')
+
+    // Release the parked lock and confirm dispatch now resolves.
+    release()
+    const result = await dispatchPromise
+    expect(result.ok).toBe(true)
+  })
+
+  it('different appIds do not block each other', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the lock on a *different* appId. Dispatching for
+    // RECIPE_ID must not be affected.
+    const release = await acquireAppLock('some-other-app')
+    try {
+      const result = await dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      )
+      expect(result.ok).toBe(true)
+    } finally {
+      release()
+    }
+  })
+
+  it('serializes two concurrent dispatches for the same appId', async () => {
+    const manifest = createTestManifest()
+    manifestStore.save(manifest)
+
+    // Park the appId's lock with an external acquire so we control
+    // when the *first* dispatch is allowed to enter its critical
+    // section. Both dispatches are fired concurrently; if the lock
+    // is honoured neither one can resolve until we release the
+    // external hold, and even then they must complete one at a
+    // time. A pure timestamp comparison would be tautological, so
+    // we instead assert (a) neither dispatch resolves while the
+    // external lock is held, (b) they release in FIFO order once
+    // the external hold is dropped.
+    const externalHold = await acquireAppLock(RECIPE_ID)
+
+    const order: number[] = []
+    const fire = (tag: number) =>
+      dispatch(
+        { appId: RECIPE_ID, callId: 'list-intel-reports', input: {} },
+        manifestStore,
+        projectRoot,
+      ).then((r) => {
+        order.push(tag)
+        return r
+      })
+
+    const p1 = fire(1)
+    const p2 = fire(2)
+
+    // Give the event loop a few ticks; if the mutex is broken at
+    // least one dispatch would resolve here.
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+    expect(order).toEqual([])
+
+    // Releasing the external hold lets the dispatches drain in the
+    // order they queued. We do not assert tag order strictly because
+    // microtask scheduling between two acquirers is implementation-
+    // defined; we only assert serialisation (one finishes before the
+    // other starts the next tick of the resolver chain).
+    externalHold()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+    expect(order).toHaveLength(2)
+  })
+
+  it('two acquireAppLock holders for the same appId never overlap', async () => {
+    // Stronger statement of mutual exclusion than the dispatch-level
+    // test above: this one uses two simulated holders that record
+    // entry / exit events around an `await setTimeout` "work" step.
+    // If the lock were broken, the two holders' work windows would
+    // interleave and we would see `enter:A, enter:B, exit:A, exit:B`.
+    // A working lock guarantees the four events come out as one
+    // holder's enter/exit followed by the other's, in either order.
+    const events: string[] = []
+
+    const worker = async (tag: string) => {
+      const release = await acquireAppLock('lock-only-test-app')
+      try {
+        events.push(`enter:${tag}`)
+        // Simulate handler work that yields to the event loop. The
+        // delay must be long enough that the other holder, if it
+        // were not blocked, would have time to push its `enter`
+        // event before this `exit`.
+        await new Promise<void>((r) => setTimeout(r, 25))
+        events.push(`exit:${tag}`)
+      } finally {
+        release()
+      }
+    }
+
+    await Promise.all([worker('A'), worker('B')])
+
+    // Strict check: the second holder's enter must come AFTER the
+    // first holder's exit. Either ordering of A vs B is acceptable
+    // because microtask scheduling between equal-priority acquirers
+    // is implementation-defined; what is not acceptable is overlap.
+    expect(events).toHaveLength(4)
+    const firstTag = events[0].slice('enter:'.length)
+    const secondTag = firstTag === 'A' ? 'B' : 'A'
+    expect(events).toEqual([
+      `enter:${firstTag}`,
+      `exit:${firstTag}`,
+      `enter:${secondTag}`,
+      `exit:${secondTag}`,
+    ])
+  })
+})
+
+// =========================================
+// T10: Internal error envelope redaction
+//   (supplementary §S16, v0.2.0 B option, handler-dispatch.md v1.3 §7)
+// =========================================
+//
+// When a handler throws, the dispatcher MUST return an `Internal` envelope
+// whose `message` is the fixed string `'Handler execution failed'`. The
+// caught error's `message` / `stack` / `cause` / `String(err)` MUST NOT be
+// echoed into the client response — recipe code receives this envelope over
+// WebSocket, so any verbatim caught-error string becomes a side-channel for
+// probing absolute paths, errno values, or internal layout. The full detail
+// is preserved in `serverLogger.error({ err }, ...)` for operator diagnosis.
+
+describe('T10: Internal error envelope redaction (補完 §S16, v0.2.0)', () => {
+  // A sentinel payload carefully constructed to look like the kinds of detail
+  // a real handler-thrown error would expose: an absolute filesystem path, an
+  // errno, and a marker token. If any of these substrings ever appears in the
+  // client-facing envelope, the regression is unambiguous.
+  const SECRET_PATH = '/home/sensitive/path/secret.key'
+  const ERRNO_MARKER = 'errno=EACCES(13)'
+  const STACK_MARKER = 'KB_INTERNAL_STACK_TOKEN_b9f1c2'
+  const THROWN_MESSAGE = `${SECRET_PATH} ${ERRNO_MARKER} ${STACK_MARKER}`
+
+  /**
+   * Throwing replacement for the real `notify` handler. We piggyback on the
+   * `notify` name so the existing test manifest's `send-notification` call
+   * (handler: 'notify', requiredScopes: project-read | own-data) resolves to
+   * this throwing version without needing a new handler name in
+   * `CategoryAHandlerName` / `HANDLER_REQUIRED_SCOPES`.
+   */
+  const throwingNotifyHandler: HandlerDef<NotifyInput, NotifyOk> = {
+    name: 'notify',
+    requiredScopes: HANDLER_REQUIRED_SCOPES['notify'],
+    validate: () => null,
+    execute: async (
+      _input: NotifyInput,
+      _context: HandlerContext,
+    ): Promise<HandlerResponse<NotifyOk>> => {
+      throw new Error(THROWN_MESSAGE)
+    },
+  }
+
+  beforeEach(() => {
+    // Overwrite the registry slot for `notify` with the throwing version.
+    // `registerHandler` is documented to overwrite on name collision.
+    registerHandler(throwingNotifyHandler)
+  })
+
+  afterEach(() => {
+    // Restore the real `notify` so subsequent tests / file reruns are not
+    // contaminated by the throwing version. We re-register the genuine
+    // handler at the same name slot.
+    registerHandler(notifyHandler)
+  })
+
+  it('handler が throw した場合、Internal envelope の message は固定文字列 "Handler execution failed" になる', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('Internal')
+    expect(result.error.message).toBe('Handler execution failed')
+  })
+
+  it('handler が throw した場合、Internal envelope は err.message 由来の絶対パス / errno / stack トークンを含まない', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    const result = await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    // Each sentinel substring from the thrown `err.message` MUST be absent
+    // from the client-facing envelope. Together they cover the three common
+    // leakage axes the redaction is designed to defend against:
+    //   - absolute filesystem path (probe internal layout)
+    //   - errno + symbolic code (probe ambient OS state)
+    //   - opaque stack-correlation token (probe stack frames)
+    expect(result.error.message).not.toContain(SECRET_PATH)
+    expect(result.error.message).not.toContain(ERRNO_MARKER)
+    expect(result.error.message).not.toContain(STACK_MARKER)
+    // And the full thrown payload as a whole must not appear.
+    expect(result.error.message).not.toContain(THROWN_MESSAGE)
+  })
+
+  it('handler が throw した場合でも、監査ログには Internal error code が記録される（運用診断は維持される）', async () => {
+    const manifest = createTestManifest({
+      approvedScopes: ['project-read', 'own-data'],
+    })
+    manifestStore.save(manifest)
+
+    await dispatch(
+      {
+        appId: RECIPE_ID,
+        callId: 'send-notification',
+        input: { title: 't', body: 'b' },
+      },
+      manifestStore,
+      projectRoot,
+    )
+
+    const last = readAuditLog().at(-1)
+    expect(last?.result).toBe('error')
+    expect(last?.errorCode).toBe('Internal')
+    expect(last?.handler).toBe('notify')
+    // The audit log captures the handler name and a duration, but the
+    // structural redactor / pino sink — not the audit JSONL itself — is
+    // where the verbose `err` lives. The audit row must not embed the
+    // thrown-message detail either.
+    const audit = JSON.stringify(last)
+    expect(audit).not.toContain(SECRET_PATH)
+    expect(audit).not.toContain(STACK_MARKER)
   })
 })

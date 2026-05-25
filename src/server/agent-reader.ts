@@ -3,6 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+import { serverLogger } from './logger'
 import { dirname, join, basename } from 'path'
 import { resolveProjectRoot } from './config'
 import { getSessionAgentsRecordPath } from './paths'
@@ -85,7 +86,7 @@ export function loadAgentDefinitions(fs: FileAccessLayer, config: ViewerConfig):
         }
       }
     } catch (err) {
-      console.error('[agent-reader] Error reading agent definitions:', err)
+      serverLogger.error({ err }, '[agent-reader] Error reading agent definitions:')
     }
   }
 
@@ -122,7 +123,7 @@ export function loadSessionAgentRecords(fs: FileAccessLayer, _config: ViewerConf
       }
     }
   } catch (err) {
-    console.error('[agent-reader] Error reading session-agent records:', err)
+    serverLogger.error({ err }, '[agent-reader] Error reading session-agent records:')
   }
 
   return records

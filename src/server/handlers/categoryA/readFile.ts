@@ -14,7 +14,6 @@
  */
 
 import * as fs from 'fs'
-import * as path from 'path'
 import type {
   HandlerDef,
   ReadFileInput,
@@ -56,7 +55,15 @@ export const readFileHandler: HandlerDef<ReadFileInput, ReadFileOutput> = {
     input: ReadFileInput,
     context: HandlerContext,
   ): Promise<HandlerResponse<ReadFileOutput>> => {
-    const absPath = path.join(context.projectRoot, input.path)
+    // Use the physical path the dispatcher resolved during scope
+    // validation. Re-joining `context.projectRoot + input.path`
+    // here would bypass the per-scope root (e.g. `own-data` lives
+    // under `app/data/<appId>/`, not the project root) and re-open
+    // the symlink-swap window between validate and read.
+    if (!context.resolvedPath) {
+      return handlerError('Internal', 'read-file requires a dispatcher-resolved path')
+    }
+    const absPath = context.resolvedPath
     const encoding = input.encoding ?? 'utf-8'
 
     // Check file existence and size

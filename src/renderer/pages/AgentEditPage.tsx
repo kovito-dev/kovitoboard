@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Navigate } from 'react-router-dom'
 import { t } from '../i18n'
 import { StructuredFieldEditor, type SectionData } from '../components/StructuredFieldEditor'
+import { kbFetch } from '../lib/kbFetch'
 
 /** Response type for GET /api/agents/:id/sections */
 interface SectionsResponse {
@@ -48,7 +49,7 @@ export function AgentEditPage() {
     setIsLoading(true)
     setLoadError(null)
     try {
-      const res = await fetch(`/api/agents/${id}/sections`)
+      const res = await kbFetch(`/api/agents/${id}/sections`)
       if (!res.ok) throw new Error(`Failed to load (${res.status})`)
       const data = (await res.json()) as SectionsResponse
       setSections(data)
@@ -71,7 +72,7 @@ export function AgentEditPage() {
     setIsInjectingMarkers(true)
     setInjectError(null)
     try {
-      const res = await fetch(`/api/agents/${id}/inject-markers`, { method: 'POST' })
+      const res = await kbFetch(`/api/agents/${id}/inject-markers`, { method: 'POST' })
       if (!res.ok) {
         const payload = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(payload.error ?? `Failed (${res.status})`)
@@ -112,7 +113,7 @@ export function AgentEditPage() {
         }
       }
 
-      const res = await fetch(`/api/agents/${id}`, {
+      const res = await kbFetch(`/api/agents/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

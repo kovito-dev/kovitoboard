@@ -6,14 +6,24 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { t, setLocale } from '../i18n'
 import type { Locale } from '../i18n'
-import type { KovitoboardSetting } from '../../shared/setting-types'
+import type {
+  KovitoboardSetting,
+  ClaudeCodeSettingsWarning,
+  SettingsCheckResult,
+} from '../../shared/setting-types'
 import { StepWelcome } from './onboarding/StepWelcome'
 import { StepUser } from './onboarding/StepUser'
 import { StepProject } from './onboarding/StepProject'
 import { StepConcierge } from './onboarding/StepConcierge'
+import { StepSecurity } from './onboarding/StepSecurity'
 import { StepComplete } from './onboarding/StepComplete'
+import { kbFetch } from '../lib/kbFetch'
 
-const TOTAL_STEPS = 5
+// Spec onboarding-scenarios.md v1.2 §9.5 inserts a Security
+// recommendations step between Concierge (Step 4) and Complete
+// (Step 6). Total step count grows from 5 to 6 — older fixtures
+// that hardcode `5` should be updated alongside.
+const TOTAL_STEPS = 6
 
 interface OnboardingPageProps {
   /**
@@ -45,9 +55,20 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   const [projectDescription, setProjectDescription] = useState('')
   const [conciergeAdded, setConciergeAdded] = useState(false)
   const [projectRoot, setProjectRoot] = useState('')
+  // Captures the exact `SettingsCheckResult` the user acknowledged in
+  // StepSecurity so handleComplete can persist that snapshot — not a
+  // fresh re-fetch that might disagree with what the user actually
+  // saw (CodeX attempt 11 — stale acknowledgement snapshot).
+  const [reviewedSecurityResult, setReviewedSecurityResult] =
+    useState<SettingsCheckResult | null>(null)
   // Tracks whether handleComplete is in flight so the final button can
   // show a spinner and stay disabled until the full-page reload fires.
   const [isCompleting, setIsCompleting] = useState(false)
+  // Opt-out for the CLAUDE.md guidance-block injection
+  // (spec `claude-md-guidance-injection.md` v1.2 §7.2). Default OFF
+  // — the wizard still injects on completion. Users who hand-roll
+  // their CLAUDE.md can flip this on to skip the write.
+  const [skipClaudeMdGuidance, setSkipClaudeMdGuidance] = useState(false)
 
   // Mirror the trust-prompt-pending flag into a ref so the async
   // handleComplete callback can poll the latest value without being
@@ -61,7 +82,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
   // Initialize locale on mount and fetch projectRoot
   useEffect(() => {
     setLocale(locale)
-    fetch('/api/config/project-root')
+    kbFetch('/api/config/project-root')
       .then(r => r.json())
       .then(d => {
         const root: string = d.projectRoot || ''
@@ -95,21 +116,91 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
     setStep(5)
   }, [])
 
+  const handleSecurityNext = useCallback(
+    (reviewedResult: SettingsCheckResult | null) => {
+      setReviewedSecurityResult(reviewedResult)
+      setStep(6)
+    },
+    [],
+  )
+
   const handleComplete = useCallback(async () => {
     if (isCompleting) return
     setIsCompleting(true)
 
+    // Seed `claudeCodeSettingsWarning` with the EXACT snapshot the
+    // user just acknowledged in StepSecurity, instead of re-fetching
+    // at completion time and risking divergence from the reviewed
+    // state. The dismiss endpoint already refuses to persist
+    // fail-closed dismiss records server-side, so StepSecurity hands
+    // off `null` for those states and we simply omit the field.
+    // (CodeX attempt 3 — stale security suppression; attempt 6 —
+    // fail-closed suppression bypass; attempt 11 — stale
+    // acknowledgement snapshot.)
+    let securityWarning: ClaudeCodeSettingsWarning | undefined
+    if (
+      reviewedSecurityResult &&
+      !reviewedSecurityResult.overallOk &&
+      !reviewedSecurityResult.bypassMode.active &&
+      reviewedSecurityResult.reason === 'ok'
+    ) {
+      securityWarning = {
+        dismissedAt: new Date().toISOString(),
+        dismissedResult: { ...reviewedSecurityResult, settingsFilePath: null },
+      }
+    }
+
     // Save setting via API
+    //
+    // `revision` / `additionalWorkRoots` / `workRootsMetadata` are
+    // initialised here so the v1.2 type contract (cwd-allowlist.md
+    // v1.0 §6.1) is satisfied at wizard-completion time. The server
+    // will reset `revision` to the CAS-derived value on write, but we
+    // emit `1` for clarity; new files start at revision 1 (§7.5).
     const setting: KovitoboardSetting = {
-      version: '1.1',
+      version: '1.2',
+      revision: 1,
+      additionalWorkRoots: [],
+      workRootsMetadata: {},
       user: { displayName, avatar: null },
       project: { name: projectName, description: projectDescription, path: projectRoot },
       locale,
-      onboarding: { completedAt: new Date().toISOString(), wizardVersion: '0.1.0' },
+      onboarding: {
+        completedAt: new Date().toISOString(),
+        // Bumped from "0.1.0" to "0.2.0" to mark records produced by
+        // the 6-step wizard (Welcome / User / Project / Concierge /
+        // **Security** / Complete). Downstream consumers that key
+        // off `wizardVersion` for migrations or analytics can now
+        // distinguish the original v0.1.0 5-step flow from the
+        // Phase 1 ② 6-step flow (CodeX attempt 16 — versioning
+        // inconsistency).
+        wizardVersion: '0.2.0',
+        // `securityRecommendationsReviewedAt` is intentionally
+        // omitted: the dismiss-cooldown logic now consumes the
+        // seeded `claudeCodeSettingsWarning` record, which carries
+        // the reviewed snapshot for drift detection (CodeX attempt
+        // 13 — dead state). Older `setting.json` files that still
+        // hold the legacy field continue to validate.
+      },
+      // When the wizard surfaced a real violation, seed the dismiss
+      // record so the post-onboarding toast respects the same 24h
+      // cooldown WITH drift detection. When everything was already
+      // OK (no violation surfaced) we omit the field — there is
+      // nothing to dismiss and a stale snapshot would create
+      // surprising re-surfacing if the user later regresses their
+      // settings.
+      ...(securityWarning ? { claudeCodeSettingsWarning: securityWarning } : {}),
+      // Persist the opt-out choice as `claudeMdGuidance.disabled`
+      // when set; otherwise omit the struct entirely so older
+      // tooling that does not know about the field is not surprised
+      // by an unexpected `false`. Spec §7.2.
+      ...(skipClaudeMdGuidance
+        ? { claudeMdGuidance: { disabled: true } }
+        : {}),
     }
 
     try {
-      await fetch('/api/config/setting', {
+      await kbFetch('/api/config/setting', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(setting),
@@ -126,7 +217,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       if (userAvatar) {
         try {
           const buffer = await userAvatar.arrayBuffer()
-          await fetch('/api/settings/user/avatar', {
+          await kbFetch('/api/settings/user/avatar', {
             method: 'POST',
             headers: { 'Content-Type': userAvatar.type },
             body: buffer,
@@ -141,7 +232,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       // launch may take several seconds; the spinner in <StepComplete>
       // keeps the user informed while we wait.
       if (conciergeAdded) {
-        await fetch('/api/sessions/new', {
+        await kbFetch('/api/sessions/new', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -202,7 +293,7 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
       ? '/agents/kovito-concierge?openLatestSession=1'
       : '/'
     window.location.assign(target)
-  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar])
+  }, [isCompleting, displayName, projectName, projectDescription, projectRoot, locale, conciergeAdded, onCompleted, userAvatar, skipClaudeMdGuidance, reviewedSecurityResult])
 
   const renderStep = () => {
     switch (step) {
@@ -247,10 +338,19 @@ export function OnboardingPage({ onCompleted, isTrustPromptPending = false }: On
         )
       case 5:
         return (
+          <StepSecurity
+            onNext={handleSecurityNext}
+            onBack={() => setStep(4)}
+          />
+        )
+      case 6:
+        return (
           <StepComplete
             conciergeAdded={conciergeAdded}
             isCompleting={isCompleting}
             onComplete={handleComplete}
+            skipClaudeMdGuidance={skipClaudeMdGuidance}
+            onSkipClaudeMdGuidanceChange={setSkipClaudeMdGuidance}
           />
         )
       default:

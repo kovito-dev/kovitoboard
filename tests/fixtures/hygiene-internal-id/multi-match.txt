@@ -1,0 +1,4 @@
+prefix MATCH end
+MATCH at column zero of line two
+plain line with no hit at all
+MATCH again at column zero of line four

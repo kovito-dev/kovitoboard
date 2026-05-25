@@ -9,6 +9,7 @@ import type { Session, SessionSummary, AgentConfig, TmuxStatus, SessionOrigin } 
 import { t } from '../i18n'
 import { ChatTimeline } from '../components/ChatTimeline'
 import { FilePreview } from '../components/FilePreview'
+import { kbFetch } from '../lib/kbFetch'
 
 interface SessionDetailPageProps {
   sessions: SessionSummary[]
@@ -132,7 +133,7 @@ export function SessionDetailPage({
   // Start new topic for the current session
   const handleStartNewTopic = useCallback(async (agentId: string, message: string) => {
     try {
-      await fetch(`/api/agents/${agentId}/deactivate-sessions`, { method: 'POST' })
+      await kbFetch(`/api/agents/${agentId}/deactivate-sessions`, { method: 'POST' })
     } catch {
       // Continue
     }

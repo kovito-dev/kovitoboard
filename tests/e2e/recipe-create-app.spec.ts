@@ -215,7 +215,12 @@ test.describe('S14: Recipe page Create-new-app flow', () => {
       expect(postData.agentId).toBe(expectedAgentId)
       expect(postData.origin).toBe('recipe-create-app')
       expect(typeof postData.message).toBe('string')
-      expect(postData.message ?? '').toContain('KovitoBoard App Creation Request')
+      // The prompt is wrapped in a rule-line `app-create` sentinel
+      // (spec `kb-authored-sentinel.md` §6.1). The legacy
+      // `KovitoBoard App Creation Request` anchor was removed in the
+      // K-15 cutover (§11.3); only the sentinel envelope identifies
+      // the kind now.
+      expect(postData.message ?? '').toContain('━━━━━ KovitoBoard:app-create ━━━━━')
 
       // The mocked 200 OK lets handleCreate close the modal. We
       // intentionally do not assert the URL transition — that ties

@@ -6,9 +6,16 @@
 /**
  * Recipe handler E2E tests — Phase L
  *
- * Verifies the full path: install -> WebSocket kb-call -> response validation.
+ * Verifies the full path: manifest setup -> WebSocket kb-call -> response validation.
  *
- * L1: Recipe installation (/api/recipes/install)
+ * The v0.2.x recipe install temporary disable (recipe-system.md §10.6)
+ * does not change the grandfather dispatcher path; these tests still
+ * register a manifest through `POST /api/recipes/_test/issue-nonce`
+ * (KB_E2E_MODE seam) + `POST /api/recipes/:recipeId/mark-installed`
+ * because the dispatcher reads from the manifest store regardless of
+ * how the manifest got there.
+ *
+ * L1: Manifest setup via mark-installed (grandfather entry point)
  * L2: write-file + list-files calls -> create files in own-data and list them
  * L3: read-file call -> verify file content in own-data
  * L4: Excluded paths / undeclared callId / path traversal -> error responses
@@ -21,7 +28,11 @@
 import { test, expect } from './helpers/l1-per-test-setup'
 
 const API_BASE = 'http://127.0.0.1:3001'
-const WS_URL = 'ws://127.0.0.1:3001/api/ws'
+// Per-launch token comes from playwright.config.l1.ts. The browser
+// context inside `page.evaluate` cannot read process.env, so the test
+// passes the token through the evaluate args as part of the WS URL.
+const LAUNCH_TOKEN = process.env.KB_LAUNCH_TOKEN ?? ''
+const WS_URL = `ws://127.0.0.1:3001/api/ws?token=${encodeURIComponent(LAUNCH_TOKEN)}`
 
 const TEST_RECIPE_NAME = 'E2E Test Viewer'
 const TEST_RECIPE_ID = 'e2e-test-viewer'
@@ -104,12 +115,62 @@ async function installTestRecipe(
   },
 ): Promise<void> {
   const scopes = overrides?.scopes ?? ['project-read', 'own-data']
+  // Path-argument convention notes (matches dispatcher resolution):
+  //
+  // - `write-file` requires `project-write` or `own-data` and only
+  //   `own-data` is approved here, so the dispatcher matches against
+  //   the own-data root (`<projectRoot>/app/data/<appId>/`) and the
+  //   recipe must pass relative paths against that root (e.g.
+  //   `notes/foo.md`, not `app/data/<appId>/notes/foo.md` which would
+  //   resolve to a doubly-prefixed path inside own-data).
+  // - `read-file` accepts every scope; with `project-read` listed
+  //   first in HANDLER_REQUIRED_SCOPES, the dispatcher resolves
+  //   against the project root, so the recipe writes the path in
+  //   project-root form (`app/data/<appId>/...`) when targeting an
+  //   own-data file.
+  // - `list-files` follows the read-file pattern (project-read first).
+  //
+  // Cross-scope path-escape defence (an own-data-only manifest that
+  // sneaks a relative path the handler would otherwise read from the
+  // project root) is covered separately in
+  // tests/unit/handler-integration.test.ts T9.
   const calls = overrides?.calls ?? [
     { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
     { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },
     { id: 'write-own-file', handler: 'write-file', args: { path: '${input.path}', content: '${input.content}', createDirs: true } },
     { id: 'read-project-file', handler: 'read-file', args: { path: '${input.path}' } },
   ]
+  const recipeHash = `e2e-test-hash-${Date.now()}`
+  const apiSection = { scopes, calls }
+  // Drop any previous-test manifest for this appId. The mark-installed
+  // handler refuses to overwrite an existing manifest whose recipeHash
+  // does not match (cross-app overwrite check), and successive L1
+  // tests reuse TEST_RECIPE_ID with a fresh recipeHash each time.
+  await request.post(`${API_BASE}/api/recipes/_test/clear-manifest`, {
+    data: { appId: TEST_RECIPE_ID },
+  })
+  // The install handover prompt path is unavailable here for two
+  // reasons: fake-claude cannot execute the handover prompt, and the
+  // v0.2.x temporary disable returns 410 Gone for the public
+  // `/api/recipes/install` route anyway. Tests mint the install
+  // session nonce through the KB_E2E_MODE-only test endpoint
+  // instead. The nonce is bound to the same recipeId / hash / scopes
+  // / api the production code would have stored, so the production
+  // mark-installed handler accepts the call without any test-mode
+  // bypass at the auth check.
+  const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
+    data: {
+      recipeId: TEST_RECIPE_ID,
+      recipeHash,
+      recipeVersion: '1.0.0',
+      recipeSource: 'sample',
+      approvedScopes: scopes,
+      api: apiSection,
+    },
+  })
+  expect(nonceRes.ok()).toBeTruthy()
+  const { installNonce } = (await nonceRes.json()) as { installNonce: string }
+
   const res = await request.post(
     `${API_BASE}/api/recipes/${TEST_RECIPE_ID}/mark-installed`,
     {
@@ -118,7 +179,8 @@ async function installTestRecipe(
         approvedScopes: scopes,
         recipeVersion: '1.0.0',
         recipeSource: 'sample',
-        recipeHash: `e2e-test-hash-${Date.now()}`,
+        recipeHash,
+        installNonce,
         api: { scopes, calls },
       },
     },
@@ -127,7 +189,7 @@ async function installTestRecipe(
 }
 
 // =========================================
-// L1: Recipe installation
+// L1: Manifest setup (grandfather entry point)
 // =========================================
 
 test.describe('Recipe handler E2E', () => {
@@ -136,23 +198,41 @@ test.describe('Recipe handler E2E', () => {
     // legacy install API path that wrote the manifest synchronously
     // was retired in DEC-024 #2 (spec §3.2) — install now hands the
     // recipe to an agent. Tests that exercise the dispatcher use
-    // mark-installed directly.
+    // mark-installed directly, after fetching an install nonce
+    // through the KB_E2E_MODE test seam.
+    const scopes = ['project-read', 'own-data']
+    const recipeHash = 'e2e-test-hash-001'
+    const apiSection = {
+      scopes,
+      calls: [
+        { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
+        { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },
+      ],
+    }
+    const nonceRes = await request.post(`${API_BASE}/api/recipes/_test/issue-nonce`, {
+      data: {
+        recipeId: TEST_RECIPE_ID,
+        recipeHash,
+        recipeVersion: '1.0.0',
+        recipeSource: 'sample',
+        approvedScopes: scopes,
+        api: apiSection,
+      },
+    })
+    expect(nonceRes.ok()).toBeTruthy()
+    const { installNonce } = (await nonceRes.json()) as { installNonce: string }
+
     const res = await request.post(
       `${API_BASE}/api/recipes/${TEST_RECIPE_ID}/mark-installed`,
       {
         data: {
           appId: TEST_RECIPE_ID,
-          approvedScopes: ['project-read', 'own-data'],
+          approvedScopes: scopes,
           recipeVersion: '1.0.0',
           recipeSource: 'sample',
-          recipeHash: 'e2e-test-hash-001',
-          api: {
-            scopes: ['project-read', 'own-data'],
-            calls: [
-              { id: 'list-own-files', handler: 'list-files', args: { path: `app/data/${TEST_RECIPE_ID}` } },
-              { id: 'read-own-file', handler: 'read-file', args: { path: '${input.path}' } },
-            ],
-          },
+          recipeHash,
+          installNonce,
+          api: apiSection,
         },
       },
     )
@@ -172,12 +252,14 @@ test.describe('Recipe handler E2E', () => {
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
-    // Write a file to own-data
+    // write-file resolves through the own-data scope here (only
+    // own-data is approved out of write-file's required scopes), so
+    // the path is relative to the own-data root.
     const writeResult = await sendKbCall(page, {
       recipeId: TEST_RECIPE_ID,
       callId: 'write-own-file',
       input: {
-        path: `app/data/${TEST_RECIPE_ID}/test-doc.md`,
+        path: 'test-doc.md',
         content: '# E2E Test Document\n\nCreated by handler test.',
       },
     })
@@ -212,13 +294,19 @@ test.describe('Recipe handler E2E', () => {
     await page.waitForLoadState('networkidle')
 
     const testContent = `# Test Report ${Date.now()}\n\nGenerated by E2E test.`
-    const filePath = `app/data/${TEST_RECIPE_ID}/report.txt`
+    // write-file uses the own-data scope here (only one of its
+    // required scopes is approved), so the path is relative to the
+    // own-data root. read-file accepts every scope and resolves
+    // through project-read first, so we hand it the project-root
+    // form to land on the same physical file.
+    const writePath = 'report.txt'
+    const readPath = `app/data/${TEST_RECIPE_ID}/report.txt`
 
     // Write a file
     const writeResult = await sendKbCall(page, {
       recipeId: TEST_RECIPE_ID,
       callId: 'write-own-file',
-      input: { path: filePath, content: testContent },
+      input: { path: writePath, content: testContent },
     })
     expect(writeResult.ok).toBe(true)
 
@@ -226,7 +314,7 @@ test.describe('Recipe handler E2E', () => {
     const readResult = await sendKbCall(page, {
       recipeId: TEST_RECIPE_ID,
       callId: 'read-own-file',
-      input: { path: filePath },
+      input: { path: readPath },
     })
 
     expect(readResult.ok).toBe(true)

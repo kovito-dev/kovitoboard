@@ -6,7 +6,7 @@
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
-import { join, isAbsolute, resolve, normalize, dirname, basename } from 'path'
+import { join, resolve, dirname, basename } from 'path'
 import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -16,6 +16,7 @@ import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot, resolveProjectRootWithSource } from './config'
 import { ensureKovitoboardDir, ensureLogsDir, getUploadDir } from './paths'
 import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } from './logger'
+import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
 import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord } from './agent-reader'
@@ -25,13 +26,33 @@ import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
 import { TrustPromptDetector, loadTrustPatterns } from './trust-prompt-detector'
+import {
+  tryClaimTrustResponded,
+  releaseTrustClaim,
+  shouldEmitDuplicateLog,
+} from './trust-prompt-respond-dedup'
 import { AgentActivityMonitor } from './agent-activity-monitor'
+import { createHeartbeatTracker } from './ws-heartbeat'
 import type { SendMessageRequest, NewSessionRequest, TmuxSendRequest, TmuxStartAgentRequest, SessionOrigin } from './types'
 import { mountAppApiRoutes } from './app-api-loader'
 import { getInitialPrompt } from './services/initial-prompts'
 import { readSetting, writeSetting } from './setting-manager'
 import type { KovitoboardSetting } from '../shared/setting-types'
+import { validateCwd } from './cwdValidator'
+import {
+  ensureWorkRootMetadata,
+  buildCwdErrorResponse,
+} from './cwd-precheck'
 import { createOnboardingRedirect } from './middleware/onboarding-redirect'
+import {
+  createTokenAndOriginGuard,
+  createWsClientVerifier,
+  resolveLaunchTokenOrThrow,
+} from './middleware/auth'
+import {
+  createInternalAuthGuard,
+  resolveInternalTokenOrThrow,
+} from './middleware/internal-auth'
 import { createConfigRouter } from './routes/config-routes'
 import { createVersionRouter } from './routes/version-routes'
 import {
@@ -47,16 +68,23 @@ import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
-import { getMenuTsPath } from './services/menu-extractor'
-import { removeMenuEntry } from './services/menu-ts-editor'
-import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
-import { parseRecipe } from './recipe-parser'
-import { inspectRecipe } from './recipe-inspector'
-import { applyRecipe, buildRecipePrompt } from './recipe-applicator'
+import { createCaptureRouter } from './routes/capture-routes'
+import { createCaptureTokenRouter } from './routes/capture-token-routes'
+import { createCaptureMountRouter } from './routes/capture-mount-routes'
+import { createAuditRouter } from './routes/audit-routes'
+import { createSecurityRouter } from './routes/security-routes'
+import { createWorkRootsRouter } from './routes/work-roots-routes'
 import {
-  resolveAgentWindowForRecipe,
-  buildAgentResolutionError,
-} from './services/recipe-agent-resolver'
+  checkClaudeCodeSettings,
+  logCheckResult,
+  watchSettingsFile,
+  watchSettingsDirectories,
+  shouldLogStartupWarning,
+} from './claude-code-settings-check'
+import { getMenuTsPath } from './services/menu-extractor'
+import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
+import { parseRecipe, RecipeParseError } from './recipe-parser'
+import { inspectRecipe } from './recipe-inspector'
 import {
   validateProposedAppId,
   findAvailableAppId,
@@ -64,8 +92,20 @@ import {
 import { readAppManifest } from './services/app-manifest'
 import { buildAppRemovalPrompt } from '../shared/app-removal-prompt'
 import { readRecipeHistory, appendRecipeHistory, generateHistoryId } from './recipe-history'
-import { scanAppDirectory, exportAsMarkdown } from './recipe-exporter'
-import type { RecipeParseRequest, RecipeApplyRequest, RecipeExportRequest } from '../shared/recipe-types'
+import {
+  issueInstallSession,
+  consumeInstallSession,
+  approvedScopesMatch,
+  approvedCapturesMatch,
+  apiSectionMatches,
+} from './recipe-install-sessions'
+import {
+  scanAppDirectory,
+  exportAsMarkdown,
+  validateAppId,
+  AppIdBoundaryError,
+} from './recipe-exporter'
+import type { RecipeParseRequest, RecipeExportRequest } from '../shared/recipe-types'
 import type {
   ServerToClientEvent,
   ClientToServerEvent,
@@ -74,10 +114,21 @@ import type {
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
 import { dispatch as dispatchHandler } from './handlerDispatcher'
-import { validateApiSection } from './recipe/apiTypes'
-import type { KbCallRequest, KbCallResponse, RecipeManifest } from './recipe/apiTypes'
+import type {
+  KbCallRequest,
+  KbCallResponse,
+  RecipeManifest,
+  CaptureKind,
+} from './recipe/apiTypes'
+import { isValidCaptureKind } from './recipe/apiTypes'
 import { validateMarkInstalledRequest } from './recipe/markInstalledValidator'
 import { registerHandler } from './handlers/registry'
+import type { Scope } from './handlers/types'
+import { HANDLER_LIMITS } from './handlers/types'
+import {
+  validatePathForArtifactRead,
+  prepareArtifactPathContext,
+} from './artifact-path-validator'
 import { listFilesHandler } from './handlers/categoryA/listFiles'
 import { readFileHandler } from './handlers/categoryA/readFile'
 import { writeFileHandler } from './handlers/categoryA/writeFile'
@@ -92,8 +143,18 @@ import { getKovitoboardDir } from './paths'
 const PORT = Number(process.env.PORT) || 3001
 const serverStartTime = Date.now()
 
+// Per-launch authentication token. Resolved once at boot from the env
+// var the supervisor (kb-start.mjs) injected. A missing token is fatal:
+// the server refuses to start rather than fall through to a degraded
+// "no auth" mode, which would silently re-introduce the same-host
+// attack surface the token was added to close.
+const LAUNCH_TOKEN = resolveLaunchTokenOrThrow()
+const INTERNAL_TOKEN = resolveInternalTokenOrThrow()
+const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
+const verifyInternalAuth = createInternalAuthGuard(INTERNAL_TOKEN)
+const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
+
 const app = express()
-app.use(express.json())
 
 // Security headers
 app.use((_req, res, next) => {
@@ -111,8 +172,23 @@ app.use((_req, res, next) => {
   next()
 })
 
+// Per-launch token + Origin allowlist. Scoped to `/api/*` so the
+// renderer can still fetch index.html and static assets without the
+// token (otherwise it could never bootstrap and read the meta tag
+// the token is delivered through). The renderer's kbFetch helper
+// adds `X-Kovitoboard-Token` to every API request, and the WebSocket
+// upgrade is gated separately by `verifyWsClient` below.
+//
+// The auth guard is mounted BEFORE `express.json()` so an unauthorized
+// request short-circuits with 401 / 403 before we spend cycles on
+// JSON body parsing. Without this ordering an attacker could keep the
+// server busy parsing megabyte-sized JSON bodies even though the
+// request would ultimately be rejected.
+app.use('/api', verifyTokenAndOrigin)
+app.use(express.json())
+
 const server = createServer(app)
-const wss = new WebSocketServer({ server, path: '/api/ws' })
+const wss = new WebSocketServer({ server, path: '/api/ws', verifyClient: verifyWsClient })
 
 // --- File access abstraction layer ---
 // v0.1.0 only provides DirectFsLayer (direct Node.js fs / chokidar calls).
@@ -122,8 +198,12 @@ const fs = new DirectFsLayer()
 const config = loadConfig(fs)
 
 // Project root (base path for .claude/agents, .kovitoboard/, etc.)
-// Resolved first because ClaudeBridge uses it as its default cwd
-const projectRoot = resolveProjectRoot(fs)
+// Resolved first because ClaudeBridge uses it as its default cwd.
+// We grab the source too so the config router can echo it back to
+// the renderer (ProjectRootBanner needs it to flag a cwd-fallback as
+// a warning state).
+const { path: projectRoot, source: projectRootSource } =
+  resolveProjectRootWithSource(fs)
 
 // Auto-create `.kovitoboard/` directory on first launch
 ensureKovitoboardDir(fs)
@@ -133,6 +213,16 @@ ensureKovitoboardDir(fs)
 // opens its rotating stream. The setting is read here (synchronous)
 // so the logger can pick up `logging.retentionDays` if configured.
 ensureLogsDir(fs)
+
+// supervisor-startup.md v1.2 §5.3 step 7 / §6.9: validate runtime
+// prerequisites (PF-1 tmux 3.4+, PF-2 Node 20+, PF-3 claude CLI on
+// PATH) before the heavy initialisation work below. Failures bypass
+// the pino pipeline (which is built two lines down) and surface
+// through bootstrap console output, mirroring log-config.ts. The
+// `KOVITOBOARD_SKIP_PREFLIGHT=1` escape hatch is documented for
+// CI / E2E only.
+enforcePreflight(runPreflightChecks())
+
 await initLogger(projectRoot, readSetting(fs))
 serverLogger.info({ projectRoot }, 'Logger initialized')
 
@@ -229,43 +319,24 @@ const _dataFileWatcher = new DataFileWatcher(fs, {
 })
 void _dataFileWatcher
 
-/**
- * Resolve the requested file path and verify it sits inside one of
- * the allowed roots (the project, or the upload directory). Returns
- * a safe absolute path, or null if the path is invalid.
- *
- * Upload paths (`/tmp/kovitoboard-uploads/...`) need to be readable
- * via `/api/artifact{,/raw}` so the FilePreview pane can render
- * images and files the user just attached to a chat message — those
- * paths live outside `projectRoot`, but they are produced by our
- * own upload endpoint with a UUID-based filename, so allowing reads
- * confined to the upload dir is safe.
- */
-function resolveAndValidatePath(requestedPath: string): string | null {
-  const resolved = isAbsolute(requestedPath)
-    ? normalize(requestedPath)
-    : normalize(resolve(projectRoot, requestedPath))
-
-  // Project-rooted paths (projectRoot itself is also allowed).
-  if (resolved === projectRoot || resolved.startsWith(projectRoot + '/')) {
-    return resolved
-  }
-
-  // Upload directory. `normalize` already collapsed any `..` segments,
-  // so a prefix check on the upload root is enough to keep the read
-  // confined to files our own upload endpoint produced.
-  const uploadDir = getUploadDir()
-  if (resolved === uploadDir || resolved.startsWith(uploadDir + '/')) {
-    return resolved
-  }
-
-  return null
-}
+// Cached context for `validatePathForArtifactRead`. Built via
+// `prepareArtifactPathContext` so `projectRoot` and `uploadDir`
+// are canonicalized exactly once at server startup — the validator
+// itself only canonicalizes the per-request `requestedPath`. The
+// preview pane can poll `/api/artifact{,/raw}` repeatedly, so
+// avoiding redundant `realpath` syscalls on every hit is worth
+// the one-time setup cost. See `prepareArtifactPathContext` for
+// the canonical-context invariant.
+const artifactPathCtx = prepareArtifactPathContext({
+  projectRoot,
+  uploadDir: getUploadDir(),
+  fs,
+})
 
 // --- Route modules ---
 // Routers handle sub-paths like /api/config/setting, so mount them
 // before the existing app.get('/api/config') to give them priority
-app.use('/api/config', createConfigRouter(fs, projectRoot))
+app.use('/api/config', createConfigRouter(fs, projectRoot, projectRootSource))
 app.use('/api/templates/agents', createTemplateRouter(fs))
 app.use('/api/agents', createAvatarRouter(fs))
 app.use(
@@ -286,7 +357,72 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 // higher limit so a multi-file recipe payload fits.
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
-app.use('/api/app', createAppRouter(fs))
+app.use('/api/app', createAppRouter(fs, manifestStore))
+// Capture-token issuance / revoke endpoints
+// (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
+// MUST be mounted before the `/api/app/capture` router because
+// Express matches `/api/app/capture-token/*` against the more
+// specific prefix here; if the order were reversed,
+// `/api/app/capture` would intercept the `:kind` segment of the
+// token path (e.g. `/api/app/capture/token`) and return a 403
+// `CaptureNotDeclared` instead of the issuance / revoke contract.
+// Mount the capture-mount router BEFORE the capture-token router so
+// the `/api/app/capture-mount/*` paths can be matched before the
+// router below claims the `/api/app/capture-token/*` namespace —
+// Express 5 matches routers in mount order.
+app.use(
+  '/api/app/capture-mount',
+  createCaptureMountRouter({
+    manifestStore,
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+app.use(
+  '/api/app/capture-token',
+  createCaptureTokenRouter({
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+// Host-side audit endpoints (v0.2.0 / spec v1.7 §6.10.6.13). Mounted
+// at /api/audit to keep the URL separate from per-app /api/app
+// routes — the host-bootstrap sentinel proves a property about host
+// bootstrap, not about any particular recipe.
+app.use(
+  '/api/audit',
+  createAuditRouter({
+    projectRoot,
+    logger: apiLogger,
+    verifyInternalAuth,
+  }),
+)
+// Capture endpoints (v0.2.0 Phase 1 prompt-injection ①, opt-in
+// mechanism). Mounted on top of /api/app so a recipe-app caller
+// invokes it via `window.kb.capture.<kind>` while the surrounding
+// kb-bridge already routes through the same namespace. See
+// `docs/specs/http-api-contract.md` v1.4 §10.6 and
+// `docs/specs/app-directory-extension.md` v1.3 §10.5.2.
+app.use(
+  '/api/app/capture',
+  createCaptureRouter({
+    manifestStore,
+    projectRoot,
+    logger: apiLogger,
+  }),
+)
+
+// --- Phase 1 prompt injection ② — Claude Code recommended-settings
+// check + dismiss. Handoff v1.1; specs trust-prompt-relay §10.5,
+// onboarding-scenarios §9.5, logging-baseline §12.7.
+// Mounted before the SPA fallback so /api/security/* resolves here.
+app.use('/api/security', createSecurityRouter(fs, projectRoot))
+
+// --- /api/work-roots (cwd-allowlist.md v1.0 §5.3) ---
+// The work-roots router owns additionalWorkRoots[] / workRootsMetadata
+// mutations. Mounting it before the SPA fallback so DELETE / POST
+// resolve here instead of becoming a static-asset 404.
+app.use('/api/work-roots', createWorkRootsRouter(fs))
 
 // --- /api/version (v0.1.0-version-display.md) ---
 // Trust patterns are loaded eagerly here (rather than at L1115 next
@@ -517,8 +653,67 @@ app.post('/api/sessions/:id/send', async (req, res) => {
   // Fallback: ClaudeBridge (--print mode)
   const sessionCwd = session.events.find(e => e.metadata.cwd)?.metadata.cwd
 
+  // cwd allow-list gate — consumer #3 in spec `cwd-allowlist.md`
+  // v1.0 §5.2 (session resume's persisted metadata.cwd). When a
+  // legacy session was recorded with a cwd that no longer satisfies
+  // the allow-list — for example because the user has since removed
+  // the work root, or because the session predates v0.2.0 entirely —
+  // we refuse to resume rather than spawning claude under an
+  // un-vetted cwd. The UI consumes the §6.4 envelope to surface the
+  // resume-rejection options (§10.2 SSOT).
+  let resolvedSessionCwd: string | undefined =
+    typeof sessionCwd === 'string' ? sessionCwd : undefined
+  if (sessionCwd !== undefined) {
+    // Defensive type check: persisted JSONL events are trusted input
+    // for cwd validation, but a corrupted record (legacy migration,
+    // hand-edit, downstream tool that emitted a non-string) would
+    // make `fs.existsSync()` inside `validateCwd()` throw before this
+    // handler's try/catch fires, turning one bad event into a 500
+    // for every resume attempt. Surface a structured rejection
+    // instead so the UI can prompt the user to remove or re-record
+    // the session (CodeX Attempt 2 MEDIUM 2).
+    if (typeof sessionCwd !== 'string') {
+      apiLogger.warn(
+        { sessionId, sessionCwdType: typeof sessionCwd },
+        '[cwd-gate] Session resume refused — persisted metadata.cwd is not a string',
+      )
+      res.status(400).json({
+        error: 'cwd_validation_failed',
+        reason: 'malformed_metadata',
+        message:
+          'Session resume refused: persisted metadata.cwd is malformed (expected string). Re-record the session or remove it from the on-disk log.',
+        requested_cwd: null,
+        allowed_roots: [],
+      })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const result = validateCwd(
+      sessionCwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!result.ok) {
+      apiLogger.warn(
+        { sessionId, reason: result.reason },
+        '[cwd-gate] Session resume refused — persisted cwd outside allow-list',
+      )
+      const { status, body } = buildCwdErrorResponse(
+        result,
+        sessionCwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedSessionCwd = result.resolvedCwd
+  }
+
   try {
-    const processId = claudeBridge.sendToSession(sessionId, message.trim(), sessionCwd)
+    const processId = claudeBridge.sendToSession(sessionId, message.trim(), resolvedSessionCwd)
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     apiLogger.error({ err }, 'Session send error')
@@ -529,6 +724,38 @@ app.post('/api/sessions/:id/send', async (req, res) => {
 // Start a new session
 app.post('/api/sessions/new', async (req, res) => {
   const { agentId, message, cwd, initialPrompt, origin } = req.body as NewSessionRequest
+
+  // cwd allow-list gate — consumer #1 in spec `cwd-allowlist.md`
+  // v1.0 §5.2. We resolve here before any side effects (origin
+  // reservation, tmux auto-start) so a forged cwd cannot leak past
+  // validation through one of the early-return success branches
+  // below.
+  let resolvedCwd: string | undefined = undefined
+  if (cwd !== undefined) {
+    if (typeof cwd !== 'string') {
+      res.status(400).json({ error: 'cwd must be a string' })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const result = validateCwd(
+      cwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!result.ok) {
+      const { status, body } = buildCwdErrorResponse(
+        result,
+        cwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedCwd = result.resolvedCwd
+  }
 
   // If initialPrompt is specified, resolve the prompt text from the dictionary
   let effectiveMessage: string | undefined = message
@@ -617,9 +844,15 @@ app.post('/api/sessions/new', async (req, res) => {
     }
   }
 
-  // Fallback: ClaudeBridge (--print mode)
+  // Fallback: ClaudeBridge (--print mode).
+  // §8.3 TOCTOU defence: pass `resolvedCwd` (the realpath form)
+  // rather than the raw client input.
   try {
-    const processId = claudeBridge.startNewSession(effectiveMessage.trim(), agentId, cwd)
+    const processId = claudeBridge.startNewSession(
+      effectiveMessage.trim(),
+      agentId,
+      resolvedCwd,
+    )
     res.json({ success: true, processId, via: 'claude-bridge' })
   } catch (err) {
     apiLogger.error({ err }, 'New session start error')
@@ -768,7 +1001,36 @@ app.post('/api/tmux/start-agent', async (req, res) => {
     return
   }
 
-  const result = await tmuxBridge.startAgent(agentId, windowName, cwd)
+  // cwd allow-list gate — consumer #2 in spec `cwd-allowlist.md`
+  // v1.0 §5.2. Same shape as consumer #1 above.
+  let resolvedCwd: string | undefined = undefined
+  if (cwd !== undefined) {
+    if (typeof cwd !== 'string') {
+      res.status(400).json({ error: 'cwd must be a string' })
+      return
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const validation = validateCwd(
+      cwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!validation.ok) {
+      const { status, body } = buildCwdErrorResponse(
+        validation,
+        cwd,
+        projectRoot,
+        snapshot.additionalWorkRoots,
+      )
+      res.status(status).json(body)
+      return
+    }
+    resolvedCwd = validation.resolvedCwd
+  }
+
+  const result = await tmuxBridge.startAgent(agentId, windowName, resolvedCwd)
   if (result.success) {
     res.json({ success: true })
   } else {
@@ -812,7 +1074,7 @@ app.get('/api/settings/basic', (_req, res) => {
  * `project.path` cannot be edited from this surface — projects are
  * switched via a future "open another project" UI (v0.1.1 backlog).
  */
-app.put('/api/settings/basic', (req, res) => {
+app.put('/api/settings/basic', async (req, res) => {
   const body = (req.body ?? {}) as {
     displayName?: unknown
     locale?: unknown
@@ -879,7 +1141,9 @@ app.put('/api/settings/basic', (req, res) => {
   }
 
   try {
-    writeSetting(fs, next)
+    // `writeSetting()` is async since spec cwd-allowlist.md v1.1 §7.5
+    // (CodeX PR #38 Attempt 3 MED 1 mitigation — async CAS backoff).
+    await writeSetting(fs, next)
     apiLogger.info({ displayName: next.user.displayName, locale: next.locale }, 'Basic settings updated')
     res.json({ success: true })
   } catch (err) {
@@ -955,94 +1219,61 @@ app.post('/api/recipes/parse', async (req, res) => {
 
     res.json({ recipe, inspection })
   } catch (err) {
+    // Security-limits breaches return a generic envelope without
+    // leaking path / size details to the caller (spec §6.2). The
+    // structured warn log was already emitted by `checkParserLimit`
+    // at the parser boundary with the forensic fields operators
+    // need; emitting a second warn here would double the log
+    // volume on the very path attackers can flood, so the route
+    // layer only translates the exception into the HTTP envelope.
+    if (err instanceof RecipeParseError) {
+      res.status(err.context.httpStatus).json({
+        error:
+          err.context.httpStatus === 413
+            ? 'Recipe exceeds the maximum allowed size'
+            : 'Recipe exceeds an allowed limit',
+      })
+      return
+    }
     const message = err instanceof Error ? err.message : 'Failed to parse recipe'
     apiLogger.error({ err }, 'Recipe parse error')
     res.status(400).json({ error: message })
   }
 })
 
-app.post('/api/recipes/apply', async (req, res) => {
-  // Deprecated in v0.1.0 (DEC-024 #2 / spec F8). The agent-handover
-  // install flow at `POST /api/recipes/install` (and the dispatcher
-  // setup at `POST /api/recipes/<recipeId>/mark-installed`) supersedes
-  // this route. The legacy endpoint is kept for backward compatibility
-  // with existing L1 E2E coverage and direct API callers; it will be
-  // removed in v0.2.0.
-  apiLogger.warn(
+// `POST /api/recipes/apply` — removed in v0.2.x.
+//
+// The deprecated apply flow was withdrawn alongside the temporary
+// disable of `/api/recipes/install` (recipe-system.md §10.6 /
+// http-api-contract.md §4.3.8.A / §10.1.1). Removing the route's
+// internals — agent resolution, applyRecipe transform, tmux send —
+// physically eliminates the attack surface that depended on the
+// client-supplied inspection verdict. There is no re-enable plan;
+// callers should migrate to `/api/recipes/install` once it ships
+// again in v0.3.0 alongside the KovitoHub signed publisher model.
+app.post('/api/recipes/apply', (_req, res) => {
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
     { route: '/api/recipes/apply' },
-    'POST /api/recipes/apply is deprecated and will be removed in v0.2.0. ' +
-    'Use POST /api/recipes/install with the v2.0 agent-handover flow ' +
-    '(spec docs/specs/v0.1.0-recipe-install-handover.md §3.2).',
+    'POST /api/recipes/apply was removed in v0.2.x. ' +
+    'The deprecated apply flow was withdrawn along with recipe install temporary disable.',
   )
-  try {
-    const { recipe, inspection, agentId } = req.body as RecipeApplyRequest
-
-    if (!recipe || !recipe.metadata) {
-      res.status(400).json({ error: 'recipe is required' })
-      return
-    }
-    if (!inspection) {
-      res.status(400).json({ error: 'inspection is required' })
-      return
-    }
-    // Re-validate: blocked recipes cannot be applied
-    if (inspection.verdict === 'blocked') {
-      res.status(403).json({ error: 'Cannot apply a recipe with blocked verdict' })
-      return
-    }
-
-    // Resolve the tmux agent window to send to. We MUST target an
-    // interactive `claude --agent <id>` window, not the bare `main`
-    // shell tmux creates alongside the session — otherwise the recipe
-    // prompt is pasted into bash and silently lost.
-    //
-    // The resolver reuses an already-running window when one exists,
-    // and otherwise auto-launches `kovito-concierge` (or the first
-    // registered agent) and waits for the live input prompt before
-    // proceeding. Failure modes (no agents / startup failed / startup
-    // timeout because of a folder-trust prompt) come back as a
-    // structured resolution that we translate into an actionable
-    // 409 / 500 / 503 response.
-    const resolution = await resolveAgentWindowForRecipe(fs, config, tmuxBridge, {
-      preferredAgentId: agentId,
-    })
-    if (resolution.kind !== 'ready') {
-      const { status, error } = buildAgentResolutionError(resolution)
-      apiLogger.warn(
-        { resolution },
-        'Recipe apply aborted: agent window unavailable',
-      )
-      res.status(status).json({ error })
-      return
-    }
-    const windowName = resolution.windowName
-
-    const result = await applyRecipe(recipe, inspection, tmuxBridge, windowName)
-    if (!result.success) {
-      res.status(500).json({ error: result.error || 'Failed to apply recipe' })
-      return
-    }
-
-    // Record history
-    const historyId = generateHistoryId(fs)
-    appendRecipeHistory(fs, {
-      id: historyId,
-      action: 'install',
-      name: recipe.metadata.name,
-      version: recipe.metadata.version,
-      author: recipe.metadata.author,
-      source: recipe.sourcePath,
-      hash: recipe.hash,
-      appliedAt: new Date().toISOString(),
-      artifacts: recipe.artifacts.map((a) => a.path),
-      menu: recipe.menu.map((m) => m.id),
-    })
-
-    res.json({ success: true, historyId })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe apply error')
-    res.status(500).json({ error: 'Failed to apply recipe' })
-  }
+  res.status(410).json({
+    error: 'RecipeApplyRemoved',
+    message:
+      'POST /api/recipes/apply has been removed in v0.2.x. The deprecated apply flow ' +
+      'was withdrawn along with recipe install temporary disable.',
+    details: {
+      endpoint: '/api/recipes/apply',
+      kbVersion: '0.2.x',
+      plannedReenable: 'not planned (use /api/recipes/install in v0.3.0)',
+      grandfatherDocs: 'docs/specs/recipe-system.md §10.6',
+    },
+  })
 })
 
 app.get('/api/recipes/history', (_req, res) => {
@@ -1080,10 +1311,13 @@ app.post('/api/recipes/export', (req, res) => {
   try {
     const { appId, metadata } = req.body as RecipeExportRequest
 
-    if (typeof appId !== 'string' || appId.trim().length === 0) {
-      res.status(400).json({ error: 'appId is required' })
-      return
-    }
+    // `validateAppId` enforces the `app-name` regex from
+    // `app-directory-extension.md` and rejects RESERVED_DIRS. Any
+    // failure throws `AppIdBoundaryError`, which we map to a 400
+    // `InvalidAppId` in the catch block below alongside the same
+    // class thrown from `scanAppDirectory`'s realpath escape check.
+    const validatedAppId = validateAppId(appId)
+
     if (!metadata || typeof metadata.recipeId !== 'string' || metadata.recipeId.trim().length === 0) {
       res.status(400).json({ error: 'metadata.recipeId is required' })
       return
@@ -1107,9 +1341,45 @@ app.post('/api/recipes/export', (req, res) => {
       return
     }
 
-    const scan = scanAppDirectory(fs, appId.trim())
+    const scan = scanAppDirectory(fs, validatedAppId)
+
+    // Refuse export when the app contains custom backend files.
+    // Backend route handlers (`app/<appId>/api/*.ts`) live outside
+    // the recipe safety boundary — recipe-inspector's path-prefix
+    // restriction rejects `api/` at install time, so packaging them
+    // would produce a recipe that cannot be re-installed. Instead of
+    // silently dropping or repackaging them as `lib`, surface the
+    // boundary at the export boundary with an actionable guidance
+    // message.
+    //
+    // The scanner already bounds `customBeFiles` to a fixed sample
+    // size (see `recipe-exporter.ts`); we additionally trim the
+    // response payload to the first 10 entries so the JSON we ship
+    // and the string the modal concatenates stay small even when
+    // the sample cap is set higher upstream. `customBeFilesCount`
+    // is the accurate total (counted while scanning) and is what
+    // the UI uses to show "...and N more". The cap is pure
+    // response-shaping: refusal triggers as soon as ≥ 1 file under
+    // `app/<appId>/api/` exists, regardless of extension.
+    const MAX_CUSTOM_BE_FILES_IN_RESPONSE = 10
+    if (scan.customBeFilesCount > 0) {
+      const sample = scan.customBeFiles
+        .slice(0, MAX_CUSTOM_BE_FILES_IN_RESPONSE)
+        .map((f) => f.relativePath)
+      // Send only structured data; the user-facing prose is
+      // localized client-side (single source of truth for the
+      // policy text, no drift between server and i18n catalogs).
+      res.status(400).json({
+        error: 'CustomBeNotExportable',
+        files: sample,
+        filesCount: scan.customBeFilesCount,
+        filesCountApproximate: scan.customBeFilesCountApproximate,
+      })
+      return
+    }
+
     if (scan.artifacts.length === 0) {
-      res.status(400).json({ error: `No artifacts found under app/${appId.trim()}/` })
+      res.status(400).json({ error: `No artifacts found under app/${validatedAppId}/` })
       return
     }
 
@@ -1117,14 +1387,14 @@ app.post('/api/recipes/export', (req, res) => {
     // manifest; user-authored apps do not. Pass `null` in the latter
     // case so the writer omits the `api:` section, leaving the
     // receiving install flow to surface the missing-handler warning.
-    const manifest = manifestStore.get(appId.trim())
+    const manifest = manifestStore.get(validatedAppId)
     const api = manifest ? manifest.api : null
 
     // Build the recipe document in memory and stream it as a download.
     // Nothing is written to disk on the server side — the browser is
     // responsible for saving the file (see DEC-024 #5 follow-up,
     // 2026-05-04: directory format and explicit outputPath dropped).
-    const markdown = exportAsMarkdown(fs, appId.trim(), scan, metadata, api)
+    const markdown = exportAsMarkdown(fs, validatedAppId, scan, metadata, api)
     const filename = buildRecipeDownloadFilename(metadata.recipeId.trim())
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
@@ -1138,6 +1408,25 @@ app.post('/api/recipes/export', (req, res) => {
     res.setHeader('Permissions-Policy', 'identity-credentials-get=(), publickey-credentials-get=()')
     res.send(markdown)
   } catch (err) {
+    if (err instanceof AppIdBoundaryError) {
+      // Both the route-layer `validateAppId` call and the symlink
+      // escape check inside `scanAppDirectory` raise this. Mapping
+      // them to the same 400 keeps the boundary policy uniform: the
+      // client gets `InvalidAppId` whether the input was malformed
+      // or the resolved path tried to leave `app/`.
+      apiLogger.warn(
+        { route: '/api/recipes/export', err: { name: err.name, message: err.message } },
+        'invalid appId',
+      )
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
+      return
+    }
     apiLogger.error(
       {
         err: err instanceof Error
@@ -1152,14 +1441,28 @@ app.post('/api/recipes/export', (req, res) => {
 
 app.get('/api/recipes/app-scan', (req, res) => {
   try {
-    const appId = typeof req.query.appId === 'string' ? req.query.appId : ''
-    if (appId.trim().length === 0) {
-      res.status(400).json({ error: 'appId query parameter is required' })
-      return
-    }
-    const result = scanAppDirectory(fs, appId.trim())
+    // `validateAppId` rejects non-string inputs as well, so we feed the
+    // raw query value in directly; the response is a uniform 400
+    // `InvalidAppId` for any malformed query, which keeps the policy
+    // aligned with `/api/recipes/export`.
+    const validatedAppId = validateAppId(req.query?.appId)
+    const result = scanAppDirectory(fs, validatedAppId)
     res.json(result)
   } catch (err) {
+    if (err instanceof AppIdBoundaryError) {
+      apiLogger.warn(
+        { route: '/api/recipes/app-scan', err: { name: err.name, message: err.message } },
+        'invalid appId',
+      )
+      // Reply with the curated client-safe message (`err.clientMessage`)
+      // — never `err.message`. The latter intentionally carries the
+      // offending `appId`, the regex literal, or the canonical realpath
+      // strings that the symlink escape branch builds, all of which we
+      // keep server-side only (the warn log above retains them for
+      // operator diagnostics).
+      res.status(400).json({ error: 'InvalidAppId', message: err.clientMessage })
+      return
+    }
     apiLogger.error({ err }, 'App scan error')
     res.status(500).json({ error: 'Failed to scan app/ directory' })
   }
@@ -1199,153 +1502,40 @@ app.get('/api/recipes/app-scan', (req, res) => {
 // `/agents/<agentId>?openLatestSession=1` to bridge the gap). The
 // renderer follows the same pattern for `recipe-install`.
 
-app.post('/api/recipes/install', async (req, res) => {
-  try {
-    const body = (req.body ?? {}) as Record<string, unknown>
-    const recipe = body.recipe
-    const inspectionInput = body.inspection
-    const agentIdRaw = body.agentId
-    const recipeSource = body.recipeSource
-
-    // -- Recipe validation (minimal; the parser already vetted shape) --
-    if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) {
-      res.status(400).json({ error: 'recipe is required' })
-      return
-    }
-    const parsed = recipe as Record<string, unknown>
-    if (!parsed.metadata || typeof parsed.metadata !== 'object') {
-      res.status(400).json({ error: 'recipe.metadata is required' })
-      return
-    }
-    const metadata = parsed.metadata as Record<string, unknown>
-    if (typeof metadata.name !== 'string' || metadata.name.length === 0) {
-      res.status(400).json({ error: 'recipe.metadata.name is required' })
-      return
-    }
-    if (typeof metadata.recipeId !== 'string' || metadata.recipeId.length === 0) {
-      res.status(400).json({ error: 'recipe.metadata.recipeId is required' })
-      return
-    }
-
-    // The api section is optional in v2.0 — recipes without
-    // declarative handlers still install. When present, validate
-    // shape early so a malformed api never reaches the prompt.
-    if (parsed.api !== undefined && parsed.api !== null) {
-      const apiValidation = validateApiSection(parsed.api)
-      if (apiValidation) {
-        res.status(400).json({ error: `Invalid api section: ${apiValidation}` })
-        return
-      }
-    }
-
-    if (typeof agentIdRaw !== 'string' || agentIdRaw.length === 0) {
-      res.status(400).json({ error: 'agentId is required' })
-      return
-    }
-    const agentId = agentIdRaw
-
-    if (
-      recipeSource !== 'sample' &&
-      recipeSource !== 'import' &&
-      recipeSource !== 'url'
-    ) {
-      res.status(400).json({
-        error: 'recipeSource must be one of: sample, import, url',
-      })
-      return
-    }
-
-    // -- Inspection: prefer the FE-provided result, fall back to recompute --
-    //
-    // The FE has typically just called `/api/recipes/parse` and has
-    // a fresh `InspectionResult`. We accept it as a hint to avoid a
-    // second inspection pass. When absent / malformed, fall back to
-    // a fresh `inspectRecipe` so the prompt's "inspection result"
-    // section never goes stale.
-    let inspection: Awaited<ReturnType<typeof inspectRecipe>>
-    if (
-      inspectionInput &&
-      typeof inspectionInput === 'object' &&
-      typeof (inspectionInput as Record<string, unknown>).pureDeclarative === 'boolean'
-    ) {
-      inspection = inspectionInput as Awaited<ReturnType<typeof inspectRecipe>>
-    } else {
-      inspection = await inspectRecipe(parsed as unknown as Parameters<typeof inspectRecipe>[0])
-    }
-
-    // -- Build the v2.0 install prompt --
-    //
-    // Pass the `{ fs, projectRoot }` context so the prompt builder
-    // can scan `app/<appId>/manifest.json` and surface a "reinstall
-    // detection" section listing every app that already shares this
-    // recipeId (DEC-024 #4 / spec §3.5).
-    const prompt = buildRecipePrompt(
-      parsed as unknown as Parameters<typeof buildRecipePrompt>[0],
-      inspection,
-      { fs, projectRoot },
-    )
-
-    // -- Reserve origin so the resulting session is tagged --
-    sessionManager.reserveOrigin(agentId, 'recipe-install')
-
-    // -- Tmux-first delivery (mirrors `/api/sessions/new`) --
-    const tmuxAgent = await ensureTmuxAgent(agentId)
-    if (!tmuxAgent) {
-      apiLogger.warn(
-        { agentId, recipeId: metadata.recipeId },
-        'Recipe install: failed to start tmux agent window',
-      )
-      res.status(503).json({
-        error: `Could not start tmux agent window for "${agentId}". Make sure tmux is installed and the agent definition exists.`,
-      })
-      return
-    }
-
-    let result: { success: boolean; error?: string }
-    if (tmuxAgent.justStarted) {
-      // Wait for the prompt before sending. Claude Code's first
-      // launch can linger 15+ seconds while it fetches credentials,
-      // so we wait up to 45 seconds before giving up.
-      const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
-      if (!ready) {
-        apiLogger.warn(
-          { agentId, timeoutMs: 45000, endpoint: req.path },
-          'Prompt wait timeout for agent (recipe-install)',
-        )
-      }
-      result = await tmuxBridge.sendMessage(tmuxAgent.windowName, prompt)
-    } else {
-      // Already running: end the existing session with `/clear` and
-      // start fresh so the install handover prompt is the first
-      // message of the new conversation.
-      result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, prompt)
-    }
-
-    if (!result.success) {
-      apiLogger.error(
-        { err: result.error, agentId, recipeId: metadata.recipeId, windowName: tmuxAgent.windowName },
-        'Recipe install failed: tmux send returned an error',
-      )
-      res.status(500).json({
-        error: result.error || 'Failed to deliver the install handover prompt to the agent.',
-      })
-      return
-    }
-
-    apiLogger.info(
-      { agentId, recipeId: metadata.recipeId, recipeSource, windowName: tmuxAgent.windowName },
-      'Recipe install handover dispatched',
-    )
-    res.json({
-      ok: true,
-      agentId,
-      via: 'tmux',
-      windowName: tmuxAgent.windowName,
-    })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe install error')
-    res.status(500).json({ error: 'Failed to install recipe' })
-  }
+// `POST /api/recipes/install` — temporarily disabled in v0.2.x.
+//
+// Recipe install is blocked during the prompt-injection defence
+// design freeze and the KovitoHub central-distribution preparation
+// (recipe-system.md §10.6 / http-api-contract.md §4.3.8.A /
+// §10.1.1). Returning 410 Gone here keeps the install handover
+// prompt builder, install-session store, and tmux delivery path
+// intact for v0.3.0 re-enable under the signed publisher model,
+// while making sure no caller can mint a fresh install handover
+// while v0.2.x is in the field. Existing install-grandfather
+// surfaces (manifest read, uninstall, export, dispatcher) stay
+// operational — see recipe-system.md §10.6.3.
+app.post('/api/recipes/install', (_req, res) => {
+  // Log at info — every retry from a stale v0.1.x client lands here
+  // during the rollout window, and warn-level emissions would let any
+  // automated probe inflate the log volume cheaply. The audit trail
+  // is still produced (see http-api-contract.md §4.3.8.A) so
+  // attempts remain visible.
+  apiLogger.info(
+    { route: '/api/recipes/install' },
+    'POST /api/recipes/install is temporarily disabled in v0.2.x. ' +
+    'Re-enable is planned for v0.3.0 with the KovitoHub signed publisher model.',
+  )
+  res.status(410).json({
+    error: 'RecipeInstallDisabled',
+    message:
+      'Recipe install is disabled in v0.2.x. KovitoHub sync release is planned for v0.3.0.',
+    details: {
+      endpoint: '/api/recipes/install',
+      kbVersion: '0.2.x',
+      plannedReenable: 'v0.3.0 (KovitoHub signed publisher model + developer sideload mode)',
+      grandfatherDocs: 'docs/specs/recipe-system.md §10.6',
+    },
+  })
 })
 
 // --- Recipe Mark-Installed API (DEC-024 #2 / spec §3.3) ---
@@ -1364,32 +1554,189 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       res.status(validation.status).json({ error: validation.error })
       return
     }
-    const { appId, approvedScopes, recipeVersion, recipeSource, recipeHash, api } =
-      validation.value
+    const {
+      appId,
+      approvedScopes,
+      captureRequires,
+      approvedCaptures,
+      recipeVersion,
+      recipeSource,
+      recipeHash,
+      installNonce,
+      api,
+    } = validation.value
 
-    // Idempotency: if a history record with the same (recipeId,
-    // appId, hash, action='install') already exists, return ok
-    // without rewriting state. The agent retried `mark-installed` —
-    // a perfectly normal recovery path.
+    // Idempotency first: if a history record with the same (recipeId,
+    // appId, hash, action='install') already exists AND the current
+    // manifest at that `appId` still describes the same install,
+    // return ok without consuming the nonce or rewriting state. The
+    // agent retried `mark-installed` — a perfectly normal recovery
+    // path. Doing the history check before nonce consumption is
+    // critical because the nonce is one-shot; the legitimate retry
+    // would otherwise hit `consumeInstallSession()` and get back
+    // null on the second call, and the handler would 403 a
+    // successful install that just happened to be acknowledged
+    // twice.
+    //
+    // Crucially we cross-check the manifest store: a stale history
+    // entry left over from a previous install (uninstalled, or
+    // re-installed with a different hash) must NOT short-circuit
+    // here. Without that guard a forged or replayed mark-installed
+    // call could be acknowledged as success even though no manifest
+    // was actually written for the current install — see
+    // codex-review attempt-5 finding #1.
     const existingHistory = readRecipeHistory(fs)
-    const alreadyRecorded = existingHistory.some(
-      (h) =>
-        h.action !== 'uninstall' &&
-        h.recipeId === recipeIdParam &&
-        h.hash === recipeHash &&
-        // We stored the appId on the history entry under the
-        // legacy key; once Phase F splits the field, this reads from
-        // a dedicated `appId` field instead.
-        (h as { appId?: string }).appId === appId,
-    )
+    const existingManifestForRetry = manifestStore.get(appId)
+    const stateConsistentWithHistory =
+      existingManifestForRetry !== null &&
+      existingManifestForRetry.recipeId === recipeIdParam &&
+      existingManifestForRetry.hash === recipeHash
+    const alreadyRecorded =
+      stateConsistentWithHistory &&
+      existingHistory.some(
+        (h) =>
+          h.action !== 'uninstall' &&
+          h.recipeId === recipeIdParam &&
+          h.hash === recipeHash &&
+          // `appId` is now a first-class field on RecipeHistoryEntry.
+          // Legacy entries without it cannot satisfy a strict
+          // (recipeId, appId, hash) idempotency match anyway, so the
+          // strict comparison preserves the prior behaviour for
+          // pre-v0.2.0 install rows.
+          h.appId === appId,
+      )
     if (alreadyRecorded) {
       res.json({ ok: true })
+      return
+    }
+
+    // Partial-success recovery: the manifest at `appId` already
+    // describes this exact install (same recipeId + hash) but no
+    // history row was written. That can happen when a previous
+    // attempt persisted the manifest, then crashed before
+    // `appendRecipeHistory` had a chance to run — the nonce was
+    // already consumed, so a naive retry would 403 a half-finished
+    // install with no obvious recovery.
+    //
+    // We acknowledge the call so the agent can move on, but we
+    // deliberately do NOT replay the body into the audit history.
+    // The body is unauthenticated on this branch (the nonce is
+    // already gone, and the manifest existence — which is
+    // server-owned trusted state — is what authorises the success
+    // response). Letting the body's `recipeVersion` / `recipeSource`
+    // ride into recipe-history.jsonl on the strength of "the
+    // manifest happens to match" would let any caller who knows
+    // `(recipeId, appId, recipeHash)` rewrite the install audit
+    // line for that app, which is itself a tampering vector. The
+    // resulting audit gap is rare (it only manifests when the
+    // original install crashed mid-write) and operators can
+    // diagnose it through the warn log emitted here.
+    if (stateConsistentWithHistory) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId },
+        'mark-installed: partial-success recovery — manifest already persisted from a prior attempt without a history entry. Acknowledging without rewriting history; an operator can fill the audit gap manually if needed.',
+      )
+      res.json({ ok: true })
+      return
+    }
+
+    // -- Cross-app overwrite check --
+    //
+    // The install nonce binds recipeId / recipeHash / approvedScopes /
+    // api but the agent picks `appId` only after the install handover
+    // has run (Step 2 of the playbook resolves collisions through
+    // /api/apps/check-id-availability). A stolen nonce reused with a
+    // different `appId` would otherwise let the caller plant the
+    // session's manifest into an unrelated app namespace. Refuse the
+    // call when an existing manifest at this `appId` does not already
+    // belong to the same recipe install — the legitimate retry path
+    // is covered by the history-record dedup above, which would have
+    // already short-circuited if this `appId` was the original
+    // destination.
+    //
+    // Reuse the manifest read above so the path stays a single store
+    // hit per request.
+    const existingManifest = existingManifestForRetry
+    if (
+      existingManifest &&
+      (existingManifest.recipeId !== recipeIdParam ||
+        existingManifest.hash !== recipeHash)
+    ) {
+      apiLogger.warn(
+        {
+          recipeId: recipeIdParam,
+          appId,
+          existingRecipeId: existingManifest.recipeId,
+          existingHash: existingManifest.hash,
+        },
+        'mark-installed rejected: appId already bound to a different recipe install',
+      )
+      res.status(403).json({
+        error:
+          `App "${appId}" is already bound to a different recipe install. ` +
+          'Pick a different appId or uninstall the existing app via ' +
+          '/api/apps/:appId/request-removal before retrying.',
+      })
+      return
+    }
+
+    // -- Install-session check --
+    //
+    // The nonce is one-shot: lookup deletes the entry whether or not
+    // it is still valid, so a repeated call cannot replay the
+    // install. The history-record dedup above already short-circuits
+    // legitimate retries before this point.
+    //
+    // We deliberately do not differentiate between "no such nonce",
+    // "expired nonce", and "approvedScopes / recipeHash / api
+    // mismatch" in the response message: the handler answers 403 in
+    // every case, and revealing which dimension failed would leak
+    // shape information about the nonce store.
+    const session = consumeInstallSession(installNonce)
+    if (
+      session === null ||
+      session.recipeId !== recipeIdParam ||
+      session.recipeHash !== recipeHash ||
+      session.recipeVersion !== recipeVersion ||
+      session.recipeSource !== recipeSource ||
+      !approvedScopesMatch(session.approvedScopes, approvedScopes) ||
+      !approvedCapturesMatch(session.captureRequires, captureRequires) ||
+      !approvedCapturesMatch(session.approvedCaptures, approvedCaptures) ||
+      !apiSectionMatches(session.apiCanonical, api)
+    ) {
+      apiLogger.warn(
+        { recipeId: recipeIdParam, appId, hasSession: session !== null },
+        'mark-installed rejected: install-session mismatch',
+      )
+      res.status(403).json({
+        error:
+          'Install session check failed. The nonce is unknown, expired, ' +
+          'or the body does not match what KB inspected at install time. ' +
+          'Restart the install via /api/recipes/install to obtain a fresh nonce.',
+      })
       return
     }
 
     // Persist the recipe-side manifest. The dispatcher's
     // `manifestStore.refresh()` (or `loadAll()`) re-reads this file
     // when it needs to resolve handler calls.
+    //
+    // `trustLevel` is hard-coded to `'unknown'` in v0.2.x: the
+    // KovitoHub signed-publisher path that distinguishes
+    // `'code-trusted'` vs `'code-trusted (sideloaded)'` ships in
+    // v0.3.0 alongside the recipe-install re-enable, so today every
+    // newly-minted manifest matches a grandfather-migrated one. The
+    // trust-marker handoff (`v02x-phase1-trust-marker-preamble-
+    // warning-request.md`) takes ownership of populating richer
+    // values when the install path comes back. See recipe-system.md
+    // v1.5 §6.10.3〜§6.10.4.
+    //
+    // `captureRequires` carries the recipe's declared
+    // `capture.requires` verbatim; `approvedCaptures` carries the
+    // subset the user agreed to (I-CR1: subset relationship is
+    // enforced by `markInstalledValidator`). The runtime gate at
+    // `/api/app/capture/<kind>` keys off both fields independently
+    // (I-CR3).
     const manifest: RecipeManifest = {
       appId,
       recipeId: recipeIdParam,
@@ -1397,15 +1744,22 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       hash: recipeHash,
       installedAt: new Date().toISOString(),
       approvedScopes,
+      captureRequires,
+      approvedCaptures,
+      trustLevel: 'unknown',
       api: api ?? { scopes: [], calls: [] },
     }
     manifestStore.save(manifest)
 
     // Append the install record to recipe-history.jsonl. The
-    // recipeId field now stores the recipe author's id (per
-    // DEC-024 D-8); the appId is captured separately. Older
-    // entries in the same file may still hold appId in `recipeId`;
-    // `findHistoryMatch` and `entryMatchesRecipeId` already cope.
+    // recipeId field stores the recipe author's id (per DEC-024
+    // D-8); the appId is captured as a first-class field on the
+    // entry so callers can attribute history rows to a specific
+    // app instance even when the same recipe was installed under
+    // multiple appIds. Older entries in the same file may still
+    // omit `appId` and hold the install's KB-local identifier in
+    // `menu[0]`; `findHistoryMatch` and `entryMatchesRecipeId`
+    // already cope with that fallback.
     const historyId = generateHistoryId(fs)
     appendRecipeHistory(fs, {
       id: historyId,
@@ -1420,10 +1774,7 @@ app.post('/api/recipes/:recipeId/mark-installed', async (req, res) => {
       artifacts: [],
       menu: [],
       recipeId: recipeIdParam,
-      // Agent-handover history records carry both ids; the upcoming
-      // RecipeHistoryEntry shape change formalises `appId` as a
-      // first-class field. Until then we cast it through.
-      ...({ appId } as Record<string, unknown>),
+      appId,
     })
 
     apiLogger.info(
@@ -1542,177 +1893,46 @@ app.post('/api/apps/:appId/request-removal', async (req, res) => {
   }
 })
 
-// --- Recipe Uninstall API ---
+// --- Recipe Uninstall API (deprecated) ---
+//
+// This endpoint used to perform an end-to-end recipe uninstall —
+// remove artifacts, strip menu entries, delete the manifest, and
+// append an `action: 'uninstall'` history row — but the UI uninstall
+// button it served was retired in DEC-024 D-6. App removal now goes
+// through `POST /api/apps/:appId/request-removal`, which hands an
+// agent the deletion playbook (`buildAppRemovalPrompt`); the agent
+// performs the actual filesystem mutation directly. No surveyed
+// caller (UI, tests, agent templates, agent-ref) reaches this route
+// anymore.
+//
+// Returning 410 makes any remaining caller fail loudly — a silent
+// success here would let an obsolete client believe it had cleaned
+// up state when nothing happened, which is harder to diagnose than
+// a clear "endpoint gone, use the replacement" message. The body
+// names the replacement so an operator who hits this in a log can
+// migrate without spelunking.
+//
+// The uninstall-only helpers (`findLatestInstallEntry`, and the
+// `removeMenuEntry` import that fed this handler) are dropped at
+// the same time so they cannot quietly accumulate callers. Removing
+// the route entirely is deferred to a follow-up cleanup PR.
 
-app.post('/api/recipes/uninstall', async (req, res) => {
-  try {
-    const { recipeId, deleteOwnData } = req.body as {
-      recipeId: unknown
-      deleteOwnData?: unknown
-    }
-
-    if (typeof recipeId !== 'string' || recipeId.length === 0) {
-      res.status(400).json({ error: 'recipeId must be a non-empty string' })
-      return
-    }
-    const shouldDeleteOwnData = deleteOwnData === true
-
-    // Pull state we need before mutating anything. Even if the
-    // manifest was lost (e.g. the user hand-edited the project), we
-    // still want to be able to undo `app/menu.ts` + history, so a
-    // missing manifest is a warning rather than a hard error.
-    const manifest = manifestStore.get(recipeId)
-    if (!manifest) {
-      apiLogger.warn(
-        { recipeId },
-        'Uninstall requested for a recipeId without a manifest; proceeding with best-effort cleanup',
-      )
-    }
-
-    // Recover the install entry — we use it to know which artifact
-    // paths to remove and to preserve metadata (name / hash / version)
-    // on the uninstall history record.
-    const history = readRecipeHistory(fs)
-    const installEntry = findLatestInstallEntry(history, recipeId)
-    if (!installEntry && !manifest) {
-      res.status(404).json({ error: `No install record found for recipeId "${recipeId}"` })
-      return
-    }
-
-    // 1. Remove the artifact files. Sourced from the install history
-    //    (recipe-applicator wrote them under app/<artifact.path>).
-    //    Best-effort: a missing file is fine (we may have been
-    //    invoked twice, or the user removed it manually).
-    const artifactPaths = installEntry?.artifacts ?? []
-    const removedArtifacts: string[] = []
-    for (const rel of artifactPaths) {
-      // Defensive: never let a `..` segment escape the project's
-      // app/ directory. The recipe-applicator only ever writes
-      // under app/, so a `..` here would be either a corrupted
-      // history record or a malicious one.
-      if (rel.split(/[\\/]/).includes('..')) {
-        apiLogger.warn({ recipeId, rel }, 'Skipping artifact with traversal segment')
-        continue
-      }
-      const abs = join(projectRoot, 'app', rel)
-      if (fs.existsSync(abs)) {
-        try {
-          fs.unlinkSync(abs)
-          removedArtifacts.push(rel)
-        } catch (err) {
-          apiLogger.warn({ err, abs }, 'Failed to delete artifact during uninstall')
-        }
-      }
-    }
-
-    // 2. Remove menu entries. Each menu entry id from the install
-    //    record is stripped from app/menu.ts. We tolerate not-found
-    //    (already removed by hand) and log parse-failed (file is in
-    //    an unexpected shape).
-    const menuIds = installEntry?.menu ?? []
-    const menuPath = join(projectRoot, 'app', 'menu.ts')
-    const removedMenuIds: string[] = []
-    if (menuIds.length > 0 && fs.existsSync(menuPath)) {
-      let menuContent = fs.readFileSync(menuPath, 'utf-8')
-      let mutated = false
-      for (const menuId of menuIds) {
-        const result = removeMenuEntry(menuContent, menuId)
-        if (result.kind === 'removed') {
-          menuContent = result.content
-          removedMenuIds.push(menuId)
-          mutated = true
-        } else if (result.kind === 'parse-failed') {
-          apiLogger.warn(
-            { recipeId, menuId, reason: result.reason },
-            'menu.ts parse failed during uninstall; leaving file untouched',
-          )
-          break
-        }
-        // 'not-found' is silent — the entry may have been removed manually.
-      }
-      if (mutated) {
-        fs.writeFileSync(menuPath, menuContent, 'utf-8')
-      }
-    }
-
-    // 3. Remove the manifest. Manifest cache + on-disk file go
-    //    together; the manifest dispatcher gates handler calls so
-    //    once the manifest is gone the recipe is effectively
-    //    deactivated even if some files remain.
-    if (manifest) {
-      manifestStore.delete(recipeId)
-    }
-    // Also drop the empty parent directory under recipes-installed/
-    // so it does not linger.
-    const installedDir = join(getKovitoboardDir(fs), 'recipes-installed', recipeId)
-    if (fs.existsSync(installedDir)) {
-      try {
-        fs.rmSync(installedDir, { recursive: true, force: true })
-      } catch (err) {
-        apiLogger.warn({ err, installedDir }, 'Failed to remove recipes-installed dir')
-      }
-    }
-
-    // 4. Optionally delete own-data. Default is to *preserve* user
-    //    data unless the caller explicitly opts in via
-    //    `deleteOwnData: true`, so a re-install can recover state.
-    let ownDataDeleted = false
-    const ownDataDir = join(projectRoot, 'app', 'data', recipeId)
-    if (shouldDeleteOwnData && fs.existsSync(ownDataDir)) {
-      try {
-        fs.rmSync(ownDataDir, { recursive: true, force: true })
-        ownDataDeleted = true
-      } catch (err) {
-        apiLogger.warn({ err, ownDataDir }, 'Failed to delete own-data during uninstall')
-      }
-    }
-
-    // 5. Append the uninstall record to history. The recipe-scanner
-    //    walks history in reverse and treats the most recent entry
-    //    for a recipe as the source of truth, so this flips the
-    //    "installed" badge back to the "before install" lane.
-    const historyId = generateHistoryId(fs)
-    appendRecipeHistory(fs, {
-      id: historyId,
-      action: 'uninstall',
-      name: installEntry?.name ?? recipeId,
-      // `RecipeManifest.recipeVersion` was renamed from the legacy
-      // `version` (DEC-024 / spec §3.5). Fall back to the install
-      // history entry first because that always carries the
-      // recipe's `version` field shape.
-      version: installEntry?.version ?? manifest?.recipeVersion ?? '0.0.0',
-      author: installEntry?.author,
-      source: installEntry?.source ?? '',
-      hash: installEntry?.hash ?? manifest?.hash ?? '',
-      appliedAt: new Date().toISOString(),
-      artifacts: removedArtifacts,
-      menu: removedMenuIds,
-      recipeId,
-      ownDataDeleted,
-    })
-
-    apiLogger.info(
-      {
-        recipeId,
-        artifactsRemoved: removedArtifacts.length,
-        menuIdsRemoved: removedMenuIds.length,
-        ownDataDeleted,
-      },
-      'Recipe uninstalled',
-    )
-
-    res.json({
-      success: true,
-      historyId,
-      recipeId,
-      artifactsRemoved: removedArtifacts,
-      menuIdsRemoved: removedMenuIds,
-      ownDataDeleted,
-    })
-  } catch (err) {
-    apiLogger.error({ err }, 'Recipe uninstall error')
-    res.status(500).json({ error: 'Failed to uninstall recipe' })
-  }
+app.post('/api/recipes/uninstall', (req, res) => {
+  const requestedRecipeId =
+    typeof (req.body as { recipeId?: unknown } | undefined)?.recipeId === 'string'
+      ? (req.body as { recipeId: string }).recipeId
+      : null
+  apiLogger.warn(
+    { recipeId: requestedRecipeId },
+    'Deprecated /api/recipes/uninstall called; use POST /api/apps/:appId/request-removal instead',
+  )
+  res.status(410).json({
+    error:
+      'POST /api/recipes/uninstall is deprecated. Use POST /api/apps/:appId/request-removal ' +
+      'to remove an installed app via the agent-driven removal flow.',
+    deprecatedSince: 'v0.2.0',
+    replacement: 'POST /api/apps/:appId/request-removal',
+  })
 })
 
 // --- App ID Collision-Avoidance API (DEC-024 D-1) ---
@@ -1767,31 +1987,6 @@ app.post('/api/apps/check-id-availability', (req, res) => {
     res.status(500).json({ error: 'Failed to check app-id availability' })
   }
 })
-
-/**
- * Find the most recent `install` entry for a given recipeId. Used by
- * the uninstall endpoint to recover artifact paths and metadata.
- *
- * Matches first by the explicit `recipeId` field (set on entries
- * written after the lifecycle-action change), and falls back to the
- * legacy heuristic ("first menu entry id" derived at install time)
- * for entries written before that field existed.
- */
-function findLatestInstallEntry(
-  history: import('../shared/recipe-types').RecipeHistoryEntry[],
-  recipeId: string,
-): import('../shared/recipe-types').RecipeHistoryEntry | undefined {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const h = history[i]
-    if (h.action === 'uninstall') continue
-    if (h.recipeId === recipeId) return h
-    // Legacy fallback: install entries written before `recipeId` was
-    // captured had `menu: ['<recipeId>', ...]` because the renderer
-    // resolves recipeId from the first menu entry id.
-    if (Array.isArray(h.menu) && h.menu[0] === recipeId) return h
-  }
-  return undefined
-}
 
 // --- File upload API ---
 
@@ -1886,12 +2081,12 @@ app.get('/api/artifact', (req, res) => {
     res.status(400).json({ error: 'path is required' })
     return
   }
-  const resolved = resolveAndValidatePath(filePath)
-  if (!resolved) {
-    res.status(403).json({ error: 'Access denied: path is outside project root' })
+  const validation = validatePathForArtifactRead(filePath, artifactPathCtx)
+  if (!validation.ok) {
+    res.status(validation.status).json({ error: validation.error })
     return
   }
-  const result = readArtifact(fs, resolved)
+  const result = readArtifact(fs, validation.resolved)
   if (!result) {
     res.status(404).json({ error: 'File not found' })
     return
@@ -1905,35 +2100,91 @@ app.get('/api/artifact/raw', (req, res) => {
     res.status(400).json({ error: 'path is required' })
     return
   }
-  const resolved = resolveAndValidatePath(filePath)
-  if (!resolved) {
-    res.status(403).json({ error: 'Access denied: path is outside project root' })
+  // Pass the size cap so a single oversized file cannot stream
+  // unbounded bytes through `res.sendFile`. The cap matches the
+  // `read-file` handler so callers see a consistent limit whether
+  // they reach the file via the dispatcher or this preview route.
+  const validation = validatePathForArtifactRead(filePath, artifactPathCtx, {
+    maxSize: HANDLER_LIMITS.READ_FILE_MAX_SIZE,
+  })
+  if (!validation.ok) {
+    res.status(validation.status).json({ error: validation.error })
     return
   }
-  if (!fs.existsSync(resolved)) {
-    res.status(404).json({ error: 'File not found' })
-    return
-  }
-  res.sendFile(resolved)
+  res.sendFile(validation.resolved)
 })
 
 // Mount user-defined API routes from app/api/
 await mountAppApiRoutes(app, fs)
 
-// Production: serve built static files
-app.use(express.static(join(__dirname, '../../dist')))
+// Production: serve built static files. `index: false` is critical
+// here — without it Express short-circuits `GET /` (and `GET
+// /index.html`) by sending the on-disk `dist/index.html` directly,
+// which still contains the `<!-- KB:LAUNCH_TOKEN_META -->` placeholder
+// that the SPA fallback below replaces with the real token meta tag.
+// Letting the static middleware win would boot the renderer without a
+// token, and every `/api/*` call would fail with 401 until the user
+// manually reloaded.
+//
+// `index: false` only suppresses directory-default `index.html`
+// resolution (e.g. `GET /` falling through to `dist/index.html`); it
+// does NOT block an explicit `GET /index.html`. The dedicated route
+// below catches that case so a bookmark or curl that targets the file
+// by name still receives the substituted HTML.
+const distIndexPath = join(__dirname, '../../dist/index.html')
+const distIndexCache: string | null = (() => {
+  if (process.env.KOVITOBOARD_MODE !== 'prod') return null
+  try {
+    const raw = fs.readFileSync(distIndexPath, 'utf-8')
+    return raw
+      .replace(
+        '<!-- KB:LAUNCH_TOKEN_META -->',
+        `<meta name="kb-launch-token" content="${LAUNCH_TOKEN}">`,
+      )
+      .replace(
+        '<!-- KB:INTERNAL_TOKEN_META -->',
+        `<meta name="kb-internal-token" content="${INTERNAL_TOKEN}">`,
+      )
+  } catch {
+    // Missing dist is already diagnosed by the explicit check at
+    // startup (search for KOVITOBOARD_MODE === 'prod' below); fall
+    // through to res.sendFile so any later error is surfaced normally.
+    return null
+  }
+})()
+
+app.get('/index.html', (_req, res) => {
+  if (distIndexCache !== null) {
+    res.type('html').send(distIndexCache)
+    return
+  }
+  res.sendFile(distIndexPath)
+})
+
+app.use(express.static(join(__dirname, '../../dist'), { index: false }))
 
 // Onboarding redirect: redirect to /onboarding if not completed
 app.use(createOnboardingRedirect(fs))
 
-// SPA fallback: serve index.html for all non-API, non-WS routes
+// SPA fallback: serve index.html for all non-API, non-WS routes.
+// In prod mode the renderer receives a copy of `dist/index.html`
+// whose `<!-- KB:LAUNCH_TOKEN_META -->` placeholder has been replaced
+// with the real token meta tag (see distIndexCache above). The Vite
+// dev server performs the same substitution through its
+// `kb-launch-token-injector` plugin (`vite.config.ts`); this branch
+// is only reachable for `npm run prod` / packaged distributions
+// where Vite is not in the loop.
 // Express 5 requires named wildcard parameters (path-to-regexp v8)
 app.get('{*path}', (req, res) => {
   if (req.path.startsWith('/api')) {
     res.status(404).json({ error: 'Not found' })
     return
   }
-  res.sendFile(join(__dirname, '../../dist/index.html'))
+  if (distIndexCache !== null) {
+    res.type('html').send(distIndexCache)
+    return
+  }
+  res.sendFile(distIndexPath)
 })
 
 // --- WebSocket: real-time event broadcasting ---
@@ -2066,6 +2317,108 @@ if (process.env.KB_E2E_MODE === '1') {
     trustPromptDetector.resetState()
     res.json({ ok: true })
   })
+
+  // L1 fake-claude harness cannot execute the install handover prompt
+  // (the fake agent does not parse markdown), so the helper that
+  // exercises the dispatcher cannot wait for the agent to call
+  // mark-installed and never sees the install nonce. This shortcut
+  // hands the harness a freshly-issued nonce bound to the same
+  // recipeId / hash / scopes the real install endpoint would have
+  // saved, so subsequent calls to `mark-installed` succeed under the
+  // production code path. The endpoint is unreachable in any build
+  // that does not export `KB_E2E_MODE=1`, so the attack surface is
+  // confined to test runs.
+  app.post('/api/recipes/_test/issue-nonce', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { recipeId, recipeHash, recipeVersion, recipeSource } = body
+    const approvedScopes = body.approvedScopes
+    const captureRequires = body.captureRequires
+    const approvedCaptures = body.approvedCaptures
+    const apiSection = body.api
+    if (typeof recipeId !== 'string' || recipeId.length === 0) {
+      res.status(400).json({ error: 'recipeId must be a non-empty string' })
+      return
+    }
+    if (typeof recipeHash !== 'string' || recipeHash.length === 0) {
+      res.status(400).json({ error: 'recipeHash must be a non-empty string' })
+      return
+    }
+    if (!Array.isArray(approvedScopes) || !approvedScopes.every((s) => typeof s === 'string')) {
+      res
+        .status(400)
+        .json({ error: 'approvedScopes must be an array of strings' })
+      return
+    }
+    // captureRequires / approvedCaptures are optional on this test
+    // harness for backward compatibility — existing L1 specs that
+    // did not declare any capture continue to pass an empty install
+    // nonce binding. New tests that exercise the opt-in surface
+    // send the arrays explicitly so the mark-installed validator
+    // can compare against the stored session.
+    let captureRequiresList: CaptureKind[] = []
+    if (captureRequires !== undefined) {
+      if (!Array.isArray(captureRequires) || !captureRequires.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'captureRequires must be an array of valid capture kinds' })
+        return
+      }
+      captureRequiresList = captureRequires as CaptureKind[]
+    }
+    let approvedCapturesList: CaptureKind[] = []
+    if (approvedCaptures !== undefined) {
+      if (!Array.isArray(approvedCaptures) || !approvedCaptures.every(isValidCaptureKind)) {
+        res
+          .status(400)
+          .json({ error: 'approvedCaptures must be an array of valid capture kinds' })
+        return
+      }
+      approvedCapturesList = approvedCaptures as CaptureKind[]
+    }
+    const issueResult = issueInstallSession({
+      recipeId,
+      recipeHash,
+      recipeVersion: typeof recipeVersion === 'string' ? recipeVersion : '',
+      recipeSource: typeof recipeSource === 'string' ? recipeSource : '',
+      approvedScopes: approvedScopes as Scope[],
+      captureRequires: captureRequiresList,
+      approvedCaptures: approvedCapturesList,
+      api: apiSection ?? null,
+    })
+    if (!issueResult.ok) {
+      if (issueResult.reason === 'invalid_api') {
+        res.status(400).json({ error: 'api section too deep or cyclic' })
+        return
+      }
+      res.status(503).json({ error: 'Install-session store at capacity' })
+      return
+    }
+    res.json({ ok: true, installNonce: issueResult.nonce })
+  })
+
+  // Companion to `_test/issue-nonce`: lets the L1 helper drop a
+  // pre-existing manifest for a given `appId` before issuing a new
+  // install nonce. Without this, the cross-app overwrite check on
+  // mark-installed (which legitimately rejects the second install
+  // of a different recipe into the same `appId`) would block the
+  // suite's repeated installs of TEST_RECIPE_ID across tests.
+  app.post('/api/recipes/_test/clear-manifest', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const { appId } = body
+    // Reuse the same `appId` validator the production mark-installed
+    // path uses. Without this guard a literal `../something` could
+    // escape the manifest namespace under `manifestStore.delete()`,
+    // which derives a filesystem path from `appId`.
+    const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+    if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
+      res
+        .status(400)
+        .json({ error: 'appId must match /^[a-z][a-z0-9-]{0,63}$/' })
+      return
+    }
+    manifestStore.delete(appId)
+    res.json({ ok: true })
+  })
 }
 
 // --- Agent individual restart (A4-4 / A8) ---
@@ -2096,7 +2449,13 @@ app.post('/api/agents/:id/restart', async (req, res) => {
     res.json({ ok: true, result })
   } catch (err) {
     adminLogger.error({ err, agentId }, 'Agent restart failed')
-    res.status(500).json({ ok: false, error: String(err) })
+    // Client-safe envelope: do NOT echo `String(err)` / `err.message` / `err.stack`
+    // / `err.cause` to the 5xx body — that path becomes a side-channel for
+    // probing absolute paths, errno, or internal layout. The full detail is
+    // preserved in the `adminLogger.error({ err, ... }, ...)` call above for
+    // operator diagnosis via the pino sink.
+    // See: docs/specs/http-api-contract.md v1.6 §8.6 (supplementary §S15, v0.2.0).
+    res.status(500).json({ ok: false, error: 'Agent restart failed' })
   }
 })
 
@@ -2107,8 +2466,25 @@ const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'client_log',
 ])
 
+// --- WebSocket connection heartbeat (supplementary review §S5) ---
+// Detect dead clients (NAT timeout / hard browser close / network
+// drop) by running the ws ping/pong heartbeat on a 30 s tick. Without
+// this loop `wss.clients` accumulates phantom sockets indefinitely
+// and every broadcast still calls `send` against them. The tracker
+// is created BEFORE the `connection` handler below so the per-socket
+// `attach()` call inside the handler always sees a live timer.
+const wsHeartbeat = createHeartbeatTracker(wss, { log: wsLogger })
+
 // --- WebSocket: client -> server (trust prompt response handling) ---
 wss.on('connection', (ws) => {
+  // Wire the pong / error listeners that the heartbeat tracker
+  // expects. Done at the top of the handler so subsequent logic
+  // (replay + message dispatch) cannot short-circuit before the
+  // heartbeat is bound — otherwise a socket that emits an error
+  // before the first message would propagate as an
+  // `uncaughtException`.
+  wsHeartbeat.attach(ws)
+
   // Replay pending trust-prompt events to the newly connected client.
   // The detector may have broadcast events before any UI client was connected,
   // causing them to be lost. This ensures late-connecting clients receive them.
@@ -2171,27 +2547,84 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
 
   const { promptId, windowName, response } = payload
 
+  // Phase 1 (payload shape) has already passed above. The branches below
+  // implement Phase 2 (mode-specific validation), Phase 3 (dedup claim),
+  // and Phase 4 (detector dispatch) per trust-prompt-relay.md v1.5 §8.1.1.
+  //
+  // Why dedup *after* Phase 2: the spec requires mode validation to run
+  // first so that an invalid payload (missing choiceId, oversize rawKeys,
+  // etc.) does not consume a `(windowName, promptId)` slot. A consumed
+  // slot would lock out the legitimate respond that arrives next with the
+  // same identifiers.
+  //
+  // Why dedup *before* Phase 4: the race the ledger defends against is
+  // exactly two responds racing through `respondChoice` / `respondRawKeys`
+  // in `state.lastDetectedKind === 'pattern'`. Once dispatch fires, the
+  // tmux keystroke is already in flight.
+
   if (response.mode === 'choice') {
-    // Validate choiceId is a non-empty string
+    // Phase 2 (mode-specific): choiceId is a non-empty string.
     if (typeof response.choiceId !== 'string' || response.choiceId.length === 0) {
       wsLogger.warn('trust_prompt_respond: choiceId must be a non-empty string')
       return
     }
-    // The UI sends only choiceId; the actual key sequence conversion is performed
-    // by the detector using choices (state.lastChoices) from the most recent notification.
-    // This design prevents the UI from injecting arbitrary keys.
+    // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
+    if (!tryClaimTrustResponded(windowName, promptId)) {
+      // One-shot warn per claimed slot to keep a hostile / buggy client's
+      // duplicate flood from amplifying into unbounded pino sink writes.
+      // Spec §8.1.1 mandates a `warn` log on duplicate — we emit it the
+      // first time and suppress subsequent hammering against the same
+      // slot until it expires / is released / is evicted.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'choice' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
+      return
+    }
+    // Phase 4 (detector dispatch). The UI sends only choiceId; the actual
+    // key sequence conversion is performed by the detector using
+    // `state.lastChoices` from the most recent notification. This design
+    // prevents the UI from injecting arbitrary keys.
     const ok = trustPromptDetector.respondChoice(windowName, promptId, response.choiceId)
     if (!ok) {
+      // Phase 5 (rollback). Dispatch failed before any tmux keystroke was
+      // delivered (semantic validation inside the detector — unknown
+      // choiceId / TOCTOU promptId mismatch / window vanished — returns
+      // false without side effects). Release the dedup slot so a buggy
+      // or hostile client that sent a semantically invalid response
+      // cannot occupy the slot for the full TTL and DoS the legitimate
+      // respond that follows.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (choice) failed')
     }
   } else if (response.mode === 'raw-keys') {
-    // Validate rawKeys is a string within the allowed length range
+    // Phase 2 (mode-specific): rawKeys is a string of length 1..500.
     if (typeof response.rawKeys !== 'string' || response.rawKeys.length < 1 || response.rawKeys.length > 500) {
       wsLogger.warn('trust_prompt_respond: rawKeys must be a string (1-500 chars)')
       return
     }
+    // Phase 3 (dedup claim): see trust-prompt-relay.md v1.5 §8.1.1.
+    if (!tryClaimTrustResponded(windowName, promptId)) {
+      // One-shot warn per claimed slot — see choice-branch comment above.
+      if (shouldEmitDuplicateLog(windowName, promptId)) {
+        wsLogger.warn(
+          { windowName, promptId, mode: 'raw-keys' },
+          'trust_prompt_respond: duplicate respond discarded by dedup ledger',
+        )
+      }
+      return
+    }
+    // Phase 4 (detector dispatch).
     const ok = trustPromptDetector.respondRawKeys(windowName, promptId, response.rawKeys)
     if (!ok) {
+      // Phase 5 (rollback). See the choice-branch comment above for
+      // rationale — `respondRawKeys` reaches `tmux.sendTrustPromptKeys`
+      // only after passing TOCTOU + length checks, so a false return
+      // here means no keystroke was delivered and the slot is safe to
+      // release.
+      releaseTrustClaim(windowName, promptId)
       wsLogger.warn({ windowName, promptId }, 'trust_prompt_respond (raw-keys) failed')
     }
   } else {
@@ -2377,10 +2810,109 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1)
 })
 
-server.listen(PORT, () => {
+// Bind to the loopback interface only. KovitoBoard is a local-first
+// tool with no authentication layer yet; serving the privileged HTTP
+// API and WebSocket bridge to the wider LAN would expose stop/restart,
+// recipe install, file read/write, and other admin operations to any
+// host that can reach this machine on the chosen port. Pin to
+// 127.0.0.1 explicitly so the bind does not depend on Node's
+// `dns.lookup` order resolving "localhost" inconsistently across OSes.
+server.listen(PORT, '127.0.0.1', () => {
   const { path: projectRoot, source: projectRootSource } = resolveProjectRootWithSource(fs)
-  serverLogger.info({ url: `http://localhost:${PORT}` }, 'Server started')
-  serverLogger.info({ url: `ws://localhost:${PORT}` }, 'WebSocket listening')
+  serverLogger.info({ url: `http://127.0.0.1:${PORT}` }, 'Server started')
+  serverLogger.info({ url: `ws://127.0.0.1:${PORT}` }, 'WebSocket listening')
   serverLogger.info({ projectRoot, projectRootSource }, 'Project root resolved')
   serverLogger.info({ claudeDir: `${config.claudeDir}/projects/` }, 'Watching Claude Code session directory')
+
+  // Phase 1 prompt injection ② — Claude Code recommended-settings check
+  // (spec trust-prompt-relay §10.5, onboarding-scenarios §9.5,
+  // logging-baseline §12.7; handoff v1.1).
+  //
+  // Runs once at startup so the warn surface is computed early. The
+  // result is fetched lazily by the renderer via /api/security/settings-check
+  // so we do not need to push it via WS here. A `fs.watch` is attached
+  // to the effective settings file when it already exists at startup so
+  // runtime mutations re-run the check and emit a `server.log` entry.
+  //
+  // SCOPE NOTE (CodeX attempt 26): the watcher does NOT cover the case
+  // where `~/.claude/` or `<project>/.claude/` is created *after* KB
+  // startup — an anchor-level fallback was removed to avoid avoidable
+  // CPU churn on busy home / project trees. When the directory
+  // materializes later, the toast's focus / visibility refetch and the
+  // per-request `/api/security/settings-check` evaluation pick up the
+  // new state on demand; a server.log entry for that transition is
+  // only emitted on the next KB restart.
+  try {
+    const checkResult = checkClaudeCodeSettings(fs, projectRoot)
+    const setting = readSetting(fs)
+    if (shouldLogStartupWarning(checkResult, setting)) {
+      logCheckResult(checkResult)
+    }
+    // Install file-level + directory-level watchers so we cover both
+    // existing settings files (file watcher) and the case where a
+    // settings file appears after startup or moves between user- and
+    // project-level (directory watcher). Both watchers feed the same
+    // re-check + log callback; the callback de-duplicates so a noisy
+    // writer (or both watchers firing for the same save) does not
+    // amplify into repeated log entries (CodeX attempt 7 — log
+    // amplification / resource exhaustion).
+    const installedHandles: Array<{ close: () => void }> = []
+    function rerunSignature(r: ReturnType<typeof checkClaudeCodeSettings>): string {
+      return [
+        r.overallOk ? '1' : '0',
+        r.reason,
+        r.permissionMode.current,
+        r.permissionMode.ok ? '1' : '0',
+        r.denyPattern.ok ? '1' : '0',
+        r.bypassMode.active ? '1' : '0',
+      ].join('|')
+    }
+    // Seed the dedupe signature from the startup state so the first
+    // watcher-triggered rerun does not re-log the same warning when
+    // the state has not actually changed (CodeX attempt 15 — log
+    // deduplication). Must be initialized AFTER the helper is
+    // hoisted but BEFORE the watchers are installed.
+    let lastEmittedSignature: string | null = rerunSignature(checkResult)
+    const rerun = () => {
+      const next = checkClaudeCodeSettings(fs, projectRoot)
+      const signature = rerunSignature(next)
+      if (signature === lastEmittedSignature) {
+        return // no observable change — suppress the duplicate log entry
+      }
+      // Honor the dismiss state: when the user has already
+      // acknowledged the same warning state we do not need to write
+      // another entry on every fs blip.
+      const setting = readSetting(fs)
+      if (!shouldLogStartupWarning(next, setting)) {
+        lastEmittedSignature = signature
+        return
+      }
+      lastEmittedSignature = signature
+      logCheckResult(next)
+    }
+    if (checkResult.settingsFilePath) {
+      const fileHandle = watchSettingsFile(fs, checkResult.settingsFilePath, rerun)
+      if (fileHandle) installedHandles.push(fileHandle)
+    }
+    const dirHandle = watchSettingsDirectories(fs, projectRoot, rerun)
+    if (dirHandle) installedHandles.push(dirHandle)
+    if (installedHandles.length > 0) {
+      process.once('beforeExit', () => {
+        for (const handle of installedHandles) {
+          try {
+            handle.close()
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      })
+    }
+  } catch (err) {
+    // Never let the settings check abort startup. Surface the failure
+    // so observability captures it, then continue.
+    serverLogger.warn(
+      { err },
+      'Claude Code recommended-settings startup check threw; continuing',
+    )
+  }
 })

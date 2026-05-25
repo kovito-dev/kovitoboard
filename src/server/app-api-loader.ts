@@ -27,6 +27,7 @@
  * @see DEC-008 (Nested app API loader)
  */
 
+import { serverLogger } from './logger'
 import { join, basename } from 'path'
 import type { Express } from 'express'
 import type { FileAccessLayer } from './fs-layer'
@@ -64,7 +65,7 @@ export async function mountAppApiRoutes(
     if (RESERVED_DIRS.has(name)) continue
 
     if (!APP_NAME_RE.test(name)) {
-      console.warn(`[app-api] SKIP (invalid name): app/${name}/ — must match ${APP_NAME_RE}`)
+      serverLogger.warn(`[app-api] SKIP (invalid name): app/${name}/ — must match ${APP_NAME_RE}`)
       continue
     }
 
@@ -111,7 +112,7 @@ async function mountApiDir(
 
     // Duplicate detection (first wins)
     if (mounted.has(mountPath)) {
-      console.warn(`[app-api] SKIP (duplicate): ${mountPath} ← ${displaySource}`)
+      serverLogger.warn(`[app-api] SKIP (duplicate): ${mountPath} ← ${displaySource}`)
       continue
     }
 
@@ -120,14 +121,14 @@ async function mountApiDir(
       const mod = await import(filePath)
       const router = mod.default
       if (!router) {
-        console.warn(`[app-api] ${displaySource}: no default export, skipping`)
+        serverLogger.warn(`[app-api] ${displaySource}: no default export, skipping`)
         continue
       }
       app.use(mountPath, router)
       mounted.add(mountPath)
-      console.log(`[app-api] Mounted: ${mountPath} ← ${displaySource}`)
+      serverLogger.info(`[app-api] Mounted: ${mountPath} ← ${displaySource}`)
     } catch (err) {
-      console.error(`[app-api] Failed to load ${displaySource}:`, err)
+      serverLogger.error({ err }, `[app-api] Failed to load ${displaySource}:`)
     }
   }
 }

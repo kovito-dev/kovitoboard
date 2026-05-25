@@ -15,6 +15,7 @@
  * @stable v0.1.0
  */
 
+import { serverLogger } from './logger'
 import type {
   HandlerResponse,
   HandlerErrorCode,
@@ -46,6 +47,136 @@ export interface DispatchRequest {
   appId: string
   callId: string
   input: Record<string, unknown>
+}
+
+// =========================================
+// Per-appId serialization mutex
+// =========================================
+//
+// Critical region: from `manifestStore.get(appId)` through the awaited
+// `handlerDef.execute()` call below. Without this lock the dispatcher
+// can take a snapshot of the manifest (and the on-disk app state it
+// implies) and then yield to the event loop while a parallel
+// `manifestStore.delete(appId)` + `rm -rf app/<appId>/` runs from a
+// removal flow, leaving the handler writing into a directory that no
+// longer exists or whose manifest has been revoked.
+//
+// External callers that mutate per-app on-disk state — recipe install,
+// `manifestStore.delete`-driven cleanup, future agent-driven removal
+// hooks — should `await acquireAppLock(appId)` themselves before
+// touching that state and release once the mutation is complete.
+// Different appIds are independent: lock keys are the appId string,
+// so unrelated apps continue to run in parallel.
+
+interface AppLockEntry {
+  /** Promise that resolves once the current holder calls `release`. */
+  held: Promise<void>
+  /** Release callback bound to the holder. */
+  release: () => void
+}
+
+const appLocks = new Map<string, AppLockEntry>()
+
+/**
+ * Maximum time `acquireAppLock` will wait for the current holder to
+ * release before giving up. A stuck handler (hung subprocess, blocked
+ * fs op) would otherwise let dispatch requests for the same appId
+ * pile up unboundedly behind it; the timeout caps that head-of-line
+ * blocking risk and surfaces the stall as a `LockWaitTimeout` error
+ * the caller can map to a 5xx-equivalent handler error.
+ *
+ * 30 seconds is generous for any in-process handler — Category A
+ * handlers are fs / kv operations that complete in milliseconds, and
+ * the only awaitable subprocess work (Claude CLI handover) lives on
+ * a different code path. A real hang at this layer is therefore
+ * pathological and should fail loud rather than queue forever.
+ */
+const APP_LOCK_WAIT_TIMEOUT_MS = 30_000
+
+/**
+ * Error thrown by `acquireAppLock` when waiting for the current
+ * holder exceeds `APP_LOCK_WAIT_TIMEOUT_MS`. The caller catches this
+ * to emit an `Internal` handler error rather than retrying forever.
+ */
+export class AppLockWaitTimeoutError extends Error {
+  constructor(appId: string, timeoutMs: number) {
+    super(`acquireAppLock("${appId}") timed out after ${timeoutMs}ms`)
+    this.name = 'AppLockWaitTimeoutError'
+  }
+}
+
+/**
+ * Acquire the per-appId dispatch lock. Resolves once any in-flight
+ * dispatch for the same `appId` has finished and returns a release
+ * function the caller MUST call (in a `finally`) to let the next
+ * waiter proceed.
+ *
+ * Implementation: each appId maps to an entry holding a
+ * `Promise<void>` (the currently-held lock) and its resolver. New
+ * acquirers race that promise against a wait-timeout deadline and
+ * throw `AppLockWaitTimeoutError` when the deadline is reached so
+ * a hung handler cannot pile up the queue forever. The map entry is
+ * cleared by the release callback so an idle appId does not keep an
+ * entry alive.
+ */
+export async function acquireAppLock(appId: string): Promise<() => void> {
+  const deadline = Date.now() + APP_LOCK_WAIT_TIMEOUT_MS
+  // Loop because two waiters can observe `existing` simultaneously,
+  // and only one of them will become the next holder — the other has
+  // to wait again on whatever entry now occupies the slot.
+  while (appLocks.has(appId)) {
+    const existing = appLocks.get(appId)
+    if (!existing) break
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      throw new AppLockWaitTimeoutError(appId, APP_LOCK_WAIT_TIMEOUT_MS)
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        existing.held,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new AppLockWaitTimeoutError(appId, APP_LOCK_WAIT_TIMEOUT_MS)),
+            remainingMs,
+          )
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = () => {
+      // Only clear the map slot if it still points at *this* entry —
+      // an out-of-order release (released twice, or after a lock
+      // ownership bug elsewhere) must not wipe a successor's entry.
+      if (appLocks.get(appId)?.held === held) {
+        appLocks.delete(appId)
+      }
+      resolve()
+    }
+  })
+  appLocks.set(appId, { held, release })
+  return release
+}
+
+/**
+ * Drop all per-appId lock state. For testing only.
+ *
+ * Walks every parked entry and resolves its `held` promise via the
+ * stored `release` callback so any awaiter that is still parked on
+ * `existing.held` returns immediately, then clears the map. Without
+ * the explicit resolve step a test that forgot to call its release
+ * function would leave its sibling waiters stuck on the previous
+ * promise indefinitely.
+ */
+export function resetAppLocks(): void {
+  for (const entry of appLocks.values()) {
+    entry.release()
+  }
+  appLocks.clear()
 }
 
 // =========================================
@@ -188,11 +319,70 @@ const HANDLERS_WITH_PATH: Set<CategoryAHandlerName> = new Set([
 ])
 
 /**
+ * Operation kind threaded into `validatePathForScope` so the v1.8
+ * operation-aware exclusion table can distinguish read-vs-write
+ * checks. `list-files` and `read-file` walk the read side of the
+ * table (write-only blocks may be bypassed by `agents-read` /
+ * `skills-read` / `claude-md-read`); `write-file` walks the write
+ * side (those bypass scopes do not apply).
+ *
+ * @see recipe-system.md v1.8 §6.6.3
+ */
+const HANDLER_OPERATION: Record<CategoryAHandlerName, 'read' | 'write'> = {
+  'list-files': 'read',
+  'read-file': 'read',
+  'write-file': 'write',
+  // Scope-only handlers below — never reach validatePathForScope, but
+  // listed so the record is exhaustive over CategoryAHandlerName and
+  // future additions force a compile-time decision.
+  'kv-get': 'read',
+  'kv-set': 'write',
+  'kv-list': 'read',
+  'kv-delete': 'write',
+  'notify': 'read',
+  'export-file': 'read',
+}
+
+/**
  * Dispatch a handler invocation.
+ *
+ * Acquires the per-appId mutex first so the manifest snapshot read by
+ * `dispatchInner` cannot be torn out from under the handler by a
+ * concurrent removal / reinstall flow that mutates `app/<appId>/`,
+ * `app/data/<appId>/`, or the manifest cache.
  *
  * @see recipe-system.md §12-5-2 steps 1-8
  */
 export async function dispatch(
+  request: DispatchRequest,
+  manifestStore: RecipeManifestStore,
+  projectRoot: string,
+  kovitoboardRoot?: string,
+): Promise<HandlerResponse<unknown>> {
+  let release: (() => void) | undefined
+  try {
+    release = await acquireAppLock(request.appId)
+  } catch (err) {
+    // A hung handler holding the per-appId lock would otherwise let
+    // queued dispatches stack up; surface the stall as a clean error
+    // so the caller can fail-fast rather than retry forever.
+    if (err instanceof AppLockWaitTimeoutError) {
+      serverLogger.warn({ err, appId: request.appId }, '[dispatcher] app lock wait timed out')
+      return handlerError(
+        'Internal',
+        `Dispatch timed out waiting for the per-app mutex on "${request.appId}"`,
+      )
+    }
+    throw err
+  }
+  try {
+    return await dispatchInner(request, manifestStore, projectRoot, kovitoboardRoot)
+  } finally {
+    release()
+  }
+}
+
+async function dispatchInner(
   request: DispatchRequest,
   manifestStore: RecipeManifestStore,
   projectRoot: string,
@@ -236,6 +426,11 @@ export async function dispatch(
   // 5. Scope validation
   const requiredScopes = HANDLER_REQUIRED_SCOPES[handlerName]
   const approvedScopes = manifest.approvedScopes
+  // Captured from validatePathForScope on the path-bound branch so it
+  // can be threaded onto HandlerContext below. Stays undefined for
+  // scope-only handlers, matching HandlerContext.resolvedPath's
+  // optional contract.
+  let resolvedPath: string | undefined
 
   if (HANDLERS_WITH_PATH.has(handlerName)) {
     // Handler with path argument: cross-validate path x scope
@@ -250,6 +445,7 @@ export async function dispatch(
       appId,
       projectRoot,
       kovitoboardRoot,
+      HANDLER_OPERATION[handlerName],
     )
     if (!pathValidation.ok) {
       return handlerError(
@@ -257,6 +453,18 @@ export async function dispatch(
         `Path "${pathArg}" is not allowed: ${pathValidation.failedCode}`,
       )
     }
+    // The validator returns the physical path that passed scope and
+    // exclusion checks; missing here would mean the validator
+    // contract is broken, so refuse with Internal rather than fall
+    // back to projectRoot+input.path (which is exactly the
+    // re-resolution pattern this change removes).
+    if (!pathValidation.resolvedPath) {
+      return handlerError(
+        'Internal',
+        `Scope validator returned ok without a resolved path for "${pathArg}"`,
+      )
+    }
+    resolvedPath = pathValidation.resolvedPath
   } else {
     // Handler without path argument: validate scope only
     const scopeValidation = validateScopeOnly(approvedScopes, requiredScopes)
@@ -286,7 +494,18 @@ export async function dispatch(
   // the recipe author's lineage id captured on the manifest. The
   // audit log records both so an entry can be attributed to a
   // specific app instance (multiple apps may share a recipeId).
+  // `resolvedPath` is set above only on the path-bound branch so
+  // the handler can read/write the same physical path that scope
+  // validation cleared, without re-deriving it.
   const recipeId = manifest.recipeId
+  // Trust-axis value captured at dispatch time. Handler dispatch only
+  // reaches this point AFTER `manifestStore.get(appId)` resolves a
+  // non-null manifest (step 1), so the value is always the manifest's
+  // `trustLevel` — no `'context-missing'` fallback is exercised on
+  // this path. The reservation of the `'context-missing'` enum is
+  // T-3-4 future-proofing for callers that may invoke `writeAuditLog`
+  // outside the dispatcher.
+  const trust = manifest.trustLevel
   const startTime = Date.now()
   try {
     const result = await handlerDef.execute(expandedArgs, {
@@ -294,6 +513,7 @@ export async function dispatch(
       appId,
       recipeId,
       approvedScopes,
+      resolvedPath,
     })
     const durationMs = Date.now() - startTime
 
@@ -308,6 +528,7 @@ export async function dispatch(
         result: result.ok ? 'ok' : 'error',
         errorCode: result.ok ? undefined : result.error.code as HandlerErrorCode,
         durationMs,
+        trust,
       }),
       projectRoot,
     )
@@ -315,7 +536,7 @@ export async function dispatch(
     return result
   } catch (err) {
     const durationMs = Date.now() - startTime
-    console.error(`[dispatcher] Handler "${handlerName}" threw:`, err)
+    serverLogger.error({ err }, `[dispatcher] Handler "${handlerName}" threw`)
 
     // Audit log (exception)
     writeAuditLog(
@@ -328,11 +549,19 @@ export async function dispatch(
         result: 'error',
         errorCode: 'Internal',
         durationMs,
+        trust,
       }),
       projectRoot,
     )
 
-    return handlerError('Internal', `Handler execution failed: ${err instanceof Error ? err.message : String(err)}`)
+    // Client-safe envelope: the `Internal` envelope's `message` MUST be a fixed
+    // string. Do NOT echo `err.message` / `err.stack` / `err.cause` / `String(err)`
+    // — recipe code receives this envelope over WebSocket, so a verbatim caught-
+    // error string becomes a side-channel for probing absolute paths, errno, or
+    // internal layout. The full detail is preserved in `serverLogger.error({ err }, ...)`
+    // above for operator diagnosis via the pino sink.
+    // See: docs/specs/handler-dispatch.md v1.3 §7 (supplementary §S16, v0.2.0).
+    return handlerError('Internal', 'Handler execution failed')
   }
 }
 

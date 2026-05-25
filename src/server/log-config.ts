@@ -16,7 +16,8 @@
  *
  * Out-of-range retention values (non-numeric, < 1, > 365) are clamped
  * to the default 7 with a `console.warn` (the logger is not yet
- * initialized at this point, so console.warn is intentional).
+ * initialized at this point, so the bootstrap-time fallback is
+ * intentional — see `// hygiene-allow: console-bootstrap` below).
  *
  * This module deliberately does not import the logger to avoid a
  * circular dependency.
@@ -51,11 +52,14 @@ export function clampRetention(value: number | string | undefined | null): numbe
     n < MIN_RETENTION_DAYS ||
     n > MAX_RETENTION_DAYS
   ) {
-    // Logger is not yet initialized at config-resolution time; using
-    // console.warn here is intentional (DEC-017 §5.2).
-    console.warn(
-      `[log-config] Invalid retentionDays value "${String(value)}", falling back to default ${DEFAULT_RETENTION_DAYS}`,
-    )
+    // Logger is not yet initialized at config-resolution time —
+    // resolveLogConfig() runs *before* initLogger() so the pino
+    // pipeline is not built yet. Falling back to a single
+    // console.warn is the intended bootstrap path. The hygiene
+    // opt-out tag must sit on the same line as the call itself,
+    // so the multi-line form is collapsed onto one line below.
+    // prettier-ignore
+    console.warn(`[log-config] Invalid retentionDays value "${String(value)}", falling back to default ${DEFAULT_RETENTION_DAYS}`) // hygiene-allow: console-bootstrap
     return DEFAULT_RETENTION_DAYS
   }
   return Math.floor(n)

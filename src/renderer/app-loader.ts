@@ -36,7 +36,10 @@
 
 import type { AppMenuEntry, AppMenuModule } from './types/app-types'
 import type { AppMenuEntryMeta } from '../shared/app-types'
+import type { RecipePageTrustLevel } from '../shared/recipe-types'
+import { isRecipePageTrustLevel } from '../shared/recipe-types'
 import { createLogger } from './lib/logger'
+import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('app-loader')
 
@@ -50,6 +53,18 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * dynamic-import the module via Vite's `/@fs/` URL.
    */
   pageAbsolutePath: string | null
+  /**
+   * Trust-axis value sourced server-side from the active recipe
+   * manifest (v0.2.0). `null` when the manifest has not yet been
+   * registered (legacy `app/menu.ts` edited outside the install
+   * flow). The renderer forwards this to the trust-marker UI.
+   *
+   * Typed as the broader `string` on the wire because legacy /
+   * forged payloads may emit `'KB-trusted'` (the reserved literal);
+   * `toAppMenuEntry` runs the {@link RecipePageTrustLevel} guard
+   * before forwarding to {@link AppMenuEntry.trustLevel}.
+   */
+  trustLevel?: string | null
 }
 
 /**
@@ -63,7 +78,7 @@ interface MenuEntryWire extends AppMenuEntryMeta {
 export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
   // 1) Preferred path: API.
   try {
-    const res = await fetch('/api/app/menu-entries')
+    const res = await kbFetch('/api/app/menu-entries')
     if (res.ok) {
       const wire = (await res.json()) as MenuEntryWire[]
       if (Array.isArray(wire)) {
@@ -87,7 +102,21 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
 
   try {
     const mod = await modules[paths[0]]()
-    return mod.menuEntries ?? []
+    const raw = mod.menuEntries ?? []
+    // Anything `app/menu.ts` claims about `trustLevel` is
+    // author-controlled (the file lives inside the recipe artifact
+    // directory). The only legitimate trust authority is the server
+    // manifest store, which the API path reads via
+    // `manifestStore.get(appId)?.trustLevel`. The fallback exists for
+    // tests that stub `app/menu.ts` directly without standing up the
+    // API; production browsers always reach the API path. Force
+    // `trustLevel` to `null` here so a hostile fallback module cannot
+    // forge a trusted badge — the trust marker silently hides itself
+    // in that case rather than rendering a misleading claim.
+    return raw.map((entry) => ({
+      ...entry,
+      trustLevel: null,
+    }))
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')
     return []
@@ -105,10 +134,30 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
  */
 function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
   const absPath = meta.pageAbsolutePath
+  // The wire payload may omit `trustLevel` (legacy server / test
+  // doubles). Validate against `RecipePageTrustLevel` so an
+  // unexpected literal — including the reserved `'KB-trusted'` value
+  // which the spec marks as illegal for recipe-page entries — is
+  // forced to `null` before it reaches the renderer-side
+  // TrustMarker. A server bug or corrupted manifest that leaks
+  // `'KB-trusted'` over the wire therefore hides the badge instead
+  // of inflating a recipe install to the first-party signal.
+  const trustLevel: RecipePageTrustLevel | null = isRecipePageTrustLevel(meta.trustLevel)
+    ? meta.trustLevel
+    : null
+  if (meta.trustLevel === 'KB-trusted') {
+    log.warn(
+      { entryId: meta.id },
+      'Refusing to render KB-trusted badge on a recipe-page menu entry; treating as null. ' +
+        'KB-trusted is reserved for KB-core surfaces and must never accompany a recipe install — ' +
+        'investigate the manifest source if this fires.',
+    )
+  }
   return {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
+    trustLevel,
     component: () => {
       if (!absPath) {
         const err = new Error(

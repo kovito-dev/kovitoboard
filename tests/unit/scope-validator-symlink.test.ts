@@ -52,8 +52,13 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
-    expect(result).toEqual({ ok: true })
+    expect(result.ok).toBe(true)
+    // The dispatcher now consumes `resolvedPath` as the physical
+    // base, so it must be the realpath of the symlink target.
+    expect(result.resolvedPath).toBe(fs.realpathSync(realProject))
   })
 
   it('accepts a relative subpath when projectRoot is a symlink', () => {
@@ -63,8 +68,13 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
-    expect(result).toEqual({ ok: true })
+    expect(result.ok).toBe(true)
+    expect(result.resolvedPath).toBe(
+      path.join(fs.realpathSync(realProject), 'docs', 'README.md'),
+    )
   })
 
   it('still rejects an out-of-tree absolute path under symlink projectRoot', () => {
@@ -77,9 +87,12 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       symlinkProject,
+      undefined,
+      'read',
     )
     expect(result.ok).toBe(false)
     expect(result.failedCode).toBe('PathOutOfScope')
+    expect(result.resolvedPath).toBeUndefined()
   })
 
   it('continues to work when projectRoot is a regular directory (no regression)', () => {
@@ -89,7 +102,10 @@ describe('validatePathForScope — symlink projectRoot', () => {
       ['project-read'],
       'rid',
       realProject,
+      undefined,
+      'read',
     )
-    expect(result).toEqual({ ok: true })
+    expect(result.ok).toBe(true)
+    expect(result.resolvedPath).toBe(fs.realpathSync(realProject))
   })
 })

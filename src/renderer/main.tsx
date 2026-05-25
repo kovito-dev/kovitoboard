@@ -3,6 +3,14 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+// Host bootstrap MUST be the first import in the renderer so it
+// captures pristine `fetch` / `XMLHttpRequest` / `Headers` /
+// `Request` / `Response` references before any recipe-loading code
+// runs (spec v1.7 §6.10.6.13 H-CR1). The bootstrap also sets the
+// `globalThis.__kbHostBootstrapComplete` sentinel that
+// `RecipePageHost` reads to emit `host-bootstrap-verified` audit
+// records.
+import './app-host/hostBootstrap'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { ToastProvider } from './components/Toast'

@@ -36,6 +36,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppScanResult, RecipeMetadata } from '../../shared/recipe-types'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 const RECIPE_ID_RE = /^[A-Za-z0-9_\-./@]+$/
 
@@ -78,7 +79,7 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
     }
     setState('scanning')
     setError(null)
-    fetch(`/api/recipes/app-scan?appId=${encodeURIComponent(appId)}`)
+    kbFetch(`/api/recipes/app-scan?appId=${encodeURIComponent(appId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
@@ -150,14 +151,63 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
     }
 
     try {
-      const res = await fetch('/api/recipes/export', {
+      const res = await kbFetch('/api/recipes/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ appId, metadata }),
       })
       if (!res.ok) {
-        // Error path returns JSON `{ error }`; success returns binary.
+        // Error path returns JSON `{ error, ... }`; success returns binary.
         const data = await res.json().catch(() => ({}))
+        // The custom-BE refusal carries a structured shape with
+        // `error: 'CustomBeNotExportable'` + `files` + `guidance`.
+        // Surface a localized summary instead of the bare error code
+        // so the user understands why the export was refused.
+        if (data?.error === 'CustomBeNotExportable') {
+          const rawSample = Array.isArray(data?.files) ? data.files : []
+          // Sanitize each filename before interpolating it into the
+          // localized error message. POSIX filenames can carry
+          // newlines and control characters; if such a path ever
+          // ends up in `app/<appId>/api/`, echoing it verbatim into
+          // a multi-line modal would let it forge fake fields or
+          // hide the real error context. Strip non-printables and
+          // cap each entry's length, mirroring how a JSON-encoded
+          // string would render.
+          const sanitizeName = (name: unknown): string => {
+            if (typeof name !== 'string') return ''
+            // Strip ASCII control characters (NUL through 0x1F + DEL 0x7F)
+            // so an attacker-controlled file name cannot embed terminal
+            // escape sequences in the export preview UI. Hex escapes keep
+            // the regex source plain text so Git stops flagging the file
+            // as binary, restoring textual diffs for review tooling.
+            const stripped = name.replace(/[\x00-\x1f\x7f]/g, '?')
+            return stripped.length > 200 ? `${stripped.slice(0, 200)}…` : stripped
+          }
+          const sample: string[] = rawSample
+            .map(sanitizeName)
+            .filter((s: string) => s.length > 0)
+          const totalCount =
+            typeof data?.filesCount === 'number' && data.filesCount > 0
+              ? data.filesCount
+              : sample.length
+          const approximate = data?.filesCountApproximate === true
+          // Show only the bounded sample in the modal; if the
+          // actual count exceeds it, append a tail so the user
+          // knows the list was truncated. When the scanner stopped
+          // early it reports a lower-bound count, so the tail
+          // becomes "...and N+ more" instead of "...and N more".
+          const remaining = totalCount - sample.length
+          const filesText =
+            remaining > 0
+              ? `${sample.join(', ')}, ...and ${remaining}${approximate ? '+' : ''} more`
+              : sample.join(', ')
+          throw new Error(
+            t('recipe.export.error.customBeNotExportable', {
+              appId,
+              files: filesText,
+            }),
+          )
+        }
         throw new Error(
           typeof data?.error === 'string' && data.error.length > 0
             ? data.error

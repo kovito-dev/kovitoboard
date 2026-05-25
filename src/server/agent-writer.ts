@@ -12,6 +12,7 @@
  * - updateAgentSections: Partially update structured fields of an existing agent
  */
 
+import { serverLogger } from './logger'
 import { join } from 'path'
 import matter from 'gray-matter'
 import type { FileAccessLayer } from './fs-layer'
@@ -119,7 +120,7 @@ export function createAgentFromTemplate(
     fs.writeFileSync(filePath, finalContent, 'utf-8')
     return { success: true, filePath }
   } catch (err) {
-    console.error('[agent-writer] Failed to write agent file:', err)
+    serverLogger.error({ err }, '[agent-writer] Failed to write agent file:')
     return { success: false, error: 'Failed to write agent file' }
   }
 }
@@ -250,7 +251,7 @@ export function createAgentFromScratch(
     fs.writeFileSync(filePath, finalContent, 'utf-8')
     return { success: true, filePath }
   } catch (err) {
-    console.error('[agent-writer] Failed to write scratch agent file:', err)
+    serverLogger.error({ err }, '[agent-writer] Failed to write scratch agent file:')
     return { success: false, error: 'Failed to write agent file' }
   }
 }
@@ -399,7 +400,7 @@ export function updateAgentSections(
 
     return { success: true }
   } catch (err) {
-    console.error('[agent-writer] Failed to update agent file:', err)
+    serverLogger.error({ err }, '[agent-writer] Failed to update agent file:')
     return { success: false, error: 'Failed to update agent file' }
   }
 }
@@ -505,7 +506,7 @@ export function injectMarkerSections(
     fs.writeFileSync(filePath, finalContent, 'utf-8')
     return { success: true, alreadyHasMarkers: false }
   } catch (err) {
-    console.error('[agent-writer] Failed to inject markers:', err)
+    serverLogger.error({ err }, '[agent-writer] Failed to inject markers:')
     return { success: false, error: 'Failed to inject markers' }
   }
 }

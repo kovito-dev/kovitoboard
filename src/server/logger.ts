@@ -43,40 +43,6 @@ function escapeRegExp(str: string): string {
 }
 
 /**
- * Build a function that replaces the home directory path with `~`
- * in every string-typed value within a structured log record.
- *
- * Applied via pino's `formatters.log` so the redaction happens at
- * write-time only — in-memory objects passed to logger.* are not
- * mutated, and behavior of the rest of the program is unaffected.
- */
-function buildHomePathMasker(): (obj: Record<string, unknown>) => Record<string, unknown> {
-  const home = homedir()
-  if (!home || home.length < 2) {
-    // No usable home directory; identity transformation
-    return (obj) => obj
-  }
-  const pattern = new RegExp(escapeRegExp(home), 'g')
-  const replace = (s: string): string => s.replace(pattern, '~')
-
-  const visit = (value: unknown): unknown => {
-    if (typeof value === 'string') return replace(value)
-    if (value === null || value === undefined) return value
-    if (Array.isArray(value)) return value.map(visit)
-    if (typeof value === 'object') {
-      const next: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        next[k] = visit(v)
-      }
-      return next
-    }
-    return value
-  }
-
-  return (obj) => visit(obj) as Record<string, unknown>
-}
-
-/**
  * Mask the home directory path in any string. Exported for the diagnose
  * CLI and unit tests.
  */
@@ -84,6 +50,170 @@ export function maskHomePath(input: string): string {
   const home = homedir()
   if (!home || home.length < 2) return input
   return input.replace(new RegExp(escapeRegExp(home), 'g'), '~')
+}
+
+/**
+ * Patterns matched and redacted from log strings to keep
+ * authorization material out of `.kovitoboard/logs/server.log` and
+ * stdout. The applied list intentionally stays narrow: each pattern
+ * targets a value shape that is never a legitimate component name,
+ * file path, or human-readable message, so false positives stay rare
+ * and the redaction does not eat structured fields agents need to
+ * read.
+ *
+ * Coverage:
+ * - Anthropic API keys (`sk-ant-…`) the Claude CLI may print on stderr.
+ * - Generic JWTs (`<base64url>.<base64url>.<base64url>`), which is the
+ *   shape of every OAuth bearer / session token that could end up in a
+ *   `paneTail` capture or a CLI failure message.
+ *
+ * Each match is replaced with a length-preserving `<sk-ant redacted>`
+ * / `<jwt redacted>` placeholder so log readers can still tell *that*
+ * a credential appeared without exposing its value.
+ *
+ * Adding new patterns: prefer narrow shapes (a unique prefix or
+ * exact length range). Broad heuristics (e.g. "any 40-char hex
+ * string") will mask hashes / sha256 commit ids that handlers and
+ * tests legitimately log.
+ */
+const SENSITIVE_TOKEN_PATTERNS: ReadonlyArray<{ pattern: RegExp; placeholder: string }> = [
+  // Anthropic API key prefix; emitted in plaintext by `claude` CLI on
+  // some auth-failure paths and surfaces through claude-bridge stderr.
+  { pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, placeholder: '<sk-ant redacted>' },
+  // Generic JWT (OAuth bearer / session). 3 base64url segments
+  // separated by dots, with the `eyJ` (`{"…`) header prefix on the
+  // first two segments. 4+ chars per segment so compact JWTs whose
+  // payload is small (e.g. `{"exp":1}` → `eyJleHAiOjF9`) are still
+  // matched while `a.b.c`-shape false positives are still excluded
+  // by the `eyJ` prefix gate.
+  { pattern: /eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g, placeholder: '<jwt redacted>' },
+]
+
+/**
+ * Apply every credential-pattern redaction to a single string.
+ * Exported for the diagnose CLI and unit tests so the redaction can
+ * be verified the same way `maskHomePath` is.
+ */
+export function redactSensitiveTokens(input: string): string {
+  let out = input
+  for (const { pattern, placeholder } of SENSITIVE_TOKEN_PATTERNS) {
+    out = out.replace(pattern, placeholder)
+  }
+  return out
+}
+
+/**
+ * Build a string redactor that applies both home-path masking and
+ * credential token redaction in a single substitution pass. Used
+ * both by the structural walker (`buildLogRedactor`) and by the
+ * `hooks.logMethod` wrapper for string positional args, so the
+ * two redaction code paths can never diverge — every string that
+ * lands on disk gets the same two substitutions in the same
+ * order.
+ */
+function buildStringRedactor(): (s: string) => string {
+  const home = homedir()
+  // Honour the safety check used by maskHomePath: no usable home
+  // directory means we skip the home-path layer (CI env with
+  // `HOME=/`).
+  const homeUsable = !!home && home.length >= 2
+  const homePattern = homeUsable ? new RegExp(escapeRegExp(home), 'g') : null
+
+  return (s: string): string => {
+    let out = s
+    if (homePattern) out = out.replace(homePattern, '~')
+    out = redactSensitiveTokens(out)
+    return out
+  }
+}
+
+/**
+ * Single-pass walker that applies every active redaction (home-path
+ * mask + credential token redaction) to every string-typed value
+ * inside a log record. Visiting the record once and applying both
+ * substitutions per-string avoids the double-walk + double-clone
+ * cost of composing two independent visitors, which matters on
+ * hot paths that log large arrays such as the trust-prompt
+ * fallback `paneTail` (50 raw capture lines per fire).
+ *
+ * Applied via pino's `formatters.log` so the redaction happens at
+ * write-time only — in-memory objects passed to logger.* are not
+ * mutated, and behavior of the rest of the program is unaffected.
+ *
+ * Walking rules:
+ * - Plain objects and arrays are recursed into.
+ * - Non-plain objects (`Error`, `Date`, `Buffer`, `Map`, class
+ *   instances, etc.) are left as-is so pino's own serialization
+ *   contract still applies. Walking them via `Object.entries`
+ *   would clone away their non-enumerable shape (Error.message /
+ *   Error.stack would silently degrade to `{}`).
+ * - Cycles are tracked with a per-walk `WeakSet`; a value already
+ *   on the path is returned untouched instead of recursing again
+ *   (a self-referential `paneTail` would otherwise overflow the
+ *   stack and crash the log path).
+ * - A hard depth cap (`MAX_DEPTH`) bounds pathological deep
+ *   structures so the redactor cannot become a request-time DoS
+ *   vector even if a future caller passes something unusual.
+ */
+const REDACT_MAX_DEPTH = 32
+
+function buildLogRedactor(
+  replaceString: (s: string) => string,
+): (obj: Record<string, unknown>) => Record<string, unknown> {
+  const visit = (
+    value: unknown,
+    seen: WeakSet<object>,
+    depth: number,
+  ): unknown => {
+    if (typeof value === 'string') return replaceString(value)
+    if (value === null || value === undefined) return value
+    if (typeof value !== 'object') return value
+    // Replace anything past the depth cap with a sentinel rather
+    // than handing the raw subtree back: returning the original
+    // would re-expose every credential below the cap because
+    // pino's serializer still walks it on output.
+    if (depth >= REDACT_MAX_DEPTH) return '[Truncated: depth limit]'
+    // Replace cycles with a sentinel for the same reason; in
+    // particular, returning the original object would re-expose
+    // raw fields under `self`/parent references that the rest of
+    // the walk has not visited yet, and would also reintroduce
+    // the cycle into the cloned record.
+    if (seen.has(value as object)) return '[Circular]'
+
+    if (Array.isArray(value)) {
+      seen.add(value)
+      const arr = value.map((v) => visit(v, seen, depth + 1))
+      seen.delete(value)
+      return arr
+    }
+
+    // Walk only plain objects. `Error`, `Date`, `Buffer`, `Map`,
+    // and other class instances keep their original identity so
+    // pino's own serializer (or a future `serializers.err` opt-in)
+    // can format them; cloning them via `Object.entries` would
+    // strip non-enumerable members (Error.message / Error.stack)
+    // and silently break log fidelity.
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) {
+      return value
+    }
+
+    seen.add(value as object)
+    // `Object.create(null)` clones into a prototype-less record so a
+    // `__proto__` key on the input value is preserved as data
+    // instead of mutating the clone's prototype chain. Pino's
+    // JSON serializer treats null-prototype objects identically to
+    // plain objects on output, so the persisted record shape is
+    // unchanged.
+    const next: Record<string, unknown> = Object.create(null)
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      next[k] = visit(v, seen, depth + 1)
+    }
+    seen.delete(value as object)
+    return next
+  }
+
+  return (obj) => visit(obj, new WeakSet(), 0) as Record<string, unknown>
 }
 
 /**
@@ -123,7 +253,90 @@ export async function initLogger(
     { stream: fileStream, level: config.level },
   ]
 
-  const maskLog = buildHomePathMasker()
+  const maskString = buildStringRedactor()
+  const maskLog = buildLogRedactor(maskString)
+
+  // Custom error serializer that pre-redacts `message` / `stack`
+  // so the most common Error-logging shape — `logger.error({ err
+  // }, 'msg')` — passes a redacted `{ type, message, stack }` plain
+  // object onto `formatters.log`. Pino's default serializer also
+  // expands an Error to `{ type, message, stack }`, but pino runs
+  // serializers AFTER `formatters.log`, so the resulting strings
+  // would otherwise reach disk untouched even though the rest of
+  // the redaction layer is in place. Trailing-positional `Error`
+  // args (printf-style `%o`) still bypass this path; call sites
+  // that need to log such errors should pass them as
+  // `{ errMessage: err.message }` so the structural redactor sees
+  // a plain object instead.
+  //
+  // Guard with `instanceof Error` so existing call sites that put
+  // structured error data on the `err` field (e.g.
+  // `logger.warn({ err: { code, detail } }, 'failed')`) keep
+  // their original payload — `formatters.log` will still walk
+  // them and redact strings inside. Without the guard, the
+  // serializer would collapse the payload to
+  // `{ type: 'Object' }` and silently drop the operator's
+  // diagnostic fields.
+  // Maximum recursion depth for `cause`-chain expansion in
+  // `errSerializer`. Plenty for `new Error('x', { cause: new
+  // Error('y', { cause: ... }) })` chains while still bounding
+  // the worst case if a future caller builds a self-referential
+  // cause graph.
+  const ERR_SERIALIZER_MAX_DEPTH = 4
+
+  // Redact a single own-property of an Error before placing it
+  // on the serialized record. Pino runs `serializers.err` AFTER
+  // `formatters.log`, so any value we hand back here lands on
+  // disk verbatim — strings must be passed through `maskString`
+  // and nested plain objects through `maskLog` BEFORE the
+  // serializer returns. Nested Errors (e.g. `cause`) recurse
+  // through `errSerializer` itself.
+  const redactErrField = (value: unknown, depth: number): unknown => {
+    if (typeof value === 'string') return maskString(value)
+    if (value === null || value === undefined) return value
+    if (value instanceof Error) return errSerializer(value, depth + 1)
+    if (typeof value === 'object') {
+      return maskLog(value as Record<string, unknown>)
+    }
+    return value
+  }
+
+  const errSerializer = (err: unknown, depth = 0): unknown => {
+    if (!(err instanceof Error) || depth > ERR_SERIALIZER_MAX_DEPTH) {
+      return err
+    }
+    // Start from the redacted standard fields, then layer in
+    // diagnostic metadata. Pino runs `serializers.err` after
+    // `formatters.log`, so anything we put on `out` reaches disk
+    // verbatim and must be redacted in-place here.
+    const out: Record<string, unknown> = {
+      type: err.constructor?.name ?? 'Error',
+      message: typeof err.message === 'string' ? maskString(err.message) : undefined,
+      stack: typeof err.stack === 'string' ? maskString(err.stack) : undefined,
+    }
+    // Custom subclasses commonly attach diagnostic data as
+    // enumerable own properties (`.code`, `.statusCode`,
+    // `.errno`, etc.). Walk every value through `redactErrField`
+    // so a string credential on `.detail` or a nested object on
+    // `.context` cannot smuggle past the redactor.
+    const errAsRecord = err as unknown as Record<string, unknown>
+    for (const key of Object.keys(err as object)) {
+      if (key in out) continue
+      out[key] = redactErrField(errAsRecord[key], depth)
+    }
+    // Standard `Error.cause` (ES2022) is non-enumerable, so
+    // `Object.keys` skips it. Pull it via the property
+    // descriptor and serialize recursively — nested Errors keep
+    // their structural shape while message / stack get redacted
+    // at every level.
+    if (!('cause' in out)) {
+      const causeDescriptor = Object.getOwnPropertyDescriptor(err, 'cause')
+      if (causeDescriptor && 'value' in causeDescriptor && causeDescriptor.value !== undefined) {
+        out.cause = redactErrField(causeDescriptor.value, depth)
+      }
+    }
+    return out
+  }
 
   rootLogger = pino(
     {
@@ -137,6 +350,97 @@ export async function initLogger(
       formatters: {
         level: (label) => ({ level: label }),
         log: maskLog,
+      },
+      serializers: {
+        err: errSerializer,
+      },
+      hooks: {
+        // pino's `formatters.log` only sees the merging object, not
+        // the trailing positional arguments. Without this hook,
+        // `logger.info('text with sk-ant-... inline')` persists the
+        // token verbatim, and printf-style interpolation such as
+        // `logger.info('failed %o', { apiKey: '…' })` also leaks
+        // through pino's internal `util.format` step. Intercept
+        // every level method to redact those positions before pino
+        // forwards them.
+        //
+        // Crucially, **skip the first positional arg if it is an
+        // object**: pino treats arg 0 as the merging object that
+        // `formatters.log` (i.e. `maskLog`) will walk on the way
+        // out. Walking it here too would
+        //   (a) double-traverse and double-clone every structured
+        //       log record (e.g. `paneTail` arrays), defeating the
+        //       single-pass redactor, and
+        //   (b) collapse `Error`-shaped first args to `{}` because
+        //       `Object.entries` ignores the non-enumerable
+        //       `message` / `stack` — silently destroying any
+        //       future `serializers.err` expansion before
+        //       `formatters.log` ever sees the object.
+        // The merging-object path therefore stays exclusively in
+        // `formatters.log`. Trailing positional args (printf-style
+        // `%o` / interpolation extras) keep going through the hook
+        // because they are formatted by pino's `util.format` step
+        // *after* this hook returns and never reach
+        // `formatters.log`.
+        logMethod(args, method) {
+          for (let i = 0; i < args.length; i++) {
+            const arg = args[i]
+            if (typeof arg === 'string') {
+              // Use the shared string redactor so msg-string args
+              // get the same home-path mask + token redaction as
+              // every string inside `formatters.log`. Without this
+              // alignment, an absolute home path inside a plain
+              // `logger.info('...')` call would land verbatim
+              // while the same string nested in a structured
+              // field would be `~`-masked.
+              args[i] = maskString(arg)
+            } else if (i === 0 && arg instanceof Error) {
+              // `logger.error(err)` / `logger.error(err, 'msg')`
+              // — pino renders this as the bare Error and skips
+              // the merging-object path that `serializers.err`
+              // hooks into. Wrap the Error into `{ err }` so the
+              // existing `serializers.err` path runs and
+              // `message` / `stack` are redacted via
+              // `maskString` before they reach disk.
+              //
+              // Also pre-populate `msg` on the wrap with the
+              // redacted Error.message: pino's default behaviour
+              // for a bare-Error first arg is to copy
+              // `err.message` into the `msg` field, but that
+              // copy happens AFTER this hook returns, so without
+              // an explicit redacted `msg` the raw message would
+              // still land on disk via the `msg` slot. A
+              // following positional msg-string (e.g.
+              // `logger.error(err, 'custom msg')`) goes through
+              // the string-arg branch above and pino prefers the
+              // explicit msg, so this default is only used when
+              // no msg was supplied.
+              const wrap: Record<string, unknown> = { err: arg }
+              if (typeof arg.message === 'string' && arg.message.length > 0) {
+                wrap.msg = maskString(arg.message)
+              }
+              args[i] = wrap
+            } else if (i > 0 && arg instanceof Error) {
+              // Trailing Error (`logger.info('failed %o', err)`):
+              // pino's util.format would print the Error verbatim,
+              // re-exposing `err.message` / `err.stack` even
+              // though `serializers.err` covers the merging-object
+              // path. Replace the Error with the same redacted
+              // plain object that `serializers.err` would produce
+              // so util.format prints a redacted shape (the
+              // standard `{ type, message, stack }` plus any
+              // enumerable own properties). The in-memory Error
+              // is untouched because the serializer builds a
+              // fresh record.
+              args[i] = errSerializer(arg)
+            } else if (i > 0 && arg !== null && typeof arg === 'object') {
+              args[i] = maskLog(arg as Record<string, unknown>)
+            }
+          }
+          // pino's typing for the hook expects the rest-spread call.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return method.apply(this, args as any)
+        },
       },
       messageKey: 'msg',
     },

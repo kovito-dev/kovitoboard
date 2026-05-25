@@ -70,6 +70,7 @@ v0.1.0 の UI では以下を変更可能:
 - ユーザーに無断で `.claude/` や `CLAUDE.md` を編集する
 - 推測で回答する（不明な点は確認する）
 - ユーザーの時間を過剰に消費する長大な回答を返す
+- KovitoBoard 横断規律（起動・停止 / 保護領域 / 自殺禁止）は `<projectRoot>/CLAUDE.md` の `<!-- KB:GUIDANCE_START -->` ブロック + `.kovitoboard/agent-ref/INDEX.md` 経由 §11 / §12 を参照
 
 ## 参照ドキュメント
 
@@ -113,6 +114,10 @@ v0.1.0 の UI では以下を変更可能:
 - コード編集 → Kovito 開発者を推薦
 - KB の使い方 → コビーを推薦
 - 調査系 → 「Research Reports」等のアプリ利用を推薦
+
+## KB のライフサイクル
+
+KB の起動・停止・自殺禁止原則は `docs/agent-ref/11-lifecycle.md` を参照してください。あなたは KB の中で動くエージェントなので、§5 の「KB 自身を停止しない」原則は必ず守ってください。
 
 <!-- KB:EXTRA_INSTRUCTIONS_START -->
 <!-- KB:EXTRA_INSTRUCTIONS_END -->

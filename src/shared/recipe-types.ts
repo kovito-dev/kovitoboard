@@ -46,9 +46,12 @@ export interface RecipeMetadata {
    * The recipe author's chosen immutable identifier. Required as of
    * v0.1.0 (DEC-024 D-8). Constraints:
    *   - matches `/^[A-Za-z0-9_\-./@]+$/`
-   *   - 1〜256 characters
+   *   - 1〜64 characters (security-limits.md v1.1 L-R5; tightened
+   *     from the legacy 256-char ceiling in v0.2.x)
    * Forms accepted: `"document-viewer"`, `"kovito-dev/document-viewer"`,
-   * `"sha256:abc123..."`, `"org-foo/recipe-bar@1.0.0"`.
+   * `"org-foo/recipe-bar@1.0.0"`. Full hex hashes (`sha256-…`) need
+   * to fit within 64 chars; the previously documented `sha256:…`
+   * literal example no longer fits and is dropped.
    *
    * v0.1.x backward compatibility: when a `recipe.yaml` does not
    * declare `recipeId`, `recipe-parser.ts` synthesizes one via
@@ -102,9 +105,132 @@ export interface ParsedRecipe {
    * @see recipe-system.md §12-2, §12-3
    */
   api?: RecipeApiSection
+  /**
+   * Declarative capture-capability requirement (v0.2.0 opt-in mechanism).
+   *
+   * Only set when the recipe's `recipe.yaml` declares a `capture:`
+   * section. The parser validates each entry against
+   * {@link CAPTURE_KIND_VALUES} so the install warning UI and the
+   * server-side endpoint guard share a single source of truth.
+   *
+   * @see recipe-system.md v1.4 §6.10.1
+   */
+  capture?: RecipeCaptureSection
   hash: string
   sourceFormat: 'directory' | 'markdown'
   sourcePath: string
+}
+
+/**
+ * Capture kinds a recipe is allowed to request from `capture.requires`
+ * in `recipe.yaml` (v0.2.x). Mirrored on the server in
+ * `src/server/recipe/apiTypes.ts` as the closed `CaptureKind` enum.
+ *
+ * Authors who want to extend this list (camera, clipboard, etc.) need
+ * to update both halves together — the install warning UI and the
+ * server-side capture endpoint key off the same membership check.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ * @stable v0.2.0
+ */
+export const CAPTURE_KIND_VALUES = ['a11y', 'exposed-context'] as const
+export type CaptureKindValue = (typeof CAPTURE_KIND_VALUES)[number]
+
+/**
+ * Trust-axis vocabulary applied to an installed recipe's manifest
+ * (v0.2.0). This is the **install-authority** axis — what authority
+ * a manifest record claims for the code that ships under
+ * `app/<appId>/`. It is intentionally distinct from the
+ * **content-source** axis (`PreambleSource` in
+ * `src/renderer/components/PreambleWarning.tsx`), which classifies
+ * untrusted regions inside a recipe page by where their bytes
+ * originated. The two axes overlap conceptually with the threat
+ * model's vocabulary but are persisted, validated, and rendered
+ * along separate code paths so we can evolve them independently
+ * without breaking either compile-time exhaustiveness boundary:
+ *
+ *   - Manifest-level trust (this enum) is what `recipe-parser` /
+ *     `recipeManifestStore` / `handlerDispatcher` / `auditLogger`
+ *     thread through the install + dispatch path.
+ *   - Content-source trust (`PreambleSource`) is what recipe pages
+ *     attach to specific untrusted regions they render.
+ *
+ * v0.2.x persists only `'unknown'` (grandfather migration sets it
+ * explicitly, the install path is disabled). The remaining enum
+ * members are reserved:
+ *   - `'KB-trusted'` — reserved for KB-core surfaces. Recipe-side
+ *     code paths (menu-entries wire, TrustMarker) MUST reject this
+ *     value on incoming data even though it lives in the union, so
+ *     a server bug / corrupted manifest cannot inflate a recipe
+ *     install to a first-party badge. See `app-loader.ts`
+ *     `toAppMenuEntry` for the wire-side guard.
+ *   - `'code-trusted'` — KovitoHub signed publisher (v0.3.0).
+ *   - `'code-trusted (sideloaded)'` — developer sideload path (v0.3.0).
+ *   - `'unknown'` — grandfather migration / current default.
+ *
+ * Mirrored on the server in `src/server/recipe/apiTypes.ts` (re-export)
+ * so manifestStore / capture / audit code can keep its existing
+ * import path while the renderer reads the same SSOT.
+ *
+ * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @see src/renderer/components/PreambleWarning.tsx (PreambleSource — content axis)
+ * @stable v0.2.0
+ */
+export const TRUST_LEVEL_VALUES = [
+  'KB-trusted',
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+export type TrustLevelValue = (typeof TRUST_LEVEL_VALUES)[number]
+
+/** Runtime type guard for {@link TrustLevelValue}. */
+export function isTrustLevelValue(value: unknown): value is TrustLevelValue {
+  return typeof value === 'string' && (TRUST_LEVEL_VALUES as readonly string[]).includes(value)
+}
+
+/**
+ * Trust-axis values that may legitimately accompany a recipe-page
+ * menu entry on the wire (v0.2.0). The full {@link TrustLevelValue}
+ * union includes `'KB-trusted'`, which is reserved for KB-core
+ * surfaces and never legitimately carried by an installed recipe.
+ * The renderer wire-validation guard (`toAppMenuEntry` in
+ * `src/renderer/app-loader.ts`) rejects `'KB-trusted'` on inbound
+ * menu entries so a server-side bug or corrupted manifest cannot
+ * inflate a recipe install into the first-party badge.
+ *
+ * @see prompt-injection-threat-model.md v1.0 §2 (trust axis vocabulary)
+ * @stable v0.2.0
+ */
+export const RECIPE_PAGE_TRUST_LEVELS = [
+  'code-trusted',
+  'code-trusted (sideloaded)',
+  'unknown',
+] as const
+export type RecipePageTrustLevel = (typeof RECIPE_PAGE_TRUST_LEVELS)[number]
+
+/** Runtime type guard for {@link RecipePageTrustLevel}. */
+export function isRecipePageTrustLevel(value: unknown): value is RecipePageTrustLevel {
+  return (
+    typeof value === 'string' &&
+    (RECIPE_PAGE_TRUST_LEVELS as readonly string[]).includes(value)
+  )
+}
+
+/**
+ * Parsed shape of the optional `capture:` block in `recipe.yaml`.
+ *
+ * Currently only the `requires` list is meaningful; the surrounding
+ * object exists so future capture-related options (e.g. throttling
+ * hints, opt-out signalling) can ride alongside without breaking the
+ * schema.
+ *
+ * @see recipe-system.md v1.4 §6.10.1
+ * @stable v0.2.0
+ */
+export interface RecipeCaptureSection {
+  requires: CaptureKindValue[]
 }
 
 /**
@@ -195,8 +321,24 @@ export interface RecipeHistoryEntry {
    */
   recipeId?: string
   /**
+   * KB-local app identifier (the directory name under `app/<appId>/`
+   * the agent picked at install time). Optional only for backward
+   * compatibility with `recipe-history.jsonl` files written before
+   * the field was promoted to a first-class member; install entries
+   * written from v0.2.0 onward always include it. Readers that need
+   * to associate a history entry with a specific app instance should
+   * prefer `appId`, then fall back to the legacy `menu[0]` heuristic
+   * for older entries.
+   *
+   * Distinct from `recipeId` — multiple apps may share a `recipeId`
+   * (the recipe author's lineage id) when the same recipe is
+   * installed under different `appId`s via the collision-avoidance
+   * flow at install time.
+   */
+  appId?: string
+  /**
    * For `action: 'uninstall'` entries: whether the user opted to
-   * delete the recipe's `app/data/<recipeId>/` directory along with
+   * delete the recipe's `app/data/<appId>/` directory along with
    * the artifacts. Default behavior is to preserve user data.
    */
   ownDataDeleted?: boolean
@@ -239,17 +381,11 @@ export interface RecipeParseUploadRequest {
   files: RecipeUploadFile[]
 }
 
-export interface RecipeApplyRequest {
-  recipe: ParsedRecipe
-  inspection: InspectionResult
-  agentId?: string
-}
-
-export interface RecipeApplyResponse {
-  success: boolean
-  historyId: string
-  error?: string
-}
+// `RecipeApplyRequest` / `RecipeApplyResponse` were retired in v0.2.x
+// when `POST /api/recipes/apply` was removed alongside the recipe
+// install temporary disable (recipe-system.md §10.6 /
+// http-api-contract.md §4.3.8.A). The v0.3.0 install flow will run
+// through `InstallRecipeRequest` / `MarkInstalledRequest` only.
 
 /**
  * Request body for `POST /api/recipes/install` (v2.0 — agent-handover flow).
@@ -347,8 +483,50 @@ export interface RecipeExportErrorResponse {
   error: string
 }
 
+/**
+ * Result of `scanAppDirectory(fs, appId)`.
+ *
+ * **Completeness contract:** when `customBeFiles` is empty (and
+ * therefore `customBeFilesCount === 0`), every other field is the
+ * accurate result of a full walk and the export can proceed.
+ * When `customBeFiles` is non-empty, the caller MUST refuse the
+ * export — anything under `api/` is rejected by recipe-inspector at
+ * install time, so packaging it would produce an uninstallable
+ * recipe. In that refusal-path case, `artifacts`, `menu`, and
+ * `totalSize` may be partial: the scanner short-circuits as soon as
+ * the refusal is certain, so it does not waste CPU / IO walking the
+ * rest of the tree on a request that is guaranteed to fail. The
+ * refusal does not consume those fields, so the partiality is
+ * harmless in practice; new callers that DO want full
+ * artifacts / menu / totalSize should first verify
+ * `customBeFilesCount === 0`.
+ */
 export interface AppScanResult {
   artifacts: Array<{ path: string; type: ArtifactType; sizeBytes: number }>
   menu: RecipeMenuEntry[]
   totalSize: number
+  /**
+   * Sample of files under `app/<appId>/api/` that the exporter
+   * detected. The list is bounded so a pathological tree cannot
+   * drive an unbounded allocation — use `customBeFilesCount` for
+   * the count and `customBeFilesCountApproximate` to know whether
+   * that count is exact.
+   */
+  customBeFiles: Array<{ relativePath: string; sizeBytes: number }>
+  /**
+   * Number of files the scanner observed under `app/<appId>/api/`
+   * before it stopped walking. Equal to `customBeFiles.length`
+   * when the cap was not hit; a best-effort lower bound otherwise
+   * (see `customBeFilesCountApproximate`).
+   */
+  customBeFilesCount: number
+  /**
+   * True when the scanner short-circuited after collecting enough
+   * `api/` matches to drive the refusal. In that case
+   * `customBeFilesCount` is the lower bound it reached before it
+   * stopped, not the true number of files in `app/<appId>/api/`,
+   * and the rest of the result (artifacts / menu / totalSize) is
+   * also partial — see the interface-level note above.
+   */
+  customBeFilesCountApproximate: boolean
 }

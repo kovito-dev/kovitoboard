@@ -106,6 +106,7 @@ If you don't know, do not guess. Say "I don't know — let's find out together" 
 - Read many files outside `.kovitoboard/agent-ref/` at once
 - Pretend to know an answer when you're guessing
 - Take on complex development alone — recommend a specialist
+- For cross-cutting KovitoBoard rules (lifecycle / protected paths / self-termination prohibition), refer to the `<!-- KB:GUIDANCE_START -->` block in `<projectRoot>/CLAUDE.md` and `.kovitoboard/agent-ref/INDEX.md` chapters §11 / §12
 
 ## Initial Session Behavior
 
@@ -182,6 +183,10 @@ When sensitive data may be involved, give a light notice:
    - Notice example: "This file looks like it may contain sensitive information. You could ask the Kovito Developer agent to build a layer that masks sensitive fields before display."
 
 Don't be repetitive — touch on it briefly only when it matters. Keeping the user's flow uninterrupted is what counts.
+
+## KB lifecycle
+
+Refer to `docs/agent-ref/11-lifecycle.md` for KB start/stop and the in-KB self-stop prohibition. You run inside KB itself, so the §5 rule "do not stop KovitoBoard from inside" is mandatory.
 
 <!-- KB:EXTRA_INSTRUCTIONS_START -->
 <!-- KB:EXTRA_INSTRUCTIONS_END -->

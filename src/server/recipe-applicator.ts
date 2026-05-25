@@ -16,7 +16,6 @@
  * @see docs/specs/v0.1.0-recipe-install-handover.md §3.4
  */
 import { extname } from 'path'
-import type { TmuxBridge } from './tmux-bridge'
 import type { FileAccessLayer } from './fs-layer'
 import { sanitizeInstruction } from './recipe-inspector'
 import { scanAppManifests } from './services/app-manifest'
@@ -44,15 +43,19 @@ import type { AppManifest } from '../shared/app-manifest-types'
 export interface BuildRecipePromptContext {
   fs: FileAccessLayer
   projectRoot: string
+  /**
+   * One-shot nonce minted by `issueInstallSession()` at the
+   * `/api/recipes/install` boundary. Embedded into the Step 7 curl
+   * snippet so the agent echoes it back on `mark-installed`, where
+   * the server checks it against the saved approvedScopes /
+   * recipeHash before persisting the manifest. Optional because
+   * legacy direct callers (the deprecated `apply` test-paths and a
+   * handful of unit tests) still build prompts without going
+   * through the install handover; those paths simply omit the
+   * `installNonce` field and `mark-installed` will reject them.
+   */
+  installNonce?: string
 }
-
-/**
- * Stable header line that marks a recipe-install prompt. The
- * renderer's `kb-authored-message` parser keys off this exact string
- * to render the message as a collapsible chip rather than dumping
- * the full prompt in chat.
- */
-export const RECIPE_INSTALL_HEADER = 'KovitoBoard Recipe Installation Request'
 
 /**
  * Build the v2.0 install handover prompt.
@@ -85,10 +88,6 @@ export function buildRecipePrompt(
     : []
 
   const sections: string[] = []
-
-  // -- Header --
-  sections.push(RECIPE_INSTALL_HEADER)
-  sections.push('')
 
   // -- Recipe Information --
   sections.push('## Recipe Information')
@@ -324,6 +323,15 @@ export function buildRecipePrompt(
   sections.push('')
   sections.push('1. **`POST /api/recipes/{recipeId}/mark-installed`** を Bash + curl で叩く:')
   sections.push('')
+  // Embed the per-install nonce inline only when the install endpoint
+  // actually issued one (the canonical path). Legacy callers that
+  // build the prompt without the install handover get the literal
+  // placeholder; the server-side handler then rejects with 403 and
+  // the agent surfaces the failure to the user.
+  const installNonce = context?.installNonce ?? '<installNonce-from-KB>'
+  sections.push('   `installNonce` は KB が install 時に発行した one-shot トークンで、サーバ側で session を照合する。')
+  sections.push('   そのまま `installNonce` フィールドに渡すこと（編集・再利用不可）。')
+  sections.push('')
   sections.push('   ```bash')
   sections.push('   curl -s -X POST http://localhost:$KB_PORT/api/recipes/' + metadata.recipeId + '/mark-installed \\')
   sections.push('     -H "Content-Type: application/json" \\')
@@ -333,6 +341,7 @@ export function buildRecipePrompt(
   sections.push(`       "recipeVersion": "${metadata.version}",`)
   sections.push('       "recipeSource": "{recipeSource}",')
   sections.push(`       "recipeHash": "${recipe.hash}",`)
+  sections.push(`       "installNonce": "${installNonce}",`)
   sections.push('       "api": { ...recipe.api section verbatim... }')
   sections.push('     }\'')
   sections.push('   ```')
@@ -373,42 +382,22 @@ export function buildRecipePrompt(
     sections.push('> （補足なし）')
   }
 
-  // SS-3 / Q4 dual-write: keep the legacy header anchor as the
-  // first line so older renderers (and JSONLs replayed from
-  // before sentinel rollout) continue to chip-collapse this
-  // message, while newer ones see the wrapping sentinel and
-  // pick up the recipe name from the `label` attr without
-  // having to scrape `### name`.
-  //
-  // Intentionally no `version` attr: nothing reads it today and
-  // adding it just gives the model an extra token to interpret as
-  // a directive ("am I supposed to use v2 of something?"). The
-  // attribute remains in `KbSentinelAttrs` for forward use — when
-  // we ship a backward-incompatible template v3 later, we add
-  // `version: '3'` here and treat its absence as v2.
+  // Wrap the prompt body in the rule-line sentinel so the renderer
+  // chips it under the recipe name. Intentionally no `version` attr:
+  // nothing reads it today and adding it just gives the model an
+  // extra token to interpret as a directive ("am I supposed to use
+  // v2 of something?"). The attribute remains in `KbSentinelAttrs`
+  // for forward use — when we ship a backward-incompatible template
+  // v3 later, we add `version: '3'` here and treat its absence as v2.
   return wrapWithSentinel('recipe-install', sections.join('\n'), {
     label: metadata.name,
   })
 }
 
-/**
- * Apply a recipe by building the prompt and sending it via tmux.
- */
-export async function applyRecipe(
-  recipe: ParsedRecipe,
-  inspection: InspectionResult,
-  tmuxBridge: TmuxBridge,
-  windowName: string,
-): Promise<{ success: boolean; error?: string }> {
-  const prompt = buildRecipePrompt(recipe, inspection)
-
-  const result = await tmuxBridge.sendMessage(windowName, prompt)
-  if (!result.success) {
-    return { success: false, error: result.error || 'Failed to send message via tmux' }
-  }
-
-  return { success: true }
-}
+// `applyRecipe` (the deprecated v0.1.x apply transform) was removed
+// in v0.2.x alongside `POST /api/recipes/apply`. The v0.3.0 install
+// flow will rebuild on top of `buildRecipePrompt` directly, so the
+// prompt builder + its sentinel wrapping are kept intact here.
 
 // --- Helpers ---
 

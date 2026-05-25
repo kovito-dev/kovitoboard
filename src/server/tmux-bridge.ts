@@ -11,6 +11,38 @@ import { resolveProjectRoot } from './config'
 import type { FileAccessLayer } from './fs-layer'
 import { TRUST_FOOTER_PATTERNS } from './trust-prompt-detector'
 import { tmuxLogger } from './logger'
+import { validateCwd } from './cwdValidator'
+import { ensureWorkRootMetadata } from './cwd-precheck'
+
+/**
+ * Run the cwd allow-list gate for a `cwd` argument passed to one of
+ * the tmux-bridge entrypoints (consumer #4 / #5 in spec
+ * `cwd-allowlist.md` v1.0 §5.2). Spec §7.1 prescribes a throw — the
+ * boundary-external helper contract (`app-directory-extension.md`
+ * v1.4.5 §5.0) hands enforcement back to the embedded-app caller,
+ * which is expected to catch and surface the error itself.
+ *
+ * Returns the canonical `resolvedCwd` so callers can satisfy the
+ * §8.3 TOCTOU defence by passing it (rather than the raw input) to
+ * `tmux -c …`.
+ */
+function gateCwd(fs: FileAccessLayer, cwd: string): string {
+  const projectRoot = resolveProjectRoot(fs)
+  const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+  const result = validateCwd(
+    cwd,
+    projectRoot,
+    snapshot.additionalWorkRoots,
+    snapshot.workRootsMetadata,
+    fs,
+  )
+  if (!result.ok) {
+    throw new Error(
+      `cwd not in allowed work roots (reason=${result.reason})`,
+    )
+  }
+  return result.resolvedCwd
+}
 
 /**
  * Validate a string as a tmux window name / agent ID.
@@ -72,14 +104,50 @@ export class TmuxBridge {
    * Derived from resolveProjectRoot(fs) on first access.
    * Not evaluated at module load time to avoid fs dependency ordering issues.
    *
-   * During E2E tests: if the KOVITOBOARD_E2E_TMUX_SESSION environment variable is set,
-   * use that session name. In production mode this is a no-op (when the env var is not set,
-   * behavior is unchanged).
+   * During E2E tests: if the KOVITOBOARD_E2E_TMUX_SESSION environment
+   * variable is set AND `KB_E2E_MODE === '1'` is also set, use that
+   * session name. The double-gate is a **misconfiguration guard**,
+   * not a complete hostile-environment mitigation: an attacker who
+   * already controls the launcher's full env block can set both
+   * variables together and reach the override anyway. What this gate
+   * *does* close is the narrower scenario where a single stray
+   * `KOVITOBOARD_E2E_TMUX_SESSION` entry — left behind by a shared
+   * dotfile, a wrapper script that preserves environment across
+   * profiles, or a copy-pasted launcher — silently redirects a
+   * production KovitoBoard onto a different operator's tmux session.
+   * `KB_E2E_MODE` is the canonical "this is a test harness" flag
+   * (already used by `/api/admin/test-reset-state` and the
+   * trust-prompt-detector poll interval), so requiring it here keeps
+   * the test surfaces consistent and turns "I forgot to unset the
+   * env var" into a loud warn log instead of a silent attach.
+   *
+   * When `KOVITOBOARD_E2E_TMUX_SESSION` is set without `KB_E2E_MODE`,
+   * the env var is ignored and a warn-level log entry is emitted so
+   * the misconfiguration surfaces rather than silently falling back
+   * to the production session name.
+   *
    * @see docs/design/fake-claude-design.md §5-3 approach A
    */
   get sessionName(): string {
     if (!this._sessionName) {
-      const e2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+      const rawE2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+      const e2eModeEnabled = process.env.KB_E2E_MODE === '1'
+      if (rawE2eSession && !e2eModeEnabled) {
+        // The env var is set but the test-harness flag is not.
+        // Refuse to honour the override and log loudly: silently
+        // falling back to the production session would mask a
+        // misconfiguration that, in the supplementary review §S6
+        // scenario, could redirect KovitoBoard onto another
+        // operator's tmux session.
+        tmuxLogger.warn(
+          {
+            envName: 'KOVITOBOARD_E2E_TMUX_SESSION',
+            gateEnv: 'KB_E2E_MODE',
+          },
+          'Ignoring KOVITOBOARD_E2E_TMUX_SESSION because KB_E2E_MODE is not set; falling back to the project-name-derived session',
+        )
+      }
+      const e2eSession = e2eModeEnabled ? rawE2eSession : undefined
       this._sessionName = e2eSession || resolveTmuxSessionName(this.fs)
     }
     return this._sessionName
@@ -371,7 +439,33 @@ export class TmuxBridge {
 
       tmuxLogger.info({ chars: sanitized.length }, 'Preparing to send')
 
-      this.fs.writeFileSync(tmpFile, sanitized, 'utf-8')
+      // Spool the paste body to a same-UID-only tmpfile.
+      //
+      // `writePrivateExclusiveFileSync` bakes in three properties
+      // we need from the tmpfile, all enforced inside the fs-layer
+      // (`session-management.md` §7.1 normative, Codex Review §15):
+      //
+      // - Mode `0o600`: only the KB process owner can read the
+      //   spool body. `/tmp` is world-readable with the sticky
+      //   bit, so the Node default (`0o666 & ~umask`) would
+      //   otherwise leave the paste exposed to other local UIDs
+      //   for the few milliseconds between the write and the
+      //   `unlinkSync` in `finally`.
+      // - `O_CREAT | O_EXCL` (`'wx'` flag): an attacker who
+      //   pre-created the predicted path (despite `randomUUID()`)
+      //   gets EEXIST instead of having us truncate their file or
+      //   write into a planted symlink target.
+      // - `fchmod(0o600)` on the fresh descriptor: a hardened
+      //   operator shell with e.g. `umask 0o477` would otherwise
+      //   strip owner-read from the file and turn the very
+      //   `tmux load-buffer` call below into EACCES — an
+      //   availability regression on top of the security fix.
+      //
+      // The narrow shape of that helper (no parameters for mode /
+      // flag) keeps this umask-bypass capability confined to the
+      // call sites the spec lists, instead of being exposed as a
+      // generic option on `writeFileSync`.
+      this.fs.writePrivateExclusiveFileSync(tmpFile, sanitized)
 
       execFileSync('tmux', [
         'load-buffer', tmpFile,
@@ -417,7 +511,29 @@ export class TmuxBridge {
     if (windowName && !isValidTmuxName(windowName)) {
       return { success: false, error: `Invalid window name: "${windowName}"` }
     }
-    const workDir = cwd || resolveProjectRoot(this.fs)
+    // cwd allow-list gate — consumer #4 in spec `cwd-allowlist.md`
+    // v1.0 §5.2 (embedded-app entrypoint, boundary-external).
+    //
+    // The condition uses `cwd !== undefined` rather than the truthy
+    // `if (cwd)` form: an empty string `""` is a *supplied* value and
+    // must be validated (and rejected as `not_absolute`) instead of
+    // silently falling back to `projectRoot`. The HTTP entry points
+    // already reject `""` at the boundary; this guard matches that
+    // contract for the boundary-external entrypoint (CodeX PR #38
+    // Attempt 14 MED 2).
+    let workDir: string
+    if (cwd !== undefined) {
+      try {
+        workDir = gateCwd(this.fs, cwd)
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    } else {
+      workDir = resolveProjectRoot(this.fs)
+    }
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === name)) {
@@ -459,7 +575,25 @@ export class TmuxBridge {
     if (!isValidTmuxName(windowName)) {
       return { success: false, error: `Invalid window name: "${windowName}"` }
     }
-    const workDir = cwd || resolveProjectRoot(this.fs)
+    // cwd allow-list gate — consumer #5 in spec `cwd-allowlist.md`
+    // v1.0 §5.2 (job-window entrypoint, boundary-external).
+    //
+    // Same `cwd !== undefined` guard as `startAgent` above — empty
+    // strings are validated and rejected, not silently widened into
+    // the project root (CodeX PR #38 Attempt 14 MED 2).
+    let workDir: string
+    if (cwd !== undefined) {
+      try {
+        workDir = gateCwd(this.fs, cwd)
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    } else {
+      workDir = resolveProjectRoot(this.fs)
+    }
 
     const windows = this.listWindows()
     if (windows.find((w) => w.name === windowName)) {

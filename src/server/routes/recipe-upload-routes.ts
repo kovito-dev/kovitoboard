@@ -35,10 +35,10 @@
 import { Router } from 'express'
 import express from 'express'
 import { join, normalize, dirname } from 'path'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import type { FileAccessLayer } from '../fs-layer'
-import { parseRecipe } from '../recipe-parser'
+import { parseRecipe, RecipeParseError } from '../recipe-parser'
 import { inspectRecipe } from '../recipe-inspector'
 import type { RecipeParseUploadRequest, RecipeUploadFile } from '../../shared/recipe-types'
 import { lazyChildLogger } from '../logger'
@@ -189,13 +189,12 @@ function writeUploadToTmp(
 
   const yamlPath = join(dir, 'recipe.yaml')
   // The renderer hands us forward-slash relPaths, so we test with the
-  // same separator the parser expects on this OS.
-  // existsSync via the shared FS layer would round-trip through DI,
-  // but at this point we just wrote the file ourselves, so a direct
-  // require is faster and avoids leaking the layer for a synchronous
-  // local check.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { existsSync } = require('fs') as typeof import('fs')
+  // same separator the parser expects on this OS. We rely on the
+  // top-level `existsSync` import: an earlier revision used
+  // `require('fs')` inline, but the build target is pure ESM so the
+  // legacy CJS shim throws `require is not defined` at runtime,
+  // collapsing every upload into a 400 with "require is not defined"
+  // instead of letting the parser actually run.
   if (existsSync(yamlPath)) {
     return { dir, entry: dir }
   }
@@ -238,6 +237,22 @@ export function createRecipeUploadRouter(fs: FileAccessLayer): Router {
         const inspection = await inspectRecipe(recipe)
         res.json({ recipe, inspection })
       } catch (err) {
+        // Map security-limits breaches to the spec-mandated 413 / 400
+        // envelope (security-limits.md §6.2). The structured warn
+        // log already fired inside `checkParserLimit` with the
+        // forensic fields operators need; emitting another warn
+        // here would double the log volume on a route attackers can
+        // flood, so the route layer only translates the exception
+        // into the HTTP envelope.
+        if (err instanceof RecipeParseError) {
+          res.status(err.context.httpStatus).json({
+            error:
+              err.context.httpStatus === 413
+                ? 'Recipe exceeds the maximum allowed size'
+                : 'Recipe exceeds an allowed limit',
+          })
+          return
+        }
         const message = err instanceof Error ? err.message : 'Failed to parse uploaded recipe'
         uploadLog.error({ err }, 'Recipe upload parse error')
         res.status(400).json({ error: message })

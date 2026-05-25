@@ -39,13 +39,15 @@ test.describe('URL routing', () => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // Recipe page heading
-    const heading = page.locator('h1').filter({ hasText: 'Recipes' })
+    // Recipe page heading (en: "App recipes").
+    const heading = page.locator('h1').filter({ hasText: /recipes/i })
     await expect(heading).toBeVisible()
 
-    // The import tab exists
-    const importTab = page.getByRole('button', { name: 'Import' })
-    await expect(importTab).toBeVisible()
+    // The Sample tab is the default tab and stays available in
+    // v0.2.x. The Import tab was retired alongside the recipe
+    // install temporary disable.
+    const sampleTab = page.getByRole('button', { name: 'Sample recipes' })
+    await expect(sampleTab).toBeVisible()
   })
 
   test('存在しないパスは /agents にリダイレクトされる', async ({ page }) => {

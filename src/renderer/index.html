@@ -11,6 +11,26 @@
       `main.tsx` after the locale bootstrap fetch resolves
       (`document.documentElement.lang = getLocale()`).
     -->
+    <!--
+      Per-launch authentication token marker. The Vite dev-server
+      plugin (`vite.config.ts`) replaces this comment with a real
+      `<meta name="kb-launch-token">` tag at request time; the
+      production Express fallback in `src/server/index.ts` performs
+      the same substitution against `dist/index.html`. The renderer
+      reads the token via the kbFetch helper to gate every API call.
+    -->
+    <!-- KB:LAUNCH_TOKEN_META -->
+    <!--
+      Host-only internal auth token marker (v0.2.0 / spec v1.7
+      §6.10.6.9). Mounted with the same Vite plugin / Express
+      fallback substitution as the launch token above. Recipe code
+      MUST NOT read this meta tag at runtime; the host renderer
+      bootstrap (`injectKb`) reads it once on module load and stores
+      it in a closure for the lifetime of the page. The capture-mount
+      / capture-token / host-bootstrap audit endpoints expect this
+      value in the `X-KB-Internal-Auth` header.
+    -->
+    <!-- KB:INTERNAL_TOKEN_META -->
   </head>
   <body class="bg-[var(--bg-base)] text-[var(--text-primary)] overflow-hidden">
     <div id="root"></div>

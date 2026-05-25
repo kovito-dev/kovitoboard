@@ -6,9 +6,18 @@
 /**
  * Recipe scanner — scan `recipes/` directory at startup and cache sample recipe metadata.
  *
- * Used by Phase G to provide `GET /api/recipes/sample` with pre-scanned recipe info.
+ * Used to back `GET /api/recipes/sample` with pre-scanned recipe info.
  * Gracefully handles missing directories and parse failures (logs warning, skips).
+ *
+ * v0.2.x: The install trigger paths are disabled (`/api/recipes/install`
+ * returns 410 Gone, the UI install buttons are gone — recipe-system.md
+ * §10.6). The scanner itself keeps parsing + caching so the sample
+ * cards stay browseable and grandfather install lineage (the
+ * `installed` flag + `historyEntry` join) keeps rendering. The
+ * scanner is not the right place to gate install — gating happens
+ * at the install endpoint and at the UI level.
  */
+import { recipeLogger } from '../logger'
 import { join, resolve, dirname } from 'path'
 import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
@@ -49,7 +58,7 @@ export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
   const recipesDir = join(kbRoot, 'recipes')
 
   if (!fs.existsSync(recipesDir)) {
-    console.log('[recipe-scanner] recipes/ directory not found — returning empty list')
+    recipeLogger.info('[recipe-scanner] recipes/ directory not found — returning empty list')
     sampleRecipeCache = []
     return sampleRecipeCache
   }
@@ -98,16 +107,16 @@ export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
         }
         // Other items are silently skipped
       } catch (err) {
-        console.warn(`[recipe-scanner] Failed to parse recipe "${item}":`, err instanceof Error ? err.message : err)
+        recipeLogger.warn({ err }, `[recipe-scanner] Failed to parse recipe "${item}"`)
         // Skip this recipe, continue scanning others
       }
     }
   } catch (err) {
-    console.error('[recipe-scanner] Failed to read recipes/ directory:', err)
+    recipeLogger.error({ err }, '[recipe-scanner] Failed to read recipes/ directory:')
   }
 
   sampleRecipeCache = entries
-  console.log(`[recipe-scanner] Scanned ${entries.length} sample recipe(s)`)
+  recipeLogger.info(`[recipe-scanner] Scanned ${entries.length} sample recipe(s)`)
   return sampleRecipeCache
 }
 

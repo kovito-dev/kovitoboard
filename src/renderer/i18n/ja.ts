@@ -37,6 +37,8 @@ const ja = {
   'onboarding.complete.talkToKobi': 'コビーと話してみる',
   'onboarding.complete.goToAgents': 'エージェント一覧へ',
   'onboarding.complete.preparing': '準備中…',
+  'onboarding.complete.skipClaudeMdGuidance': 'CLAUDE.md への案内ブロック追記をスキップする',
+  'onboarding.complete.skipClaudeMdGuidanceHint': 'チェックを入れると、KovitoBoard はあなたのプロジェクト直下の CLAUDE.md に案内ブロックを書き込みません。CLAUDE.md を自分で管理している場合に選択してください。',
   'onboarding.welcome.start': '始める',
   'onboarding.user.avatarHint': 'アバター画像（任意・1MB以下）',
   'onboarding.user.avatarSizeError': 'ファイルサイズが 1MB を超えています',
@@ -50,9 +52,86 @@ const ja = {
   'onboarding.next': '次へ',
   'onboarding.back': '戻る',
   'onboarding.step': 'ステップ {current} / {total}',
+  // Phase 1 prompt injection ② Claude Code 推奨設定告知
+  // (handoff v1.1 §3.4 / §3.7、onboarding-scenarios §9.5.2)
+  'onboarding.security.title': 'セキュリティ推奨設定',
+  'onboarding.security.subtitle': '安全に KovitoBoard を使うため、Claude Code の推奨設定を確認します。',
+  'onboarding.security.intro': 'プロンプトインジェクション対策として、Claude Code 側で以下の設定を有効にすることを推奨します。',
+  'onboarding.security.acknowledge': '内容を確認しました',
+  // 各 BOX 個別の確認 label。「内容を確認しました」一括 tick で 3 BOX
+  // 全体を rubber-stamp 通過することを避けるため、各 BOX 内に配置する
+  // checkbox には対応する BOX を限定する文言を用いる（spec §9.5.2.3
+  // v1.4 normative pin、外側 wrapper 1 つ統合配置禁止）。
+  'onboarding.security.acknowledge.bypassMode': 'bypass モードの設定を確認しました',
+  'onboarding.security.acknowledge.permissionMode': 'permissionMode の設定を確認しました',
+  'onboarding.security.acknowledge.denyPattern': 'deny pattern の設定を確認しました',
+  'onboarding.security.allOk': 'すべての推奨設定が満たされています。',
+  'onboarding.security.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。',
+  'onboarding.security.failClosedRemediation': 'Claude Code の設定ファイルを編集するか、KovitoBoard サーバーへの接続を確認してください。詳細はターミナルログを確認してください。',
+  'onboarding.security.failClosedCandidatePath': '設定ファイルパス: `~/.claude/settings.json` (user-level) または `<projectRoot>/.claude/settings.json` (project-level)',
+  'onboarding.security.recheck': '再チェック',
+  'onboarding.security.permissionMode.label': 'permissionMode = default',
+  'onboarding.security.permissionMode.description': 'Claude Code の権限モードを default に設定します。bypassPermissions は HITL (Human in the Loop) なしで全アクションを許可するため、Rule of Two 違反となり推奨されません。',
+  'onboarding.security.denyPattern.label': '.kovitoboard/ を deny pattern に追加',
+  'onboarding.security.denyPattern.description': 'Claude Code の permissions.deny に ".kovitoboard/" を追加し、Claude Code 側から KovitoBoard 内部状態への書き込みをブロックします。',
+  'onboarding.security.bypassMode.label': 'bypass モードを無効化',
+  'onboarding.security.bypassMode.description': 'bypassPermissions モードが有効な場合、Rule of Two 違反 (3/3 揃い) のため HITL が必須となります。可能な限り無効化してください。',
+  'onboarding.security.why': 'なぜ必要？',
+  'onboarding.security.whyModal.heading': '推奨設定の背景',
+  'onboarding.security.whyModal.responsibility': 'プロンプトインジェクションの検知・ブロックは Anthropic (Claude Code) 側の責務です。KovitoBoard は推奨設定が満たされているかを確認し、通知するのみで、deny pattern の実装は行いません。',
+  'onboarding.security.whyModal.ruleOfTwo': 'Rule of Two: untrusted input + sensitive data access + external state change の 3 つすべてが揃うと、人手による確認 (HITL) が必須になります。',
+  'onboarding.security.whyModal.close': '閉じる',
+  // Phase 1 prompt injection ② 起動時 warn toast
+  // (handoff v1.1 §3.3、trust-prompt-relay §10.5.4)
+  'security.toast.title': 'セキュリティ推奨設定',
+  'security.toast.intro': 'Claude Code の設定に推奨されない値が含まれています:',
+  'security.toast.permissionMode.violation': 'permissionMode が {current} に設定されています (推奨: default)',
+  'security.toast.denyPattern.violation': '.kovitoboard/ が Claude Code の deny pattern に含まれていません',
+  'security.toast.bypassMode.violation': 'bypass モードが有効です (Rule of Two 違反、HITL 必須)',
+  'security.toast.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。設定を手動で確認してください。',
+  'security.toast.learnMore': '詳細を見る',
+  'security.toast.dismiss': '閉じる (24 時間)',
+  // Phase 1 prompt injection ④ Rule of Two violation announcement
+  // (handoff v1.1 §3.2 / §3.5 / §3.6, prompt-injection-threat-model §4)
+  'ruleOfTwo.violation.title': 'Rule of Two 違反を検出',
+  'ruleOfTwo.violation.description': 'bypass モードが有効 — 3/3 違反',
+  'ruleOfTwo.violation.element.untrustedInput': '(A) 信頼できない入力',
+  'ruleOfTwo.violation.element.sensitiveData': '(B) 機密データへのアクセス',
+  'ruleOfTwo.violation.element.externalState': '(C) 外部状態変更',
+  'ruleOfTwo.violation.elementStructurallyRequired': 'KB セッションで構造的に必須',
+  'ruleOfTwo.violation.elementClaudeAccess': 'Claude が ~/.ssh、~/.aws などにアクセス可',
+  'ruleOfTwo.violation.elementBypassConsequence': 'bypass モードで git push / npm publish が確認なしに実行可',
+  'ruleOfTwo.violation.consequence': '→ HITL (Human-In-The-Loop) が必要',
+  'ruleOfTwo.violation.accept': 'リスクを理解し、HITL 責任を負うことに同意します',
+  'ruleOfTwo.violation.acceptDisabledHint.modal': 'Rule of Two の意味を「Why?」で確認してから同意してください',
+  'ruleOfTwo.violation.acceptDisabledHint.idle': '内容を読み終えるまで 2 秒間お待ちください',
+  'ruleOfTwo.violation.why': 'Rule of Two はなぜ重要？',
+  'ruleOfTwo.violation.changeMode': 'default モードに変更',
+  'ruleOfTwo.modal.heading': 'Rule of Two はなぜ重要？',
+  'ruleOfTwo.modal.intro': 'Rule of Two は、攻撃面の構造的判定基準です。3 つの要素 (A)(B)(C) のうち 2 つ以下なら自動実行を許容しても安全マージンが残りますが、3 つすべてが揃うと攻撃成立条件を満たすため、人手による確認 (HITL) が必須になります。',
+  'ruleOfTwo.modal.element.untrustedInput.title': '(A) 信頼できない入力',
+  'ruleOfTwo.modal.element.untrustedInput.detail': '外部から取り込まれる任意のテキスト・データ。recipe 出力、Web 取得結果、ファイル内容など。',
+  'ruleOfTwo.modal.element.sensitiveData.title': '(B) 機密データへのアクセス',
+  'ruleOfTwo.modal.element.sensitiveData.detail': 'API キー、SSH 鍵、認証情報、個人ファイル、社内データなど。',
+  'ruleOfTwo.modal.element.externalState.title': '(C) 外部状態変更',
+  'ruleOfTwo.modal.element.externalState.detail': 'git push、npm publish、API リクエスト、ファイル書き込みなど、取り消し困難な副作用を伴う操作。',
+  'ruleOfTwo.modal.kbContext': 'KovitoBoard セッションでは、(A) と (B) は構造的に必須です。Claude Code が user 環境で動作するため、~/.ssh や ~/.aws へのアクセス権を持ち、recipe や Web fetch は untrusted input を取り込みます。',
+  'ruleOfTwo.modal.cBlockMeaning': 'したがって、(C) 外部状態変更を HITL でブロックすることで Rule of Two の 3/3 揃いを回避し、攻撃成立条件を構造的に満たさない設計を維持します。bypass モードはこの (C) ブロック機構を解除するため、Rule of Two 違反となります。',
+  'ruleOfTwo.modal.hitl': 'HITL (Human-In-The-Loop): 自動化された操作の前に必ず人手の確認を挟む設計。bypass モードを無効化すると Claude Code は (C) 外部状態変更の前に確認プロンプトを表示します。',
+  'ruleOfTwo.modal.boundary': '責任分担境界: Rule of Two 違反検知は Anthropic (Claude Code) 側の責務です。KovitoBoard は告知のみ行い、検知ロジック自体は実装しません。',
+  'ruleOfTwo.modal.close': '閉じる',
 
   // ナビゲーション
   'nav.titleBar.settings': '設定',
+
+  // プロジェクトルートバナー（process-lifecycle.md v1.2 §3 / shared-installation-prevention §M-3）
+  'projectRootBanner.label': 'プロジェクト',
+  'projectRootBanner.source.cliArg': '--project-root で指定',
+  'projectRootBanner.source.env': 'KOVITOBOARD_PROJECT_ROOT で指定',
+  'projectRootBanner.source.settingJson': 'setting.json から復元',
+  'projectRootBanner.source.cwdFallback': 'カレントディレクトリ（fallback）',
+  'projectRootBanner.source.unknown': '解決元不明',
+  'projectRootBanner.cwdFallbackWarning': 'プロジェクトを誤認している可能性があります。--project-root を指定して再起動してください。',
 
   // 常駐サイドバー（Ambient Session Sidebar、DEC-020 / EU8）
   'ambientSidebar.heading': 'セッション',
@@ -114,10 +193,39 @@ const ja = {
   'recipe.button.createApp': 'アプリ新規作成',
   'recipe.code.button.expandAll': 'すべて展開',
   'recipe.tab.sample': 'サンプルレシピ',
-  'recipe.tab.import': '読み込み',
   'recipe.tab.history': '履歴',
-  // recipe.tab.export was removed in DEC-024 #5 — recipe export now
-  // runs from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.export was retired earlier — recipe export now runs
+  // from the AmbientSidebar's per-app actions popover.
+  // recipe.tab.import was retired in v0.2.x alongside the recipe
+  // install temporary disable (recipe-system.md §10.6).
+  'recipe.install.comingSoon':
+    'レシピのインストールは v0.2.x で一時停止しています。KovitoHub の署名済み配布モデル経由で v0.3.0 にて再開予定です。',
+
+  // キャプチャ機能の承認（v0.2.0 Phase 1 prompt-injection ①、opt-in 機構）。
+  // v0.2.x では install フローが停止中のためダイアログは描画されないが、
+  // v0.3.0 再開時に placeholder ラベルとなるのを避けるため翻訳キーは
+  // 先行整備する。`app-directory-extension.md` v1.2 §10.5.2 と
+  // 実装委託書 `v02x-phase1-capture-optin-implementation-request.md` を参照。
+  'recipe.capture.title': 'キャプチャ機能の承認',
+  'recipe.capture.description':
+    'このレシピは以下のキャプチャ機能を要求しています。インストール前に項目ごとに承認してください。',
+  'recipe.capture.kind.a11y': 'a11y (UI のアクセシビリティスナップショット)',
+  'recipe.capture.kind.exposed-context': 'exposed-context (window.kb.exposeContext)',
+  'recipe.capture.why.a11y':
+    'サーバーに対して画面構造の要約（要素のロールとアクセシビリティ名）を要求できるようになります。生 HTML は共有しませんが、エージェントは画面上の表示内容を推測可能になります。',
+  'recipe.capture.why.exposed-context':
+    'window.kb.exposeContext で公開した payload をサーバー経由で読み出せるようになります。選択中の ID や active filter などアプリ側で意図的に公開した状態をレシピに渡したい場合のみ承認してください。',
+  'recipe.capture.whyLink': 'なぜ必要?',
+  'recipe.capture.approveButton': '選択した項目を承認',
+  'recipe.capture.error.notApproved':
+    "キャプチャ '{kind}' はこのレシピで承認されていません。",
+  // Normative warning text (spec v1.4 §10.5.5). Always-visible at
+  // approval point. Communicates the v0.2.x same-instance trust
+  // collapse to the user — approving capture for one recipe means
+  // trusting all other recipes installed in the same KovitoBoard
+  // instance, because v0.2.x cannot structurally isolate them.
+  'recipe.capture.trustWarning':
+    'この recipe の capture を承認すると、同じ KovitoBoard インスタンスにインストール済みの他のすべての recipe を信頼することに同意したことになります。v0.2.x は recipe 間の構造的な隔離を提供できません。これは experimental preview 機能で、将来バージョンで解消される予定です。',
 
   // アプリ新規作成モーダル（v0.1.0-app-creation-flow.md §7.4）
   'appCreate.modal.title': 'アプリ新規作成',
@@ -160,6 +268,28 @@ const ja = {
   'nav.menu.agents': 'エージェント',
   'nav.menu.sessions': 'セッション',
   'nav.menu.recipes': 'アプリレシピ',
+  'nav.menu.workRoots': '作業ルート',
+
+  // 作業ルート設定画面（仕様 cwd-allowlist.md v1.0 §7.4）。
+  // プロジェクトルート以外で Claude Code に作業させるフォルダを
+  // 追加・削除できる。フォルダを追加すると Claude Code がその中で
+  // ファイル書き込みを行えるため、文言は注意を促す調子で揃える。
+  'workRoots.title': '作業ルート',
+  'workRoots.description':
+    'KovitoBoard が Claude Code の作業ディレクトリとして利用できるフォルダの一覧です。プロジェクトルートは常に含まれており、それ以外のルートを以下で追加・削除できます。',
+  'workRoots.addSection.title': '作業ルートを追加',
+  'workRoots.addSection.help':
+    '絶対パスを入力してください。システムディレクトリや KovitoBoard 自身の repo root は安全のため追加できません。',
+  'workRoots.addButton': '追加',
+  'workRoots.adding': '追加中…',
+  'workRoots.listSection.title': '追加済みの作業ルート',
+  'workRoots.listSection.empty': '追加済みの作業ルートはまだありません。',
+  'workRoots.listSection.loadError':
+    '現在の作業ルートの読み込みに失敗しました。上のリストは不完全な可能性があります。詳細はサーバーログを確認し、再読み込みしてください。',
+  'workRoots.deleteConfirm.title': 'この作業ルートを削除しますか？',
+  'workRoots.deleteConfirm.body':
+    'KovitoBoard は今後このフォルダ配下で新しい Claude Code セッションを開始しません。実行中のセッションは終了するまでそのまま継続します。',
+  'workRoots.errorCodeLabel': 'エラーコード',
 
   // エージェント（デフォルト）
   'agent.default.name': 'デフォルト',
@@ -220,36 +350,18 @@ const ja = {
   'chat.topic.status.sending': '送信中...',
   'chat.topic.button.start': '開始',
 
-  // サンプルレシピ
+  // サンプルレシピ — v0.2.x ではインストールを一時停止中の閲覧専用表示。
+  // インストール / 再インストール / 警告 / picker のキーはインストール経路と
+  // 同時に廃止し、上の `recipe.install.comingSoon` がサンプル画面の CTA に
+  // 取って代わる。
   'recipe.sample.status.loading': 'サンプルレシピを読み込み中...',
-  'recipe.sample.status.installing': 'インストール中...',
   'recipe.sample.button.reload': '再読み込み',
-  'recipe.sample.button.install': 'インストール',
   'recipe.sample.empty': 'サンプルレシピはありません',
   'recipe.sample.emptyHint': 'recipes/ ディレクトリにレシピを追加すると、ここに表示されます。',
   'recipe.sample.section.available': 'インストール前 ({count})',
   'recipe.sample.section.installed': 'インストール済み ({count})',
   'recipe.sample.badge.installed': 'インストール済み',
   'recipe.sample.installedDate': 'インストール日',
-  'recipe.sample.justInstalled.title': 'インストール完了',
-  'recipe.sample.justInstalled.body': '左側のメニューに新しい項目が追加されました。再読み込みは不要です。',
-  'recipe.sample.justInstalled.dismiss': '閉じる',
-  'recipe.sample.button.reinstall': '再インストール',
-  'recipe.sample.status.reinstalling': '再インストール中...',
-
-  // レシピインストール v2.0 — declarative 警告ダイアログ
-  'recipe.install.warning.title': '注意: declarative 外の実装を含むレシピ',
-  'recipe.install.warning.body': 'レシピ「{name}」は declarative handler の枠を超える実装を含みます:',
-  'recipe.install.warning.note': 'エージェントが実装する際、フル権限のコードが追加される可能性があります。信頼できる配布元のレシピか確認の上で進めてください。',
-  'recipe.install.warning.continue': '続ける',
-  'recipe.install.warning.cancel': 'キャンセル',
-  'recipe.install.warning.pattern.express-router': 'Express Router の使用',
-  'recipe.install.warning.pattern.direct-fetch': '直接 HTTP 通信（fetch）',
-  'recipe.install.warning.pattern.axios-import': 'axios による HTTP 通信',
-  'recipe.install.warning.pattern.child-process': 'シェル / 子プロセスの実行',
-  'recipe.install.warning.pattern.node-fs-direct': 'Node.js fs API の直接利用',
-  'recipe.install.warning.pattern.shell-exec': 'exec / spawn の使用',
-  'recipe.install.warning.pattern.process-env-write': '環境変数の書き換え',
 
   // アプリ削除フロー (DEC-024 #3)
   'nav.action.removeApp': 'アプリを削除',
@@ -270,13 +382,6 @@ const ja = {
   'appRemoval.picker.button.confirm': '削除を依頼',
   'appRemoval.error.noAgents': 'エージェントが定義されていません。エージェント画面でエージェントを作成してください。',
   'appRemoval.error.sessionCreationFailed': 'セッションの作成に失敗しました: {error}',
-
-  // レシピインストール v2.0 — agent picker
-  'recipe.install.picker.title': 'インストールを依頼するエージェント',
-  'recipe.install.picker.body': '「{name}」のインストール作業を行うエージェントを選択してください。エージェントが対話で配置を進めます。',
-  'recipe.install.picker.confirm': 'インストールを依頼',
-  'recipe.install.picker.cancel': 'キャンセル',
-  'recipe.install.picker.noAgents': 'エージェントが定義されていません。エージェント画面でエージェントを作成してください。',
 
   // エージェント一覧
   'agent.list.title': 'エージェント',
@@ -413,37 +518,11 @@ const ja = {
   'recipe.export.error.appIdMissing': 'appId が解決できません。アプリ画面が開かれているか確認してください。',
   'recipe.export.error.recipeIdRequired': 'レシピ ID は必須です。',
   'recipe.export.error.recipeIdFormat': 'レシピ ID は半角英数字 / _ / - / . / / / @ のみ、1〜256 文字で入力してください。',
+  'recipe.export.error.customBeNotExportable':
+    'このアプリはレシピとしてエクスポートできません: app/{appId}/api/ 配下のファイル({files})はレシピの安全境界の外側で扱われるためです (recipe-inspector は拡張子に関わらず api/ 配下のすべての artifact を拒否します)。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) api/ 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
 
-  // レシピインポート
-  'recipe.import.verdict.blocked': 'ブロック',
-  'recipe.import.verdict.warning': '警告',
-  'recipe.import.verdict.caution': '注意',
-  'recipe.import.verdict.safe': '安全',
-  'recipe.import.field.path': 'レシピのパス',
-  'recipe.import.field.pathHint': 'ローカルのレシピディレクトリまたは .md ファイルのパスを入力してください。',
-  'recipe.import.button.parse': '解析',
-  'recipe.import.button.apply': '適用',
-  'recipe.import.button.importAnother': '別のレシピを読み込む',
-  'recipe.import.status.parsing': 'レシピを解析中...',
-  'recipe.import.status.applying': '適用中...',
-  'recipe.import.findings.title': '検査結果 ({count} 件)',
-  'recipe.import.code.title': '成果物コード',
-  'recipe.import.menu.title': 'メニュー追加',
-  'recipe.import.hint.reviewRequired': '※ 全コードを確認後に適用可能になります',
-  'recipe.import.applied.title': 'レシピを適用しました',
-  'recipe.import.applied.description': 'ID: {id} — エージェントがファイルを作成しています。セッション画面で進捗を確認できます。',
-  // RC-3: ファイル選択ダイアログ
-  'recipe.import.upload.label': 'レシピを選択',
-  'recipe.import.upload.button.file': '.md ファイルを選択',
-  'recipe.import.upload.button.dir': 'ディレクトリを選択',
-  'recipe.import.upload.hint': '単一の .md レシピ、または recipe.yaml を含むレシピディレクトリを選んでください（合計 5MB 以下）。',
-  'recipe.import.upload.noFiles': 'ファイルが選択されていません',
-  'recipe.import.upload.noSupportedFiles': '対応形式のファイルが含まれていません（.md / .markdown / .yaml / .ts / .tsx / .css / .json）',
-  'recipe.import.upload.tooManyFiles': 'ファイル数が多すぎます（最大 {max}）',
-  'recipe.import.upload.fileTooLarge': 'ファイルが大きすぎます: {name}（1MB 以下）',
-  'recipe.import.upload.totalTooLarge': '合計サイズが 5MB を超えています',
-  'recipe.import.upload.unsupportedExtension': '対応していない拡張子です: {name}',
-  'recipe.import.advanced.toggle': 'パスを直接入力する（上級者向け）',
+  // レシピインポート — v0.2.x でレシピインストール一時停止と合わせて廃止。
+  // v0.3.0 の developer sideload mode で復活予定。
 
   // エージェント構造化フィールドエディタ
   'agent.field.displayName.label': '表示名',
@@ -506,6 +585,17 @@ const ja = {
   'trust.tmux.copy': 'コピー',
   'trust.tmux.copied': '✓ コピー済み',
   'trust.rawBuffer.title': '実メッセージ（末尾）',
+
+  // Trust marker + preamble warning（レシピの信頼軸、v0.2.0）
+  'trust.level.kbTrusted': 'KB 信頼済',
+  'trust.level.codeTrusted': 'コード信頼済（署名）',
+  'trust.level.codeTrustedSideloaded': 'コード信頼済（サイドロード）',
+  'trust.level.unknown': '不明（グランドファーザー）',
+  'trust.marker.ariaLabel': 'レシピの信頼レベル: {label}',
+  'trust.unknown.reinstall': 'KovitoHub (v0.3.0) 経由で再インストールして検証',
+  'trust.preamble.fromApp': 'このコンテンツは app から: {appId}',
+  'trust.preamble.fromUserPaste': 'このコンテンツはユーザーの貼り付けから',
+  'trust.preamble.fromUnknown': 'このコンテンツは検証されていない情報源から',
 
   // エージェント詳細
   'agent.detail.tab.profile': 'プロフィール',

@@ -7,6 +7,9 @@ import { join, resolve, dirname } from 'path'
 import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from './fs-layer'
 import type { ViewerConfig } from './types'
+import { lazyChildLogger } from './logger'
+
+const cfgLog = lazyChildLogger('config-resolver')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -87,7 +90,24 @@ export function resolveProjectRootWithSource(
   }
 
   // 4. process.cwd() fallback
-  cachedProjectRootResult = { path: process.cwd(), source: 'cwd-fallback' }
+  //
+  // M-2 (`shared-installation-prevention-request.md` §M-2 + spec
+  // `process-lifecycle.md` v1.2 §3.1): the cwd-fallback exists for
+  // contributor / test ergonomics only — the embedded model
+  // (kovitoboard-master-spec §2.2) requires --project-root or
+  // KOVITOBOARD_PROJECT_ROOT in production. Emit a single WARN so
+  // operators who land here by accident can spot the misconfiguration
+  // in the startup log instead of after the UI presents the wrong
+  // project. We do not refuse to start — that is M-1's responsibility
+  // and is already enforced inside `tools/kb-start.mjs`.
+  const cwd = process.cwd()
+  cfgLog.warn(
+    { resolved: cwd },
+    '[config] WARN: project root resolved via cwd-fallback. ' +
+      'Embedded mode expects an explicit --project-root or KOVITOBOARD_PROJECT_ROOT. ' +
+      'See process-lifecycle.md §3 / agent-ref/11-lifecycle.md.',
+  )
+  cachedProjectRootResult = { path: cwd, source: 'cwd-fallback' }
   return cachedProjectRootResult
 }
 

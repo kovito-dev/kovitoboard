@@ -7,6 +7,176 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-26
+
+Security and design hardening release. Adds protected-path reference,
+CLAUDE.md guidance pointer, process lifecycle commands, capture API
+opt-in, recommended settings check, trust marker UI, Rule of Two
+warning, and temporarily disables recipe install pending the KovitoHub
+signed-only model planned for v0.3.0.
+
+### Added — Protected-paths reference and CLAUDE.md guidance pointer
+
+- `docs/agent-ref/12-protected-paths.md` lists every KB-managed path
+  and the proper API/UI/CLI route to use instead of editing it
+  directly.
+- After onboarding, KovitoBoard appends a one-line pointer to
+  `<projectRoot>/CLAUDE.md` between
+  `<!-- KB:GUIDANCE_START --> ... <!-- KB:GUIDANCE_END -->` markers so
+  Claude Code agents in the project know to consult
+  `kovitoboard/docs/agent-ref/INDEX.md` for KB-related tasks.
+- The block is auto-managed; KovitoBoard will not re-inject it if you
+  delete the markers. To skip the injection entirely set
+  `claudeMdGuidance.disabled = true` in `.kovitoboard/setting.json`
+  before running onboarding.
+
+### Added — Process lifecycle commands
+
+- `npm run kb:stop` for graceful shutdown including tmux session
+  cleanup and residual process diagnostics.
+- Multi-launch refusal via
+  `<projectRoot>/.kovitoboard/run/supervisor.pid` with stale-detection
+  fallback.
+- Startup preflight checks for tmux 3.4+, Node.js, and Claude CLI.
+- `docs/agent-ref/11-lifecycle.md` documents the start / stop
+  protocol for agents acting on behalf of KovitoBoard users.
+
+### Changed — Shared installation prevention
+
+- KovitoBoard now refuses to start when invoked from inside the KB
+  clone itself without an explicit `--project-root` (or
+  `KOVITOBOARD_PROJECT_ROOT`). Use the embedded deployment model
+  documented in README.md.
+- The cwd-fallback path now logs a warning and surfaces a
+  confirmation in the UI when invoked, since it is treated as an
+  exceptional path.
+
+### Added — Capture API opt-in mechanism for a11y / exposed-context
+
+- Recipe apps that use `window.kb.capture.snapshot()` (accessibility
+  tree walker) or `window.kb.exposeContext()` now require explicit
+  opt-in approval at install time. The recipe manifest declares
+  `captureRequires: ['a11y' | 'exposed-context']`, and the install
+  warning dialog surfaces a per-kind approval section that the user
+  must explicitly check.
+- A trusted-host-mediated identity model (per-mount capture tokens
+  issued by KB and never exposed to recipe code) replaces body-based
+  appId trust.
+- Grandfather behavior: existing recipes installed before v0.2.0
+  retain capture access without re-approval (`captureRequires: []`).
+
+### Added — Claude Code recommended settings check at startup / onboarding
+
+- On startup, KovitoBoard inspects the merged Claude Code settings
+  (`~/.claude/settings.json` + project-local `.claude/settings.json`)
+  and warns when any of three recommended settings is missing:
+  `permissionMode` is not `default`/`acceptEdits`/`plan`, the
+  `.kovitoboard/` deny pattern is absent from `permissions.deny`, or
+  bypass mode is active.
+- Warnings surface as a toast for onboarded users (24h dismiss
+  cooldown, drift detection invalidates the dismiss) and as an
+  inline Security step in the onboarding wizard for first-time
+  users. Per-item acknowledge UI prevents rubber-stamp approval.
+- The settings file is watched at runtime via `fs.watch`; mutations
+  trigger a re-check. Settings paths are redacted (home masking +
+  credential redaction) before logging.
+
+### Added — Trust marker UI and Rule of Two warning
+
+- 5-level trust vocabulary indicators in the trust prompt UI with
+  preamble warning surfacing potential prompt injection patterns.
+- Warning toast and onboarding step when Claude Code Rule of Two
+  bypass mode is active, with onboarding gate requiring per-item
+  acknowledgment.
+
+### Changed — Recipe install temporarily disabled
+
+- New recipe install via `/api/recipes/install` is **disabled** in
+  this release. The endpoint returns 410 Gone, and the install button
+  in the UI is hidden / disabled with a "Coming in v0.3.0 with
+  KovitoHub" notice.
+- Existing recipes installed in v0.1.x or v0.2.0 continue to work
+  unchanged (grandfathered). View, uninstall, and export flows are
+  preserved.
+- KovitoBoard's recipe distribution is moving to a signed-only model
+  via KovitoHub (publisher signing + central marketplace, planned
+  for v0.3.0). A developer sideload mode (opt-in via
+  `KB_DEVELOPER_MODE=1`) is also planned for v0.3.0.
+- See `README.md` "Recipe distribution model" section for the
+  broader rationale.
+
+### Security
+
+- Per-launch auth token for HTTP API and WebSocket upgrade
+- Backend and Vite dev server bound to 127.0.0.1
+- Mark-installed gated behind a one-shot install-session nonce
+- Dispatcher resolved path threaded through HandlerContext (TOCTOU)
+- Anthropic API key / JWT redaction in structured log records
+- Migrate direct console.* calls to pino-backed loggers
+- Refuse recipe export when app contains custom backend files
+- Atomic write helper for JSON stores
+- Safety boundary + trusted-code model in install warning dialog
+- Serialize handler dispatch per appId
+- `/api/artifact` exclusion list + size cap
+- Recipe export appId path-traversal defense
+- DoS limits at recipe-parser entry
+- Artifact-path traversal rejection at recipe parser
+- WebSocket heartbeat with dead-connection termination
+- `KOVITOBOARD_E2E_TMUX_SESSION` gated behind `KB_E2E_MODE`
+- Operation-aware exclusion for recipe scope validator
+- cwd allow-list gate for spawn / tmux consumers
+- tmux `sendViaBuffer` tmpfile 0600 + O_EXCL
+- Server-side catch envelope redaction
+- Server-side dedup ledger for trust prompt respond races
+- Legacy anchor detection removal
+- Agent-ref install / `kb-stop --all` path hardening
+
+### Notes
+
+- Several install-flow hardening items (install verdict trust, recipe
+  hash scope, Expand All review gate, KH registration warning,
+  install preview) are deferred to v0.3.0 because the install
+  endpoint is disabled in v0.2.0; they will be re-evaluated under the
+  signed-only model.
+- v0.2.0 remains private (closed). Public landing page updates
+  planned for v0.2.1.
+
+### Migration notes
+
+#### Shared installation refusal (formerly silent fallback)
+
+Starting `npm run dev` from inside the KovitoBoard clone now exits
+with ERROR. Use `npm start -- --project-root <path-to-claude-code-project>`
+or set `KOVITOBOARD_PROJECT_ROOT`. Contributors developing the
+KovitoBoard codebase should pass the project root explicitly.
+
+#### Stopping KovitoBoard
+
+Use `npm run kb:stop` instead of `Ctrl+C` for clean shutdown of
+supervisor, tmux session, and Vite dev server. Ctrl+C still works
+for contributors.
+
+#### Recipe install temporarily disabled (existing recipes grandfathered)
+
+Recipe install via `/api/recipes/install` is disabled in v0.2.0. The
+install button in the UI is hidden / disabled with a "Coming in
+v0.3.0 with KovitoHub" notice.
+
+- **Existing recipes** installed in v0.1.x or v0.2.0 continue to
+  work unchanged. No action is required.
+- **New recipe install** is unavailable until v0.3.0.
+- **For developers** who need to test or develop recipes locally, a
+  developer sideload mode (opt-in via `KB_DEVELOPER_MODE=1`) is
+  planned for v0.3.0.
+- See `README.md` "Recipe distribution model" section for the
+  broader rationale.
+
+#### tmux 3.4+ requirement
+
+Startup preflight check now enforces tmux 3.4+. Earlier versions
+exit with a clear error message and remediation steps. Upgrade tmux
+to 3.4 or later before running v0.2.0.
+
 ## [0.1.1] - 2026-05-06
 
 Validation release for the self-update detection and agent-driven upgrade flow.

@@ -11,6 +11,8 @@ import { useTheme } from './hooks/useTheme'
 import { useAdminStatus } from './hooks/useAdminStatus'
 import { TitleBar, type AgentStatus } from './components/TitleBar'
 import { Layout } from './components/Layout'
+import { SecurityRecommendationsToast } from './components/SecurityRecommendationsToast'
+import { ProjectRootBanner } from './components/ProjectRootBanner'
 import { AmbientSidebar } from './components/AmbientSidebar'
 import { NavMenu, Icons, getIcon, type MenuEntry } from './components/NavMenu'
 import { AppRemovalModal } from './components/AppRemovalModal'
@@ -25,11 +27,13 @@ import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
 import { RecipesPage } from './pages/RecipesPage'
+import WorkRootsPage from './pages/WorkRootsPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import { RecipePageHost } from './app-host/RecipePageHost'
 import type { AppMenuEntry } from './types/app-types'
 import { t } from './i18n'
 import { createLogger } from './lib/logger'
+import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('App')
 
@@ -55,6 +59,11 @@ const menuEntries: MenuEntry[] = [
     label: t('nav.menu.recipes'),
     icon: Icons.seeds,
   },
+  {
+    id: 'work-roots',
+    label: t('nav.menu.workRoots'),
+    icon: Icons.settings,
+  },
 ]
 
 export function App() {
@@ -78,7 +87,7 @@ export function App() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null)
 
   useEffect(() => {
-    fetch('/api/config/setting')
+    kbFetch('/api/config/setting')
       .then((res) => {
         if (!res.ok) {
           // Setting file not found = onboarding not completed
@@ -137,6 +146,7 @@ export function App() {
   const activeMenuId = useMemo(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
     if (location.pathname.startsWith('/recipes')) return 'recipes'
+    if (location.pathname.startsWith('/work-roots')) return 'work-roots'
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
@@ -146,6 +156,16 @@ export function App() {
 
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+
+  // Nav rail compact state — lifted out of NavMenu so the rail wrapper
+  // (`<div className="flex flex-col h-full ...">` in the Layout nav
+  // slot) can drive its own width and so ProjectRootBanner can be
+  // hidden when collapsed. Previously the state lived inside NavMenu,
+  // which left the wrapper unconstrained: ProjectRootBanner's natural
+  // (min-content) width then dictated the rail width, so the expanded
+  // rail showed dead space to the right of the menu and compact mode
+  // failed to shrink the rail at all (the banner kept it wide).
+  const [navCompact, setNavCompact] = useState(false)
 
   // App removal modal (DEC-024 #3 / DEC-024 #5, spec §F4 — opened via
   // the AmbientSidebar's per-app actions popover instead of the legacy
@@ -325,12 +345,41 @@ export function App() {
         <>
         <Layout
           nav={
-            <NavMenu
-              entries={allMenuEntries}
-              activeId={activeMenuId}
-              onSelect={(id) => navigate(`/${id}`)}
-              actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
-            />
+            // Wrap NavMenu + ProjectRootBanner in a single column so
+            // the banner pins to the bottom of the nav rail. The
+            // banner uses `mt-auto`, which only takes effect when the
+            // flex container has a resolved height — `h-full` makes
+            // the wrapper consume the parent Layout's nav slot so the
+            // banner sits inside the nav rail rather than being
+            // pushed outside it (KB-2026-05 hardening).
+            //
+            // The width class lives on this wrapper (rather than on
+            // NavMenu alone) so the rail width is decided in exactly
+            // one place. Without a width here ProjectRootBanner's
+            // long path/source text would drive the wrapper's
+            // min-content width, leaving NavMenu (w-40) with dead
+            // space on its right and preventing compact mode from
+            // actually shrinking the rail.
+            <div
+              className={`flex flex-col h-full ${navCompact ? 'w-12' : 'w-40'} transition-[width] duration-200`}
+            >
+              <NavMenu
+                entries={allMenuEntries}
+                activeId={activeMenuId}
+                onSelect={(id) => navigate(`/${id}`)}
+                compact={navCompact}
+                onToggleCompact={() => setNavCompact((prev) => !prev)}
+                actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
+              />
+              {/* The banner stays mounted in compact mode as an
+                  icon-only surface so the shared-installation-
+                  prevention spec requirement to keep the project
+                  root continuously visible in the UI remains
+                  satisfied. The folder icon carries the hover
+                  tooltip for the full path, and a red dot signals
+                  the cwd-fallback warning state. */}
+              <ProjectRootBanner compact={navCompact} />
+            </div>
           }
           sidebar={renderSidebar()}
           /*
@@ -393,6 +442,10 @@ export function App() {
         >
           <Routes>
             <Route path="/" element={<Navigate to="/agents" replace />} />
+            {/* Onboarding-complete users see the toast surface as a
+                portal at the top-right; the inline <StepSecurity>
+                step covers the not-yet-onboarded path so the toast
+                is gated on `onboardingComplete`. */}
             <Route path="/agents" element={
               <AgentsPage
                 agents={agents}
@@ -424,6 +477,7 @@ export function App() {
               />
             } />
             <Route path="/sessions" element={<SessionsPage defaultSessionId={selectedId} />} />
+            <Route path="/work-roots" element={<WorkRootsPage />} />
             <Route path="/sessions/:id" element={
               <SessionDetailPage
                 sessions={sessions}
@@ -472,7 +526,11 @@ export function App() {
                         {t('common.loading')}
                       </div>
                     }>
-                      <RecipePageHost appId={entry.id} Page={LazyPage} />
+                      <RecipePageHost
+                        appId={entry.id}
+                        Page={LazyPage}
+                        trustLevel={entry.trustLevel}
+                      />
                     </Suspense>
                   }
                 />
@@ -481,6 +539,18 @@ export function App() {
             <Route path="*" element={<Navigate to="/agents" replace />} />
           </Routes>
         </Layout>
+
+        {/* Phase 1 prompt injection ② Claude Code recommended-settings
+            startup warn (spec trust-prompt-relay v1.3 §10.5; handoff
+            v1.1 §3.3). The toast is self-contained: it fetches
+            /api/security/settings-check on mount, hides itself when
+            suppressed by the 24h dismiss cooldown, and offers a
+            dismiss action that POSTs to /api/security/dismiss.
+            The `onboardingComplete` prop gates the toast off during
+            the onboarding wizard so it does not double up with the
+            inline StepSecurity surface (CodeX review attempt 1). */}
+        <SecurityRecommendationsToast onboardingComplete={onboardingComplete === true} />
+
 
         {/* Mobile bottom nav */}
         <div className="md:hidden shrink-0 bg-[var(--bg-nav)] border-t border-[var(--border)] flex items-center justify-around py-1.5 px-2">
@@ -535,7 +605,7 @@ export function App() {
             setAppRemovalError(null)
             setAppRemovalSubmitting(true)
             try {
-              const res = await fetch(
+              const res = await kbFetch(
                 `/api/apps/${appRemovalState.appId}/request-removal`,
                 {
                   method: 'POST',

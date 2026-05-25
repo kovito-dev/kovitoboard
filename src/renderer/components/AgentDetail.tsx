@@ -14,6 +14,7 @@ import { useToast } from './Toast'
 import { STATUS_INDICATORS, relativeTime, formatTokens, shortModel } from '../utils/format'
 import { getAgentDescription, getAgentDisplayName, getAgentRole } from '../utils/agent-display'
 import { t } from '../i18n'
+import { kbFetch } from '../lib/kbFetch'
 
 interface AgentDetailProps {
   agent: AgentInfo
@@ -211,7 +212,7 @@ export function AgentDetail({
                       shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
                       transition-all duration-200
                       ${showNewSession
-                        ? 'bg-gray-700 text-[var(--text-tertiary)]'
+                        ? 'bg-[var(--bg-elevated)] text-[var(--text-tertiary)] border border-[var(--border)]'
                         : 'bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-shadow)]'
                       }
                     `}
@@ -573,11 +574,14 @@ function ActiveSessionConfirmDialog({
           {t('agent.detail.activeConfirm.startNew')}
         </button>
 
-        {/* Open active session */}
+        {/* Open active session — use the themed accent color so the
+            label keeps contrast against `--bg-surface` in both light
+            and dark themes. The previous hardcoded `text-blue-300`
+            collapsed to near-black on the light theme. */}
         <button
           onClick={onOpenActive}
           className="w-full flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium
-            bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-blue-300 border border-[var(--border)] transition-colors"
+            bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[var(--accent-text)] border border-[var(--border)] transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -658,7 +662,7 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
               <div className="flex-1" />
               <svg
                 width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                className="text-gray-700 group-hover:text-[var(--text-muted)] transition-colors"
+                className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors"
                 style={{ color: undefined }}
               >
                 <polyline points="9 18 15 12 9 6" />
@@ -681,7 +685,7 @@ function DefinitionTab({ agentId }: { agentId: string }) {
   useEffect(() => {
     setLoading(true)
     setError(false)
-    fetch(`/api/agents/${agentId}/definition`)
+    kbFetch(`/api/agents/${agentId}/definition`)
       .then((res) => {
         if (!res.ok) throw new Error('Not found')
         return res.json()

@@ -3,112 +3,84 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+/**
+ * Tests for `parseKbAuthoredSections` after the v0.2.0 K-15 cutover
+ * (spec `kb-authored-sentinel.md` v1.3 §11.3). The legacy anchor
+ * ladder and the v1.0 HTML-comment fallback have been removed; the
+ * parser now only recognizes rule-line sentinel blocks. JSONL written
+ * before the rule-line rollout falls through to `userInput` as plain
+ * text — the accepted degrade.
+ *
+ * Sentinel-shape edge cases (label escapes, unknown kinds, broken
+ * envelopes) live next door in `kb-authored-sentinel.test.ts`. This
+ * file pins the higher-level contract callers depend on:
+ *   - whole-message types (one sentinel, no leftover userInput)
+ *   - composite messages (multiple sentinels + trailing userInput)
+ *   - tmux-bridge sanitization tolerance (`\n` / `\t` literals)
+ *   - degrade behavior for legacy anchor / fence inputs
+ */
 import { describe, expect, it } from 'vitest'
 import { parseKbAuthoredSections } from '../../src/renderer/utils/kb-authored-message'
-import { SYSTEM_PROMPT_PREAMBLE } from '../../src/renderer/hooks/useSidebarContext'
+import {
+  SYSTEM_PROMPT_PREAMBLE,
+} from '../../src/renderer/hooks/useSidebarContext'
+import { wrapWithSentinel } from '../../src/shared/kb-authored-sentinel'
 
-const PREAMBLE = SYSTEM_PROMPT_PREAMBLE
-
-const KBCONTEXT = ['```kbcontext', 'url: /agents/kobi', 'activeMenu: agents', 'appId: agents', 'screenLabel: Agents', '```'].join('\n')
-const A11Y = ['```a11y', '<heading level="1">KovitoBoard</heading>', '```'].join('\n')
-const EXPOSED = ['```ExposedContext', '{"reportId":"42"}', '```'].join('\n')
-// `Selected` is emitted by `describePickedElement` as a fenced block
-// (info string `Selected`), not as a `[Selected]` paragraph.
-const SELECTED = ['```Selected', 'tag: button', 'text: 送信', '```'].join('\n')
+const PREAMBLE_BODY = SYSTEM_PROMPT_PREAMBLE
+const KBCONTEXT_BODY = [
+  'url: /agents/kobi',
+  'activeMenu: agents',
+  'appId: agents',
+  'screenLabel: Agents',
+].join('\n')
+const A11Y_BODY = '- heading[level=1]: "KovitoBoard"'
+const SELECTED_BODY = ['tag: button', 'text: 送信'].join('\n')
+const EXPOSED_BODY = '{"reportId":"42"}'
 
 describe('parseKbAuthoredSections', () => {
-  describe('whole-message types', () => {
-    it('detects app creation requests', () => {
-      const text = 'KovitoBoard App Creation Request\n\n## ユーザーの要件\n\n### 目的と概要\n\n```\np\n```'
+  describe('whole-message sentinel types', () => {
+    it('extracts an app-create sentinel as one section with no userInput', () => {
+      const text = wrapWithSentinel('app-create', '## ユーザーの要件\n\n…body…')
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(1)
-      expect(r.sections[0]).toEqual({ kind: 'app-create', content: text })
+      expect(r.sections[0].kind).toBe('app-create')
+      expect(r.sections[0].content).toContain('## ユーザーの要件')
       expect(r.userInput).toBe('')
     })
 
-    it('detects v2.0 recipe install requests and pulls the name from the body', () => {
-      // The v2.0 prompt header no longer embeds the name — the
-      // parser extracts it from the `### name` block instead.
-      const text = [
-        'KovitoBoard Recipe Installation Request',
-        '',
-        '## Recipe Information',
-        '',
-        '### recipeId',
-        '',
-        'todo-manager',
-        '',
-        '### name',
-        '',
-        'TODO Manager',
-        '',
-        '### version',
-        '',
-        '1.0.0',
-      ].join('\n')
+    it('extracts a recipe-install sentinel and surfaces the recipe name as label', () => {
+      const text = wrapWithSentinel(
+        'recipe-install',
+        '## Recipe Information\n\n### name\n\nTODO Manager',
+        { label: 'TODO Manager' },
+      )
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(1)
-      expect(r.sections[0]).toMatchObject({ kind: 'recipe-install', label: 'TODO Manager' })
+      expect(r.sections[0]).toMatchObject({
+        kind: 'recipe-install',
+        label: 'TODO Manager',
+      })
       expect(r.userInput).toBe('')
     })
 
-    it('still detects legacy v1.x recipe install requests', () => {
-      // Sessions captured before the v2.0 header change keep
-      // rendering as collapsible chips after the upgrade.
-      const text = 'KovitoBoard Recipe Application: "todo" v0.1.0\n\n## CONSTRAINTS'
-      const r = parseKbAuthoredSections(text)
-      expect(r.sections).toHaveLength(1)
-      expect(r.sections[0]).toMatchObject({ kind: 'recipe-install', label: 'todo' })
-      expect(r.userInput).toBe('')
-    })
-
-    it('detects continue-session handover messages and captures the short session ID', () => {
-      // The handover message is built by `format.ts:buildContinueSessionMessage`
-      // and contains a `<previous-session>` block. KB recognizes the
-      // first-line anchor and folds the entire message into a chip so
-      // the timeline does not display the carbon-copied transcript
-      // verbatim.
-      const text = [
-        'Please continue working from the previous session (988e0a43).',
-        '',
-        '<previous-session>',
-        '## User',
-        'Hello',
-        '## Assistant',
-        'Hi there!',
-        '</previous-session>',
-        '',
-        'Based on the context above, please continue with the remaining work.',
-      ].join('\n')
+    it('extracts a continue-session sentinel and pulls the short session id from the label', () => {
+      const text = wrapWithSentinel(
+        'continue-session',
+        '<previous-session>\n## User\nHello\n</previous-session>',
+        { label: '988e0a43' },
+      )
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(1)
       expect(r.sections[0]).toMatchObject({
         kind: 'continue-session',
         label: '988e0a43',
       })
-      // The full original message must be preserved as the chip's
-      // content so expanding it shows the agent-facing payload.
-      expect(r.sections[0].content).toBe(text)
       expect(r.userInput).toBe('')
     })
 
-    it('detects the short-form continue-session message with no embedded transcript', () => {
-      // When the previous session has no extractable conversation,
-      // `buildContinueSessionMessage` falls back to the single-sentence
-      // form. KB still folds it into a chip for a consistent UX.
-      const text = 'Please continue working from the previous session (abcd1234).'
-      const r = parseKbAuthoredSections(text)
-      expect(r.sections).toHaveLength(1)
-      expect(r.sections[0]).toMatchObject({
-        kind: 'continue-session',
-        label: 'abcd1234',
-      })
-      expect(r.userInput).toBe('')
-    })
-
-    it('does not over-match similar prefixes', () => {
-      // Whole-message types only fire on the literal anchors; other text
-      // returns empty sections + the original userInput.
+    it('does not match plain text that mentions the brand name', () => {
+      // Without a rule-line sentinel envelope, the parser must not
+      // chip-collapse arbitrary text — it returns the message as-is.
       const text = 'Just a regular message that mentions KovitoBoard somewhere'
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(0)
@@ -117,24 +89,31 @@ describe('parseKbAuthoredSections', () => {
   })
 
   describe('composite (sidebar-origin) messages', () => {
-    it('peels off the preamble when the message starts with it', () => {
-      const text = PREAMBLE + '\n\nhello'
+    it('peels off a single preamble sentinel when the message starts with it', () => {
+      const text = `${wrapWithSentinel('preamble', PREAMBLE_BODY)}\n\nhello`
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(1)
       expect(r.sections[0].kind).toBe('preamble')
       expect(r.userInput).toBe('hello')
     })
 
-    it('peels off the kbcontext fence', () => {
-      const text = KBCONTEXT + '\n\nopen ext/research-reports'
+    it('peels off a kbcontext sentinel and keeps the user text intact', () => {
+      const text = `${wrapWithSentinel('kbcontext', KBCONTEXT_BODY)}\n\nopen ext/research-reports`
       const r = parseKbAuthoredSections(text)
       expect(r.sections.map((s) => s.kind)).toEqual(['kbcontext'])
-      expect(r.sections[0].content).toBe(KBCONTEXT)
+      expect(r.sections[0].content).toBe(KBCONTEXT_BODY)
       expect(r.userInput).toBe('open ext/research-reports')
     })
 
-    it('peels off all five sidebar sections in appearance order', () => {
-      const text = [PREAMBLE, KBCONTEXT, A11Y, SELECTED, EXPOSED, 'do the thing'].join('\n\n')
+    it('peels all five sidebar sentinel sections in appearance order', () => {
+      const text = [
+        wrapWithSentinel('preamble', PREAMBLE_BODY),
+        wrapWithSentinel('kbcontext', KBCONTEXT_BODY),
+        wrapWithSentinel('a11y', A11Y_BODY),
+        wrapWithSentinel('selected', SELECTED_BODY),
+        wrapWithSentinel('exposed-context', EXPOSED_BODY),
+        'do the thing',
+      ].join('\n\n')
       const r = parseKbAuthoredSections(text)
       expect(r.sections.map((s) => s.kind)).toEqual([
         'preamble',
@@ -146,43 +125,28 @@ describe('parseKbAuthoredSections', () => {
       expect(r.userInput).toBe('do the thing')
     })
 
-    it('keeps user input intact when no sidebar sections are present', () => {
+    it('keeps user input intact when no sidebar sentinels are present', () => {
       const text = 'just a plain user message'
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(0)
       expect(r.userInput).toBe(text)
     })
 
-    it('peels just the kbcontext when only that section exists', () => {
-      // An ambient sidebar follow-up message (kbcontext only, no preamble).
-      const text = KBCONTEXT + '\n\nfollow-up question'
-      const r = parseKbAuthoredSections(text)
-      expect(r.sections.map((s) => s.kind)).toEqual(['kbcontext'])
-      expect(r.userInput).toBe('follow-up question')
-    })
-
-    it('handles two kbcontext fences in the same message (defensive)', () => {
+    it('handles two kbcontext sentinels in the same message (defensive)', () => {
       // Should not happen in practice but the parser still carries
       // them through individually instead of merging.
-      const text = [KBCONTEXT, KBCONTEXT, 'tail'].join('\n\n')
+      const block = wrapWithSentinel('kbcontext', KBCONTEXT_BODY)
+      const text = [block, block, 'tail'].join('\n\n')
       const r = parseKbAuthoredSections(text)
       expect(r.sections.map((s) => s.kind)).toEqual(['kbcontext', 'kbcontext'])
       expect(r.userInput).toBe('tail')
     })
 
-    it('preserves kbcontext fence body unchanged for the expanded view', () => {
-      const text = KBCONTEXT + '\n\nuser tail'
+    it('preserves the kbcontext body verbatim for the expanded view', () => {
+      const text = `${wrapWithSentinel('kbcontext', KBCONTEXT_BODY)}\n\nuser tail`
       const r = parseKbAuthoredSections(text)
       expect(r.sections[0].content).toContain('url: /agents/kobi')
       expect(r.sections[0].content).toContain('appId: agents')
-    })
-
-    it('extracts a Selected fenced block when present', () => {
-      const text = SELECTED + '\n\nselect this for me'
-      const r = parseKbAuthoredSections(text)
-      expect(r.sections.map((s) => s.kind)).toEqual(['selected'])
-      expect(r.sections[0].content).toBe(SELECTED)
-      expect(r.userInput).toBe('select this for me')
     })
 
     it('returns no sections for empty input', () => {
@@ -193,17 +157,19 @@ describe('parseKbAuthoredSections', () => {
   })
 
   describe('mixed-input edge cases', () => {
-    it('treats unknown fences as user content (not as kb-authored)', () => {
+    it('treats arbitrary fenced code blocks as user content', () => {
+      // A user-typed code fence must survive into userInput unchanged
+      // — the sentinel parser only matches rule-line envelopes.
       const text = '```typescript\nconst x = 1\n```\n\nplease review'
       const r = parseKbAuthoredSections(text)
       expect(r.sections).toHaveLength(0)
       expect(r.userInput).toBe(text)
     })
 
-    it('still peels sidebar sections when the user message comes first', () => {
+    it('preserves leading user text when the sentinel is not first', () => {
       // Defensive: the production composer always puts user text last,
       // but make sure leading user text is preserved through the peel.
-      const text = 'leading question\n\n' + KBCONTEXT
+      const text = `leading question\n\n${wrapWithSentinel('kbcontext', KBCONTEXT_BODY)}`
       const r = parseKbAuthoredSections(text)
       expect(r.sections.map((s) => s.kind)).toEqual(['kbcontext'])
       expect(r.userInput).toBe('leading question')
@@ -222,8 +188,8 @@ describe('parseKbAuthoredSections', () => {
       return s.replace(/\r\n/g, '\\n').replace(/[\r\n]/g, '\\n').replace(/\t/g, '\\t')
     }
 
-    it('detects the preamble even when newlines are escaped', () => {
-      const text = sanitize(PREAMBLE + '\n\nhello')
+    it('detects the preamble sentinel even when newlines are escaped', () => {
+      const text = sanitize(`${wrapWithSentinel('preamble', PREAMBLE_BODY)}\n\nhello`)
       // Sanity check: the literal escapes really do come through.
       expect(text).toContain('\\n')
       expect(text).not.toContain('\n')
@@ -233,8 +199,17 @@ describe('parseKbAuthoredSections', () => {
       expect(r.userInput).toBe('hello')
     })
 
-    it('detects fenced blocks (kbcontext / a11y / Selected / ExposedContext) when newlines are escaped', () => {
-      const text = sanitize([PREAMBLE, KBCONTEXT, A11Y, SELECTED, EXPOSED, 'do the thing'].join('\n\n'))
+    it('detects all sentinel sections when newlines are escaped', () => {
+      const text = sanitize(
+        [
+          wrapWithSentinel('preamble', PREAMBLE_BODY),
+          wrapWithSentinel('kbcontext', KBCONTEXT_BODY),
+          wrapWithSentinel('a11y', A11Y_BODY),
+          wrapWithSentinel('selected', SELECTED_BODY),
+          wrapWithSentinel('exposed-context', EXPOSED_BODY),
+          'do the thing',
+        ].join('\n\n'),
+      )
       expect(text).not.toContain('\n')
 
       const r = parseKbAuthoredSections(text)
@@ -247,13 +222,64 @@ describe('parseKbAuthoredSections', () => {
       ])
       expect(r.userInput).toBe('do the thing')
     })
+  })
 
-    it('whole-message types still match after sanitization', () => {
-      const text = sanitize('KovitoBoard Recipe Application: "todo" v0.1.0\n\n## CONSTRAINTS')
+  describe('legacy-anchor / fence degrade (v0.1.x JSONL)', () => {
+    // After the K-15 cutover, JSONL written before the rule-line
+    // sentinel rollout no longer chip-collapses — it falls through to
+    // userInput as raw text. Spec §11.3 documents this as an accepted
+    // degrade because v0.1.x had no long-term users.
+
+    it('renders a legacy app-create anchor as raw user input', () => {
+      const text = 'KovitoBoard App Creation Request\n\n## ユーザーの要件\n\n…body…'
       const r = parseKbAuthoredSections(text)
-      expect(r.sections.map((s) => s.kind)).toEqual(['recipe-install'])
-      expect(r.sections[0].label).toBe('todo')
-      expect(r.userInput).toBe('')
+      expect(r.sections).toHaveLength(0)
+      expect(r.userInput).toBe(text)
+    })
+
+    it('renders a legacy recipe-install anchor as raw user input', () => {
+      const text = [
+        'KovitoBoard Recipe Installation Request',
+        '',
+        '## Recipe Information',
+      ].join('\n')
+      const r = parseKbAuthoredSections(text)
+      expect(r.sections).toHaveLength(0)
+      expect(r.userInput).toBe(text)
+    })
+
+    it('renders a legacy continue-session anchor as raw user input', () => {
+      const text =
+        'Please continue working from the previous session (988e0a43).\n\n<previous-session>\n…\n</previous-session>'
+      const r = parseKbAuthoredSections(text)
+      expect(r.sections).toHaveLength(0)
+      expect(r.userInput).toBe(text)
+    })
+
+    it('renders legacy fenced kbcontext / a11y / Selected / ExposedContext blocks as raw user input', () => {
+      const text = [
+        '```kbcontext',
+        'url: /agents/kobi',
+        '```',
+        '',
+        '```a11y',
+        '<heading>KB</heading>',
+        '```',
+        '',
+        '```Selected',
+        'tag: button',
+        '```',
+        '',
+        '```ExposedContext',
+        '{"reportId":"42"}',
+        '```',
+        '',
+        'tail',
+      ].join('\n')
+      const r = parseKbAuthoredSections(text)
+      expect(r.sections).toHaveLength(0)
+      expect(r.userInput).toContain('```kbcontext')
+      expect(r.userInput).toContain('tail')
     })
   })
 })

@@ -17,29 +17,69 @@
  * For detailed design rationale, see kovitoboard-dev docs/design/v0.1.0-fs-layer-notes.md.
  */
 
+import { constants as fsConstants } from 'fs'
 import {
   readFileSync as fsReadFileSync,
   writeFileSync as fsWriteFileSync,
+  writeSync as fsWriteSync,
+  appendFileSync as fsAppendFileSync,
+  renameSync as fsRenameSync,
   existsSync as fsExistsSync,
   readdirSync as fsReaddirSync,
   statSync as fsStatSync,
+  lstatSync as fsLstatSync,
   mkdirSync as fsMkdirSync,
   unlinkSync as fsUnlinkSync,
   rmSync as fsRmSync,
   symlinkSync as fsSymlinkSync,
+  realpathSync as fsRealpathSync,
   openSync as fsOpenSync,
   readSync as fsReadSync,
   closeSync as fsCloseSync,
+  fsyncSync as fsFsyncSync,
+  fstatSync as fsFstatSync,
+  fchmodSync as fsFchmodSync,
+  fchownSync as fsFchownSync,
 } from 'fs'
+import { dirname, basename } from 'path'
+import { randomBytes } from 'crypto'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 
 // --- Type definitions ---
 
-/** Abstracted stat info (minimal fields extracted from Node.js fs.Stats) */
+/**
+ * Abstracted stat info (minimal fields extracted from Node.js fs.Stats).
+ *
+ * `isFile` / `isDirectory` were added in the cwd-allowlist work so the
+ * validator (`cwdValidator.ts`) can ask "is this a directory?" without
+ * reaching past the fs-layer abstraction. They are captured at
+ * stat-time and are stable for the duration of the FileStat — race
+ * conditions between stat and a follow-up use are handled at the
+ * call-site (see `cwdValidator` resolvedCwd contract).
+ */
 export interface FileStat {
   size: number
   mtime: Date
   mtimeMs: number
+  isFile: boolean
+  isDirectory: boolean
+}
+
+/**
+ * Abstracted lstat info — superset of `FileStat` with the type
+ * predicates needed to defend against symlinks and non-regular files
+ * in security-sensitive write paths (e.g. CLAUDE.md guidance
+ * injection where a planted symlink could otherwise redirect a read /
+ * write outside the trusted project root).
+ *
+ * `lstat` does NOT follow symlinks, so `isSymbolicLink: true` reflects
+ * the link itself rather than its target. Callers that want to allow
+ * existing files at a security-sensitive path should reject the
+ * non-regular cases (`!isFile || isSymbolicLink`) before any
+ * follow-up `readFileSync` / `writeFileAtomic` runs.
+ */
+export interface FileLstat extends FileStat {
+  isSymbolicLink: boolean
 }
 
 /** Abstracted watch event (subset of chokidar) */
@@ -64,6 +104,101 @@ export interface WatchOptions {
   depth?: number
 }
 
+/**
+ * Write-capable open flags accepted by Node's `fs.writeFileSync`.
+ * Narrowed from Node's `OpenMode` (`string | number`) so:
+ *
+ *   - the numeric form (which `writeFileSync` rejects at runtime)
+ *     is caught at compile time; and
+ *   - read-only flags like `'r'` are caught at compile time too,
+ *     instead of failing later with EBADF on the underlying write.
+ *
+ * The union mirrors the values documented under "File system flags"
+ * in the Node.js docs, restricted to the ones that are valid for
+ * a write.
+ */
+export type WriteOpenFlag =
+  | 'a'
+  | 'ax'
+  | 'a+'
+  | 'ax+'
+  | 'as'
+  | 'as+'
+  | 'r+'
+  | 'rs+'
+  | 'w'
+  | 'wx'
+  | 'w+'
+  | 'wx+'
+
+/**
+ * Options for non-atomic `writeFileSync` callers that need to control
+ * `mode` / `flag` directly (e.g. tmpfile writes that MUST be created
+ * with `O_CREAT | O_EXCL` + restrictive mode to defend against same-UID
+ * pre-creation in `/tmp`).
+ *
+ * Most callers can keep passing a plain `BufferEncoding` string for
+ * back-compat. Pass this object form only when `mode` or `flag` is
+ * actually needed; otherwise the legacy string form keeps the
+ * intent obvious.
+ */
+export interface WriteFileSyncOptions {
+  /**
+   * Encoding for string content. Ignored for `Buffer` content.
+   * Defaults to `'utf-8'` to match the legacy 3-arg form.
+   */
+  encoding?: BufferEncoding
+  /**
+   * File mode applied at open(2). By default Node honors the process
+   * `umask` on top of this value, so the on-disk mode can be tighter
+   * than what is requested. Combine with `forceMode: true` (below)
+   * when the caller needs an exact mode irrespective of the operator
+   * umask — for instance to satisfy a normative spec contract
+   * like Codex Review §15 ("`0o600`" in `session-management.md`
+   * §7.1, `tmux-bridge.sendViaBuffer`).
+   */
+  mode?: number
+  /**
+   * Open flag. Pass `'wx'` (= `O_CREAT | O_EXCL`) for
+   * security-sensitive tmpfile writes that must refuse a pre-existing
+   * path. The type is the `WriteOpenFlag` literal union so invalid
+   * (or read-only) flags are rejected statically rather than at
+   * `open(2)` / `write(2)` time.
+   */
+  flag?: WriteOpenFlag
+}
+
+/** Options for `writeFileAtomic`. */
+export interface WriteFileAtomicOptions {
+  /**
+   * File mode for the destination file.
+   *
+   * Resolution rules when this option is omitted:
+   *
+   * - The destination already exists → reuse the existing file's
+   *   mode verbatim (so an existing 0o644 menu.ts stays 0o644 after
+   *   a rewrite, instead of being silently downgraded).
+   * - The destination is new → create with mode 0o600 *subject to*
+   *   the process umask, so deployment-level hardening (for example
+   *   `umask 077`) keeps applying.
+   *
+   * When this option is supplied the requested mode is set
+   * verbatim via `fchmod(2)`, bypassing the umask. Callers that pass
+   * an explicit mode are presumed to know what they want; if they
+   * intended a hardened mode they can pass `0o600` directly, and if
+   * they intended a permissive one (e.g. `0o644` for a shared
+   * config) the helper does not silently strip bits.
+   */
+  mode?: number
+  /**
+   * When true (default), call `fsync` on the temp file before the
+   * rename. This guarantees that the new content has been flushed to
+   * disk before it becomes visible. Disable only when the caller has
+   * already proven the durability cost is unacceptable.
+   */
+  fsync?: boolean
+}
+
 // --- FileAccessLayer interface ---
 
 /**
@@ -78,9 +213,124 @@ export interface FileAccessLayer {
   readFileSync(path: string, encoding?: BufferEncoding): string
   /** Low-level byte-range read (for watcher.ts JSONL differential parsing) */
   readBytesSync(path: string, offset: number, length: number): Buffer
+  /**
+   * Read a file with two guarantees enforced via `fstat` on the open
+   * file descriptor:
+   *
+   *   1. **regular-file gate**: `fstat.isFile()` must hold. FIFOs,
+   *      devices, directories, and sockets are rejected with
+   *      `{ notRegular: true }` so the caller's prior `lstat` check
+   *      cannot be undone by a TOCTOU swap (CodeX attempt 18 —
+   *      validate-then-open race).
+   *   2. **size cap**: `fstat.size` must be within `maxBytes`. An
+   *      oversized file is rejected with `{ oversized: true }` and no
+   *      content is buffered (CodeX attempt 16 / 17 — resource
+   *      exhaustion).
+   *
+   * Both checks run against the SAME file descriptor as the read, so
+   * an attacker cannot swap or grow the file between validation and
+   * load. Implementations MUST close the fd in a `finally` branch so
+   * a thrown read does not leak descriptors.
+   *
+   * Throws on `open`/`stat`/`read` failures other than the gates —
+   * the caller treats those as `read-error`.
+   */
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true }
 
   // --- Write ---
-  writeFileSync(path: string, content: string | Buffer, encoding?: BufferEncoding): void
+  /**
+   * Non-atomic write. Pass a `BufferEncoding` string for the legacy
+   * 3-arg form, or a `WriteFileSyncOptions` object when `mode` /
+   * `flag` matter. Note that Node's `{ mode }` still passes through
+   * the process `umask`; callers that need an exact on-disk mode
+   * irrespective of umask (e.g. tmpfile hardening for Codex Review
+   * §15 / `tmux-bridge.sendViaBuffer`) MUST use
+   * `writePrivateExclusiveFileSync` instead.
+   */
+  writeFileSync(
+    path: string,
+    content: string | Buffer,
+    encodingOrOptions?: BufferEncoding | WriteFileSyncOptions,
+  ): void
+  /**
+   * Exclusive-create a fresh file with strict owner-only permissions
+   * (mode `0o600`) that ignores the process `umask`. Used by
+   * `tmux-bridge.sendViaBuffer` to spool the paste body to a
+   * same-UID-only tmpfile (Codex Review §15, `session-management.md`
+   * §7.1 normative).
+   *
+   * Semantics:
+   *
+   * - Open `path` with `O_CREAT | O_EXCL | O_WRONLY` (the `'wx'`
+   *   flag). `EEXIST` is thrown if anything is already at `path`,
+   *   defending against an attacker pre-creating the predicted
+   *   path (or planting a symlink there).
+   * - `fchmod(fd, 0o600)` is called on the fresh descriptor BEFORE
+   *   any write, so the on-disk mode is exactly `0o600` regardless
+   *   of operator hardening profiles (e.g. `umask 0o477` that would
+   *   otherwise clear owner-read and turn a `tmux load-buffer` call
+   *   into an EACCES).
+   * - Content is written through that descriptor; the descriptor is
+   *   then closed in a `finally`.
+   *
+   * Scope is deliberately tight: this is NOT a generic "create a
+   * file with exact permissions" helper. The `0o600` mode and
+   * `O_CREAT | O_EXCL` flag are baked in so the umask-bypass
+   * capability cannot be widened by a future caller without a
+   * conscious extension here (and the matching spec change). Other
+   * exact-mode workflows MUST add their own helper rather than
+   * parametrising this one.
+   */
+  writePrivateExclusiveFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding?: BufferEncoding,
+  ): void
+  /**
+   * Atomically replace the destination file's contents.
+   *
+   * Scope: this helper is intended for KB-internal JSON / text stores
+   * under `.kovitoboard/` and `app/<appId>/` — files KB itself
+   * creates and owns. It is **not** a generic file-replacement helper:
+   * because it publishes via `rename(2)` over a fresh inode, only the
+   * mode bits and (best-effort) owner/group of the previous file are
+   * carried over. POSIX ACLs, extended attributes, and security
+   * labels are lost by design. For generic file replacement that
+   * needs full metadata preservation, prefer an in-place helper or
+   * `cp --preserve=all` style routine.
+   *
+   * String content is always written as UTF-8 (matching how callers
+   * stringify JSON); Buffer content is written verbatim.
+   *
+   * Backed by a same-directory temp file + `fsync` (optional) + POSIX
+   * `rename(2)`. The file is either the previous version or the new
+   * version, never half-written — useful for JSON stores where a
+   * partial write would surface as a `JSON.parse` failure on the
+   * next load.
+   */
+  writeFileAtomic(
+    path: string,
+    content: string | Buffer,
+    options?: WriteFileAtomicOptions
+  ): void
+  /**
+   * Append content to a file (create if missing). Used by JSONL stores
+   * where each call writes one line. Avoids the read-modify-write race
+   * that `writeFileSync` would have on a shared append target.
+   */
+  appendFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding?: BufferEncoding
+  ): void
+  /** Rename a file. Used internally by atomic writes and by `.corrupted` fallback paths. */
+  renameSync(oldPath: string, newPath: string): void
   unlinkSync(path: string): void
   /**
    * Remove a path. With `{ recursive: true }` removes a directory and
@@ -93,10 +343,30 @@ export interface FileAccessLayer {
   // --- Metadata ---
   existsSync(path: string): boolean
   statSync(path: string): FileStat
+  /**
+   * `lstat`-based metadata. Unlike `statSync`, this does NOT follow
+   * symlinks, so the result reports the link itself (`isSymbolicLink:
+   * true`) rather than the link target. Use this in security-sensitive
+   * write paths to reject planted symlinks / FIFOs / device files
+   * before any follow-up `readFileSync` / `writeFileAtomic` chain
+   * inadvertently leaves the trusted project root.
+   */
+  lstatSync(path: string): FileLstat
   readdirSync(path: string): string[]
   mkdirSync(path: string, options?: { recursive?: boolean }): void
   /** Symbolic link creation (for agent-ref setup etc.) */
   symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void
+  /**
+   * Resolve `path` to its canonical absolute form, following every
+   * symbolic link in the chain and removing `.` / `..` segments.
+   *
+   * Used by security-sensitive callers (`recipe-exporter.scanAppDirectory`
+   * etc.) to enforce that a derived path stays inside the trusted root
+   * even when an intermediate component is a planted symlink. Throws
+   * `ENOENT` when any link in the chain is dangling, so callers should
+   * either confirm `existsSync` first or catch the error.
+   */
+  realpathSync(path: string): string
 
   // --- Watch ---
   watch(
@@ -128,16 +398,300 @@ export class DirectFsLayer implements FileAccessLayer {
     return buffer
   }
 
+  readFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false; size: number }
+    | { oversized: false; notRegular: true } {
+    // Open with O_NONBLOCK so a FIFO target does not stall the
+    // event loop waiting for a writer (CodeX attempt 20 —
+    // blocking I/O). Once we observe `isFile() === false` we
+    // bail; otherwise the non-blocking flag has no effect on a
+    // regular file read.
+    const fd = fsOpenSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK)
+    try {
+      const stat = fsFstatSync(fd)
+      if (!stat.isFile()) {
+        return { oversized: false, notRegular: true }
+      }
+      if (stat.size > maxBytes) {
+        return { oversized: true, notRegular: false, size: stat.size }
+      }
+      const buffer = Buffer.alloc(stat.size)
+      let totalRead = 0
+      while (totalRead < stat.size) {
+        const bytesRead = fsReadSync(
+          fd,
+          buffer,
+          totalRead,
+          stat.size - totalRead,
+          totalRead,
+        )
+        if (bytesRead <= 0) break
+        totalRead += bytesRead
+      }
+      return {
+        oversized: false,
+        notRegular: false,
+        content: buffer.subarray(0, totalRead).toString('utf-8'),
+      }
+    } finally {
+      fsCloseSync(fd)
+    }
+  }
+
   writeFileSync(
+    path: string,
+    content: string | Buffer,
+    encodingOrOptions: BufferEncoding | WriteFileSyncOptions = 'utf-8',
+  ): void {
+    // Legacy 3-arg form: third arg is a BufferEncoding string. Keep
+    // the exact previous behavior (no mode / no flag, Node defaults).
+    if (typeof encodingOrOptions === 'string') {
+      if (typeof content === 'string') {
+        fsWriteFileSync(path, content, encodingOrOptions)
+      } else {
+        fsWriteFileSync(path, content)
+      }
+      return
+    }
+    // Options-object form. Build a single options object so a missing
+    // field falls back to Node's default rather than to undefined.
+    const opts: { encoding?: BufferEncoding; mode?: number; flag?: WriteOpenFlag } = {}
+    if (typeof content === 'string') {
+      opts.encoding = encodingOrOptions.encoding ?? 'utf-8'
+    } else if (encodingOrOptions.encoding !== undefined) {
+      opts.encoding = encodingOrOptions.encoding
+    }
+    if (encodingOrOptions.mode !== undefined) opts.mode = encodingOrOptions.mode
+    if (encodingOrOptions.flag !== undefined) opts.flag = encodingOrOptions.flag
+    fsWriteFileSync(path, content, opts)
+  }
+
+  writePrivateExclusiveFileSync(
+    path: string,
+    content: string | Buffer,
+    encoding: BufferEncoding = 'utf-8',
+  ): void {
+    // Open with O_CREAT | O_EXCL | O_WRONLY (the 'wx' flag). The
+    // requested mode is passed to `openSync` as a defence-in-depth
+    // ceiling — Node combines it with umask on creation, so the
+    // descriptor never temporarily exists in a more permissive
+    // state than `0o600` even before the `fchmod` below runs.
+    const fd = fsOpenSync(path, 'wx', 0o600)
+    try {
+      // Force the exact bits the spec demands, ignoring the process
+      // umask. Hardening profiles like `umask 0o477` would otherwise
+      // strip owner-read from the descriptor and turn the tmpfile
+      // unreadable to the subsequent `tmux load-buffer` call.
+      fsFchmodSync(fd, 0o600)
+      if (typeof content === 'string') {
+        // Materialize the string as a Buffer once so we can use the
+        // (fd, buffer, offset, length) overload of `writeSync`,
+        // which has a stable shape across Node versions and lets
+        // us loop on short writes if the kernel splits the call.
+        const buf = Buffer.from(content, encoding)
+        let written = 0
+        while (written < buf.length) {
+          written += fsWriteSync(fd, buf, written, buf.length - written)
+        }
+      } else {
+        let written = 0
+        while (written < content.length) {
+          written += fsWriteSync(fd, content, written, content.length - written)
+        }
+      }
+    } finally {
+      fsCloseSync(fd)
+    }
+  }
+
+  writeFileAtomic(
+    path: string,
+    content: string | Buffer,
+    options?: WriteFileAtomicOptions
+  ): void {
+    // Same-directory rename is the only atomic-replace path POSIX
+    // gives us — `rename(2)` across devices falls back to copy+unlink
+    // and loses the atomicity guarantee. So the temp file MUST be a
+    // sibling of the destination.
+    const dir = dirname(path)
+    const base = basename(path)
+    // pid + 8 hex chars from /dev/urandom: cheap collision avoidance
+    // when multiple processes race to write the same destination
+    // (e.g. two browser tabs saving settings concurrently).
+    const tempName = `${base}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
+    const tempPath = `${dir}/${tempName}`
+    const wantFsync = options?.fsync !== false
+    // Mode resolution falls into three branches:
+    //
+    // - explicitMode !== null: caller asked for an exact mode. Pass
+    //   it to `open` *and* `fchmod` so umask cannot strip bits the
+    //   caller wanted (see Finding-6 lineage).
+    // - existing file, no explicit mode: reuse the existing mode via
+    //   `fchmod` so a rewrite does not silently downgrade an existing
+    //   0o644 menu.ts to 0o600.
+    // - new file, no explicit mode: open with 0o600 and DO NOT call
+    //   `fchmod`. That keeps the process umask in force (deployment
+    //   hardening such as `umask 077` is the operator's contract,
+    //   not ours to bypass for new files).
+    const explicitMode = options?.mode ?? null
+    let preservedMode: number | null = null
+    let preservedUid: number | null = null
+    let preservedGid: number | null = null
+    if (explicitMode === null && fsExistsSync(path)) {
+      try {
+        const st = fsStatSync(path)
+        // Mask 0o7777 keeps the standard rwx triplet *and* the
+        // setuid/setgid/sticky bits. Plain 0o777 would strip them
+        // and silently change the security semantics of any file
+        // the operator had explicitly chmodded with those bits.
+        preservedMode = st.mode & 0o7777
+        // Record uid/gid for best-effort post-rename preservation.
+        // chown(2) requires CAP_CHOWN unless the new owner is the
+        // current process — which is the common case here, so
+        // failures are non-fatal and silently swallowed below.
+        preservedUid = st.uid
+        preservedGid = st.gid
+      } catch {
+        preservedMode = null
+      }
+    }
+    const openMode = explicitMode ?? preservedMode ?? 0o600
+    const enforcedMode = explicitMode ?? preservedMode
+
+    let fd: number | undefined
+    try {
+      // O_WRONLY | O_CREAT | O_EXCL: refuse to clobber a stale temp
+      // file (whose presence would mean another writer just lost the
+      // race or crashed mid-write — we cannot safely reuse it).
+      fd = fsOpenSync(tempPath, 'wx', openMode)
+      // `fchmod(2)` sets the mode bits verbatim, bypassing umask. We
+      // only call it for explicit / preserved modes (see resolution
+      // branches above); for genuinely new files the umask filter on
+      // open is intentional and we leave it alone.
+      if (enforcedMode !== null) {
+        fsFchmodSync(fd, enforcedMode)
+      }
+      // Best-effort owner/group preservation when rewriting an
+      // existing file. chown(2) succeeds without privileges only
+      // when the target uid/gid match the calling process — which
+      // is the typical case for KB JSON stores (KB created the file
+      // and is rewriting it). Any failure here is swallowed; the
+      // intent is "don't silently change owner if we can avoid it",
+      // not "guarantee owner preservation across privilege barriers".
+      if (preservedUid !== null && preservedGid !== null) {
+        try {
+          fsFchownSync(fd, preservedUid, preservedGid)
+        } catch {
+          // Likely EPERM (different owner, no CAP_CHOWN). The new
+          // file inherits the caller's effective uid/gid, which is
+          // already the standard behaviour for any new file in this
+          // tree.
+        }
+      }
+      if (typeof content === 'string') {
+        fsWriteFileSync(fd, content, 'utf-8')
+      } else {
+        fsWriteFileSync(fd, content)
+      }
+      if (wantFsync) {
+        this._fsync(fd)
+      }
+      fsCloseSync(fd)
+      fd = undefined
+      this._rename(tempPath, path)
+      // Durability of the rename itself depends on the parent
+      // directory entry reaching disk, which requires an explicit
+      // fsync(dirfd) on POSIX (a file fsync alone does not flush the
+      // dirent that points at the new inode). Without this a
+      // crash/power loss after rename can drop the entry and roll
+      // back to the previous file. We swallow errors here — the
+      // primary write succeeded, and platforms that disallow
+      // directory fsync (notably Windows) would otherwise fail every
+      // call. fsync for `--fsync=false` callers is also skipped on
+      // the directory to keep the opt-out coherent.
+      if (wantFsync) {
+        this._fsyncDir(dir)
+      }
+    } catch (err) {
+      // Best-effort cleanup. Either the open failed (no fd, no temp
+      // file to remove), or the write/rename failed (stale temp file
+      // we should remove). Suppress errors here — the original error
+      // is what the caller cares about, and a leftover temp file is
+      // recoverable (next successful write will rename over it).
+      if (fd !== undefined) {
+        try {
+          fsCloseSync(fd)
+        } catch {
+          // already closed or invalid fd; nothing more we can do
+        }
+      }
+      try {
+        fsUnlinkSync(tempPath)
+      } catch {
+        // temp file may not exist (open failed) or may already be gone
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Hook around `fs.renameSync`, isolated as a protected method so
+   * tests can inject failure modes (ENOSPC / EXDEV) by subclassing
+   * `DirectFsLayer`. ESM `vi.spyOn` cannot redefine module namespace
+   * exports, so per-call indirection is the cleanest seam.
+   */
+  protected _rename(oldPath: string, newPath: string): void {
+    fsRenameSync(oldPath, newPath)
+  }
+
+  /** Hook around `fs.fsyncSync`. See `_rename` for rationale. */
+  protected _fsync(fd: number): void {
+    fsFsyncSync(fd)
+  }
+
+  /**
+   * Best-effort `fsync` on a directory descriptor so the freshly
+   * renamed dirent reaches disk. Windows / some FUSE filesystems
+   * reject `O_RDONLY` opens of directories or `fsync` on directory
+   * fds — we treat any failure here as non-fatal because the primary
+   * file write has already succeeded.
+   */
+  protected _fsyncDir(dir: string): void {
+    let dirFd: number | undefined
+    try {
+      dirFd = fsOpenSync(dir, 'r')
+      fsFsyncSync(dirFd)
+    } catch {
+      // best-effort; directory fsync is unsupported on some platforms
+    } finally {
+      if (dirFd !== undefined) {
+        try {
+          fsCloseSync(dirFd)
+        } catch {
+          // already closed; nothing to recover
+        }
+      }
+    }
+  }
+
+  appendFileSync(
     path: string,
     content: string | Buffer,
     encoding: BufferEncoding = 'utf-8'
   ): void {
     if (typeof content === 'string') {
-      fsWriteFileSync(path, content, encoding)
+      fsAppendFileSync(path, content, encoding)
     } else {
-      fsWriteFileSync(path, content)
+      fsAppendFileSync(path, content)
     }
+  }
+
+  renameSync(oldPath: string, newPath: string): void {
+    fsRenameSync(oldPath, newPath)
   }
 
   unlinkSync(path: string): void {
@@ -157,7 +711,28 @@ export class DirectFsLayer implements FileAccessLayer {
 
   statSync(path: string): FileStat {
     const s = fsStatSync(path)
-    return { size: s.size, mtime: s.mtime, mtimeMs: s.mtimeMs }
+    return {
+      size: s.size,
+      mtime: s.mtime,
+      mtimeMs: s.mtimeMs,
+      isFile: s.isFile(),
+      isDirectory: s.isDirectory(),
+    }
+  }
+
+  lstatSync(path: string): FileLstat {
+    const s = fsLstatSync(path)
+    return {
+      size: s.size,
+      mtime: s.mtime,
+      mtimeMs: s.mtimeMs,
+      // Capture the booleans verbatim — Node's Stats.isFile() /
+      // isSymbolicLink() are mutually exclusive on lstat (a symlink
+      // is never reported as a regular file).
+      isSymbolicLink: s.isSymbolicLink(),
+      isFile: s.isFile(),
+      isDirectory: s.isDirectory(),
+    }
   }
 
   readdirSync(path: string): string[] {
@@ -170,6 +745,13 @@ export class DirectFsLayer implements FileAccessLayer {
 
   symlinkSync(target: string, path: string, type?: 'dir' | 'file' | 'junction'): void {
     fsSymlinkSync(target, path, type)
+  }
+
+  realpathSync(path: string): string {
+    // `fs.realpathSync` returns a string when no `encoding` option is
+    // passed. The Node typings widen the signature to allow `Buffer`
+    // for the `'buffer'` encoding overload, so we narrow back here.
+    return fsRealpathSync(path) as string
   }
 
   watch(

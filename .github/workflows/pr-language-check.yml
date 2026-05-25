@@ -1,0 +1,327 @@
+name: PR Language Check (Japanese characters)
+
+# Detect Japanese characters (hiragana, katakana, CJK ideographs) in PR title
+# and body. This workflow is a Japanese-specific check, intentionally narrower
+# than a fully English-only enforcement: it targets the concrete recurrence
+# observed in past incidents (Japanese leaking into PR descriptions). Other
+# non-English scripts (Cyrillic, Hangul, full-width punctuation, etc.) are
+# not currently in scope and may be added by a future workflow if a similar
+# recurrence is observed for those scripts.
+#
+# This workflow is intentionally separate from `ci.yml` so that PR-metadata
+# events (`edited` / `labeled` / `unlabeled`) do not trigger the heavier hygiene
+# / typecheck / build / test jobs in `ci.yml`. Those jobs only need to run on
+# code-changing events (`opened` / `synchronize` / `reopened`).
+#
+# Bypass: applying the `lang-exception-approved` label skips this check. The
+# workflow does not verify who applied the label; control over who can add
+# labels is governed by GitHub repository permissions (configure label-write
+# access via the repo settings to restrict bypass authority).
+
+on:
+  pull_request:
+    # synchronize: required so the check is reported on every new head SHA;
+    # otherwise a required status can become Expected/missing after a push.
+    # opened / reopened / edited / labeled / unlabeled cover PR-creation,
+    # title/body edits, and bypass-label transitions respectively.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    branches: [main, staging]
+
+# Serialize per-PR runs so that overlapping `edited` / `labeled` /
+# `synchronize` events cannot race the read-then-write dedup logic and
+# produce duplicate marker comments. `cancel-in-progress: false` keeps the
+# in-flight comment update from being interrupted mid-write; subsequent
+# events queue up and execute in order.
+concurrency:
+  group: pr-language-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  language-check:
+    name: PR Language Check (Japanese characters)
+    runs-on: ubuntu-latest
+    permissions:
+      # GitHub Actions models PR comments under the `pull-requests` scope
+      # rather than `issues`, even though the underlying REST endpoint is
+      # the issues-comments URL. Verified empirically on attempts 1-3 of
+      # this PR: `pull-requests: write` succeeds, and a brief experiment
+      # at attempt 4 with `issues: write` instead returned HTTP 403
+      # ("Resource not accessible by integration") on the same call.
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Check for bypass label
+        id: check-bypass
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          LABELS=$(echo "$LABELS_JSON" | jq -r '.[].name')
+          if echo "$LABELS" | grep -qx 'lang-exception-approved'; then
+            echo "bypass=true" >> "$GITHUB_OUTPUT"
+            echo "Bypass: lang-exception-approved label present, skipping check"
+          else
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect Japanese in title/body
+        if: steps.check-bypass.outputs.bypass != 'true'
+        id: detect
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 <<'PY'
+          import os, re, json
+
+          title = os.environ.get('PR_TITLE', '') or ''
+          body = os.environ.get('PR_BODY', '') or ''
+
+          # Japanese / CJK character ranges:
+          #   - Hiragana                       U+3040-U+309F
+          #   - Katakana (full-width)          U+30A0-U+30FF
+          #   - CJK Unified Ideographs (BMP)   U+4E00-U+9FFF
+          #   - Halfwidth Katakana             U+FF66-U+FF9F
+          #   - CJK Unified Ideographs Ext B   U+20000-U+2FFFF (supplementary
+          #     plane; covers rare/historical characters that occasionally
+          #     appear via translation-tool copy-paste)
+          # The BMP ranges use literal characters to mirror the existing
+          # tools/check-release-hygiene.mjs JAPANESE_RE; the supplementary
+          # plane is expressed via \U escapes because literal supplementary-
+          # plane characters cannot be embedded in this YAML file portably.
+          pattern = re.compile(
+              r'[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ'
+              r'\U00020000-\U0002FFFF]'
+          )
+
+          title_has_jp = bool(pattern.search(title))
+          body_line_numbers = []
+          for i, line in enumerate(body.split('\n'), 1):
+              if pattern.search(line):
+                  body_line_numbers.append(i)
+
+          fail = title_has_jp or bool(body_line_numbers)
+          # NOTE: the report intentionally records only flags / line numbers,
+          # never raw snippets. If a contributor accidentally puts secrets or
+          # other sensitive content in the PR body, this workflow must not
+          # republish that content into bot comments or Actions logs (where
+          # it would persist even after the PR text is corrected).
+          report = {
+              'fail': fail,
+              'title_has_jp': title_has_jp,
+              # Cap body line numbers at 10 to bound comment size; the truncated
+              # flag tells the reader to keep scrolling for more.
+              'body_line_numbers': body_line_numbers[:10],
+              'body_line_numbers_truncated': len(body_line_numbers) > 10,
+          }
+
+          out_path = os.environ['GITHUB_OUTPUT']
+          with open(out_path, 'a') as f:
+              f.write(f"fail={'true' if fail else 'false'}\n")
+              f.write('report<<REPORT_EOF\n')
+              f.write(json.dumps(report))
+              f.write('\nREPORT_EOF\n')
+
+          # Log only flag / line numbers. Do NOT echo raw snippets to the
+          # Actions log, even on FAIL — this is a hardening measure for the
+          # case where a contributor accidentally includes sensitive content.
+          if fail:
+              loc_summary = []
+              if title_has_jp:
+                  loc_summary.append('title')
+              if body_line_numbers:
+                  shown = body_line_numbers[:10]
+                  total = len(body_line_numbers)
+                  if total > 10:
+                      loc_summary.append(
+                          f"body lines {shown} (showing first 10 of {total} matched lines; "
+                          f"more lines beyond line {shown[-1]} also match)"
+                      )
+                  else:
+                      loc_summary.append(f"body lines {shown}")
+              print(f"FAIL: Japanese characters detected in {', '.join(loc_summary)}")
+          else:
+              print('OK: title and body are English-only')
+          PY
+
+      - name: Compose fail comment body
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
+        id: compose
+        env:
+          REPORT: ${{ steps.detect.outputs.report }}
+        run: |
+          BODY=$(python3 <<'PY'
+          import os, json, textwrap
+
+          r = json.loads(os.environ['REPORT'])
+
+          # We intentionally never include raw PR title/body snippets here.
+          # Reporting only flags / line numbers protects against the case
+          # where a contributor puts sensitive content in the PR text by
+          # mistake — bot comments persist even after the PR is corrected.
+          if r['title_has_jp']:
+              title_line = ':warning: Japanese characters detected in title.'
+          else:
+              title_line = '_no Japanese in title_'
+
+          if r['body_line_numbers']:
+              line_str = ', '.join(str(n) for n in r['body_line_numbers'])
+              if r['body_line_numbers_truncated']:
+                  line_str += ' (... additional lines truncated)'
+              body_block = f':warning: Japanese characters detected on body line(s): {line_str}.'
+          else:
+              body_block = '_no Japanese in body_'
+
+          # Use textwrap.dedent so any future indentation accidents inside the
+          # template do not turn the rendered comment into an indented code
+          # block. Note: YAML `run: |` strips the common leading indent before
+          # invoking the shell, but defending against in-template drift is
+          # cheap and prevents subtle rendering regressions.
+          template = textwrap.dedent("""\
+              <!-- pr-language-check-fail -->
+              ## :warning: Language check failed (Japanese characters detected)
+
+              This PR's title or body contains Japanese characters (hiragana, katakana, or CJK ideographs). The KovitoBoard OSS repository's contributor language policy requires PR title and body to be written in English; this workflow specifically detects Japanese characters as the most common recurrence pattern in past incidents.
+
+              ### Detected locations
+
+              - **Title:** {title_line}
+              - **Body:** {body_block}
+
+              For privacy reasons this comment intentionally does not echo back the matched text; please review the PR title and the listed body lines directly.
+
+              ### How to fix
+
+              1. Edit this PR's title and body via `gh pr edit <pr-number> --title "<english title>" --body "<english body>"` or via the GitHub UI.
+              2. The `pull_request: edited` event will retrigger this check automatically.
+              3. The check will turn green once all Japanese characters are removed.
+
+              ### Exception
+
+              If the Japanese characters are intentional and approved by a repository maintainer, add the `lang-exception-approved` label to bypass this check. The workflow honors the label without verifying who applied it; restrict label-write access via the repository settings to control bypass authority.
+
+              ---
+
+              :robot: Posted automatically by the `pr-language-check` workflow.
+          """).format(title_line=title_line, body_block=body_block)
+
+          print(template)
+          PY
+          )
+          # Use a heredoc-style multiline GITHUB_OUTPUT to preserve newlines.
+          {
+            echo 'comment_body<<COMMENT_EOF'
+            echo "$BODY"
+            echo 'COMMENT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post or update fail comment (gh CLI)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_BODY: ${{ steps.compose.outputs.comment_body }}
+          # GITHUB_REPOSITORY is "owner/repo" — pass it via --repo so gh CLI
+          # does not need a local git context (we skip actions/checkout to
+          # keep this workflow lightweight).
+          REPO: ${{ github.repository }}
+        run: |
+          # Deduplicate by the <!-- pr-language-check-fail --> HTML marker:
+          # repeated `edited` / `labeled` / `unlabeled` events update the same
+          # comment in place rather than appending a fresh comment each time.
+          # `head -1` defends against multiple legacy comments sharing the
+          # marker — any extra ones are left untouched as historical record.
+          # Use --paginate so that PRs with many comments (>30, the default
+          # per_page on the issues/comments endpoint) still find a prior
+          # marker comment. Without --paginate we would silently miss it on
+          # long-running PRs and post a duplicate failure comment instead of
+          # updating in place.
+          #
+          # Capture the full ID list into a variable BEFORE selecting the
+          # first one. Piping `gh api --paginate ... | head -1` would close
+          # the pipe early, sending SIGPIPE to gh; under bash's default
+          # `pipefail`, SIGPIPE turns into a non-zero exit and fails the
+          # step. Materializing the list first avoids that fragility.
+          #
+          # Restrict the candidate set to comments authored by the Actions
+          # bot so a different PR participant cannot impersonate the
+          # marker by copying the HTML comment into their own message and
+          # have this step overwrite their comment with bot content.
+          ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body // "" | startswith("<!-- pr-language-check-fail -->"))) | .id')
+          EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing language-check comment id=$EXISTING"
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" \
+              -f body="$COMMENT_BODY" >/dev/null
+          else
+            echo "Posting new language-check comment"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$COMMENT_BODY"
+          fi
+
+      - name: Note skipped comment for fork PR
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::warning::Japanese characters detected, but this PR is from a fork."
+          echo "::warning::Auto-comment skipped because secrets.GITHUB_TOKEN is read-only on fork PRs."
+          echo "::warning::The check will fail; the contributor must edit the PR title/body to remove Japanese characters."
+
+      - name: Update marker comment on resolution
+        # When the check transitions from fail to pass, rewrite the existing
+        # marker comment to a "resolved" message so that reviewers do not see
+        # a stale failure comment after the issue has been fixed. Bypass and
+        # fork-PR paths are skipped intentionally — bypass leaves the failure
+        # record in place for transparency, and fork PRs cannot post comments.
+        if: steps.check-bypass.outputs.bypass != 'true' && steps.detect.outputs.fail == 'false' && github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Use --paginate so that PRs with many comments (>30, the default
+          # per_page on the issues/comments endpoint) still find a prior
+          # marker comment. Without --paginate we would silently miss it on
+          # long-running PRs and post a duplicate failure comment instead of
+          # updating in place.
+          # Same SIGPIPE-safe pattern as the post step: materialize the full
+          # ID list before selecting the first one with awk (which buffers
+          # the pipeline output rather than closing the pipe early).
+          # Restrict the candidate set to comments authored by the Actions
+          # bot so a different PR participant cannot impersonate the
+          # marker by copying the HTML comment into their own message and
+          # have this step overwrite it.
+          ALL_MARKER_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body // "" | startswith("<!-- pr-language-check-fail -->"))) | .id')
+          EXISTING=$(printf '%s\n' "$ALL_MARKER_IDS" | awk 'NF { print; exit }')
+
+          if [ -z "$EXISTING" ]; then
+            echo "No prior language-check comment to update; nothing to do."
+            exit 0
+          fi
+
+          BODY=$(cat <<'EOF'
+          <!-- pr-language-check-fail -->
+          ## :white_check_mark: Language check passed
+
+          This PR's title and body no longer contain Japanese characters. The previous failure has been resolved; this comment is preserved as a historical record while the check is now green.
+
+          ---
+
+          :robot: Updated automatically by the `pr-language-check` workflow.
+          EOF
+          )
+          echo "Rewriting marker comment id=$EXISTING to resolved state"
+          gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" \
+            -f body="$BODY" >/dev/null
+
+      - name: Fail the job (non-fork PR — comment was posted)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == false
+        run: |
+          echo "::error::PR title or body contains Japanese characters. See the language-check comment on the PR for details and a fix guide."
+          exit 1
+
+      - name: Fail the job (fork PR — comment skipped, see log)
+        if: steps.detect.outputs.fail == 'true' && github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::error::PR title or body contains Japanese characters. Auto-comment is skipped on fork PRs (read-only token); see this workflow run's log for the affected line numbers and edit the PR title/body to remove Japanese characters."
+          exit 1
