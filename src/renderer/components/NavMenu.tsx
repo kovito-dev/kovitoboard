@@ -190,7 +190,7 @@ export function NavMenu({ entries, activeId, onSelect, actionSlot }: NavMenuProp
     <div
       className={`
         ${compact ? 'w-12' : 'w-40'}
-        bg-[var(--bg-nav)] border-r border-[var(--border)] flex flex-col py-2 gap-1 shrink-0
+        bg-[var(--bg-nav)] border-r border-[var(--border)] flex flex-col py-2 gap-1 flex-1 min-h-0
         transition-[width] duration-200
         ${compact ? 'items-center' : ''}
       `}

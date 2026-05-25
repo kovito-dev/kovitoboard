@@ -212,7 +212,7 @@ export function AgentDetail({
                       shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
                       transition-all duration-200
                       ${showNewSession
-                        ? 'bg-gray-700 text-[var(--text-tertiary)]'
+                        ? 'bg-[var(--bg-elevated)] text-[var(--text-tertiary)] border border-[var(--border)]'
                         : 'bg-[var(--accent-strong)] hover:bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-shadow)]'
                       }
                     `}
@@ -662,7 +662,7 @@ function SessionsTab({ sessions, agentColor, onSelectSession }: SessionsTabProps
               <div className="flex-1" />
               <svg
                 width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                className="text-gray-700 group-hover:text-[var(--text-muted)] transition-colors"
+                className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors"
                 style={{ color: undefined }}
               >
                 <polyline points="9 18 15 12 9 6" />
