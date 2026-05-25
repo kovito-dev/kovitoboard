@@ -371,7 +371,14 @@ export function App() {
                 onToggleCompact={() => setNavCompact((prev) => !prev)}
                 actionSlot={null /* moved to AmbientSidebar popover (DEC-024 #5 / spec §F4) */}
               />
-              {!navCompact && <ProjectRootBanner />}
+              {/* The banner stays mounted in compact mode as an
+                  icon-only surface so the shared-installation-
+                  prevention spec requirement to keep the project
+                  root continuously visible in the UI remains
+                  satisfied. The folder icon carries the hover
+                  tooltip for the full path, and a red dot signals
+                  the cwd-fallback warning state. */}
+              <ProjectRootBanner compact={navCompact} />
             </div>
           }
           sidebar={renderSidebar()}

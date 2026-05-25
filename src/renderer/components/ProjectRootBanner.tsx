@@ -65,7 +65,19 @@ function sourceLabel(source: ProjectRootSource | undefined): string {
   }
 }
 
-export function ProjectRootBanner() {
+interface ProjectRootBannerProps {
+  /**
+   * Compact (icon-only) variant for the collapsed nav rail. The banner
+   * still mounts in compact mode so the shared-installation-prevention
+   * spec requirement to keep the project root continuously visible in
+   * the UI stays satisfied — the user can hover the folder icon to see
+   * the full path via the native title tooltip, and a red dot keeps
+   * the cwd-fallback warning continuously visible.
+   */
+  compact?: boolean
+}
+
+export function ProjectRootBanner({ compact = false }: ProjectRootBannerProps) {
   const [projectRoot, setProjectRoot] = useState<string | null>(null)
   const [source, setSource] = useState<ProjectRootSource | undefined>(undefined)
 
@@ -91,6 +103,49 @@ export function ProjectRootBanner() {
 
   const isWarning = source === 'cwd-fallback'
   const display = shortenHome(projectRoot)
+  const tooltip = `${display}\n${sourceLabel(source)}${
+    isWarning ? `\n${t('projectRootBanner.cwdFallbackWarning')}` : ''
+  }`
+
+  if (compact) {
+    return (
+      <div
+        data-testid="project-root-banner"
+        data-compact="true"
+        title={tooltip}
+        className={
+          isWarning
+            ? 'relative mt-auto border-t border-[var(--border)] bg-[var(--danger-bg, #2a1a1a)] text-[var(--text-primary)] flex items-center justify-center py-2'
+            : 'relative mt-auto border-t border-[var(--border)] bg-[var(--bg-nav)] text-[var(--text-dim)] flex items-center justify-center py-2'
+        }
+      >
+        {/* Folder icon — keeps the project-root surface visible
+            per the shared-installation-prevention spec requirement
+            even when the rail is collapsed; the full path lives in
+            the native title tooltip. */}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-label={t('projectRootBanner.label')}
+        >
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        {isWarning && (
+          <span
+            data-testid="project-root-banner-warning"
+            aria-label={t('projectRootBanner.cwdFallbackWarning')}
+            className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[var(--accent-danger,#f87171)]"
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
