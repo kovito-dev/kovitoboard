@@ -146,8 +146,9 @@ test.describe('/api/work-roots — GET / POST / DELETE round-trip', () => {
 })
 
 test.describe('Work Roots page renders', () => {
-  test('navigating to /work-roots shows the page heading', async ({ page, kbFixture }) => {
-    await page.goto(`${kbFixture.apiBaseUrl}/work-roots`)
+  test('navigating to /work-roots shows the page heading', async ({ page }) => {
+    await page.goto('/work-roots')
+    await page.waitForLoadState('networkidle')
     // The page heading is i18n-driven; we check for the test-id
     // marker on the empty-state to confirm the page mounted.
     await expect(page.locator('[data-testid="work-roots-empty"]')).toBeVisible({
