@@ -15,6 +15,10 @@ import { randomUUID } from 'crypto'
 import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot, resolveProjectRootWithSource } from './config'
 import { ensureKovitoboardDir, ensureLogsDir, getUploadDir } from './paths'
+import {
+  createCleanupUploads,
+  inFlightUploads,
+} from './upload-tracker'
 import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } from './logger'
 import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
@@ -1999,20 +2003,16 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 }
 
-// Periodically delete old uploaded files
-function cleanupUploads() {
-  try {
-    if (!fs.existsSync(UPLOAD_DIR)) return
-    const now = Date.now()
-    for (const file of fs.readdirSync(UPLOAD_DIR)) {
-      const filePath = join(UPLOAD_DIR, file)
-      const stat = fs.statSync(filePath)
-      if (now - stat.mtimeMs > UPLOAD_TTL_MS) {
-        fs.unlinkSync(filePath)
-      }
-    }
-  } catch { /* Ignore cleanup failures */ }
-}
+// Periodically delete old uploaded files. The handler tracks
+// in-flight basenames via the `inFlightUploads` singleton so the
+// sweep below skips a file the upload route is mid-writing. The
+// helper lives in its own module so the race scenario can be
+// exercised in unit tests without standing up the HTTP server.
+const cleanupUploads = createCleanupUploads({
+  fs,
+  uploadDir: UPLOAD_DIR,
+  ttlMs: UPLOAD_TTL_MS,
+})
 cleanupUploads()
 setInterval(cleanupUploads, 60 * 60 * 1000) // Every hour
 
@@ -2058,15 +2058,25 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '20mb' }), (req, res) 
     const fileName = `upload-${uuid}${ext}`
     const filePath = join(UPLOAD_DIR, fileName)
 
-    fs.writeFileSync(filePath, body)
+    // Mark the basename as in-flight so the periodic cleanup
+    // sweep skips it for the duration of the write. The try
+    // wrapper around the existing logic is unchanged; the
+    // finally block guarantees we drop the entry even if
+    // writeFileSync throws.
+    inFlightUploads.add(fileName)
+    try {
+      fs.writeFileSync(filePath, body)
 
-    res.json({
-      success: true,
-      filePath,
-      fileName,
-      size: body.length,
-      contentType,
-    })
+      res.json({
+        success: true,
+        filePath,
+        fileName,
+        size: body.length,
+        contentType,
+      })
+    } finally {
+      inFlightUploads.delete(fileName)
+    }
   } catch (err) {
     apiLogger.error({ err }, 'Upload error')
     res.status(500).json({ error: 'Upload failed' })
