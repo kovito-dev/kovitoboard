@@ -60,13 +60,13 @@
  * @see docs/specs/security-limits.md (size-first DoS bounds)
  */
 import matter from 'gray-matter'
-// `@types/js-yaml` is not installed (it would only describe
-// gray-matter's transitive dependency, which we now invoke
-// directly). The local `js-yaml.d.ts` ambient declaration narrows
-// the subset we actually use without dragging an extra dev-dep
-// into the OSS body.
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-expect-error — see local ambient declaration in same dir
+// js-yaml is a first-class runtime dependency of this package
+// (`package.json` lists it directly, not via gray-matter's
+// transitive hoist) and `@types/js-yaml` is a dev-dep. That
+// makes the wrapper's dependency surface explicit and survives
+// stricter package managers (e.g. pnpm without
+// `hoistedDependencies`) or a future gray-matter upgrade that
+// drops js-yaml from its own dependency tree.
 import yaml from 'js-yaml'
 
 /**
