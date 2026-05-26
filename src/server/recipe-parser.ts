@@ -8,7 +8,7 @@
  */
 import { join, extname, normalize, posix as pathPosix, win32 as pathWin32, sep } from 'path'
 import { createHash } from 'crypto'
-import matter from 'gray-matter'
+import { safeMatter as matter } from './recipe/safe-matter'
 import type { FileAccessLayer } from './fs-layer'
 import { recipeLogger } from './logger'
 import type {

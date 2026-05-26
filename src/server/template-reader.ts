@@ -13,7 +13,7 @@
 import { serverLogger } from './logger'
 import { resolve, dirname, join, basename } from 'path'
 import { fileURLToPath } from 'node:url'
-import matter from 'gray-matter'
+import { safeMatter as matter } from './recipe/safe-matter'
 import type { FileAccessLayer } from './fs-layer'
 
 const __filename = fileURLToPath(import.meta.url)
