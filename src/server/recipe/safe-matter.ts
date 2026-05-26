@@ -92,7 +92,14 @@ import yaml from 'js-yaml'
  *
  * Exported for unit-test access only.
  */
-export const SAFE_MATTER_MAX_BYTES = 5 * 1024 * 1024 // 5 MiB
+// 10 MiB. Aligned with `MAX_RECIPE_TOTAL_BYTES` so the wrapper's
+// defence-in-depth ceiling never silently lowers the documented
+// per-caller limits on the recipe path. Smaller call sites
+// (agent writer, template reader) operate well below this bound
+// in practice; the shared upper bound keeps a future entry
+// point from silently inheriting a tighter limit when the
+// caller-side check was the one expected to govern.
+export const SAFE_MATTER_MAX_BYTES = 10 * 1024 * 1024
 
 /**
  * Hard cap on the number of YAML anchor / alias tokens the
@@ -114,11 +121,20 @@ export const SAFE_MATTER_MAX_DEPTH = 20
 
 /**
  * Matches a YAML anchor (`&name`) or alias (`*name`) reference.
+ * The YAML 1.2 grammar lets anchor names start with any
+ * non-flow / non-whitespace character (including digits, `_`,
+ * Unicode, etc.), so the previous `[A-Za-z_][\w-]*` shape would
+ * have missed numeric-first anchors like `&0` / `*1`. We match
+ * the structural-boundary prefix followed by one or more
+ * characters that are not flow indicators or whitespace, which
+ * is a strict superset of what js-yaml actually accepts as an
+ * anchor name.
+ *
  * The scanner runs against a quote-stripped view of the input so
  * the pattern does not need to know about YAML's quoting rules;
  * see `stripQuotedScalarsAndComments`.
  */
-const ALIAS_TOKEN_PATTERN = /(?:^|[\s[\]{},:])[&*][A-Za-z_][\w-]*/g
+const ALIAS_TOKEN_PATTERN = /(?:^|[\s[\]{},:])[&*][^\s[\]{},:#]+/g
 
 /**
  * Remove `'...'` / `"..."` scalar values and `#...` comments

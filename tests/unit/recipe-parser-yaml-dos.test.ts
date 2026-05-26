@@ -183,6 +183,48 @@ describe('safeMatter — standard YAML primitives accepted', () => {
   })
 })
 
+describe('safeMatter — alias regex covers the full anchor grammar', () => {
+  it('counts numeric-first anchors like `&0` / `*0`', () => {
+    // YAML allows any printable, non-flow character as the first
+    // character of an anchor name. Previously the regex required
+    // `[A-Za-z_]` as the lead, so an attacker could route a
+    // billion-laughs payload through digit-led anchors entirely
+    // outside the budget. The wider regex catches them.
+    const N = SAFE_MATTER_MAX_ALIASES / 2 + 5
+    const lines: string[] = ['---', 'defs:']
+    for (let i = 0; i < N; i++) {
+      lines.push(`  - &${i} x`)
+    }
+    lines.push('refs:')
+    for (let i = 0; i < N; i++) {
+      lines.push(`  - *${i}`)
+    }
+    lines.push('---')
+    lines.push('body')
+    expect(() => safeMatter(lines.join('\n'))).toThrow(
+      /alias-token budget/,
+    )
+  })
+
+  it('counts anchors with mixed punctuation in the name', () => {
+    // Names with `.`, `-`, `:` etc. are accepted by js-yaml as
+    // long as they do not contain whitespace or flow indicators.
+    const lines: string[] = ['---', 'defs:']
+    for (let i = 0; i < SAFE_MATTER_MAX_ALIASES / 2 + 5; i++) {
+      lines.push(`  - &a.${i}.x y`)
+    }
+    lines.push('refs:')
+    for (let i = 0; i < SAFE_MATTER_MAX_ALIASES / 2 + 5; i++) {
+      lines.push(`  - *a.${i}.x`)
+    }
+    lines.push('---')
+    lines.push('body')
+    expect(() => safeMatter(lines.join('\n'))).toThrow(
+      /alias-token budget/,
+    )
+  })
+})
+
 describe('safeMatter — quoted scalar tokens are not counted', () => {
   it('does not count `*foo` / `&bar` inside single-quoted strings', () => {
     // A legitimate value that happens to contain alias-looking
