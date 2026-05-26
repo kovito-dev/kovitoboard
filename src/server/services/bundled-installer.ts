@@ -39,6 +39,7 @@ import { getKovitoboardDir } from '../paths'
 import {
   appendRecipeHistory,
   generateHistoryId,
+  getRecipeHistoryPath,
   readRecipeHistory,
 } from '../recipe-history'
 import { parseRecipe } from '../recipe-parser'
@@ -48,6 +49,7 @@ import type { ApiSection, RecipeManifest } from '../recipe/apiTypes'
 import type { Scope } from '../handlers/types'
 import {
   findHistoryMatch,
+  getSampleRecipes,
   type SampleRecipeInfo,
   type SampleRecipeSourceLabel,
 } from './recipe-scanner'
@@ -160,6 +162,389 @@ export class BundledInstallerError extends Error {
 }
 
 // =========================================
+// Filesystem probe helpers (Phase 1 edge-case PR, BL-2026-176)
+// =========================================
+
+/**
+ * Sibling-path prefixes treated as "leftover temp dir" anomalies by
+ * the Step 3d (ii-e) probe. A failed atomic rename from a previous
+ * enable transaction can leave a `<appId>.tmp*` / `<appId>.staging*`
+ * directory next to the target `app/<appId>/`; spec recipe-system
+ * v1.10 §10.9.3 Step 3d (ii-e) treats those as fail-closed before
+ * any new write.
+ */
+const LEFTOVER_TEMP_DIR_PREFIXES: readonly string[] = ['.tmp', '.staging']
+
+/**
+ * Probe `recipe-history.jsonl` for filesystem-level I/O readability.
+ *
+ * `readRecipeHistory` swallows I/O failures and returns `[]`, which is
+ * appropriate for callers that prefer best-effort behaviour. The
+ * bundled-installer must distinguish "no install record" from "we
+ * could not read the file at all" so the disable endpoint surfaces
+ * a 503 `BundledLocalStateUnavailable` (spec recipe-system v1.10
+ * §10.9.4 Step 1 SSOT) instead of falling through to a misleading
+ * `already-disabled` 200.
+ *
+ * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503)
+ *   on `EACCES` / `EPERM` / `EIO` / `EBUSY` etc.
+ */
+function probeRecipeHistoryReadability(fs: FileAccessLayer): void {
+  const path = getRecipeHistoryPath(fs)
+  if (!fs.existsSync(path)) return
+  try {
+    // statSync surfaces permission / IO errors that existsSync hides.
+    fs.statSync(path)
+    // readFileSync re-runs the open(2)+read(2) the actual parser will
+    // use, so any deferred failure surfaces here rather than mid-parse.
+    fs.readFileSync(path, 'utf-8')
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    throw new BundledInstallerError(
+      `Failed to read recipe-history.jsonl for residue probe`,
+      503,
+      'BundledLocalStateUnavailable',
+      {
+        fileName: 'recipe-history.jsonl',
+        errno: code,
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    )
+  }
+}
+
+/**
+ * Outcome of {@link probeManifestOnDisk}.
+ *
+ * - `'cached'` — the manifest is in the manifestStore cache; treat as
+ *   present and use the cached value for downstream coherence checks.
+ * - `'absent'` — `recipes-installed/<appId>/manifest.json` does not
+ *   exist on disk. Step 3d (ii) probe takes over for appDir anomaly.
+ * - `'present-io-failure'` — file exists but read failed at the
+ *   filesystem level (EACCES / EIO / EPERM etc.). Surfaces as
+ *   `BundledLocalStateUnavailable` 503 on the disable path; the
+ *   enable path treats the same failure mode as the same code
+ *   (the enable error table reuses `BundledManifestUnreadable` 500
+ *   for parse-only failures, but a deeper IO failure is identical
+ *   to the disable-side LocalStateUnavailable failure domain).
+ * - `'present-parse-failure'` — file exists but JSON.parse failed.
+ *   Surfaces as `BundledManifestUnreadable` 500 on both enable
+ *   (Step 3d (iv)) and disable (Step 1) paths.
+ */
+type ManifestProbeOutcome =
+  | { state: 'cached'; manifest: RecipeManifest }
+  | { state: 'absent' }
+  | { state: 'present-io-failure'; errno?: string; detail: string }
+  | { state: 'present-parse-failure'; detail: string }
+
+/**
+ * Probe `recipes-installed/<appId>/manifest.json` for read/parse
+ * health. Required because the manifestStore cache silently drops
+ * unparseable manifests at load time (warn log only), so a cache
+ * miss is not enough to distinguish "file absent" from "file present
+ * but corrupt". Both bundled-installer endpoints need that distinction
+ * to surface the correct error code (`BundledManifestUnreadable` 500
+ * vs `BundledLocalStateUnavailable` 503) per spec recipe-system
+ * v1.10 §10.9.3 Step 3d (iv) / §10.9.4 Step 1.
+ */
+function probeManifestOnDisk(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  appId: string,
+): ManifestProbeOutcome {
+  const cached = manifestStore.get(appId)
+  if (cached !== null) {
+    return { state: 'cached', manifest: cached }
+  }
+  const baseDir = join(getKovitoboardDir(fs), 'recipes-installed', appId)
+  const manifestPath = join(baseDir, 'manifest.json')
+  if (!fs.existsSync(manifestPath)) {
+    return { state: 'absent' }
+  }
+  let raw: string
+  try {
+    raw = fs.readFileSync(manifestPath, 'utf-8')
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'present-io-failure',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  try {
+    JSON.parse(raw)
+  } catch (err) {
+    return {
+      state: 'present-parse-failure',
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  // Read + parsed OK, but the manifestStore.loadAll() rejected it for
+  // schema reasons (validateManifest / I-CR1 enforcement). Treat the
+  // same as a parse failure for the bundled-installer error table —
+  // either way the on-disk file cannot be promoted to an enabled
+  // bundled manifest until the user cleans it up.
+  return { state: 'present-parse-failure', detail: 'manifest failed schema validation' }
+}
+
+/**
+ * Probe `recipes/<recipeId>/recipe.yaml` for filesystem-level read
+ * health. Spec recipe-system v1.10 §10.9.3 Step 3a separates the
+ * "asset unreadable" 503 (`BundledRecipeUnreadable`) from the parse
+ * failure 503 (`BundledRecipeMalformed`) so the audit-logging /
+ * monitoring layer can distinguish a disk fault from a corrupt asset.
+ *
+ * @throws BundledInstallerError (`BundledRecipeUnreadable` 503) on
+ *   any read failure of `recipes/<recipeId>/recipe.yaml`.
+ */
+function probeBundledRecipeAssetReadable(
+  fs: FileAccessLayer,
+  kovitoboardRoot: string,
+  recipeId: string,
+): void {
+  const recipeYamlPath = join(kovitoboardRoot, 'recipes', recipeId, 'recipe.yaml')
+  try {
+    // statSync to surface EACCES / EPERM / ENOTDIR before readFile.
+    // We do not actually use the stat result — just the throw path.
+    fs.statSync(recipeYamlPath)
+    fs.readFileSync(recipeYamlPath, 'utf-8')
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    throw new BundledInstallerError(
+      `Failed to read bundled recipe asset for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
+      503,
+      'BundledRecipeUnreadable',
+      {
+        recipeId,
+        errno: code,
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    )
+  }
+}
+
+/**
+ * Outcome of {@link probeAppDirAnomaly}.
+ *
+ * The four normative anomaly states from spec recipe-system v1.10
+ * §10.9.3 Step 3d (ii) plus the two "OK" branches the caller routes
+ * to either recovery (partial-residue → Step 4-7) or rejection
+ * (self-made → 400 `BundledAppIdConflict`).
+ */
+type AppDirProbeOutcome =
+  | { state: 'absent' }
+  | { state: 'leftover-temp-dir'; leftoverPath: string }
+  | { state: 'non-directory-entry' }
+  | { state: 'broken-symlink' }
+  | { state: 'unreadable'; errno?: string; detail: string }
+  | { state: 'partial-residue' }
+  | { state: 'self-made' }
+
+/**
+ * Probe `<projectRoot>/app/<appId>/` and its sibling paths to decide
+ * how the enable transaction Step 3d (ii) should route. The probe
+ * order is normative per spec recipe-system v1.10 §10.9.3 Step 3d
+ * (ii) round-15 fix:
+ *
+ *   1. Sibling-path leftover temp dir scan (`<appId>.tmp*` /
+ *      `<appId>.staging*`) → `leftover-temp-dir` (500).
+ *   2. `lstatSync` on the entry to discriminate non-directory and
+ *      symbolic-link cases.
+ *   3. `statSync` on the resolved target if (2) reported a symlink;
+ *      `ENOENT` → `broken-symlink` (500).
+ *   4. `readdirSync` on the resolved directory; failure → `unreadable`
+ *      (503).
+ *   5. recipe-history.jsonl bundled/sample install record match;
+ *      most recent record action `install` → `partial-residue`
+ *      (recovery), else → `self-made` (reject).
+ *
+ * @param fs — file access layer (`existsSync` / `lstatSync` /
+ *   `statSync` / `readdirSync`).
+ * @param projectRoot — the absolute path of the user's project root.
+ *   The probe never walks outside `<projectRoot>/app/`.
+ * @param appId — the safe-slug appId (already validated by
+ *   {@link assertSafeAppId}).
+ * @param recipeId — the bundled-eligible recipe id for the install
+ *   record match in step 5.
+ * @param history — pre-loaded recipe-history.jsonl entries (the
+ *   caller already paid the read cost; we reuse it to avoid a second
+ *   read).
+ */
+function probeAppDirAnomaly(
+  fs: FileAccessLayer,
+  projectRoot: string,
+  appId: string,
+  recipeId: string,
+  history: RecipeHistoryEntry[],
+): AppDirProbeOutcome {
+  const appBase = join(projectRoot, 'app')
+  const appDir = join(appBase, appId)
+
+  // Step 1: sibling-path leftover scan. The temp-dir suffix patterns
+  // are owned by the atomic-rename layer of the enable transaction;
+  // any sibling matching the prefixes below is a previous attempt
+  // that did not finish, and fail-closed is safer than overwriting
+  // whatever state it left behind. Skip the scan when `app/` itself
+  // does not exist yet — that is a normal new-enable state, not an
+  // anomaly. `appBase` will be created by Step 4 mkdirSync below.
+  if (fs.existsSync(appBase)) {
+    try {
+      const siblings = fs.readdirSync(appBase)
+      for (const name of siblings) {
+        for (const prefix of LEFTOVER_TEMP_DIR_PREFIXES) {
+          if (name.startsWith(appId + prefix)) {
+            return { state: 'leftover-temp-dir', leftoverPath: join(appBase, name) }
+          }
+        }
+      }
+    } catch (err) {
+      // `app/` itself unreadable is treated as a generic anomaly so
+      // the caller still surfaces a 503; the underlying audit log
+      // records the directory path for ops to investigate.
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : undefined
+      return {
+        state: 'unreadable',
+        errno: code,
+        detail: `app base ${appBase}: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+  }
+
+  // Step 2: entry kind discrimination. `lstatSync` is the only way to
+  // tell a symlink apart from its target — `existsSync` follows
+  // symlinks and would mistreat a broken link as "absent".
+  let lstat: { isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
+  try {
+    lstat = fs.lstatSync(appDir)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') {
+      return { state: 'absent' }
+    }
+    return {
+      state: 'unreadable',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+
+  if (lstat.isSymbolicLink) {
+    // Step 3: symlink target resolution.
+    try {
+      const target = fs.statSync(appDir)
+      if (!target.isDirectory) {
+        return { state: 'non-directory-entry' }
+      }
+      // Fallthrough to step 4 (readdirSync via the symlink).
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : undefined
+      if (code === 'ENOENT') {
+        return { state: 'broken-symlink' }
+      }
+      return {
+        state: 'unreadable',
+        errno: code,
+        detail: err instanceof Error ? err.message : String(err),
+      }
+    }
+  } else if (!lstat.isDirectory) {
+    return { state: 'non-directory-entry' }
+  }
+
+  // Step 4: readability probe.
+  try {
+    fs.readdirSync(appDir)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'unreadable',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+
+  // Step 5: history match (bundled/sample install record most recent).
+  // `findHistoryMatchForBundled` already enforces the sourceFilter
+  // and the "uninstall cancels the lifecycle" rule.
+  const installRecord = findHistoryMatchForBundled(history, recipeId)
+  if (installRecord !== undefined) {
+    return { state: 'partial-residue' }
+  }
+  return { state: 'self-made' }
+}
+
+/**
+ * Bundled-registry presence states reported by
+ * {@link probeBundledRegistryPresence}. Drives the disable Step 2
+ * `metadata.note` choice per spec recipe-system v1.10 §10.9.4 Step 2.
+ *
+ * - `'present'` — registry enumerable and contains the recipe id.
+ * - `'stale'` — registry enumerable but the recipe id is absent
+ *   (typically because a future KB release renamed / removed the
+ *   bundled sample). The disable transaction proceeds and the
+ *   history append records `metadata.note: 'bundled-registry-stale'`.
+ * - `'unavailable'` — registry itself is not enumerable (cache not
+ *   initialised, disk error, etc.). Disable proceeds when local
+ *   state is present; the history append records
+ *   `metadata.note: 'bundled-registry-unavailable'`.
+ */
+type BundledRegistryPresence = 'present' | 'stale' | 'unavailable'
+
+function probeBundledRegistryPresence(recipeId: string): BundledRegistryPresence {
+  let samples: SampleRecipeInfo[]
+  try {
+    samples = getSampleRecipes()
+  } catch {
+    return 'unavailable'
+  }
+  if (!Array.isArray(samples) || samples.length === 0) {
+    // An empty cache cannot distinguish "scanned and found nothing"
+    // from "scanner cache uninitialised". Treat as `unavailable` so
+    // the disable path still proceeds (the metadata.note then records
+    // the unavailable lineage for monitoring; a real
+    // "no bundled samples at all" deployment is a corner case the
+    // spec routes through the same metadata note value).
+    return 'unavailable'
+  }
+  const found = samples.some(
+    (s) => s.id === recipeId && s.metadata.recipeId === recipeId,
+  )
+  return found ? 'present' : 'stale'
+}
+
+/**
+ * `metadata.note` closed enum for disable history records, per
+ * `data-persistence.md` v1.4 §6.3 / spec recipe-system v1.10
+ * §10.9.4 Step 2 SSOT.
+ */
+export type DisableMetadataNote =
+  | 'manifest-already-absent'
+  | 'bundled-registry-stale'
+  | 'bundled-registry-unavailable'
+
+// =========================================
 // Local-state classification helpers
 // =========================================
 
@@ -196,11 +581,55 @@ interface ClassifyLocalResidueArgs {
  * mismatch is reported as `'corrupted'` so the caller surfaces a
  * 500 + manual-recovery prompt instead of silently deleting one of
  * the two diverging entries.
+ *
+ * Filesystem-level fail-closed gates (BL-2026-176, spec recipe-system
+ * v1.10 §10.9.4 Step 1 fail-closed policy):
+ *
+ *   - `recipe-history.jsonl` read I/O failure (`EACCES` / `EIO` /
+ *     `EPERM` etc.) throws `BundledLocalStateUnavailable` 503 so the
+ *     disable endpoint never silently falls through to
+ *     `already-disabled` 200 when the disk cannot be read.
+ *   - `recipes-installed/<appId>/manifest.json` IO failure also
+ *     surfaces as `BundledLocalStateUnavailable` 503; a successful
+ *     read followed by a JSON parse failure surfaces as
+ *     `BundledManifestUnreadable` 500 (shared with the enable Step
+ *     3d (iv) error code).
  */
 export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResidueState {
   const { fs, manifestStore, recipeId } = args
 
+  // Probe IO readability before the silent-skip swallowing in
+  // `readRecipeHistory`. A genuine I/O failure must surface as a 503;
+  // an empty / absent file is fine (the gate below treats it as
+  // "no record").
+  probeRecipeHistoryReadability(fs)
+
   const manifest = findManifestByRecipeId(manifestStore, recipeId)
+  if (manifest !== null) {
+    // Cross-check the on-disk manifest: a cache-hit guarantees the
+    // file parsed at boot time, but a corruption introduced after boot
+    // (manual edit + signal) would still serve from cache while the
+    // file is unreadable. Re-probe to surface the IO / parse failure
+    // before the disable transaction proceeds.
+    const probe = probeManifestOnDisk(fs, manifestStore, manifest.appId)
+    if (probe.state === 'present-io-failure') {
+      throw new BundledInstallerError(
+        `Manifest IO failure for "${recipeId}" (appId="${manifest.appId}")`,
+        503,
+        'BundledLocalStateUnavailable',
+        { fileName: 'manifest.json', appId: manifest.appId, errno: probe.errno, detail: probe.detail },
+      )
+    }
+    if (probe.state === 'present-parse-failure') {
+      throw new BundledInstallerError(
+        `Manifest parse failure for "${recipeId}" (appId="${manifest.appId}"): ${probe.detail}`,
+        500,
+        'BundledManifestUnreadable',
+        { appId: manifest.appId, detail: probe.detail },
+      )
+    }
+  }
+
   const history = readRecipeHistory(fs)
   const installRecord = findHistoryMatchForBundled(history, recipeId)
 
@@ -220,6 +649,96 @@ export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResid
   }
 
   return 'present'
+}
+
+// =========================================
+// Public API: resolve disable target appId
+// =========================================
+
+/**
+ * Result of {@link resolveBundledAppIdForDisable}. The `appId` is the
+ * destructive-path target for the disable transaction; the `source`
+ * is the persisted four-value enum subset (`'bundled' | 'sample'`,
+ * never `'import'` / `'url'`) used for the ws-event broadcast
+ * (`http-api-contract.md` v1.7.1 §6.3.8.B BS-L3-B round-trip);
+ * `manifestAlreadyAbsent` flags the partial-residue path so the
+ * disable transaction routes to Step 5-only history append + audit
+ * log (spec recipe-system v1.10 §10.9.4 Step 2 partial residue).
+ */
+export interface ResolveBundledAppIdResult {
+  appId: string
+  source: 'bundled' | 'sample'
+  manifestAlreadyAbsent: boolean
+}
+
+interface ResolveBundledAppIdArgs {
+  fs: FileAccessLayer
+  manifestStore: RecipeManifestStore
+  recipeId: string
+}
+
+/**
+ * Resolve the destructive-path `appId` + persisted `source` for the
+ * disable endpoint **before** {@link acquireAppLock} is taken (BL-
+ * 2026-176 (a) acquireAppLock 統合).
+ *
+ * The HTTP handler MUST hold the per-appId dispatch lock around the
+ * disable transaction so a concurrent `handlerDispatcher`-driven app
+ * call cannot run inside an `app/<appId>/` directory that the disable
+ * is in the middle of tearing down. The lock key is the appId, but
+ * the appId only exists once we have resolved either a bundled/sample
+ * manifest or a history install record. This helper performs the
+ * minimum read necessary to obtain the appId and surfaces all
+ * filesystem-level failures through `BundledInstallerError` so the
+ * handler can `try/finally`-release the lock cleanly.
+ *
+ * Returns `undefined` when neither a manifest nor a bundled/sample
+ * install record exists — the handler then short-circuits with
+ * `already-disabled` 200 without taking the lock.
+ *
+ * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503,
+ *   `BundledManifestUnreadable` 500, or
+ *   `BundledLocalStateCorrupted` 500 via
+ *   {@link classifyLocalResidue}).
+ */
+export function resolveBundledAppIdForDisable(
+  args: ResolveBundledAppIdArgs,
+): ResolveBundledAppIdResult | undefined {
+  const { fs, manifestStore, recipeId } = args
+  const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+  if (residue === 'none') return undefined
+  if (residue === 'corrupted') {
+    throw new BundledInstallerError(
+      `Local state for "${recipeId}" is corrupted (manifest / history appId mismatch)`,
+      500,
+      'BundledLocalStateCorrupted',
+      { recipeId },
+    )
+  }
+  const manifest = findManifestByRecipeId(manifestStore, recipeId)
+  if (manifest !== null) {
+    const persisted = narrowPersistedSource(manifest.source)
+    const broadcastSource: 'bundled' | 'sample' = persisted === 'sample' ? 'sample' : 'bundled'
+    return {
+      appId: manifest.appId,
+      source: broadcastSource,
+      manifestAlreadyAbsent: false,
+    }
+  }
+  const history = readRecipeHistory(fs)
+  const installRecord = findHistoryMatchForBundled(history, recipeId)
+  if (installRecord !== undefined) {
+    const persisted = narrowPersistedSource(installRecord.source)
+    const broadcastSource: 'bundled' | 'sample' = persisted === 'sample' ? 'sample' : 'bundled'
+    return {
+      appId: installRecord.appId ?? installRecord.recipeId ?? recipeId,
+      source: broadcastSource,
+      manifestAlreadyAbsent: true,
+    }
+  }
+  // residue === 'present' but neither side resolves — defensive
+  // fallback identical to disableBundledRecipe's same-shape guard.
+  return undefined
 }
 
 interface IsEnabledAndManifestCoherentArgs {
@@ -314,7 +833,18 @@ export function enableBundledRecipe(
     }
   }
 
-  // Step 3: parse the bundled recipe on disk.
+  // Step 3a (a): probe the bundled recipe asset for IO readability
+  // before invoking the parser. spec recipe-system v1.10 §10.9.3
+  // Step 3a separates `BundledRecipeUnreadable` 503 (file IO failure)
+  // from `BundledRecipeMalformed` 503 (parse failure) so the audit-
+  // logging / monitoring layer can distinguish a disk fault from a
+  // corrupt asset. Both are server-side faults (KB OSS-distributed
+  // assets), but the operational response is different — a disk fault
+  // suggests retry / capacity, a malformed asset suggests a bad
+  // release build.
+  probeBundledRecipeAssetReadable(fs, kovitoboardRoot, recipeId)
+
+  // Step 3a (b): parse the bundled recipe on disk.
   const sourcePath = join(kovitoboardRoot, 'recipes', sample.id)
   let parsed: ParsedRecipe
   try {
@@ -408,7 +938,29 @@ export function enableBundledRecipe(
     )
   }
 
-  const existingManifest = manifestStore.get(appId)
+  // Probe the manifest on disk: spec recipe-system v1.10 §10.9.3
+  // Step 3d (iv) routes a read-success-but-parse-failure to a 500
+  // `BundledManifestUnreadable`. The manifestStore cache silently
+  // skips malformed manifests at load time, so a cache miss is not
+  // enough to distinguish "absent" from "present-but-corrupt".
+  const manifestProbe = probeManifestOnDisk(fs, manifestStore, appId)
+  if (manifestProbe.state === 'present-io-failure') {
+    throw new BundledInstallerError(
+      `Existing manifest IO failure for appId "${appId}"`,
+      503,
+      'BundledLocalStateUnavailable',
+      { fileName: 'manifest.json', appId, errno: manifestProbe.errno, detail: manifestProbe.detail },
+    )
+  }
+  if (manifestProbe.state === 'present-parse-failure') {
+    throw new BundledInstallerError(
+      `Existing manifest parse failure for appId "${appId}": ${manifestProbe.detail}`,
+      500,
+      'BundledManifestUnreadable',
+      { appId, detail: manifestProbe.detail },
+    )
+  }
+  const existingManifest = manifestProbe.state === 'cached' ? manifestProbe.manifest : null
   if (existingManifest !== null) {
     const existingSource = existingManifest.source
     if (existingSource !== 'bundled' && existingSource !== 'sample') {
@@ -438,27 +990,78 @@ export function enableBundledRecipe(
   // from a previous incarnation would otherwise be promoted to
   // `code-trusted (bundled)` along with the freshly-written files.
   //
-  // - New enable (no existing manifest): the appDir must not exist
-  //   yet. If it does, that is an anomaly (probably a leftover from
-  //   a half-cleaned uninstall, or a user-authored directory
-  //   colliding with the bundled-registry id). Fail-closed so we
-  //   never bless tampered files under a trusted label.
+  // - New enable (no existing manifest): the appDir must follow the
+  //   probe order in spec recipe-system v1.10 §10.9.3 Step 3d (ii):
+  //   sibling leftover scan → entry-kind → symlink target → readdir →
+  //   history match. The probe routes the four anomaly cases to
+  //   `BundledAppIdConflictAnomaly`, the readable-but-no-install
+  //   case to `BundledAppIdConflict` (`'self-made'`), and the
+  //   readable-with-install case to the partial-residue recovery
+  //   path (Step 4-7 executed as if it were a regular enable, so
+  //   `code-trusted (bundled)` only wraps freshly-written files).
   // - Recovery (existing bundled/sample manifest, non-coherent):
   //   wipe the appDir first and rebuild from scratch. The matching
   //   `app/data/<appId>/` is on a sibling path and stays untouched
   //   (BS-L3-A).
   const appDir = join(projectRoot, 'app', appId)
-  const appDirPreExisted = fs.existsSync(appDir)
-  const isRecoveryPath = existingManifest !== null
-  if (appDirPreExisted && !isRecoveryPath) {
-    throw new BundledInstallerError(
-      `appDir "${appDir}" exists without a coherent bundled/sample manifest`,
-      500,
-      'BundledAppDirAnomaly',
-      { recipeId, appId },
-    )
+  let isRecoveryPath = existingManifest !== null
+  if (!isRecoveryPath) {
+    // Reuse the history read inside the anomaly probe so we don't
+    // pay the file read cost twice when partial-residue recovery
+    // falls through to Step 4-7.
+    const historyForProbe = readRecipeHistory(fs)
+    const probe = probeAppDirAnomaly(fs, projectRoot, appId, recipeId, historyForProbe)
+    switch (probe.state) {
+      case 'absent':
+        // Normal new-enable path — nothing to clean up before
+        // mkdir below.
+        break
+      case 'leftover-temp-dir':
+        throw new BundledInstallerError(
+          `Leftover temp dir blocks enable for "${recipeId}" (appId="${appId}"): ${probe.leftoverPath}`,
+          500,
+          'BundledAppIdConflictAnomaly',
+          { recipeId, appId, anomalyType: 'leftover-temp-dir', leftoverPath: probe.leftoverPath },
+        )
+      case 'non-directory-entry':
+        throw new BundledInstallerError(
+          `appDir "${appDir}" exists as a non-directory entry`,
+          500,
+          'BundledAppIdConflictAnomaly',
+          { recipeId, appId, anomalyType: 'non-directory-entry' },
+        )
+      case 'broken-symlink':
+        throw new BundledInstallerError(
+          `appDir "${appDir}" is a broken symlink`,
+          500,
+          'BundledAppIdConflictAnomaly',
+          { recipeId, appId, anomalyType: 'broken-symlink' },
+        )
+      case 'unreadable':
+        throw new BundledInstallerError(
+          `appDir "${appDir}" is unreadable: ${probe.detail}`,
+          503,
+          'BundledAppIdConflictAnomaly',
+          { recipeId, appId, anomalyType: 'unreadable', errno: probe.errno, detail: probe.detail },
+        )
+      case 'self-made':
+        throw new BundledInstallerError(
+          `appId "${appId}" is a user-authored ('self-made') app — bundled enable is not the recovery path`,
+          400,
+          'BundledAppIdConflict',
+          { recipeId, appId, conflictSource: 'self-made' },
+        )
+      case 'partial-residue':
+        // Promote to the recovery path so Step 4 below wipes the
+        // partial residue and Step 5 overwrites the (absent)
+        // manifest with a freshly-minted one. Spec recipe-system
+        // v1.10 §10.9.3 Step 3d (ii-a-partial-residue) treats this
+        // as a successful enable response (`status: 'enabled'`).
+        isRecoveryPath = true
+        break
+    }
   }
-  if (appDirPreExisted && isRecoveryPath) {
+  if (isRecoveryPath && fs.existsSync(appDir)) {
     // Drop stale / tampered residue from the previous incarnation
     // before the new artifacts land. `app/data/<appId>/` is on a
     // sibling path (`app/data/`, not `app/`) so this rm does not
@@ -613,7 +1216,26 @@ export interface DisableBundledRecipeResult {
    * @see docs/specs/http-api-contract.md v1.7.1 §6.3.8.B (broadcast)
    */
   source?: 'bundled' | 'sample'
-  metadata?: { note?: 'manifest-already-absent' }
+  /**
+   * Closed-enum `metadata.note` per `data-persistence.md` v1.4 §6.3:
+   *
+   *   - `'manifest-already-absent'` — disable completed with no
+   *     manifest on disk (partial residue path, spec recipe-system
+   *     v1.10 §10.9.4 Step 2 partial residue).
+   *   - `'bundled-registry-stale'` — local manifest existed but the
+   *     bundled registry no longer lists the recipe id (typically a
+   *     future KB release rename / removal).
+   *   - `'bundled-registry-unavailable'` — local manifest existed
+   *     but the registry itself was not enumerable (scanner cache
+   *     uninitialised, disk IO error). The disable still proceeds
+   *     to clean up the local state.
+   *
+   * Multiple notes are mutually exclusive — the disable transaction
+   * picks the most specific one (manifest-already-absent overrides
+   * registry status, which in turn overrides the present-and-OK case
+   * where `metadata` is simply omitted).
+   */
+  metadata?: { note?: DisableMetadataNote }
 }
 
 /**
@@ -689,7 +1311,33 @@ export function disableBundledRecipe(
   // so even a corrupted state cannot escalate to arbitrary deletion.
   assertSafeAppId(projectRoot, appId)
 
-  // Step 2: delete `app/<appId>/` (artifacts only).
+  // Step 2: probe bundled-registry presence so the history append
+  // below records `metadata.note: 'bundled-registry-stale' |
+  // 'bundled-registry-unavailable'` per spec recipe-system v1.10
+  // §10.9.4 Step 2 SSOT. `manifest-already-absent` (partial residue
+  // path) overrides the registry note because the artifacts +
+  // manifest are gone anyway — registry state is moot for that case.
+  const registryPresence = manifestAlreadyAbsent
+    ? null
+    : probeBundledRegistryPresence(recipeId)
+  let metadataNote: DisableMetadataNote | undefined
+  if (manifestAlreadyAbsent) {
+    metadataNote = 'manifest-already-absent'
+  } else if (registryPresence === 'stale') {
+    metadataNote = 'bundled-registry-stale'
+    recipeLogger.warn(
+      { recipeId, appId, persistedSource },
+      '[bundled-installer] disable: bundled registry stale (event=bundled-registry-stale-disable)',
+    )
+  } else if (registryPresence === 'unavailable') {
+    metadataNote = 'bundled-registry-unavailable'
+    recipeLogger.warn(
+      { recipeId, appId, persistedSource },
+      '[bundled-installer] disable: bundled registry unavailable (event=bundled-registry-unavailable-disable)',
+    )
+  }
+
+  // Step 3: delete `app/<appId>/` (artifacts only).
   //
   // Critical: in the history-only path (`manifestAlreadyAbsent ===
   // true`) the manifest store does not corroborate that
@@ -717,7 +1365,7 @@ export function disableBundledRecipe(
     }
   }
 
-  // Step 3: delete the manifest.
+  // Step 4: delete the manifest.
   if (manifest !== null) {
     try {
       manifestStore.delete(appId)
@@ -731,7 +1379,7 @@ export function disableBundledRecipe(
     }
   }
 
-  // Step 4: history append.
+  // Step 5: history append.
   // `name` is a localized display field — prefer the install
   // record's stored display name so the uninstall row keeps the
   // human-readable label, never the machine `recipeId`. The
@@ -750,9 +1398,7 @@ export function disableBundledRecipe(
     recipeId,
     appId,
     ownDataDeleted: false,
-    ...(manifestAlreadyAbsent
-      ? { metadata: { note: 'manifest-already-absent' as const } }
-      : {}),
+    ...(metadataNote !== undefined ? { metadata: { note: metadataNote } } : {}),
   }
   try {
     appendRecipeHistory(fs, historyEntry)
@@ -780,9 +1426,7 @@ export function disableBundledRecipe(
     dataPreserved: true,
     appId,
     source: broadcastSource,
-    ...(manifestAlreadyAbsent
-      ? { metadata: { note: 'manifest-already-absent' as const } }
-      : {}),
+    ...(metadataNote !== undefined ? { metadata: { note: metadataNote } } : {}),
   }
 }
 

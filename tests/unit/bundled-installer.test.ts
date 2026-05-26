@@ -673,12 +673,15 @@ describe('enableBundledRecipe', () => {
     expect(installRecord.hash).not.toBe('STALE-CACHE-HASH-DO-NOT-USE')
   })
 
-  it('appDir anomaly: a pre-existing app/<appId>/ without a manifest fails closed', () => {
+  it('appDir self-made conflict: a pre-existing app/<appId>/ without a bundled/sample install record is rejected as self-made (BL-2026-176)', () => {
     // Without a coherent (or even non-coherent) bundled/sample
-    // manifest at the target appId, an existing `app/<appId>/`
-    // directory cannot have been authored by the bundled-installer.
-    // Promoting its contents to `'code-trusted (bundled)'` would
-    // bless tampered files under a trusted label — fail closed.
+    // manifest at the target appId AND without a bundled/sample
+    // install record in recipe-history.jsonl, the existing
+    // `app/<appId>/` directory must have been authored by the user.
+    // Spec recipe-system v1.10 §10.9.3 Step 3d (ii-a-self-made)
+    // routes this to a 400 BundledAppIdConflict so the user can
+    // rename / clean up by hand; the request-removal endpoint is
+    // the correct destructive surface for self-made apps.
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
 
@@ -703,8 +706,9 @@ describe('enableBundledRecipe', () => {
     }
     expect(thrown).toBeInstanceOf(BundledInstallerError)
     const err = thrown as BundledInstallerError
-    expect(err.errorCode).toBe('BundledAppDirAnomaly')
-    expect(err.httpStatus).toBe(500)
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    expect(err.detail?.conflictSource).toBe('self-made')
     // The stray file is left untouched (no Step 4 ran).
     expect(existsSync(join(appDir, 'evil.tsx'))).toBe(true)
     // No manifest was written.

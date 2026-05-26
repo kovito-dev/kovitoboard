@@ -94,6 +94,7 @@ import {
   disableBundledRecipe,
   enableBundledRecipe,
   isBundledEligibleRecipeId,
+  resolveBundledAppIdForDisable,
 } from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
@@ -125,7 +126,11 @@ import type {
   ClientLogPayload,
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
-import { dispatch as dispatchHandler } from './handlerDispatcher'
+import {
+  acquireAppLock,
+  AppLockWaitTimeoutError,
+  dispatch as dispatchHandler,
+} from './handlerDispatcher'
 import type {
   KbCallRequest,
   KbCallResponse,
@@ -1234,7 +1239,7 @@ app.get('/api/recipes/sample', (_req, res) => {
 // http-api-contract v1.7.1 §6.3.8.B). The handlers below stay thin
 // — the transaction lives in services/bundled-installer.ts.
 
-app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
+app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
   const recipeId = req.params.recipeId
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
@@ -1270,7 +1275,35 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
     res.status(404).json({ error: 'BundledNotFound' })
     return
   }
+  // BL-2026-176 (a) acquireAppLock 統合. The bundled-enable
+  // transaction copies artifacts into `<projectRoot>/app/<appId>/`
+  // and writes the manifest. A concurrent handler dispatch for the
+  // same appId could see a half-written appDir or stale manifest
+  // snapshot — `acquireAppLock(appId)` is the same gate
+  // `handlerDispatcher.dispatch` already takes, so by sharing the
+  // key we make the two paths mutually exclusive for the duration
+  // of the destructive write.
+  //
+  // The bundled-registry id (`sample.id`) is also the target appId
+  // (BS-L9 default), so the lock key is known before any disk read
+  // and we acquire it here, before `enableBundledRecipe` opens its
+  // first file.
+  const appIdForLock = sample.id
+  let release: (() => void) | null = null
   try {
+    try {
+      release = await acquireAppLock(appIdForLock)
+    } catch (lockErr) {
+      if (lockErr instanceof AppLockWaitTimeoutError) {
+        apiLogger.warn(
+          { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+          'Bundled enable rejected (app lock timeout)',
+        )
+        res.status(503).json({ error: 'BundledAppLockTimeout' })
+        return
+      }
+      throw lockErr
+    }
     const result = enableBundledRecipe({
       fs,
       manifestStore,
@@ -1308,10 +1341,12 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
     res.json(result)
   } catch (err) {
     handleBundledInstallerError(req, res, err, 'enable', recipeId)
+  } finally {
+    if (release !== null) release()
   }
 })
 
-app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
+app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   const recipeId = req.params.recipeId
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
@@ -1338,7 +1373,41 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
       return
     }
   }
+  // BL-2026-176 (a) acquireAppLock 統合. Resolve the appId *before*
+  // we take the lock so handler-dispatch and bundled-disable share
+  // the same mutual-exclusion key (spec recipe-system v1.10 §10.9.4
+  // Step 1 + handlerDispatcher.ts SSOT). The resolve helper does
+  // the minimum read necessary; any IO failure surfaces as a
+  // `BundledInstallerError` with the spec-normative error code.
+  let resolved
   try {
+    resolved = resolveBundledAppIdForDisable({ fs, manifestStore, recipeId })
+  } catch (resolveErr) {
+    handleBundledInstallerError(req, res, resolveErr, 'disable', recipeId)
+    return
+  }
+  if (resolved === undefined) {
+    // No residue at all — short-circuit with 200 `already-disabled`
+    // per spec recipe-system v1.10 §10.9.4 Step 1 'none' branch.
+    // Skip the lock acquisition because there is nothing to mutate.
+    res.json({ status: 'already-disabled', dataPreserved: true })
+    return
+  }
+  let release: (() => void) | null = null
+  try {
+    try {
+      release = await acquireAppLock(resolved.appId)
+    } catch (lockErr) {
+      if (lockErr instanceof AppLockWaitTimeoutError) {
+        apiLogger.warn(
+          { err: lockErr, action: 'disable', recipeId, appId: resolved.appId },
+          'Bundled disable rejected (app lock timeout)',
+        )
+        res.status(503).json({ error: 'BundledAppLockTimeout' })
+        return
+      }
+      throw lockErr
+    }
     const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
     try {
       refreshInstallStatus(fs, manifestStore)
@@ -1369,6 +1438,8 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
     res.json(result)
   } catch (err) {
     handleBundledInstallerError(req, res, err, 'disable', recipeId)
+  } finally {
+    if (release !== null) release()
   }
 })
 
