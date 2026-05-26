@@ -365,6 +365,126 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('persists the freshly-parsed recipe hash, not the cached registry hash', () => {
+    // The bundled-installer re-parses recipe.yaml right before
+    // copying the artifacts, so the persisted hash should describe
+    // the artifacts that actually landed on disk. A future caller
+    // that re-uses a stale `SampleRecipeInfo.hash` would mis-bind
+    // the integrity stamp to a different revision.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Force a divergence between the cached hash and the
+    // freshly-parsed hash by mutating the sample object in place
+    // before calling enable.
+    const driftedSample = { ...sample, hash: 'STALE-CACHE-HASH-DO-NOT-USE' }
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample: driftedSample,
+    })
+    const manifest = h.manifestStore.get(result.appId)
+    expect(manifest).not.toBeNull()
+    // The recorded hash is whatever `parseRecipe` returned during
+    // enable — never the stale registry-cache value.
+    expect(manifest!.hash).not.toBe('STALE-CACHE-HASH-DO-NOT-USE')
+    expect(manifest!.hash.length).toBeGreaterThan(0)
+
+    const history = readRecipeHistory(h.fs)
+    const installRecord = history.find(
+      (r) => r.recipeId === SAMPLE_RECIPE_ID && (r.action ?? 'install') === 'install',
+    )!
+    expect(installRecord.hash).not.toBe('STALE-CACHE-HASH-DO-NOT-USE')
+  })
+
+  it('appDir anomaly: a pre-existing app/<appId>/ without a manifest fails closed', () => {
+    // Without a coherent (or even non-coherent) bundled/sample
+    // manifest at the target appId, an existing `app/<appId>/`
+    // directory cannot have been authored by the bundled-installer.
+    // Promoting its contents to `'code-trusted (bundled)'` would
+    // bless tampered files under a trusted label — fail closed.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+
+    // Seed an app directory with a stray file the bundled recipe
+    // would never write itself.
+    const appDir = join(h.projectRoot, 'app', SAMPLE_RECIPE_ID)
+    mkdirSync(appDir, { recursive: true })
+    writeFileSync(join(appDir, 'evil.tsx'), 'malicious payload', 'utf-8')
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppDirAnomaly')
+    expect(err.httpStatus).toBe(500)
+    // The stray file is left untouched (no Step 4 ran).
+    expect(existsSync(join(appDir, 'evil.tsx'))).toBe(true)
+    // No manifest was written.
+    expect(h.manifestStore.get(SAMPLE_RECIPE_ID)).toBeNull()
+  })
+
+  it('recovery path: a manifest without a matching appDir is re-built cleanly (no anomaly fail)', () => {
+    // Non-coherent residue: the manifest store still carries a
+    // bundled entry but `app/<appId>/` was swept out of band (the
+    // "orphan manifest" case `isEnabledAndManifestCoherent` reports
+    // as non-coherent). Enable should drive Step 4 to a fresh
+    // appDir build without the BundledAppDirAnomaly fail (which
+    // only fires when the appDir is *present* without a manifest).
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+
+    h.manifestStore.save({
+      appId: SAMPLE_RECIPE_ID,
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '0.0.1-old',
+      hash: 'stale',
+      installedAt: '2026-04-01T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    // No `app/<SAMPLE_RECIPE_ID>/` directory exists — this is what
+    // makes `isEnabledAndManifestCoherent` report false and routes
+    // Step 2 into the recovery path instead of `already-enabled`.
+
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    // Step 5 overwrote the stale manifest with the freshly-parsed
+    // version (recipe-system v1.10 §10.9.3 Step 3d (iii) recovery
+    // semantics).
+    const refreshed = h.manifestStore.get(result.appId)!
+    expect(refreshed.recipeVersion).not.toBe('0.0.1-old')
+    expect(refreshed.source).toBe('bundled')
+    // The new artifacts are in place.
+    expect(
+      existsSync(join(h.projectRoot, 'app', result.appId, 'pages', 'DocumentViewer.tsx')),
+    ).toBe(true)
+  })
+
   it('cross-source overwrite reject: an `import` manifest at the same appId blocks bundled enable', () => {
     // The bundled-installer must not overwrite a non-bundled / non-
     // sample manifest, even when the `recipeId` happens to match —

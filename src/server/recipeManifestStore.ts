@@ -318,10 +318,25 @@ function validateManifest(raw: unknown): string | null {
         'expected "unknown" until KovitoHub signature verification ships in v0.3.0'
       )
     }
-    // `'code-trusted (bundled)'` is the v0.2.1 bundled-enable literal
-    // — the bundled-installer flow is the only writer and is gated by
-    // OSS PR review (recipe-system v1.10 §10.9.5 BS-L4'). No extra
-    // verification beyond bundled-installer's own contract is required.
+    // v0.2.1 bundled-enable literal. The bundled-installer flow is the
+    // only writer (recipe-system v1.10 §10.9.5 BS-L4', gated by OSS
+    // PR review) and the literal is explicitly allowed at validation
+    // time so `loadAll` keeps freshly-enabled bundled manifests in the
+    // cache across restarts. Listed by name (rather than relying on
+    // the absence of an earlier rejection) so a future reviewer
+    // tightening the rejection set cannot strip this path by accident.
+    if (obj.trustLevel === 'code-trusted (bundled)') {
+      // explicit allow — fall through to the remaining schema checks
+    } else if (obj.trustLevel !== 'unknown') {
+      // Belt-and-suspenders: any v0.2.x trustLevel literal that is
+      // not `'unknown'` and not `'code-trusted (bundled)'` should
+      // already have been rejected by the guards above. If a future
+      // enum addition slips through, fail closed.
+      return (
+        `"trustLevel" "${String(obj.trustLevel)}" is not accepted in v0.2.x; ` +
+        'expected "unknown" or "code-trusted (bundled)"'
+      )
+    }
   }
 
   // v0.2.1 `source` field — optional for backward compat with v0.2.0

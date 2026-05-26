@@ -296,18 +296,41 @@ export function enableBundledRecipe(
     // the existing manifest is non-coherent and worth re-establishing.
   }
 
-  // Step 4: artifacts copy (atomic via per-file writeFileAtomic into
-  // the final `app/<appId>/` directory). The sequence is "build
-  // first, swap last": if any per-file write fails the rollback in
-  // the catch block below removes the partially-populated directory
-  // recursively, leaving `app/data/<appId>/` untouched.
+  // Step 4: artifacts copy. The bundled-installer must own the
+  // entire `app/<appId>/` directory contents — anything left behind
+  // from a previous incarnation would otherwise be promoted to
+  // `code-trusted (bundled)` along with the freshly-written files.
+  //
+  // - New enable (no existing manifest): the appDir must not exist
+  //   yet. If it does, that is an anomaly (probably a leftover from
+  //   a half-cleaned uninstall, or a user-authored directory
+  //   colliding with the bundled-registry id). Fail-closed so we
+  //   never bless tampered files under a trusted label.
+  // - Recovery (existing bundled/sample manifest, non-coherent):
+  //   wipe the appDir first and rebuild from scratch. The matching
+  //   `app/data/<appId>/` is on a sibling path and stays untouched
+  //   (BS-L3-A).
   const appDir = join(projectRoot, 'app', appId)
   const appDirPreExisted = fs.existsSync(appDir)
+  const isRecoveryPath = existingManifest !== null
+  if (appDirPreExisted && !isRecoveryPath) {
+    throw new BundledInstallerError(
+      `appDir "${appDir}" exists without a coherent bundled/sample manifest`,
+      500,
+      'BundledAppDirAnomaly',
+      { recipeId, appId },
+    )
+  }
+  if (appDirPreExisted && isRecoveryPath) {
+    // Drop stale / tampered residue from the previous incarnation
+    // before the new artifacts land. `app/data/<appId>/` is on a
+    // sibling path (`app/data/`, not `app/`) so this rm does not
+    // touch user data.
+    tryRm(fs, appDir)
+  }
   const writtenArtifactPaths: string[] = []
   try {
-    if (!appDirPreExisted) {
-      fs.mkdirSync(appDir, { recursive: true })
-    }
+    fs.mkdirSync(appDir, { recursive: true })
     for (const artifact of parsed.artifacts) {
       const destPath = join(appDir, artifact.path)
       const destDir = dirname(destPath)
@@ -319,11 +342,9 @@ export function enableBundledRecipe(
     }
   } catch (err) {
     // Rollback Step 4: remove the partial `app/<appId>/` directory.
-    // Only delete what we created — if it pre-existed (re-enable
-    // race / leftover), leave the user's state alone.
-    if (!appDirPreExisted) {
-      tryRm(fs, appDir)
-    }
+    // We always created (or recreated) it above, so it is safe to
+    // wipe — the data dir lives at the sibling `app/data/<appId>/`.
+    tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to copy bundled artifacts for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -354,7 +375,7 @@ export function enableBundledRecipe(
     appId,
     recipeId,
     recipeVersion: parsed.metadata.version,
-    hash: sample.hash,
+    hash: parsed.hash,
     installedAt: new Date().toISOString(),
     approvedScopes: apiScopes,
     api: apiSection,
@@ -366,9 +387,10 @@ export function enableBundledRecipe(
   try {
     manifestStore.save(manifest)
   } catch (err) {
-    if (!appDirPreExisted) {
-      tryRm(fs, appDir)
-    }
+    // Step 4 always created (or re-created) appDir, so it is safe
+    // to wipe on rollback — `app/data/<appId>/` is on a sibling
+    // path and stays put (BS-L3-A).
+    tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to write manifest for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -386,9 +408,7 @@ export function enableBundledRecipe(
     }
   } catch (err) {
     manifestStore.delete(appId)
-    if (!appDirPreExisted) {
-      tryRm(fs, appDir)
-    }
+    tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to create data dir for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -405,7 +425,7 @@ export function enableBundledRecipe(
     version: parsed.metadata.version,
     author: parsed.metadata.author,
     source: 'bundled',
-    hash: sample.hash,
+    hash: parsed.hash,
     appliedAt: manifest.installedAt,
     artifacts: writtenArtifactPaths,
     menu: (parsed.menu ?? []).map((m) => m.id),
@@ -419,9 +439,7 @@ export function enableBundledRecipe(
     // Best-effort rollback: tear down both so the next call sees a
     // clean slate. Data dir stays put (BS-L3-A).
     manifestStore.delete(appId)
-    if (!appDirPreExisted) {
-      tryRm(fs, appDir)
-    }
+    tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to append history for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
