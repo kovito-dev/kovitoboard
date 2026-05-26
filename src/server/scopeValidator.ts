@@ -209,9 +209,13 @@ const EXCLUSIONS: readonly ExclusionEntry[] = [
     blockedOps: ['read', 'write'],
   },
   // .git directory tree and the `.git` gitfile (worktree / submodule
-  // pointer file). A v0.2.1 follow-up will extend matching to
-  // bare-repo / submodule linked gitdirs once §6.6.1 normative
-  // implementation lands.
+  // pointer file). v0.2.1 extends the match to any segment ending in
+  // `.git` so bare-repo / submodule linked gitdirs (e.g.
+  // `tools/helper.git/hooks/post-checkout`, `submodules/pkg.git`)
+  // share the same full-block as a top-level `.git`. The exclusion
+  // key arrives normalized (NFC + case-fold + forward-slash separator
+  // + suspicious-char reject), so `matchGit` matches verbatim without
+  // additional flags.
   {
     match: (k) => matchGit(k),
     blockedOps: ['read', 'write'],
@@ -276,9 +280,36 @@ function matchEnv(k: string): boolean {
   return base === '.env' || base.startsWith('.env.')
 }
 
+/**
+ * Match the `.git` exclusion family, including bare-repo embeds.
+ *
+ * The exclusion key is already normalized when this predicate runs
+ * (see `normalizeForExclusionMatch`): NFC, case-folded, forward-slash
+ * separated, with suspicious / bidi-override characters rejected
+ * upstream. We can therefore match without flags or further
+ * normalization.
+ *
+ * Three on-disk shapes are covered:
+ *   - Literal `.git` directory tree at any depth (`.git`, `.git/...`).
+ *   - `.git` gitfile (single-file pointer used by worktrees and
+ *     submodules — caught by the same `.git` segment match).
+ *   - Bare-repo embeds: any nested segment whose basename ends in
+ *     `.git` (e.g. `tools/helper.git/hooks/post-checkout`,
+ *     `submodules/pkg.git/config`). The Novee Security write-up uses
+ *     this shape to land a sandbox escape that walks the nested
+ *     gitdir's hooks during a later `git` operation; without this
+ *     extension the pre-v0.2.1 predicate only blocked `.git/...` at
+ *     the project root.
+ *
+ * Lookalike substrings (`gitignore-helper`, `prettier-plugin-git`,
+ * `gitlab`) are not affected — the regex anchors to a `.git` suffix
+ * preceded by `/` or start-of-key.
+ *
+ * @see docs/specs/security-threat-model.md §S2
+ * @see CVE-2026-26268 (same threat family, Cursor 2.5 sandbox escape)
+ */
 function matchGit(k: string): boolean {
-  if (k === '.git') return true
-  return k.startsWith('.git/')
+  return /(^|\/)[^/]*\.git(\/|$)/.test(k)
 }
 
 function matchNodeModules(k: string): boolean {
