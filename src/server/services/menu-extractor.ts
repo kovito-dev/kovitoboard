@@ -172,23 +172,76 @@ export function readUserMenuEntries(
     // canonical-app-id check at line 181 below only governs
     // trust-badge attribution; the file-resolution gap is what is
     // closed here.
+    // Layer 1 — lexical containment under `app/`. Refuses
+    // parent-directory escapes, absolute paths, drive-qualified
+    // shapes, and Windows separators before we touch the
+    // filesystem.
     if (!isWithinAppDir(entry.page, appDir)) {
       serverLogger.warn(
         { id: entry.id, page: entry.page },
         '[menu-extractor] Skipping menu entry whose page path escapes app/',
       )
-      // pageAbsolutePath stays null. trustLevel will also be
-      // forced to null below since isCanonicalAppIdPath returns
-      // false for the same shape.
+      if (trustLookup) entry.trustLevel = null
+      continue
+    }
+    // Layer 2 — app-id binding. `app-directory-extension.md` binds
+    // menu `id`, the `app/<appId>/` subtree, and the
+    // `window.kb.call` bridge to the same `appId`. Loading a
+    // sibling app's pages on this route would inject the wrong
+    // app's runtime capability context (recipe-scoped bridge),
+    // so we refuse cross-app drift outright instead of merely
+    // stripping the trust badge downstream.
+    if (!isCanonicalAppIdPath(entry.page, entry.id)) {
+      serverLogger.warn(
+        { id: entry.id, page: entry.page },
+        '[menu-extractor] Skipping menu entry whose page path does not live under app/<id>/',
+      )
       if (trustLookup) entry.trustLevel = null
       continue
     }
     const tsxPath = join(appDir, `${entry.page}.tsx`)
     const tsPath = join(appDir, `${entry.page}.ts`)
-    if (fs.existsSync(tsxPath)) {
-      entry.pageAbsolutePath = tsxPath
-    } else if (fs.existsSync(tsPath)) {
-      entry.pageAbsolutePath = tsPath
+    const candidate = fs.existsSync(tsxPath)
+      ? tsxPath
+      : fs.existsSync(tsPath)
+        ? tsPath
+        : null
+    if (candidate !== null) {
+      // Layer 3 — symlink containment. `existsSync` follows
+      // links, so `app/<id>/Index.tsx` could itself be (or live
+      // under) a planted symlink pointing outside `app/`. We
+      // canonicalize both sides via `realpathSync` and refuse
+      // the entry unless the canonical candidate still lives
+      // under the canonical `appDir`. Failure to realpath (link
+      // target missing, permission denied, etc.) is also
+      // refused: we prefer a missing menu entry over a silent
+      // out-of-tree read primitive.
+      try {
+        const realCandidate = fs.realpathSync(candidate)
+        const realAppDir = fs.realpathSync(appDir)
+        const rootMarker = realAppDir.endsWith(sep)
+          ? realAppDir
+          : realAppDir + sep
+        if (
+          realCandidate !== realAppDir &&
+          !realCandidate.startsWith(rootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, candidate, realCandidate },
+            '[menu-extractor] Skipping menu entry whose resolved path escapes app/ via symlink',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        entry.pageAbsolutePath = candidate
+      } catch (err) {
+        serverLogger.warn(
+          { id: entry.id, page: entry.page, candidate, err },
+          '[menu-extractor] Skipping menu entry whose path could not be canonicalized',
+        )
+        if (trustLookup) entry.trustLevel = null
+        continue
+      }
     }
     if (trustLookup) {
       // Only attach the manifest's trust level when the menu row is

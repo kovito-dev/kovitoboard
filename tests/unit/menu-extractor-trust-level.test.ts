@@ -20,7 +20,33 @@
  * `recipe-parser-recipe-id.test.ts` so the extractor exercises its
  * production path without writing to the host disk.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// v0.2.1: the path-containment guard introduced by F-19 emits
+// structured warn events via `serverLogger`. The root logger is
+// not initialized in this unit-test process, so we stub the
+// logger module before importing the menu-extractor (vi.mock is
+// hoisted). `lazyChildLogger` is also surfaced because
+// `menu-extractor.ts` → `config.ts` resolves it eagerly.
+const { serverLoggerStub } = vi.hoisted(() => ({
+  serverLoggerStub: {
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}))
+
+vi.mock('../../src/server/logger', () => ({
+  serverLogger: serverLoggerStub,
+  lazyChildLogger: () => ({
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+}))
+
 import {
   isCanonicalAppIdPath,
   readUserMenuEntries,
@@ -61,6 +87,11 @@ function makeMockFs(projectRoot: string, files: Record<string, string>): FileAcc
       if (!fileMap.has(p)) throw new Error(`ENOENT: ${p}`)
       return { size: fileMap.get(p)!.length } as unknown as ReturnType<FileAccessLayer['statSync']>
     },
+    // The path-containment guard added in v0.2.1 canonicalizes
+    // both `candidate` and `appDir` via `realpathSync`. The mock
+    // filesystem has no symlinks so the identity function is
+    // sufficient.
+    realpathSync: (p) => p,
     mkdirSync: () => {},
     rmdirSync: () => {},
     unlinkSync: () => {},

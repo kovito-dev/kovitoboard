@@ -69,9 +69,22 @@ afterEach(() => {
   delete process.env.KOVITOBOARD_PROJECT_ROOT
 })
 
+interface MockFsOpts {
+  /**
+   * Optional symlink map: `path → resolvedTarget`. When the
+   * production code calls `realpathSync(p)`, the mock returns
+   * `resolvedTarget` if `p` is in the map, otherwise `p`. Lets the
+   * Layer-3 symlink check be exercised without standing up a real
+   * temp-dir tree (which would also need cache resets across the
+   * config-cached projectRoot resolver).
+   */
+  symlinks?: Record<string, string>
+}
+
 function makeMockFs(
   projectRoot: string,
   files: Record<string, string>,
+  opts: MockFsOpts = {},
 ): FileAccessLayer {
   const fileMap = new Map(Object.entries(files))
   const dirs = new Set<string>([projectRoot])
@@ -81,6 +94,7 @@ function makeMockFs(
       dirs.add(parts.slice(0, i).join('/'))
     }
   }
+  const symlinkMap = new Map(Object.entries(opts.symlinks ?? {}))
   return {
     readFileSync: (p) => {
       const v = fileMap.get(p)
@@ -94,13 +108,18 @@ function makeMockFs(
     writeFileAtomic: () => {
       throw new Error('not implemented in this stub')
     },
-    existsSync: (p) => fileMap.has(p) || dirs.has(p),
+    existsSync: (p) => fileMap.has(p) || dirs.has(p) || symlinkMap.has(p),
     statSync: (p) => {
       if (!fileMap.has(p)) throw new Error(`ENOENT: ${p}`)
       return { size: fileMap.get(p)!.length } as unknown as ReturnType<
         FileAccessLayer['statSync']
       >
     },
+    // The path-containment guard canonicalizes both `candidate`
+    // and `appDir` via `realpathSync`. The mock returns the
+    // symlink target when one is registered, otherwise the input
+    // unchanged.
+    realpathSync: (p) => symlinkMap.get(p) ?? p,
     mkdirSync: () => {},
     rmdirSync: () => {},
     unlinkSync: () => {},
@@ -277,12 +296,15 @@ describe('readUserMenuEntries — path containment guard', () => {
     expect(lookup).not.toHaveBeenCalled()
   })
 
-  it('preserves the existing in-app sibling drift behaviour (page loads, badge stripped)', () => {
+  it('rejects in-app sibling drift to refuse cross-app capability context mixup', () => {
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    // `doc-viewer/../evil-app/Index` collapses to `evil-app/Index`,
-    // which is a real app/ descendant. The page resolves; the
-    // trust-badge check downstream strips the marker because the
-    // canonical-app-id check fails.
+    // `doc-viewer/../evil-app/Index` collapses to `evil-app/Index`
+    // which lexically lives under app/, but it lives under a
+    // different appId than the menu entry's `id`. Loading it on
+    // the `/ext/doc-viewer` route would inject `doc-viewer`'s
+    // recipe-scoped bridge into evil-app's code — a cross-app
+    // identity mixup per app-directory-extension.md. Layer 2
+    // catches it before resolution.
     const driftedPath = `${projectRoot}/app/evil-app/Index.tsx`
     const fs = makeMockFs(projectRoot, {
       [menuPath]: menuTs([
@@ -293,10 +315,128 @@ describe('readUserMenuEntries — path containment guard', () => {
     const lookup = vi.fn(() => 'unknown' as const)
     const entries = readUserMenuEntries(fs, lookup)
     expect(entries).toHaveLength(1)
-    expect(entries[0].pageAbsolutePath).toBe(driftedPath)
-    // The canonical-app-id check forces the badge to null even
-    // though the page itself loads.
+    expect(entries[0].pageAbsolutePath).toBeNull()
     expect(entries[0].trustLevel).toBeNull()
+    expect(lookup).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'doc-viewer' }),
+      expect.stringContaining('does not live under app/<id>/'),
+    )
+  })
+
+  it('rejects rows whose page id does not match the menu entry id', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    // Directly bound — no `..` shenanigans — but still
+    // cross-app: the page lives under app/evil-app/ while the
+    // menu entry id is doc-viewer.
+    const driftedPath = `${projectRoot}/app/evil-app/Index.tsx`
+    const fs = makeMockFs(projectRoot, {
+      [menuPath]: menuTs([
+        { id: 'doc-viewer', page: 'evil-app/Index' },
+      ]),
+      [driftedPath]: 'export default function Index() { return null }\n',
+    })
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+// =========================================
+// Symlink containment (real fs)
+// =========================================
+
+describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
+  // The Layer-3 guard refuses any entry whose `realpathSync(candidate)`
+  // does not resolve inside `realpathSync(appDir)`. We drive it
+  // through the mock fs's symlink map: registering
+  // `app/leaky-app/Index.tsx → /elsewhere/leak.tsx` simulates a
+  // planted symlink pointing outside `app/`, while a target that
+  // remains inside `app/` is accepted.
+  const projectRoot = '/test-project'
+  const menuPath = `${projectRoot}/app/menu.ts`
+
+  function menuTs(rows: Array<{ id: string; page: string }>): string {
+    const lines = ['export const menuEntries = [']
+    for (const row of rows) {
+      lines.push(
+        `  { id: '${row.id}', label: '${row.id} label', icon: 'note', component: () => import('./${row.page}') },`,
+      )
+    }
+    lines.push(']')
+    return lines.join('\n')
+  }
+
+  it('rejects a menu entry whose .tsx file is a symlink to outside app/', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    const outsideTarget = '/elsewhere/secrets/leak.tsx'
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'leaky-app', page: 'leaky-app/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        symlinks: {
+          [candidatePath]: outsideTarget,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    // The candidate exists (mock returns true) and is found, but
+    // realpathSync points outside appDir, so Layer 3 refuses it.
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'leaky-app' }),
+      expect.stringContaining('escapes app/ via symlink'),
+    )
+  })
+
+  it('accepts a menu entry whose .tsx file is a symlink that still lands inside app/', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/doc-viewer/Index.tsx`
+    const insideTarget = `${projectRoot}/app/shared/pages/Common.tsx`
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        symlinks: {
+          [candidatePath]: insideTarget,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBe(candidatePath)
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('rejects when realpathSync throws (broken or denied link)', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/broken-app/Index.tsx`
+    const fs = makeMockFs(projectRoot, {
+      [menuPath]: menuTs([{ id: 'broken-app', page: 'broken-app/Index' }]),
+      [candidatePath]: '// placeholder\n',
+    }) as FileAccessLayer
+    // Override realpathSync to simulate a broken symlink / EACCES.
+    ;(fs as { realpathSync: (p: string) => string }).realpathSync = (
+      p: string,
+    ) => {
+      if (p === candidatePath) throw new Error('ELOOP: symlink loop')
+      return p
+    }
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'broken-app' }),
+      expect.stringContaining('could not be canonicalized'),
+    )
   })
 })
