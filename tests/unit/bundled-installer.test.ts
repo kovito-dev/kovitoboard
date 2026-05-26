@@ -365,6 +365,70 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('appId path-traversal: a tampered manifest with `..` in appId fails closed before rmSync', () => {
+    // The bundled-installer trusts the manifest store for `appId`,
+    // so a corrupted record could drive the recursive `rmSync`
+    // outside `<projectRoot>/app/`. The format validator must
+    // reject anything that contains a path separator or `..`
+    // segment, *before* any filesystem write happens.
+    h.manifestStore.save({
+      // `manifestStore.save` writes into baseDir/appId, so we use
+      // a benign appId on disk and then expose a malicious value
+      // through the cache by replacing the entry in-memory.
+      appId: 'evil',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'h',
+      installedAt: '2026-05-01T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    // Swap in a traversal value through the public list-by-id path.
+    // (`save` of `../escape` would fail on disk, but the validator
+    // must catch the in-memory variant too.)
+    const malicious = {
+      appId: '../escape',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'h',
+      installedAt: '2026-05-01T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)' as const,
+      source: 'bundled' as const,
+    }
+    // Reach into the manifest store cache via the public list path —
+    // we cannot save `../escape` through the real `save` (writeFileAtomic
+    // would refuse), but we can construct the same in-memory shape that
+    // a corrupted on-disk JSON would surface after `loadAll`.
+    const cacheLike = (h.manifestStore as unknown as { cache: Map<string, typeof malicious> })
+      .cache
+    cacheLike.clear()
+    cacheLike.set(malicious.appId, malicious)
+
+    let thrown: unknown = null
+    try {
+      disableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        recipeId: SAMPLE_RECIPE_ID,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdInvalid')
+    expect(err.httpStatus).toBe(500)
+  })
+
   it('fails closed when multiple bundled/sample manifests share the same recipeId', () => {
     // Source-scoped uniqueness is normative (recipe-system v1.10
     // §10.9.3 Step 2 SSOT): exactly one bundled/sample manifest per

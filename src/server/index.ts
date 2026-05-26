@@ -1269,12 +1269,18 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
       sample,
     })
     refreshInstallStatus(fs, manifestStore)
-    // ws-event broadcast: recipe_apps_changed (L11 cascade).
-    broadcastRecipeAppsChanged({
-      trigger: 'enable',
-      appId: result.appId,
-      source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
-    })
+    // ws-event broadcast: recipe_apps_changed (L11 cascade). Only
+    // emit on an actual state change — `already-enabled` is an
+    // idempotent retry that downstream consumers would otherwise
+    // re-handle as a fresh enable (refetching menus, replaying
+    // audit work, etc.).
+    if (result.status === 'enabled') {
+      broadcastRecipeAppsChanged({
+        trigger: 'enable',
+        appId: result.appId,
+        source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
+      })
+    }
     res.json(result)
   } catch (err) {
     handleBundledInstallerError(req, res, err, 'enable', recipeId)
@@ -1311,12 +1317,18 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
   try {
     const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
     refreshInstallStatus(fs, manifestStore)
-    if (result.appId !== undefined && result.source !== undefined) {
+    if (
+      result.status === 'disabled' &&
+      result.appId !== undefined &&
+      result.source !== undefined
+    ) {
       // Round-trip the persisted source (`'bundled'` for bundled-
       // enable lineage, `'sample'` for grandfather-sample lineage).
       // Hard-coding `'bundled'` here would break BS-L3-B and
       // mis-signal grandfather-sample disables to UI consumers
       // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
+      // Skip the broadcast on `already-disabled` no-ops — see the
+      // matching guard on the enable handler.
       broadcastRecipeAppsChanged({
         trigger: 'disable',
         appId: result.appId,

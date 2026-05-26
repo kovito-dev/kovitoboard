@@ -31,7 +31,7 @@
  * @stable v0.2.1
  */
 
-import { join } from 'path'
+import { join, resolve, sep } from 'path'
 import { createHash } from 'crypto'
 import type { FileAccessLayer } from '../fs-layer'
 import { recipeLogger } from '../logger'
@@ -80,6 +80,59 @@ export const BUNDLED_ELIGIBLE_RECIPE_IDS: readonly string[] = [
 /** True iff the recipe id is a v0.2.1 bundled-eligible sample. */
 export function isBundledEligibleRecipeId(recipeId: string): boolean {
   return BUNDLED_ELIGIBLE_RECIPE_IDS.includes(recipeId)
+}
+
+// =========================================
+// appId path-traversal validation
+// =========================================
+
+/**
+ * Strict appId format. Mirrors `validateProposedAppId` in
+ * `app-id-collision.ts` (lowercase ASCII letters / digits / hyphens,
+ * starting with a letter, ≤64 chars). Disallows path separators,
+ * dot segments, NUL, and Unicode lookalikes by construction.
+ */
+const SAFE_APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+
+/**
+ * Validate that `appId` is a safe filesystem slug before any
+ * destructive path operation. The bundled-installer trusts the
+ * manifest store and `recipe-history.jsonl` as the source of truth
+ * for `appId`, but a tampered or corrupted record could carry a
+ * value like `..` or `../escape` that would let the subsequent
+ * `rmSync(..., { recursive: true, force: true })` walk outside
+ * `<projectRoot>/app/`. Format validation rejects every form of
+ * path-separator / traversal segment / NUL / Unicode lookalike by
+ * construction.
+ *
+ * Also verifies that `path.resolve(projectRoot, 'app', appId)`
+ * stays under `path.resolve(projectRoot, 'app')` as a belt-and-
+ * suspenders guard against future regex regressions.
+ *
+ * @throws BundledInstallerError (`BundledAppIdInvalid` 500) on any
+ *   format violation or escape attempt — fail-closed so a tampered
+ *   record can never reach a destructive `rmSync` call.
+ */
+function assertSafeAppId(projectRoot: string, appId: string): void {
+  if (typeof appId !== 'string' || !SAFE_APP_ID_PATTERN.test(appId)) {
+    throw new BundledInstallerError(
+      `appId "${appId}" does not match the v0.2.1 safe-slug format`,
+      500,
+      'BundledAppIdInvalid',
+      { appId },
+    )
+  }
+  const appRoot = resolve(projectRoot, 'app')
+  const target = resolve(appRoot, appId)
+  const appRootWithSep = appRoot.endsWith(sep) ? appRoot : appRoot + sep
+  if (!target.startsWith(appRootWithSep)) {
+    throw new BundledInstallerError(
+      `appId "${appId}" resolved outside the app root`,
+      500,
+      'BundledAppIdInvalid',
+      { appId },
+    )
+  }
 }
 
 // =========================================
@@ -301,6 +354,12 @@ export function enableBundledRecipe(
   // same appId); only a same-`recipeId` bundled/sample residue is
   // allowed to fall through to the Step 5 overwrite recovery.
   const appId = sample.id
+  // Defence-in-depth: validate the appId format + resolution
+  // boundary before any subsequent path operation. The
+  // bundled-registry enforces the format upstream, but a future
+  // refactor that loosens the registry-side check should not be
+  // able to silently weaken the destructive-path boundary here.
+  assertSafeAppId(projectRoot, appId)
   const existingManifest = manifestStore.get(appId)
   if (existingManifest !== null) {
     const existingSource = existingManifest.source
@@ -574,6 +633,13 @@ export function disableBundledRecipe(
     // is actually present — should not happen, but guard.
     return { status: 'already-disabled', dataPreserved: true }
   }
+
+  // Path-boundary check: `appId` comes from persisted state
+  // (manifest store and/or recipe-history.jsonl). A tampered record
+  // could otherwise drive the recursive `rmSync` below outside
+  // `<projectRoot>/app/`. Fail-closed before any filesystem write
+  // so even a corrupted state cannot escalate to arbitrary deletion.
+  assertSafeAppId(projectRoot, appId)
 
   // Step 2: delete `app/<appId>/` (artifacts only).
   const appDir = join(projectRoot, 'app', appId)
