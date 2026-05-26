@@ -207,67 +207,35 @@ export function readUserMenuEntries(
         ? tsPath
         : null
     if (candidate !== null) {
-      // Layer 3 — symlink containment under the entry's OWN
-      // `app/<id>/` subtree. Layer 2 only checked the lexical
-      // `page` string; without a parallel check on the canonical
-      // target a planted symlink at `app/<id>/Index.tsx →
-      // app/evil-app/Index.tsx` would pass Layer 2 (since the
-      // lexical page stays under `<id>/`) and only Layer-3-coarse
-      // (since the target stays under `app/`), reintroducing the
-      // cross-app capability mixup Layer 2 is meant to prevent.
-      // We therefore compare the canonical candidate against the
-      // canonical `app/<id>/` directory specifically. Failure to
-      // realpath (link target missing, permission denied, ELOOP,
-      // missing `<id>/` directory, etc.) is also refused — we
-      // prefer a missing menu entry over a silent out-of-tree or
-      // cross-app read primitive.
-      const appIdDir = join(appDir, entry.id)
+      // Layer 3 — symlink defence. We refuse any candidate whose
+      // canonical path differs from the lexical candidate. This
+      // catches both file-level symlinks
+      // (`<id>/Index.tsx → /elsewhere/...`) and intermediate-
+      // directory symlinks (`<id> → /elsewhere/...`). Allowing
+      // canonicalization here would silently change the page's
+      // import base path, breaking the page's own relative
+      // imports — so symlinked menu pages are not a supported
+      // feature in v0.2.x. Realpath failures (ELOOP, EACCES,
+      // missing target) are also refused via the surrounding
+      // try/catch. Logs intentionally carry only the user-
+      // supplied `page` and a stable reason code; absolute
+      // canonical paths are never emitted because they would
+      // leak host filesystem layout for exactly the attack
+      // shapes this guard is defending against.
       try {
-        const realAppDir = fs.realpathSync(appDir)
-        const realAppIdDir = fs.realpathSync(appIdDir)
         const realCandidate = fs.realpathSync(candidate)
-        const appRootMarker = realAppDir.endsWith(sep)
-          ? realAppDir
-          : realAppDir + sep
-        // Inner-to-outer containment: `app/<id>/` itself must
-        // stay inside `app/`. Without this an attacker who plants
-        // `app/<id>` as a symlink to `/elsewhere/evil-app` would
-        // make every later check operate on the foreign tree
-        // while the source-side comparison still passes.
-        if (
-          realAppIdDir !== realAppDir &&
-          !realAppIdDir.startsWith(appRootMarker)
-        ) {
+        if (realCandidate !== candidate) {
           serverLogger.warn(
-            { id: entry.id, page: entry.page, candidate, realAppIdDir },
-            '[menu-extractor] Skipping menu entry whose app/<id>/ directory itself escapes app/ via symlink',
+            { id: entry.id, page: entry.page, reason: 'symlink-redirect' },
+            '[menu-extractor] Skipping menu entry whose page resolves via a symlink',
           )
           if (trustLookup) entry.trustLevel = null
           continue
         }
-        const idRootMarker = realAppIdDir.endsWith(sep)
-          ? realAppIdDir
-          : realAppIdDir + sep
-        if (
-          realCandidate !== realAppIdDir &&
-          !realCandidate.startsWith(idRootMarker)
-        ) {
-          serverLogger.warn(
-            { id: entry.id, page: entry.page, candidate, realCandidate },
-            '[menu-extractor] Skipping menu entry whose resolved path escapes app/<id>/ via symlink',
-          )
-          if (trustLookup) entry.trustLevel = null
-          continue
-        }
-        // Persist the canonicalized path so the renderer's `/@fs/`
-        // dynamic import pins to the verified target. Storing the
-        // pre-canonical `candidate` would leave a TOCTOU hole: an
-        // attacker could swap the symlink target between our
-        // realpath check here and the renderer's later import.
-        entry.pageAbsolutePath = realCandidate
-      } catch (err) {
+        entry.pageAbsolutePath = candidate
+      } catch {
         serverLogger.warn(
-          { id: entry.id, page: entry.page, candidate, err },
+          { id: entry.id, page: entry.page, reason: 'realpath-failure' },
           '[menu-extractor] Skipping menu entry whose path could not be canonicalized',
         )
         if (trustLookup) entry.trustLevel = null

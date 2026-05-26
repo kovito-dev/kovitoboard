@@ -352,13 +352,15 @@ describe('readUserMenuEntries — path containment guard', () => {
 // Symlink containment (real fs)
 // =========================================
 
-describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
-  // The Layer-3 guard refuses any entry whose `realpathSync(candidate)`
-  // does not resolve inside `realpathSync(appDir)`. We drive it
-  // through the mock fs's symlink map: registering
-  // `app/leaky-app/Index.tsx → /elsewhere/leak.tsx` simulates a
-  // planted symlink pointing outside `app/`, while a target that
-  // remains inside `app/` is accepted.
+describe('readUserMenuEntries — symlink defence (Layer 3)', () => {
+  // Layer 3 refuses any entry whose `realpathSync(candidate)` differs
+  // from the lexical candidate, regardless of whether the canonical
+  // target stays inside `app/<id>/` or not. The rationale (Codex review
+  // attempt 6): silently swapping the import base path would change
+  // the page module's own relative-import resolution, which is not a
+  // supported feature in v0.2.x. Refusing the entire shape also keeps
+  // the warn payload free of canonical absolute paths so the guard
+  // does not leak host filesystem layout in logs.
   const projectRoot = '/test-project'
   const menuPath = `${projectRoot}/app/menu.ts`
 
@@ -373,129 +375,87 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     return lines.join('\n')
   }
 
-  it('rejects a menu entry whose .tsx file is a symlink to outside app/', () => {
-    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
-    const outsideTarget = '/elsewhere/secrets/leak.tsx'
-    const fs = makeMockFs(
+  function buildSymlinkFs(symlinks: Record<string, string>): FileAccessLayer {
+    return makeMockFs(
       projectRoot,
       {
         [menuPath]: menuTs([{ id: 'leaky-app', page: 'leaky-app/Index' }]),
-        [candidatePath]: '// placeholder\n',
+        [`${projectRoot}/app/leaky-app/Index.tsx`]: '// placeholder\n',
       },
-      {
-        symlinks: {
-          [candidatePath]: outsideTarget,
-        },
-      },
+      { symlinks },
     )
-    const entries = readUserMenuEntries(fs)
-    expect(entries).toHaveLength(1)
-    // The candidate exists (mock returns true) and is found, but
-    // realpathSync points outside appDir, so Layer 3 refuses it.
-    expect(entries[0].pageAbsolutePath).toBeNull()
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'leaky-app' }),
-      expect.stringContaining('escapes app/<id>/ via symlink'),
-    )
-  })
+  }
 
-  it('rejects a symlink whose target lands in app/ but outside the entry\'s own app/<id>/', () => {
-    // The target is under app/ but in a different app's subtree.
-    // Layer 3 must refuse this even though the lexical page
-    // (`doc-viewer/Index`) passes Layers 1 and 2 — otherwise a
-    // planted link would reintroduce the cross-app capability
-    // mixup Layer 2 just closed.
+  it('refuses a file-level symlink pointing outside app/', () => {
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    const candidatePath = `${projectRoot}/app/doc-viewer/Index.tsx`
-    const crossAppTarget = `${projectRoot}/app/evil-app/Index.tsx`
-    const fs = makeMockFs(
-      projectRoot,
-      {
-        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
-        [candidatePath]: '// placeholder\n',
-        // Materialize the `<id>/` directory so realpathSync can
-        // canonicalize it.
-        [`${projectRoot}/app/doc-viewer/.keep`]: '',
-      },
-      {
-        symlinks: {
-          [candidatePath]: crossAppTarget,
-        },
-      },
-    )
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    const fs = buildSymlinkFs({ [candidatePath]: '/elsewhere/secrets/leak.tsx' })
     const entries = readUserMenuEntries(fs)
     expect(entries).toHaveLength(1)
     expect(entries[0].pageAbsolutePath).toBeNull()
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'doc-viewer' }),
-      expect.stringContaining('escapes app/<id>/ via symlink'),
+      expect.objectContaining({
+        id: 'leaky-app',
+        reason: 'symlink-redirect',
+      }),
+      expect.stringContaining('resolves via a symlink'),
     )
   })
 
-  it('accepts a symlink whose target stays inside the entry\'s own app/<id>/', () => {
+  it('refuses a file-level symlink even when the target stays inside app/<id>/', () => {
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    const candidatePath = `${projectRoot}/app/doc-viewer/Index.tsx`
-    const sameAppTarget = `${projectRoot}/app/doc-viewer/pages/RealIndex.tsx`
-    const fs = makeMockFs(
-      projectRoot,
-      {
-        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
-        [candidatePath]: '// placeholder\n',
-        [`${projectRoot}/app/doc-viewer/.keep`]: '',
-      },
-      {
-        symlinks: {
-          [candidatePath]: sameAppTarget,
-        },
-      },
-    )
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    // Same-app target. Still refused: any symlink redirection changes
+    // the import base path, breaking the page module's relative imports.
+    const fs = buildSymlinkFs({
+      [candidatePath]: `${projectRoot}/app/leaky-app/pages/RealIndex.tsx`,
+    })
     const entries = readUserMenuEntries(fs)
     expect(entries).toHaveLength(1)
-    // Layer 3 persists the canonical realpath, not the symlink
-    // source, so the renderer's later `/@fs/` import pins to the
-    // verified target and can no longer be swapped.
-    expect(entries[0].pageAbsolutePath).toBe(sameAppTarget)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'leaky-app',
+        reason: 'symlink-redirect',
+      }),
+      expect.stringContaining('resolves via a symlink'),
+    )
+  })
+
+  it('refuses when an intermediate app/<id>/ directory is a symlink', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const appIdDir = `${projectRoot}/app/leaky-app`
+    const candidatePath = `${appIdDir}/Index.tsx`
+    // app/leaky-app → /elsewhere/evil-app (directory symlink) makes
+    // candidate canonicalize to the foreign tree.
+    const fs = buildSymlinkFs({
+      [appIdDir]: '/elsewhere/evil-app',
+      [candidatePath]: '/elsewhere/evil-app/Index.tsx',
+    })
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'leaky-app',
+        reason: 'symlink-redirect',
+      }),
+      expect.stringContaining('resolves via a symlink'),
+    )
+  })
+
+  it('accepts a plain (non-symlinked) page file and persists the lexical path', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    // No symlink mapping → realpathSync returns candidate verbatim.
+    const fs = buildSymlinkFs({})
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBe(candidatePath)
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
-  it('rejects when the app/<id>/ directory itself is a symlink outside app/', () => {
-    // Plant a menu row whose page path lexically looks fine, but
-    // the entry's own `app/<id>/` directory is a symlink to a
-    // location outside `app/`. The candidate file (which lives
-    // physically under the foreign target) would otherwise pass
-    // the inner containment check because the comparison root is
-    // the foreign target itself. The new outer check refuses it.
-    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
-    const appIdDir = `${projectRoot}/app/doc-viewer`
-    const foreignAppDir = `${projectRoot}/elsewhere/evil-app`
-    const candidatePath = `${appIdDir}/Index.tsx`
-    const fs = makeMockFs(
-      projectRoot,
-      {
-        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
-        [candidatePath]: '// placeholder\n',
-      },
-      {
-        symlinks: {
-          // app/doc-viewer → /elsewhere/evil-app
-          [appIdDir]: foreignAppDir,
-          // The candidate, when canonicalized, points at the
-          // foreign target file.
-          [candidatePath]: `${foreignAppDir}/Index.tsx`,
-        },
-      },
-    )
-    const entries = readUserMenuEntries(fs)
-    expect(entries).toHaveLength(1)
-    expect(entries[0].pageAbsolutePath).toBeNull()
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'doc-viewer' }),
-      expect.stringContaining('app/<id>/ directory itself escapes app/'),
-    )
-  })
-
-  it('rejects when realpathSync throws (broken or denied link)', () => {
+  it('refuses when realpathSync throws (broken link / EACCES / ELOOP)', () => {
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
     const candidatePath = `${projectRoot}/app/broken-app/Index.tsx`
     const fs = makeMockFs(projectRoot, {
@@ -513,7 +473,10 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].pageAbsolutePath).toBeNull()
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'broken-app' }),
+      expect.objectContaining({
+        id: 'broken-app',
+        reason: 'realpath-failure',
+      }),
       expect.stringContaining('could not be canonicalized'),
     )
   })
