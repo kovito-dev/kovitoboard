@@ -146,6 +146,36 @@ describe('scanSampleRecipes / refreshInstallStatus: enabled/source coherence', (
     expect(sample.source).toBeUndefined()
   })
 
+  it('surfaces duplicate bundled/sample manifests as enabled=false (uniqueness violation)', () => {
+    // Source-scoped uniqueness is enforced by the installer with
+    // BundledManifestUniquenessViolation 500. The scanner must
+    // mirror that: returning the first match would make the UI
+    // report enabled=true for a recipe id whose installer APIs are
+    // already 500-ing on every call.
+    for (const appId of ['app-alpha', 'app-beta']) {
+      manifestStore.save({
+        appId,
+        recipeId: SAMPLE_RECIPE_ID,
+        recipeVersion: '1.0.0',
+        hash: `hash-${appId}`,
+        installedAt: '2026-05-01T00:00:00.000Z',
+        approvedScopes: [],
+        api: { scopes: [], calls: [] },
+        captureRequires: [],
+        approvedCaptures: [],
+        trustLevel: 'code-trusted (bundled)',
+        source: 'bundled',
+      })
+      mkdirSync(join(projectRoot, 'app', appId), { recursive: true })
+    }
+    scanSampleRecipes(fs, manifestStore)
+    const sample = getSampleRecipes().find(
+      (s) => s.metadata.recipeId === SAMPLE_RECIPE_ID,
+    )!
+    expect(sample.enabled).toBe(false)
+    expect(sample.source).toBeUndefined()
+  })
+
   it('surfaces grandfather-sample manifests as enabled with source="sample (grandfather)"', () => {
     manifestStore.save({
       appId: SAMPLE_RECIPE_ID,

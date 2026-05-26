@@ -90,8 +90,10 @@ import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
 import {
   BundledInstallerError,
+  classifyLocalResidue,
   disableBundledRecipe,
   enableBundledRecipe,
+  isBundledEligibleRecipeId,
 } from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
@@ -1238,6 +1240,14 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
     return
   }
+  // Defence-in-depth allowlist gate. The closed-world set is the
+  // only thing that can reach the privileged bundled-enable path —
+  // anything else falls through to 404 even if a future scan of
+  // `recipes/` surfaces additional directories.
+  if (!isBundledEligibleRecipeId(recipeId)) {
+    res.status(404).json({ error: 'BundledNotFound' })
+    return
+  }
   // Step 1: registry presence.
   const samples = getSampleRecipes()
   const sample = samples.find((s) => s.metadata.recipeId === recipeId)
@@ -1246,7 +1256,7 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
       res.status(503).json({ error: 'BundledRegistryUnavailable' })
       return
     }
-    res.status(404).json({ error: 'BundledNotFound', recipeId })
+    res.status(404).json({ error: 'BundledNotFound' })
     return
   }
   try {
@@ -1276,6 +1286,27 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
     return
+  }
+  // Authorization gate: disable accepts a recipeId iff either
+  // (a) it is in the closed bundled-eligible allowlist, or
+  // (b) a bundled/sample manifest / history record already exists
+  //     locally (registry-stale grandfather sample path,
+  //     recipe-system v1.10 §10.9.4 Step 2).
+  // A `recipeId` that is neither bundled-eligible nor locally
+  // recorded as bundled/sample is rejected with 404 so the
+  // dedicated bundled endpoint never becomes a generic uninstall
+  // primitive.
+  if (!isBundledEligibleRecipeId(recipeId)) {
+    try {
+      const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+      if (residue === 'none') {
+        res.status(404).json({ error: 'BundledNotFound' })
+        return
+      }
+    } catch (probeErr) {
+      handleBundledInstallerError(req, res, probeErr, 'disable', recipeId)
+      return
+    }
   }
   try {
     const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })

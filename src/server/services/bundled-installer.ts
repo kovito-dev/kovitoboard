@@ -53,6 +53,36 @@ import {
 } from './recipe-scanner'
 
 // =========================================
+// Closed-world bundled registry allowlist
+// =========================================
+
+/**
+ * Hardcoded closed-world allowlist of bundled-eligible recipe ids
+ * (v0.2.1). The bundled-installer is the only enable path in v0.2.x
+ * and is gated by OSS PR-merge — adding a recipe id to this list
+ * therefore requires OSS PR review, which is the same gating
+ * `recipes/` itself enjoys. The explicit allowlist is belt-and-
+ * suspenders: even if a future `recipes/` reorganisation surfaces
+ * additional directories, only the names below can pass through the
+ * bundled-enable / bundled-disable endpoints.
+ *
+ * Add new bundled samples here in tandem with `recipes/<id>/`.
+ *
+ * @see docs/design/handoffs/v021-app-rebrand-and-bundled-enable-implementation-request.md
+ *      §1.1 (bundled samples: `document-viewer`, `todo`)
+ * @see docs/specs/recipe-system.md v1.10 §10.9.1 (bundled trust model)
+ */
+export const BUNDLED_ELIGIBLE_RECIPE_IDS: readonly string[] = [
+  'document-viewer',
+  'todo',
+]
+
+/** True iff the recipe id is a v0.2.1 bundled-eligible sample. */
+export function isBundledEligibleRecipeId(recipeId: string): boolean {
+  return BUNDLED_ELIGIBLE_RECIPE_IDS.includes(recipeId)
+}
+
+// =========================================
 // Error class hierarchy
 // =========================================
 

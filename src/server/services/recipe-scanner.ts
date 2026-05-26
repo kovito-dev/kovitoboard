@@ -246,21 +246,41 @@ function deriveEnableState(args: {
   if (!manifestStore || projectRoot === null) {
     return { enabled: false, source: undefined }
   }
-  for (const manifest of manifestStore.list()) {
-    if (manifest.recipeId !== recipeId) continue
+  // Source-scoped uniqueness (recipe-system v1.10 §10.9.3 Step 2):
+  // exactly one bundled/sample manifest per recipeId. Collecting
+  // every match — and surfacing the corruption case as
+  // `enabled: false` — mirrors `findManifestByRecipeId` in
+  // `bundled-installer.ts`, so the sample-card UI never reports
+  // `enabled: true` while the installer endpoint would 500 with
+  // `BundledManifestUniquenessViolation`.
+  const matches = manifestStore.list().filter((manifest) => {
+    if (manifest.recipeId !== recipeId) return false
     const persisted = manifest.source
-    if (persisted !== 'bundled' && persisted !== 'sample') continue
-    const appDir = join(projectRoot, 'app', manifest.appId)
-    if (!fs.existsSync(appDir)) {
-      // Manifest still on disk but the artifacts are gone — surface
-      // this as `enabled: false` so a subsequent enable call goes
-      // through the recovery path instead of short-circuiting on
-      // the stale manifest.
-      continue
-    }
-    if (persisted === 'bundled') return { enabled: true, source: 'bundled' }
-    if (persisted === 'sample') return { enabled: true, source: 'sample (grandfather)' }
+    return persisted === 'bundled' || persisted === 'sample'
+  })
+  if (matches.length > 1) {
+    recipeLogger.warn(
+      {
+        recipeId,
+        foundAppIds: matches.map((m) => m.appId),
+      },
+      '[recipe-scanner] Multiple bundled/sample manifests for the same recipeId — surfacing as enabled=false',
+    )
+    return { enabled: false, source: undefined }
   }
+  const manifest = matches[0]
+  if (!manifest) return { enabled: false, source: undefined }
+  const persisted = manifest.source
+  const appDir = join(projectRoot, 'app', manifest.appId)
+  if (!fs.existsSync(appDir)) {
+    // Manifest still on disk but the artifacts are gone — surface
+    // this as `enabled: false` so a subsequent enable call goes
+    // through the recovery path instead of short-circuiting on
+    // the stale manifest.
+    return { enabled: false, source: undefined }
+  }
+  if (persisted === 'bundled') return { enabled: true, source: 'bundled' }
+  if (persisted === 'sample') return { enabled: true, source: 'sample (grandfather)' }
   return { enabled: false, source: undefined }
 }
 
