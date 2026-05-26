@@ -161,6 +161,28 @@ export function readUserMenuEntries(
   // `null` if neither exists; the renderer surfaces a clear error
   // in that case rather than silently dropping the menu entry.
   for (const entry of entries) {
+    // Reject menu rows whose `page` path resolves outside the
+    // canonical `app/` directory before letting `join(appDir, ...)`
+    // walk a `../` segment. The parser regex (`import('./<page>')`)
+    // already strips the leading `./`, but `<page>` itself may
+    // contain `..` segments, an absolute path, or Windows
+    // separators — any of those would let a hand-edited menu row
+    // address a file outside `app/` and the renderer would
+    // dynamic-import it via Vite's `/@fs/` URL scheme. The
+    // canonical-app-id check at line 181 below only governs
+    // trust-badge attribution; the file-resolution gap is what is
+    // closed here.
+    if (!isWithinAppDir(entry.page)) {
+      serverLogger.warn(
+        { id: entry.id, page: entry.page },
+        '[menu-extractor] Skipping menu entry whose page path escapes app/',
+      )
+      // pageAbsolutePath stays null. trustLevel will also be
+      // forced to null below since isCanonicalAppIdPath returns
+      // false for the same shape.
+      if (trustLookup) entry.trustLevel = null
+      continue
+    }
     const tsxPath = join(appDir, `${entry.page}.tsx`)
     const tsPath = join(appDir, `${entry.page}.ts`)
     if (fs.existsSync(tsxPath)) {
@@ -187,6 +209,53 @@ export function readUserMenuEntries(
   }
 
   return entries
+}
+
+/**
+ * Returns true when `page` (as parsed out of `import('./<page>')`)
+ * resolves to a location strictly inside `app/` once joined with
+ * `appDir`. Used by `readUserMenuEntries` to refuse menu rows that
+ * would otherwise let `join(appDir, ${entry.page}.tsx)` address a
+ * file outside the canonical `app/` directory via `../` segments,
+ * absolute paths, or Windows separators.
+ *
+ * The check is intentionally coarser than `isCanonicalAppIdPath`:
+ * it does NOT require the path to live under `app/<appId>/`. The
+ * caller still validates `appId` containment separately for trust-
+ * badge attribution. This split lets hand-edited rows that point
+ * at a sibling appId's pages stay reachable (no badge, but
+ * loadable) while still closing the `../etc/passwd` escape.
+ *
+ * Exported so unit tests can drive the regex-free entry path
+ * directly.
+ */
+export function isWithinAppDir(page: string): boolean {
+  // Cheap structural rejections first: forward slash is the only
+  // separator the recipe layout uses, so any absolute path or
+  // backslash is already non-canonical (and avoids quirks on
+  // Windows hosts).
+  if (page.length === 0) return false
+  if (page.startsWith('/') || page.startsWith('\\')) return false
+  if (page.includes('\\')) return false
+
+  // `normalize` collapses `./` and `../` segments. After this:
+  //   - `pages/Foo`              → `pages/Foo`           (kept)
+  //   - `./pages/Foo`            → `pages/Foo`           (kept)
+  //   - `doc-viewer/../evil-app` → `evil-app`            (kept; the
+  //       trust-badge attribution catches sibling drift separately)
+  //   - `../etc/passwd`          → `../etc/passwd`       (rejected)
+  //   - `pages/../../etc/passwd` → `../etc/passwd`       (rejected)
+  //   - `..`                     → `..`                  (rejected)
+  const normalized = normalize(page)
+  if (
+    normalized === '..' ||
+    normalized.startsWith('..') ||
+    normalized.includes(`${sep}..${sep}`) ||
+    normalized.endsWith(`${sep}..`)
+  ) {
+    return false
+  }
+  return true
 }
 
 /**
