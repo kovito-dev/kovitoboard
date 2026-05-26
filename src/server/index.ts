@@ -1280,11 +1280,16 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
   try {
     const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
     refreshInstallStatus(fs, manifestStore)
-    if (result.appId !== undefined) {
+    if (result.appId !== undefined && result.source !== undefined) {
+      // Round-trip the persisted source (`'bundled'` for bundled-
+      // enable lineage, `'sample'` for grandfather-sample lineage).
+      // Hard-coding `'bundled'` here would break BS-L3-B and
+      // mis-signal grandfather-sample disables to UI consumers
+      // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
       broadcastRecipeAppsChanged({
         trigger: 'disable',
         appId: result.appId,
-        source: 'bundled', // persisted manifest.source is preserved in the audit; the wire enum is the same family
+        source: result.source,
       })
     }
     res.json(result)

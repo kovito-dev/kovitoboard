@@ -260,14 +260,28 @@ export function enableBundledRecipe(
     )
   }
 
-  // appId picks the bundled-registry id by default (BS-L9). A
-  // collision with an existing manifest from a different source
-  // (`'import'` / `'url'`) is reported as a hard conflict; same-
-  // source residue falls through to the recovery path (Step 5
-  // overwrites the stale manifest).
+  // appId picks the bundled-registry id by default (BS-L9). The
+  // collision check is **source-scoped** (recipe-system v1.10
+  // §10.9.3 Step 3d (i)): a non-bundled / non-sample manifest at
+  // the target appId is a hard conflict regardless of whether its
+  // `recipeId` happens to match, because the bundled-installer
+  // must not overwrite an `'import'` / `'url'` install. Within the
+  // bundled/sample source-scoped subset a `recipeId` mismatch is
+  // still a conflict (two different bundled recipes claiming the
+  // same appId); only a same-`recipeId` bundled/sample residue is
+  // allowed to fall through to the Step 5 overwrite recovery.
   const appId = sample.id
   const existingManifest = manifestStore.get(appId)
   if (existingManifest !== null) {
+    const existingSource = existingManifest.source
+    if (existingSource !== 'bundled' && existingSource !== 'sample') {
+      throw new BundledInstallerError(
+        `appId "${appId}" is already taken by a ${existingSource ?? 'pre-v0.2.1'} install`,
+        400,
+        'BundledAppIdConflict',
+        { appId, conflictSource: existingSource ?? 'pre-v0.2.1' },
+      )
+    }
     if (existingManifest.recipeId !== recipeId) {
       throw new BundledInstallerError(
         `appId "${appId}" is already taken by recipe "${existingManifest.recipeId}"`,
@@ -276,7 +290,7 @@ export function enableBundledRecipe(
         { appId, conflictSource: 'recipe-id-mismatch' },
       )
     }
-    // Same recipeId + same source-scoped subset → fall through to
+    // Same recipeId + bundled/sample source → fall through to
     // overwrite (Step 5). The Step 2 coherence gate above already
     // short-circuits the *coherent* case, so reaching here means
     // the existing manifest is non-coherent and worth re-establishing.
@@ -434,6 +448,16 @@ export interface DisableBundledRecipeResult {
   status: 'disabled' | 'already-disabled'
   dataPreserved: boolean
   appId?: string
+  /**
+   * Persisted manifest source of the just-disabled record, surfaced
+   * for ws-event broadcasting (BS-L3-B round-trip). Always `'bundled'`
+   * for bundled-enable lineage and `'sample'` for grandfather-sample
+   * lineage. Omitted for `already-disabled` results (no manifest was
+   * present to read the source from).
+   *
+   * @see docs/specs/http-api-contract.md v1.7.1 §6.3.8.B (broadcast)
+   */
+  source?: 'bundled' | 'sample'
   metadata?: { note?: 'manifest-already-absent' }
 }
 
@@ -561,10 +585,21 @@ export function disableBundledRecipe(
     )
   }
 
+  // BS-L3-B: round-trip the persisted source so the ws-event
+  // broadcast and consumers downstream can tell a grandfather-
+  // sample disable apart from a fresh bundled one. `narrowPersistedSource`
+  // already coerced any out-of-set value to `'bundled'`; we further
+  // narrow to the `'bundled' | 'sample'` subset because the
+  // bundled-installer never reaches this point with `'import'` /
+  // `'url'` (those paths fail closed in `findManifestByRecipeId`
+  // and `findHistoryMatchForBundled`).
+  const broadcastSource: 'bundled' | 'sample' =
+    persistedSource === 'sample' ? 'sample' : 'bundled'
   return {
     status: 'disabled',
     dataPreserved: true,
     appId,
+    source: broadcastSource,
     ...(manifestAlreadyAbsent
       ? { metadata: { note: 'manifest-already-absent' as const } }
       : {}),

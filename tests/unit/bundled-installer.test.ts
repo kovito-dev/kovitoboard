@@ -365,6 +365,57 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('cross-source overwrite reject: an `import` manifest at the same appId blocks bundled enable', () => {
+    // The bundled-installer must not overwrite a non-bundled / non-
+    // sample manifest, even when the `recipeId` happens to match —
+    // overwriting an `'import'` or `'url'` install destroys user
+    // intent (recipe-system v1.10 §10.9.3 Step 3d (i) SSOT).
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+
+    // Seed an existing `'import'` manifest at the target appId
+    // (same recipeId so the legacy `recipeId !== recipeId` guard
+    // alone would have let this through).
+    h.manifestStore.save({
+      appId: SAMPLE_RECIPE_ID,
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '9.9.9',
+      hash: 'import-hash',
+      installedAt: '2026-05-01T00:00:00.000Z',
+      approvedScopes: ['own-data'],
+      api: { scopes: ['own-data'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'unknown',
+      source: 'import',
+    })
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    // The pre-existing import manifest is left untouched (no Step 4
+    // artifacts copy ran — appId conflict fails before any side
+    // effect).
+    const stillPresent = h.manifestStore.get(SAMPLE_RECIPE_ID)
+    expect(stillPresent).not.toBeNull()
+    expect(stillPresent!.source).toBe('import')
+    expect(stillPresent!.recipeVersion).toBe('9.9.9')
+  })
+
   it('scope reject: agents-write declared in api.scopes throws BundledScopeForbidden (BS-L5)', () => {
     // Materialise a synthetic bundled recipe with a forbidden scope.
     // We sandbox it under a temp dir to avoid touching the real
@@ -549,6 +600,71 @@ describe('disableBundledRecipe', () => {
     })
     expect(result.status).toBe('already-disabled')
     expect(result.dataPreserved).toBe(true)
+  })
+
+  it('result.source: round-trips persisted "bundled" for bundled-enable lineage', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    // The bundled-installer's disable transaction must surface the
+    // persisted `source` on the result so the ws-event broadcast
+    // can pass it through to consumers (BS-L3-B / http-api-contract
+    // v1.7.1 §6.3.8.B broadcast contract).
+    expect(result.source).toBe('bundled')
+  })
+
+  it('result.source: round-trips persisted "sample" for grandfather lineage', () => {
+    h.manifestStore.save({
+      appId: 'document-viewer',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'grandfather-hash',
+      installedAt: '2026-04-01T00:00:00.000Z',
+      approvedScopes: ['project-read'],
+      api: { scopes: ['project-read'], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'unknown',
+      source: 'sample',
+    })
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260401_001',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'sample',
+      hash: 'grandfather-hash',
+      appliedAt: '2026-04-01T00:00:00.000Z',
+      artifacts: [],
+      menu: ['document-viewer'],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: 'document-viewer',
+    })
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    // Grandfather-sample disable must broadcast `source: 'sample'`,
+    // not a hard-coded `'bundled'` — UI consumers distinguish
+    // grandfather paths via this field.
+    expect(result.source).toBe('sample')
   })
 
   it('grandfather sample: preserves source: "sample" in the uninstall history (BS-L3-B)', () => {

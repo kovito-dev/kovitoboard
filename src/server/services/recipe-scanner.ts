@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
 import { parseRecipe, deriveRecipeIdFromName } from '../recipe-parser'
 import { readRecipeHistory } from '../recipe-history'
+import { resolveProjectRoot } from '../config'
 import type { RecipeMetadata, RecipeHistoryEntry } from '../../shared/recipe-types'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 
@@ -112,6 +113,11 @@ export function scanSampleRecipes(
   fs: FileAccessLayer,
   manifestStore?: RecipeManifestStore,
 ): SampleRecipeInfo[] {
+  // Snapshot the project-root once per scan — the per-recipe
+  // `enabled` derivation needs the `app/<appId>/` existence check,
+  // and pulling the resolver inside the loop would amortise the
+  // module-level cache hit but obscure the dependency.
+  const projectRoot = manifestStore ? resolveProjectRoot(fs) : null
   const kbRoot = resolveKovitoboardRoot(fs)
   const recipesDir = join(kbRoot, 'recipes')
 
@@ -149,7 +155,9 @@ export function scanSampleRecipes(
         }
         const historyEntry = findHistoryMatch(history, parsed.metadata.recipeId, parsed.hash)
         const { enabled, source } = deriveEnableState({
+          fs,
           manifestStore,
+          projectRoot,
           recipeId: parsed.metadata.recipeId,
         })
         entries.push({
@@ -196,12 +204,15 @@ export function refreshInstallStatus(
   manifestStore?: RecipeManifestStore,
 ): void {
   const history = readRecipeHistory(fs)
+  const projectRoot = manifestStore ? resolveProjectRoot(fs) : null
   for (const recipe of sampleRecipeCache) {
     const historyEntry = findHistoryMatch(history, recipe.metadata.recipeId, recipe.hash)
     recipe.installed = historyEntry !== undefined
     recipe.historyEntry = historyEntry
     const { enabled, source } = deriveEnableState({
+      fs,
       manifestStore,
+      projectRoot,
       recipeId: recipe.metadata.recipeId,
     })
     recipe.enabled = enabled
@@ -216,18 +227,37 @@ export function refreshInstallStatus(
  * store is available or when no bundled/sample manifest exists for
  * the recipe id. The grandfather alias (`'sample (grandfather)'`)
  * is derived here based on the persisted `source` field.
+ *
+ * Coherence: a manifest alone is not enough — the matching
+ * `<projectRoot>/app/<appId>/` directory must also exist. A user
+ * who manually deleted `app/<appId>/` while the manifest was still
+ * on disk leaves a non-coherent state that should surface as
+ * `enabled: false` so the next bundled-enable runs the artifacts
+ * recovery path (recipe-system v1.10 §10.9.5 BS-L2'). This mirrors
+ * `bundled-installer.isEnabledAndManifestCoherent`.
  */
 function deriveEnableState(args: {
+  fs: FileAccessLayer
   manifestStore?: RecipeManifestStore
+  projectRoot: string | null
   recipeId: string
 }): { enabled: boolean; source: SampleRecipeSourceLabel | undefined } {
-  const { manifestStore, recipeId } = args
-  if (!manifestStore) {
+  const { fs, manifestStore, projectRoot, recipeId } = args
+  if (!manifestStore || projectRoot === null) {
     return { enabled: false, source: undefined }
   }
   for (const manifest of manifestStore.list()) {
     if (manifest.recipeId !== recipeId) continue
     const persisted = manifest.source
+    if (persisted !== 'bundled' && persisted !== 'sample') continue
+    const appDir = join(projectRoot, 'app', manifest.appId)
+    if (!fs.existsSync(appDir)) {
+      // Manifest still on disk but the artifacts are gone — surface
+      // this as `enabled: false` so a subsequent enable call goes
+      // through the recovery path instead of short-circuiting on
+      // the stale manifest.
+      continue
+    }
     if (persisted === 'bundled') return { enabled: true, source: 'bundled' }
     if (persisted === 'sample') return { enabled: true, source: 'sample (grandfather)' }
   }
