@@ -75,6 +75,7 @@ const PRESENTATION: Record<
     labelKey:
       | 'trust.level.codeTrusted'
       | 'trust.level.codeTrustedSideloaded'
+      | 'trust.level.codeTrustedBundled'
       | 'trust.level.unknown'
   }
 > = {
@@ -89,6 +90,12 @@ const PRESENTATION: Record<
     bg: 'bg-orange-50 dark:bg-orange-900/30',
     text: 'text-orange-700 dark:text-orange-200',
     labelKey: 'trust.level.codeTrustedSideloaded',
+  },
+  'code-trusted (bundled)': {
+    border: 'border-sky-500',
+    bg: 'bg-sky-50 dark:bg-sky-900/30',
+    text: 'text-sky-700 dark:text-sky-200',
+    labelKey: 'trust.level.codeTrustedBundled',
   },
   unknown: {
     border: 'border-slate-400',

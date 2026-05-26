@@ -594,6 +594,7 @@ const en: Record<MessageKey, string> = {
   'trust.level.kbTrusted': 'KB-trusted',
   'trust.level.codeTrusted': 'Code-trusted (signed)',
   'trust.level.codeTrustedSideloaded': 'Code-trusted (sideloaded)',
+  'trust.level.codeTrustedBundled': 'Code-trusted (bundled)',
   'trust.level.unknown': 'Unknown (grandfather)',
   'trust.marker.ariaLabel': 'Recipe trust level: {label}',
   'trust.unknown.reinstall': 'Re-install via KovitoHub (v0.3.0) to verify',
