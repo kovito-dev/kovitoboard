@@ -17,7 +17,7 @@
  * logged as warnings without throwing.
  */
 import { serverLogger } from '../logger'
-import { join, normalize, sep } from 'path'
+import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
@@ -172,7 +172,7 @@ export function readUserMenuEntries(
     // canonical-app-id check at line 181 below only governs
     // trust-badge attribution; the file-resolution gap is what is
     // closed here.
-    if (!isWithinAppDir(entry.page)) {
+    if (!isWithinAppDir(entry.page, appDir)) {
       serverLogger.warn(
         { id: entry.id, page: entry.page },
         '[menu-extractor] Skipping menu entry whose page path escapes app/',
@@ -217,7 +217,7 @@ export function readUserMenuEntries(
  * `appDir`. Used by `readUserMenuEntries` to refuse menu rows that
  * would otherwise let `join(appDir, ${entry.page}.tsx)` address a
  * file outside the canonical `app/` directory via `../` segments,
- * absolute paths, or Windows separators.
+ * absolute paths, Windows separators, or drive-qualified paths.
  *
  * The check is intentionally coarser than `isCanonicalAppIdPath`:
  * it does NOT require the path to live under `app/<appId>/`. The
@@ -226,10 +226,16 @@ export function readUserMenuEntries(
  * at a sibling appId's pages stay reachable (no badge, but
  * loadable) while still closing the `../etc/passwd` escape.
  *
- * Exported so unit tests can drive the regex-free entry path
- * directly.
+ * `appDir`, when supplied, enables a defence-in-depth post-resolve
+ * check: the candidate path is rebuilt via `resolve(appDir, page)`
+ * and must end up under `appDir`. This catches Win32-only escapes
+ * such as `C:/../../bar` whose drive-qualified prefix bypasses the
+ * lexical traversal checks because `normalize` collapses them away
+ * from the project tree on Windows hosts.
+ *
+ * Exported so unit tests can drive the predicate directly.
  */
-export function isWithinAppDir(page: string): boolean {
+export function isWithinAppDir(page: string, appDir?: string): boolean {
   // Cheap structural rejections first: forward slash is the only
   // separator the recipe layout uses, so any absolute path or
   // backslash is already non-canonical (and avoids quirks on
@@ -237,6 +243,13 @@ export function isWithinAppDir(page: string): boolean {
   if (page.length === 0) return false
   if (page.startsWith('/') || page.startsWith('\\')) return false
   if (page.includes('\\')) return false
+
+  // Reject Win32 drive-qualified shapes (`C:foo`, `C:/foo`,
+  // `D:bar`). On Windows hosts `path.normalize` quietly strips
+  // the drive prefix and emits a relative tail (`C:/../../bar` →
+  // `bar` on Win32), so the POSIX-style `..` checks below would
+  // otherwise let drive-qualified inputs through.
+  if (/^[A-Za-z]:/.test(page)) return false
 
   // `normalize` collapses `./` and `../` segments. After this:
   //   - `pages/Foo`              → `pages/Foo`           (kept)
@@ -254,6 +267,18 @@ export function isWithinAppDir(page: string): boolean {
     normalized.endsWith(`${sep}..`)
   ) {
     return false
+  }
+
+  // Defence in depth: rebuild the candidate path against the
+  // concrete `appDir` and verify lexical containment. This catches
+  // any platform-specific quirk in `normalize` we did not anticipate.
+  // The check is platform-aware via `resolve` + `sep`.
+  if (appDir !== undefined) {
+    const candidate = resolve(appDir, page)
+    const rootMarker = appDir.endsWith(sep) ? appDir : appDir + sep
+    if (candidate !== appDir && !candidate.startsWith(rootMarker)) {
+      return false
+    }
   }
   return true
 }

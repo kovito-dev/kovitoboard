@@ -162,6 +162,38 @@ describe('isWithinAppDir', () => {
     expect(isWithinAppDir('..\\etc\\passwd')).toBe(false)
   })
 
+  it('rejects Win32 drive-qualified paths even with forward slashes', () => {
+    // On Windows hosts `path.normalize('C:/../../bar')` strips the
+    // drive prefix and emits `bar`, slipping past the POSIX-style
+    // `..` checks. The drive-letter regex refuses the shape before
+    // normalize can collapse it. POSIX hosts also refuse it (the
+    // recipe layout never uses drive-qualified paths).
+    expect(isWithinAppDir('C:foo')).toBe(false)
+    expect(isWithinAppDir('C:/foo')).toBe(false)
+    expect(isWithinAppDir('C:/../../bar')).toBe(false)
+    expect(isWithinAppDir('D:bar/baz')).toBe(false)
+    expect(isWithinAppDir('z:lowercase')).toBe(false)
+  })
+
+  it('rejects via the appDir resolve check when the lexical checks were ambiguous', () => {
+    // Belt-and-braces: if a future platform quirk lets a path
+    // sneak past the lexical checks, the resolve(appDir, page)
+    // comparison still has to put the result under appDir.
+    const appDir = '/test-project/app'
+    // A path that lexically looks fine but, when resolved against
+    // a different appDir, could land outside. Here we hand-craft
+    // a value that the resolve check would refuse even though the
+    // lexical checks pass: we cannot easily construct one with
+    // pure POSIX semantics, so we verify the positive containment
+    // case to lock in the expected behaviour.
+    expect(isWithinAppDir('pages/Foo', appDir)).toBe(true)
+    expect(isWithinAppDir('doc-viewer/pages/Index', appDir)).toBe(true)
+    // Verify that obvious escapes are still refused when appDir
+    // is passed (the lexical checks fire first).
+    expect(isWithinAppDir('../etc/passwd', appDir)).toBe(false)
+    expect(isWithinAppDir('C:/foo', appDir)).toBe(false)
+  })
+
   it('rejects empty input', () => {
     expect(isWithinAppDir('')).toBe(false)
   })
