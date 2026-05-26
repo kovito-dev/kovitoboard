@@ -1275,7 +1275,7 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
     res.status(404).json({ error: 'BundledNotFound' })
     return
   }
-  // BL-2026-176 (a) acquireAppLock 統合. The bundled-enable
+  // BL-2026-176 (a) acquireAppLock integration. The bundled-enable
   // transaction copies artifacts into `<projectRoot>/app/<appId>/`
   // and writes the manifest. A concurrent handler dispatch for the
   // same appId could see a half-written appDir or stale manifest
@@ -1373,7 +1373,7 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
       return
     }
   }
-  // BL-2026-176 (a) acquireAppLock 統合. Resolve the appId *before*
+  // BL-2026-176 (a) acquireAppLock integration. Resolve the appId *before*
   // we take the lock so handler-dispatch and bundled-disable share
   // the same mutual-exclusion key (spec recipe-system v1.10 §10.9.4
   // Step 1 + handlerDispatcher.ts SSOT). The resolve helper does

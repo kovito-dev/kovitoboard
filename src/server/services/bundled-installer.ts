@@ -680,7 +680,7 @@ interface ResolveBundledAppIdArgs {
 /**
  * Resolve the destructive-path `appId` + persisted `source` for the
  * disable endpoint **before** {@link acquireAppLock} is taken (BL-
- * 2026-176 (a) acquireAppLock 統合).
+ * 2026-176 (a) acquireAppLock integration).
  *
  * The HTTP handler MUST hold the per-appId dispatch lock around the
  * disable transaction so a concurrent `handlerDispatcher`-driven app
