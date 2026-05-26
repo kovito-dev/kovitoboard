@@ -38,6 +38,7 @@ import {
   safeStringify,
   SAFE_MATTER_MAX_BYTES,
   SAFE_MATTER_MAX_ALIASES,
+  SAFE_MATTER_MAX_DEPTH,
 } from '../../src/server/recipe/safe-matter'
 
 describe('safeMatter — CORE_SCHEMA rejection of JS-typed tags', () => {
@@ -179,6 +180,107 @@ describe('safeMatter — standard YAML primitives accepted', () => {
     const { data, content } = safeMatter(noFrontmatter)
     expect(data).toEqual({})
     expect(content).toBe(noFrontmatter)
+  })
+})
+
+describe('safeMatter — quoted scalar tokens are not counted', () => {
+  it('does not count `*foo` / `&bar` inside single-quoted strings', () => {
+    // A legitimate value that happens to contain alias-looking
+    // text must not eat into the alias budget. The scanner
+    // strips single-quoted scalars before counting.
+    const yaml = [
+      '---',
+      "value: 'preceded by *not_an_alias and &not_an_anchor'",
+      '---',
+      'body',
+    ].join('\n')
+    expect(() => safeMatter(yaml)).not.toThrow()
+    const { data } = safeMatter(yaml) as {
+      data: { value: string }
+    }
+    expect(data.value).toContain('*not_an_alias')
+    expect(data.value).toContain('&not_an_anchor')
+  })
+
+  it('does not count `*foo` / `&bar` inside double-quoted strings', () => {
+    const yaml = [
+      '---',
+      'value: "embedded *star and &amp markers"',
+      '---',
+      'body',
+    ].join('\n')
+    expect(() => safeMatter(yaml)).not.toThrow()
+    const { data } = safeMatter(yaml) as {
+      data: { value: string }
+    }
+    expect(data.value).toContain('*star')
+    expect(data.value).toContain('&amp')
+  })
+
+  it('does not count `*foo` / `&bar` inside a YAML comment', () => {
+    const yaml = [
+      '---',
+      'value: 1  # this comment mentions *foo and &bar',
+      '---',
+      'body',
+    ].join('\n')
+    expect(() => safeMatter(yaml)).not.toThrow()
+    const { data } = safeMatter(yaml) as { data: { value: number } }
+    expect(data.value).toBe(1)
+  })
+})
+
+describe('safeMatter — nesting-depth budget', () => {
+  it('refuses a block-style document exceeding SAFE_MATTER_MAX_DEPTH', () => {
+    // Build a single chain of nested mappings whose 2-space
+    // indent count exceeds the cap.
+    const lines: string[] = ['---']
+    for (let d = 0; d <= SAFE_MATTER_MAX_DEPTH + 1; d++) {
+      lines.push(`${'  '.repeat(d)}k${d}:`)
+    }
+    lines.push(`${'  '.repeat(SAFE_MATTER_MAX_DEPTH + 2)}leaf: x`)
+    lines.push('---')
+    lines.push('body')
+    expect(() => safeMatter(lines.join('\n'))).toThrow(
+      /nesting-depth budget/,
+    )
+  })
+
+  it('refuses a flow-style document exceeding SAFE_MATTER_MAX_DEPTH', () => {
+    // Build a chain of nested flow-style sequences: `[[[[...]]]]`
+    // beyond the cap.
+    const open = '['.repeat(SAFE_MATTER_MAX_DEPTH + 5)
+    const close = ']'.repeat(SAFE_MATTER_MAX_DEPTH + 5)
+    const yaml = ['---', `nested: ${open}1${close}`, '---', 'body'].join('\n')
+    expect(() => safeMatter(yaml)).toThrow(/nesting-depth budget/)
+  })
+
+  it('accepts shallow nesting that legitimate recipes actually use', () => {
+    // Real-world recipe shape: 3-4 levels of nesting is typical
+    // (recipe → artifacts → entry → field). Well inside the cap.
+    const yaml = [
+      '---',
+      'recipe:',
+      '  artifacts:',
+      '    - path: pages/Foo',
+      '      meta:',
+      '        kind: page',
+      '---',
+      'body',
+    ].join('\n')
+    expect(() => safeMatter(yaml)).not.toThrow()
+  })
+
+  it('does not count `[` / `{` inside quoted strings toward flow depth', () => {
+    // A legitimate value that contains bracket-like text in a
+    // quoted scalar must not inflate the flow-depth scan.
+    const yaml = [
+      '---',
+      'value: "an [opening bracket inside quotes does not nest"',
+      '---',
+      'body',
+    ].join('\n')
+    expect(() => safeMatter(yaml)).not.toThrow()
   })
 })
 

@@ -41,15 +41,19 @@
  *     a runtime cap on alias resolution, so the wrapper pre-
  *     scans the raw input for YAML anchor (`&name`) and alias
  *     (`*name`) tokens and refuses the document when the count
- *     exceeds `SAFE_MATTER_MAX_ALIASES` (200). A billion-laughs
- *     style payload defines O(N) anchors and references each of
- *     them O(N) times to set up the exponential expansion;
- *     refusing at the token count, before js-yaml ever starts
- *     resolving them, keeps the cost linear. The cap sits well
- *     above anything a legitimate recipe needs (recipe / agent
- *     authoring uses zero anchors in practice) and conservatively
- *     allows for a small amount of incidental anchor-like text
- *     inside string values.
+ *     exceeds `SAFE_MATTER_MAX_ALIASES` (200). The scan first
+ *     strips quoted scalars and comments so a string value that
+ *     contains `*foo` or `&bar` does not eat into the budget.
+ *
+ *   - **Text-level nesting-depth bound.** A deeply nested
+ *     payload — even one well under the byte and alias budgets —
+ *     can still force pathological recursion in the parser. The
+ *     wrapper rejects any document whose block-style indent
+ *     depth or flow-style `[` / `{` nesting exceeds
+ *     `SAFE_MATTER_MAX_DEPTH` (20). The block-style scan uses
+ *     2-space indent levels (the canonical recipe style); the
+ *     flow-style scan counts net open brackets character by
+ *     character after the quoted-scalar strip.
  *
  * Top-level shape is also constrained: the parse engine
  * normalises non-mapping results (null, scalars, arrays) to an
@@ -101,24 +105,80 @@ export const SAFE_MATTER_MAX_BYTES = 5 * 1024 * 1024 // 5 MiB
 export const SAFE_MATTER_MAX_ALIASES = 200
 
 /**
+ * Hard cap on YAML nesting depth (block-style 2-space indent or
+ * flow-style `[` / `{`). Even a small frontmatter that hits a
+ * runaway depth can force pathological recursion in the parser.
+ * Exported for unit-test access only.
+ */
+export const SAFE_MATTER_MAX_DEPTH = 20
+
+/**
  * Matches a YAML anchor (`&name`) or alias (`*name`) reference.
- * The pattern is intentionally permissive: the goal is to bound
- * the upper limit of `yaml.load`'s alias-resolution work, not to
- * distinguish anchor / alias semantically. The leading anchor
- * boundary (`(?:^|[\s\[\]{},:])`) avoids matching incidental `&`
- * / `*` characters that appear inside quoted string values
- * without a preceding YAML structural context.
+ * The scanner runs against a quote-stripped view of the input so
+ * the pattern does not need to know about YAML's quoting rules;
+ * see `stripQuotedScalarsAndComments`.
  */
 const ALIAS_TOKEN_PATTERN = /(?:^|[\s[\]{},:])[&*][A-Za-z_][\w-]*/g
 
+/**
+ * Remove `'...'` / `"..."` scalar values and `#...` comments
+ * from a YAML document. The goal is not full YAML lexing — only
+ * to ensure that incidental `&foo` / `*foo` text inside quoted
+ * strings does not eat into the alias-token budget, and that
+ * `[` / `{` characters inside quoted strings do not inflate the
+ * flow-style depth scan. The replacement is content-preserving
+ * for length so column offsets stay consistent in any later
+ * diagnostics that might want to map back to the source.
+ */
+function stripQuotedScalarsAndComments(input: string): string {
+  return input
+    .replace(/'(?:[^'\\]|\\.)*'/g, (m) => "'" + ' '.repeat(m.length - 2) + "'")
+    .replace(/"(?:[^"\\]|\\.)*"/g, (m) => '"' + ' '.repeat(m.length - 2) + '"')
+    .replace(/#[^\n]*/g, (m) => ' '.repeat(m.length))
+}
+
+function checkNestingDepth(stripped: string): void {
+  // Block-style: maximum 2-space indent prefix on any line.
+  let maxBlockDepth = 0
+  for (const line of stripped.split('\n')) {
+    const m = line.match(/^( +)/)
+    if (m) {
+      const depth = Math.floor(m[1].length / 2)
+      if (depth > maxBlockDepth) maxBlockDepth = depth
+    }
+  }
+  // Flow-style: net open-bracket depth after the strip.
+  let flowDepth = 0
+  let maxFlowDepth = 0
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i]
+    if (ch === '[' || ch === '{') {
+      flowDepth++
+      if (flowDepth > maxFlowDepth) maxFlowDepth = flowDepth
+    } else if (ch === ']' || ch === '}') {
+      if (flowDepth > 0) flowDepth--
+    }
+  }
+  if (
+    maxBlockDepth > SAFE_MATTER_MAX_DEPTH ||
+    maxFlowDepth > SAFE_MATTER_MAX_DEPTH
+  ) {
+    throw new Error(
+      `safeMatter input exceeds nesting-depth budget (${SAFE_MATTER_MAX_DEPTH})`,
+    )
+  }
+}
+
 const yamlEngine = {
   parse: (input: string): object => {
-    const aliasTokens = input.match(ALIAS_TOKEN_PATTERN) ?? []
+    const stripped = stripQuotedScalarsAndComments(input)
+    const aliasTokens = stripped.match(ALIAS_TOKEN_PATTERN) ?? []
     if (aliasTokens.length > SAFE_MATTER_MAX_ALIASES) {
       throw new Error(
         `safeMatter input exceeds alias-token budget (${SAFE_MATTER_MAX_ALIASES})`,
       )
     }
+    checkNestingDepth(stripped)
     const result = yaml.load(input, {
       schema: yaml.CORE_SCHEMA,
     })
