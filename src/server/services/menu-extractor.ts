@@ -207,28 +207,34 @@ export function readUserMenuEntries(
         ? tsPath
         : null
     if (candidate !== null) {
-      // Layer 3 — symlink containment. `existsSync` follows
-      // links, so `app/<id>/Index.tsx` could itself be (or live
-      // under) a planted symlink pointing outside `app/`. We
-      // canonicalize both sides via `realpathSync` and refuse
-      // the entry unless the canonical candidate still lives
-      // under the canonical `appDir`. Failure to realpath (link
-      // target missing, permission denied, etc.) is also
-      // refused: we prefer a missing menu entry over a silent
-      // out-of-tree read primitive.
+      // Layer 3 — symlink containment under the entry's OWN
+      // `app/<id>/` subtree. Layer 2 only checked the lexical
+      // `page` string; without a parallel check on the canonical
+      // target a planted symlink at `app/<id>/Index.tsx →
+      // app/evil-app/Index.tsx` would pass Layer 2 (since the
+      // lexical page stays under `<id>/`) and only Layer-3-coarse
+      // (since the target stays under `app/`), reintroducing the
+      // cross-app capability mixup Layer 2 is meant to prevent.
+      // We therefore compare the canonical candidate against the
+      // canonical `app/<id>/` directory specifically. Failure to
+      // realpath (link target missing, permission denied, ELOOP,
+      // missing `<id>/` directory, etc.) is also refused — we
+      // prefer a missing menu entry over a silent out-of-tree or
+      // cross-app read primitive.
+      const appIdDir = join(appDir, entry.id)
       try {
         const realCandidate = fs.realpathSync(candidate)
-        const realAppDir = fs.realpathSync(appDir)
-        const rootMarker = realAppDir.endsWith(sep)
-          ? realAppDir
-          : realAppDir + sep
+        const realAppIdDir = fs.realpathSync(appIdDir)
+        const rootMarker = realAppIdDir.endsWith(sep)
+          ? realAppIdDir
+          : realAppIdDir + sep
         if (
-          realCandidate !== realAppDir &&
+          realCandidate !== realAppIdDir &&
           !realCandidate.startsWith(rootMarker)
         ) {
           serverLogger.warn(
             { id: entry.id, page: entry.page, candidate, realCandidate },
-            '[menu-extractor] Skipping menu entry whose resolved path escapes app/ via symlink',
+            '[menu-extractor] Skipping menu entry whose resolved path escapes app/<id>/ via symlink',
           )
           if (trustLookup) entry.trustLevel = null
           continue

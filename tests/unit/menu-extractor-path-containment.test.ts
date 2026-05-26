@@ -396,23 +396,57 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     expect(entries[0].pageAbsolutePath).toBeNull()
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'leaky-app' }),
-      expect.stringContaining('escapes app/ via symlink'),
+      expect.stringContaining('escapes app/<id>/ via symlink'),
     )
   })
 
-  it('accepts a menu entry whose .tsx file is a symlink that still lands inside app/', () => {
+  it('rejects a symlink whose target lands in app/ but outside the entry\'s own app/<id>/', () => {
+    // The target is under app/ but in a different app's subtree.
+    // Layer 3 must refuse this even though the lexical page
+    // (`doc-viewer/Index`) passes Layers 1 and 2 — otherwise a
+    // planted link would reintroduce the cross-app capability
+    // mixup Layer 2 just closed.
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
     const candidatePath = `${projectRoot}/app/doc-viewer/Index.tsx`
-    const insideTarget = `${projectRoot}/app/shared/pages/Common.tsx`
+    const crossAppTarget = `${projectRoot}/app/evil-app/Index.tsx`
     const fs = makeMockFs(
       projectRoot,
       {
         [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
         [candidatePath]: '// placeholder\n',
+        // Materialize the `<id>/` directory so realpathSync can
+        // canonicalize it.
+        [`${projectRoot}/app/doc-viewer/.keep`]: '',
       },
       {
         symlinks: {
-          [candidatePath]: insideTarget,
+          [candidatePath]: crossAppTarget,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'doc-viewer' }),
+      expect.stringContaining('escapes app/<id>/ via symlink'),
+    )
+  })
+
+  it('accepts a symlink whose target stays inside the entry\'s own app/<id>/', () => {
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/doc-viewer/Index.tsx`
+    const sameAppTarget = `${projectRoot}/app/doc-viewer/pages/RealIndex.tsx`
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
+        [candidatePath]: '// placeholder\n',
+        [`${projectRoot}/app/doc-viewer/.keep`]: '',
+      },
+      {
+        symlinks: {
+          [candidatePath]: sameAppTarget,
         },
       },
     )
@@ -421,7 +455,7 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     // Layer 3 persists the canonical realpath, not the symlink
     // source, so the renderer's later `/@fs/` import pins to the
     // verified target and can no longer be swapped.
-    expect(entries[0].pageAbsolutePath).toBe(insideTarget)
+    expect(entries[0].pageAbsolutePath).toBe(sameAppTarget)
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
