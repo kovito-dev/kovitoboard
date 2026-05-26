@@ -37,7 +37,26 @@ interface SampleRecipeInfo {
   sourcePath: string
   sourceFormat: 'directory' | 'markdown'
   hash: string
+  /**
+   * Legacy install flag. `enabled` (below) supersedes this from v0.2.1
+   * onward — kept on the wire for backward compatibility with older
+   * clients that have not refetched the schema yet.
+   */
   installed: boolean
+  /**
+   * v0.2.1 enable/disable model. `true` when a coherent bundled or
+   * grandfather-sample manifest exists for the recipe id (spec
+   * recipe-system v1.10 §10.9.5 BS-L2'). Drives the badge + section
+   * routing.
+   */
+  enabled?: boolean
+  /**
+   * UI display alias for the persisted `manifest.source`:
+   *   - `'bundled'` — fresh v0.2.1 bundled enable
+   *   - `'sample (grandfather)'` — v0.1.x / v0.2.0 grandfather sample
+   * Omitted when `enabled` is false (no manifest to read from).
+   */
+  source?: 'bundled' | 'sample (grandfather)'
   historyEntry?: {
     id: string
     appliedAt: string
@@ -48,9 +67,20 @@ interface SampleRecipeInfo {
   }
 }
 
+interface RecipeSampleProps {
+  /**
+   * Monotonic counter from `useIPC()`; refetch `/api/recipes/sample`
+   * whenever this bumps (BL-2026-176 (b), ws-event-contract v1.4
+   * §7.6.3, server broadcasts `recipe_apps_changed` after a bundled
+   * enable / disable transaction). Optional so existing call sites
+   * without the prop still work; the initial mount fetch covers them.
+   */
+  sampleRecipeVersion?: number
+}
+
 type LoadState = 'loading' | 'loaded' | 'error'
 
-export function RecipeSample() {
+export function RecipeSample({ sampleRecipeVersion }: RecipeSampleProps = {}) {
   const [recipes, setRecipes] = useState<SampleRecipeInfo[]>([])
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
@@ -71,8 +101,12 @@ export function RecipeSample() {
   }, [])
 
   useEffect(() => {
+    // Initial mount + every `recipe_apps_changed` bump. The
+    // `sampleRecipeVersion` dependency makes the renderer state
+    // converge after a bundled enable / disable transaction without
+    // a manual page reload.
     fetchRecipes()
-  }, [fetchRecipes])
+  }, [fetchRecipes, sampleRecipeVersion])
 
   // v0.2.x disable notice — recipe install is temporarily off until
   // the KovitoHub signed publisher model ships in v0.3.0. Rendered
@@ -133,8 +167,15 @@ export function RecipeSample() {
     )
   }
 
-  const available = recipes.filter((r) => !r.installed)
-  const installed = recipes.filter((r) => r.installed)
+  // Prefer the v0.2.1 `enabled` flag when present; fall back to the
+  // legacy `installed` flag so older server builds (pre-Phase 1 MVP)
+  // still render correctly. The two never disagree at runtime once
+  // the server has been refreshed against current manifests, but the
+  // fallback keeps the renderer resilient to a partial deploy.
+  const isEnabled = (r: SampleRecipeInfo): boolean =>
+    r.enabled ?? r.installed
+  const available = recipes.filter((r) => !isEnabled(r))
+  const installed = recipes.filter((r) => isEnabled(r))
 
   return (
     <div className="space-y-6">
@@ -177,6 +218,13 @@ export function RecipeSample() {
 
 /** Individual recipe card — read-only in v0.2.x. */
 function RecipeCard({ recipe }: { recipe: SampleRecipeInfo }) {
+  // Resolve the enable state with backward-compat fallback (mirrors
+  // the top-level isEnabled helper). A `'sample (grandfather)'`
+  // source surfaces as a green grandfather badge; a `'bundled'`
+  // source surfaces as the sky-blue bundled badge once Phase 3 lands
+  // the dedicated UI. Until then the legacy green "installed" badge
+  // covers both paths so v0.2.1 ships with parity.
+  const enabled = recipe.enabled ?? recipe.installed
   return (
     <div
       data-testid={`recipe-card-${recipe.id}`}
@@ -188,7 +236,7 @@ function RecipeCard({ recipe }: { recipe: SampleRecipeInfo }) {
             {getRecipeName(recipe.metadata)}
           </h4>
           <span className="text-xs text-[var(--text-dim)] shrink-0">v{recipe.metadata.version}</span>
-          {recipe.installed && (
+          {enabled && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-500/20 text-green-400 shrink-0">
               {t('recipe.sample.badge.installed')}
             </span>
@@ -212,7 +260,7 @@ function RecipeCard({ recipe }: { recipe: SampleRecipeInfo }) {
             ))}
           </div>
         )}
-        {recipe.installed && recipe.historyEntry && (
+        {enabled && recipe.historyEntry && (
           <p className="text-[10px] text-[var(--text-dim)] mt-1">
             {t('recipe.sample.installedDate')}: {new Date(recipe.historyEntry.appliedAt).toLocaleDateString('ja-JP')}
           </p>
