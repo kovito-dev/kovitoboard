@@ -360,6 +360,36 @@ export function enableBundledRecipe(
   // refactor that loosens the registry-side check should not be
   // able to silently weaken the destructive-path boundary here.
   assertSafeAppId(projectRoot, appId)
+
+  // RecipeId-keyed residue check (recipe-system v1.10 §10.9.3
+  // Step 3d (iii) SSOT). The Step 2 coherence gate short-circuits
+  // the coherent case; reaching here means any bundled/sample
+  // manifest already on disk for this recipeId is non-coherent
+  // residue. If the residue lives under a *different* appId from
+  // the bundled-registry id, silently writing a second manifest
+  // would brick later enable/disable calls with
+  // BundledManifestUniquenessViolation. Detect the cross-appId
+  // residue and reject with a dedicated conflict so the user can
+  // clean up by hand — automatic reconciliation across appId
+  // boundaries belongs to the Phase 1 edge-case PR.
+  const recipeIdScopedResidue = findManifestByRecipeId(manifestStore, recipeId)
+  if (
+    recipeIdScopedResidue !== null &&
+    recipeIdScopedResidue.appId !== appId
+  ) {
+    throw new BundledInstallerError(
+      `Existing ${recipeIdScopedResidue.source ?? 'bundled/sample'} manifest for recipeId "${recipeId}" lives under a different appId "${recipeIdScopedResidue.appId}"`,
+      400,
+      'BundledAppIdConflict',
+      {
+        recipeId,
+        targetAppId: appId,
+        existingAppId: recipeIdScopedResidue.appId,
+        conflictSource: 'cross-appid-residue',
+      },
+    )
+  }
+
   const existingManifest = manifestStore.get(appId)
   if (existingManifest !== null) {
     const existingSource = existingManifest.source
@@ -760,13 +790,25 @@ function findManifestByRecipeId(
   )
 }
 
+/**
+ * Look up the latest bundled/sample install record for a `recipeId`.
+ *
+ * Matches **only** on the canonical `RecipeHistoryEntry.recipeId`
+ * field. `entry.name` is a localized display string (v0.1.x history
+ * even stored it in the user's locale) — keying a destructive
+ * operation off display text would let a tampered or hand-edited
+ * row become authoritative input for the disable transaction, which
+ * then walks into `rmSync(app/<appId>)`. Pre-recipeId-era history
+ * rows are not migrated by this PR; they remain inaccessible to
+ * the bundled-installer until a dedicated migration ships.
+ */
 function findHistoryMatchForBundled(
   history: RecipeHistoryEntry[],
   recipeId: string,
 ): RecipeHistoryEntry | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
     const entry = history[i]
-    if (entry.recipeId !== recipeId && entry.name !== recipeId) continue
+    if (entry.recipeId !== recipeId) continue
     if (!isBundledOrSample(entry.source)) continue
     const action = entry.action ?? 'install'
     if (action === 'install') return entry

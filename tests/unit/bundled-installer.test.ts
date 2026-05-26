@@ -365,6 +365,89 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('cross-appId residue: same recipeId under a different appId fails closed (no duplicate manifest)', () => {
+    // Same recipeId, different appId, non-coherent residue. The
+    // Step 2 coherence gate short-circuits the coherent case;
+    // reaching Step 4 with a recipeId-scoped residue under a
+    // different appId would mint a *second* manifest and brick
+    // every later enable/disable call with the uniqueness
+    // violation. Fail closed instead so the user can clean up.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    h.manifestStore.save({
+      appId: 'orphan-id',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '0.0.1-old',
+      hash: 'stale',
+      installedAt: '2026-04-01T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.detail?.conflictSource).toBe('cross-appid-residue')
+    expect(err.detail?.existingAppId).toBe('orphan-id')
+    // The cross-appId residue is left untouched (no Step 4 ran).
+    expect(h.manifestStore.get('orphan-id')).not.toBeNull()
+    // No new manifest was created at the bundled-registry id.
+    expect(h.manifestStore.get(SAMPLE_RECIPE_ID)).toBeNull()
+  })
+
+  it('history match never keys off entry.name (display text)', () => {
+    // A history row whose recipeId is missing (or whose `name`
+    // happens to be the user-localized display string for an
+    // unrelated recipe) must not be treated as a match for the
+    // bundled-installer's disable transaction. Seed a row that
+    // would have matched under the old `entry.name === recipeId`
+    // fallback, then verify the disable call short-circuits as
+    // `already-disabled` instead of acting on the spoofed row.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260101_001',
+      action: 'install',
+      // `name` collides with the target recipeId, but `recipeId`
+      // itself is absent — the old code would treat this as a
+      // bundled install of `document-viewer`. The new code does
+      // not, so the disable call must see no residue.
+      name: SAMPLE_RECIPE_ID,
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'spoof-hash',
+      appliedAt: '2026-01-01T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      // recipeId intentionally absent
+      appId: 'spoofed-app',
+    })
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('already-disabled')
+    expect(result.dataPreserved).toBe(true)
+    expect(result.appId).toBeUndefined()
+  })
+
   it('appId path-traversal: a tampered manifest with `..` in appId fails closed before rmSync', () => {
     // The bundled-installer trusts the manifest store for `appId`,
     // so a corrupted record could drive the recursive `rmSync`
