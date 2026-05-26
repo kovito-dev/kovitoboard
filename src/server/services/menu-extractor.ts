@@ -232,7 +232,21 @@ export function readUserMenuEntries(
           if (trustLookup) entry.trustLevel = null
           continue
         }
-        entry.pageAbsolutePath = candidate
+        // Persist the canonical path. On the accept branch
+        // `realCandidate === candidate` is invariant (the
+        // divergence branch refused above), so storing the
+        // canonical form is semantically identical to storing the
+        // lexical form. We pick `realCandidate` so the value
+        // surfaces as canonical to any downstream consumer (logs,
+        // `/@fs/` URL composition) and so the validate/use story
+        // reads as "we verified this exact path and we are
+        // storing this exact path". The residual race — an
+        // attacker that swaps `realCandidate` into a symlink
+        // between this assignment and the renderer's later
+        // `/@fs/` import — requires a renderer-side
+        // re-canonicalization to close; that is tracked as a
+        // follow-up outside this PR.
+        entry.pageAbsolutePath = realCandidate
       } catch {
         serverLogger.warn(
           { id: entry.id, page: entry.page, reason: 'realpath-failure' },
