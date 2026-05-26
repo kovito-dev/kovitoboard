@@ -4,28 +4,31 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Tests for the `app/`-containment guard added to
- * `readUserMenuEntries` in v0.2.1.
+ * Tests for the three-layer path-containment guard in
+ * `readUserMenuEntries`, introduced in v0.2.1.
  *
  * The menu parser regex emits `<page>` from `import('./<page>')`,
  * which the renderer then dynamic-imports via Vite's `/@fs/` URL
- * scheme. Without the containment guard, a hand-edited menu row
- * such as `component: () => import('./../../etc/passwd')` would
- * survive parse and land in `pageAbsolutePath`, letting the
- * renderer pull that file. The guard refuses any `<page>` that
- * resolves outside the canonical `app/` directory:
+ * scheme. Without containment, a hand-edited menu row such as
+ * `component: () => import('./../../etc/passwd')` would survive
+ * parse and land in `pageAbsolutePath`, letting the renderer pull
+ * that file. The guard layers are:
  *
- *   - parent-directory escapes (`../etc/passwd`,
- *     `pages/../../etc/passwd`)
- *   - absolute paths (`/etc/passwd`)
- *   - Windows-style separators (`..\\evil`)
- *   - bare `..` and trailing `/..`
- *
- * In-app sibling drift (`doc-viewer/../evil-app/Index`) is
- * intentionally still loadable here — the trust-badge attribution
- * at `isCanonicalAppIdPath` strips the badge in that case, but
- * the file resolves to a real `app/` descendant, so refusing it
- * here would break legitimate cross-app navigation.
+ *   - **Layer 1 — `isWithinAppDir(page, appDir)`**: lexical
+ *     containment under `app/`. Refuses parent-directory escapes
+ *     (`../etc/passwd`), absolute paths (`/etc/passwd`),
+ *     drive-qualified shapes (`C:/../../bar`), Windows separators,
+ *     and bare `..`.
+ *   - **Layer 2 — `isCanonicalAppIdPath(page, id)`**: app-id
+ *     binding. Refuses sibling-app drift
+ *     (`doc-viewer/../evil-app/Index`) outright because loading
+ *     evil-app's pages on the doc-viewer route would inject the
+ *     wrong app's recipe-scoped capability bridge per
+ *     `app-directory-extension.md`.
+ *   - **Layer 3 — `realpathSync(candidate)` containment**: refuses
+ *     planted symlinks whose target lands outside `app/`, and
+ *     persists the canonicalized path so the renderer's later
+ *     `/@fs/` import cannot be swapped post-validation.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
@@ -142,10 +145,12 @@ describe('isWithinAppDir', () => {
     expect(isWithinAppDir('a/b/c/d/e')).toBe(true)
   })
 
-  it('accepts in-app sibling drift (collapses to a real app/ descendant)', () => {
-    // `doc-viewer/../evil-app` collapses to `evil-app` which is
-    // still under app/. The badge check is what strips the trust
-    // marker; the file still resolves.
+  it('accepts in-app sibling drift at the Layer-1 predicate level', () => {
+    // Layer 1 is intentionally coarse: it only checks that the
+    // path stays inside `app/`. `doc-viewer/../evil-app` collapses
+    // to `evil-app` which is still under app/, so the predicate
+    // returns true. Layer 2 (`isCanonicalAppIdPath`) is what
+    // refuses the cross-app drift further in.
     expect(isWithinAppDir('doc-viewer/../evil-app/Index')).toBe(true)
   })
 
@@ -413,7 +418,10 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     )
     const entries = readUserMenuEntries(fs)
     expect(entries).toHaveLength(1)
-    expect(entries[0].pageAbsolutePath).toBe(candidatePath)
+    // Layer 3 persists the canonical realpath, not the symlink
+    // source, so the renderer's later `/@fs/` import pins to the
+    // verified target and can no longer be swapped.
+    expect(entries[0].pageAbsolutePath).toBe(insideTarget)
     expect(warnSpy).not.toHaveBeenCalled()
   })
 

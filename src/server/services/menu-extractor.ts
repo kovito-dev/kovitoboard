@@ -233,7 +233,12 @@ export function readUserMenuEntries(
           if (trustLookup) entry.trustLevel = null
           continue
         }
-        entry.pageAbsolutePath = candidate
+        // Persist the canonicalized path so the renderer's `/@fs/`
+        // dynamic import pins to the verified target. Storing the
+        // pre-canonical `candidate` would leave a TOCTOU hole: an
+        // attacker could swap the symlink target between our
+        // realpath check here and the renderer's later import.
+        entry.pageAbsolutePath = realCandidate
       } catch (err) {
         serverLogger.warn(
           { id: entry.id, page: entry.page, candidate, err },
@@ -267,17 +272,18 @@ export function readUserMenuEntries(
 /**
  * Returns true when `page` (as parsed out of `import('./<page>')`)
  * resolves to a location strictly inside `app/` once joined with
- * `appDir`. Used by `readUserMenuEntries` to refuse menu rows that
- * would otherwise let `join(appDir, ${entry.page}.tsx)` address a
- * file outside the canonical `app/` directory via `../` segments,
- * absolute paths, Windows separators, or drive-qualified paths.
+ * `appDir`. This is **Layer 1** of the three-layer path-containment
+ * check in `readUserMenuEntries` — it refuses parent-directory
+ * escapes, absolute paths, Windows separators, and drive-qualified
+ * paths before we touch the filesystem.
  *
  * The check is intentionally coarser than `isCanonicalAppIdPath`:
  * it does NOT require the path to live under `app/<appId>/`. The
- * caller still validates `appId` containment separately for trust-
- * badge attribution. This split lets hand-edited rows that point
- * at a sibling appId's pages stay reachable (no badge, but
- * loadable) while still closing the `../etc/passwd` escape.
+ * sibling-drift refusal (cross-app capability mixup per
+ * `app-directory-extension.md`) is enforced by `isCanonicalAppIdPath`
+ * one layer further in. Splitting the predicates keeps each one's
+ * invariant crisp and lets the trust-badge layer evolve
+ * independently of the file-resolution gate.
  *
  * `appDir`, when supplied, enables a defence-in-depth post-resolve
  * check: the candidate path is rebuilt via `resolve(appDir, page)`
