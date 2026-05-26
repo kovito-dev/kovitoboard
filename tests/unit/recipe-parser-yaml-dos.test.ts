@@ -37,6 +37,7 @@ import {
   safeMatter,
   safeStringify,
   SAFE_MATTER_MAX_BYTES,
+  SAFE_MATTER_MAX_ALIASES,
 } from '../../src/server/recipe/safe-matter'
 
 describe('safeMatter — CORE_SCHEMA rejection of JS-typed tags', () => {
@@ -178,6 +179,77 @@ describe('safeMatter — standard YAML primitives accepted', () => {
     const { data, content } = safeMatter(noFrontmatter)
     expect(data).toEqual({})
     expect(content).toBe(noFrontmatter)
+  })
+})
+
+describe('safeMatter — alias-token budget', () => {
+  it('refuses an input whose anchor/alias token count exceeds SAFE_MATTER_MAX_ALIASES', () => {
+    // Construct a frontmatter with N anchor definitions and N
+    // alias references. 2*N tokens; refuses when 2N >
+    // SAFE_MATTER_MAX_ALIASES.
+    const N = SAFE_MATTER_MAX_ALIASES / 2 + 10
+    const lines: string[] = ['---', 'anchors:']
+    for (let i = 0; i < N; i++) {
+      lines.push(`  - &a${i} x`)
+    }
+    lines.push('aliases:')
+    for (let i = 0; i < N; i++) {
+      lines.push(`  - *a${i}`)
+    }
+    lines.push('---')
+    lines.push('body')
+    expect(() => safeMatter(lines.join('\n'))).toThrow(
+      /alias-token budget/,
+    )
+  })
+
+  it('accepts a small number of legitimate anchors and aliases', () => {
+    // A real-world shared-structure recipe (e.g. shared `kind:
+    // page` constant) is rare but legal; one anchor + one alias
+    // is well under the budget.
+    const yaml = [
+      '---',
+      'shared: &kind page',
+      'one: *kind',
+      'two: *kind',
+      '---',
+      'body',
+    ].join('\n')
+    const { data } = safeMatter(yaml) as {
+      data: { shared: string; one: string; two: string }
+    }
+    expect(data.shared).toBe('page')
+    expect(data.one).toBe('page')
+    expect(data.two).toBe('page')
+  })
+
+  it('refuses a billion-laughs style chain before js-yaml resolves it', () => {
+    // Classic exponential-expansion shape — the actual decode is
+    // never reached because the token count trips the budget
+    // first. We assert behaviour, not which specific check
+    // fires (alias-budget or byte-budget), as long as the
+    // wrapper refuses the input deterministically and quickly.
+    const lines: string[] = ['---']
+    // Build a 10-wide chain of nested aliases. Token count is
+    // O(W * D); W=10, D=22 → 220 tokens > 200 budget.
+    let prev = 'leaf'
+    lines.push('leaf: &leaf x')
+    for (let i = 0; i < 22; i++) {
+      const refs: string[] = []
+      for (let j = 0; j < 10; j++) refs.push(`*${prev}`)
+      const name = `n${i}`
+      lines.push(`${name}: &${name} [${refs.join(', ')}]`)
+      prev = name
+    }
+    lines.push('---')
+    lines.push('body')
+    const start = Date.now()
+    expect(() => safeMatter(lines.join('\n'))).toThrow()
+    const elapsed = Date.now() - start
+    // Budget check fires before any exponential resolution can
+    // begin; even on a slow CI box this should return in well
+    // under a second.
+    expect(elapsed).toBeLessThan(500)
   })
 })
 

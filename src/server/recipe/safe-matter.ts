@@ -19,28 +19,37 @@
  * data, not embedded code.
  *
  * Anchor / alias amplification (billion-laughs class DoS) is a
- * separate axis from the schema choice. js-yaml v3 has no built-in
- * `maxAliasCount`, so this wrapper enforces two complementary
- * bounds:
+ * separate axis from the schema choice. This wrapper enforces
+ * three complementary bounds:
  *
- *   - **Per-caller size enforcement.** `recipe-parser.ts` performs
- *     stat-first size checks against `MAX_RECIPE_YAML_BYTES` /
- *     `MAX_RECIPE_TOTAL_BYTES` before calling `safeMatter`, so
- *     externally-sourced recipe documents are bounded at parser
- *     entry. The agent / template paths (`agent-writer.ts`,
- *     `template-reader.ts`) operate on KB-managed files whose
- *     size is bounded by KB's own write paths, but they share
- *     this wrapper so any future entry point inherits the same
- *     contract.
+ *   - **Per-caller size enforcement.** `recipe-parser.ts`
+ *     performs stat-first size checks against
+ *     `MAX_RECIPE_YAML_BYTES` / `MAX_RECIPE_TOTAL_BYTES` before
+ *     calling `safeMatter`, so externally-sourced recipe
+ *     documents are bounded at parser entry. The agent /
+ *     template paths (`agent-writer.ts`, `template-reader.ts`)
+ *     operate on KB-managed files whose size is bounded by KB's
+ *     own write paths.
  *
- *   - **Defence-in-depth ceiling (this module).** The wrapper
- *     itself rejects any input larger than
- *     `SAFE_MATTER_MAX_BYTES` (5 MiB) before handing it to
- *     js-yaml. That keeps a runaway frontmatter section from
- *     reaching the alias-resolution loop regardless of which
- *     call site routed it here — even a future caller that
- *     forgot to add an upstream size check stops at this
- *     boundary.
+ *   - **Defence-in-depth byte ceiling.** The wrapper itself
+ *     rejects any input larger than `SAFE_MATTER_MAX_BYTES`
+ *     (5 MiB) before handing it to js-yaml. That keeps a
+ *     runaway frontmatter section from reaching the alias
+ *     resolver regardless of which call site routed it here.
+ *
+ *   - **Text-level alias-count bound.** js-yaml does not expose
+ *     a runtime cap on alias resolution, so the wrapper pre-
+ *     scans the raw input for YAML anchor (`&name`) and alias
+ *     (`*name`) tokens and refuses the document when the count
+ *     exceeds `SAFE_MATTER_MAX_ALIASES` (200). A billion-laughs
+ *     style payload defines O(N) anchors and references each of
+ *     them O(N) times to set up the exponential expansion;
+ *     refusing at the token count, before js-yaml ever starts
+ *     resolving them, keeps the cost linear. The cap sits well
+ *     above anything a legitimate recipe needs (recipe / agent
+ *     authoring uses zero anchors in practice) and conservatively
+ *     allows for a small amount of incidental anchor-like text
+ *     inside string values.
  *
  * Top-level shape is also constrained: the parse engine
  * normalises non-mapping results (null, scalars, arrays) to an
@@ -81,9 +90,38 @@ import yaml from 'js-yaml'
  */
 export const SAFE_MATTER_MAX_BYTES = 5 * 1024 * 1024 // 5 MiB
 
+/**
+ * Hard cap on the number of YAML anchor / alias tokens the
+ * wrapper will tolerate in a single document. js-yaml does not
+ * expose a runtime alias-count limiter, so we pre-scan the raw
+ * input and refuse the parse before it ever starts when the
+ * token count exceeds this bound. Exported for unit-test
+ * access only.
+ */
+export const SAFE_MATTER_MAX_ALIASES = 200
+
+/**
+ * Matches a YAML anchor (`&name`) or alias (`*name`) reference.
+ * The pattern is intentionally permissive: the goal is to bound
+ * the upper limit of `yaml.load`'s alias-resolution work, not to
+ * distinguish anchor / alias semantically. The leading anchor
+ * boundary (`(?:^|[\s\[\]{},:])`) avoids matching incidental `&`
+ * / `*` characters that appear inside quoted string values
+ * without a preceding YAML structural context.
+ */
+const ALIAS_TOKEN_PATTERN = /(?:^|[\s[\]{},:])[&*][A-Za-z_][\w-]*/g
+
 const yamlEngine = {
   parse: (input: string): object => {
-    const result = yaml.load(input, { schema: yaml.CORE_SCHEMA })
+    const aliasTokens = input.match(ALIAS_TOKEN_PATTERN) ?? []
+    if (aliasTokens.length > SAFE_MATTER_MAX_ALIASES) {
+      throw new Error(
+        `safeMatter input exceeds alias-token budget (${SAFE_MATTER_MAX_ALIASES})`,
+      )
+    }
+    const result = yaml.load(input, {
+      schema: yaml.CORE_SCHEMA,
+    })
     // js-yaml returns `unknown`; gray-matter expects an
     // object-shaped value for the front-matter section.
     //
@@ -137,15 +175,20 @@ export function safeMatter(content: string): matter.GrayMatterFile<string> {
 }
 
 /**
- * Drop-in replacement for `matter.stringify(file, data, options)`.
+ * Narrow replacement for `matter.stringify(file, data)`. This is
+ * not a full drop-in for `matter.stringify(file, data, options)`:
+ * the `options` slot is intentionally omitted because the whole
+ * point of this module is to pin the YAML engine, and a
+ * caller-supplied `engines` override would defeat that. All
+ * current call sites already use the two-argument shape, and
+ * any future caller that needs gray-matter's broader options
+ * surface should land that intentionally so the engine-pinning
+ * contract stays visible at the call site.
+ *
  * Threads the same CORE_SCHEMA YAML engine so the serialized
- * frontmatter cannot regress into `DEFAULT_FULL_SCHEMA` shapes
- * even when callers pass additional options.
+ * frontmatter cannot regress into `DEFAULT_FULL_SCHEMA` shapes.
  */
-export function safeStringify(
-  file: string,
-  data?: object,
-): string {
+export function safeStringify(file: string, data?: object): string {
   return matter.stringify(file, data ?? {}, {
     engines: { yaml: yamlEngine },
   })
