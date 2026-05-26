@@ -36,6 +36,7 @@ import { describe, it, expect } from 'vitest'
 import {
   safeMatter,
   safeStringify,
+  SAFE_MATTER_MAX_BYTES,
 } from '../../src/server/recipe/safe-matter'
 
 describe('safeMatter — CORE_SCHEMA rejection of JS-typed tags', () => {
@@ -73,6 +74,49 @@ describe('safeMatter — CORE_SCHEMA rejection of JS-typed tags', () => {
       'body',
     ].join('\n')
     expect(() => safeMatter(hostile)).toThrow()
+  })
+})
+
+describe('safeMatter — top-level shape normalization', () => {
+  it('normalizes a top-level YAML sequence to an empty object', () => {
+    // `---\n- a\n- b\n---` parses to `['a', 'b']` under the
+    // default contract, but arrays are typeof === 'object' in JS
+    // so the previous `typeof result === 'object'` guard would
+    // have let it through. The dedicated `Array.isArray` reject
+    // keeps the destructure contract intact: callers can still
+    // write `const { data, content } = safeMatter(...)` and
+    // index named fields without worrying about array shapes.
+    const yaml = ['---', '- a', '- b', '---', 'body'].join('\n')
+    const { data, content } = safeMatter(yaml)
+    expect(data).toEqual({})
+    expect(content.trim()).toBe('body')
+  })
+
+  it('normalizes a top-level YAML scalar to an empty object', () => {
+    const yaml = ['---', "'just a string'", '---', 'body'].join('\n')
+    const { data } = safeMatter(yaml)
+    expect(data).toEqual({})
+  })
+})
+
+describe('safeMatter — defence-in-depth byte ceiling', () => {
+  it('rejects an input larger than SAFE_MATTER_MAX_BYTES', () => {
+    // A document at byte ceiling + 1 must throw before js-yaml
+    // even sees it. The threshold is enforced via
+    // `Buffer.byteLength(content, 'utf8')` so multi-byte UTF-8
+    // characters cannot smuggle a larger payload past a naive
+    // `.length` check.
+    const huge = '#'.repeat(SAFE_MATTER_MAX_BYTES + 1)
+    expect(() => safeMatter(huge)).toThrow(/exceeds defence-in-depth ceiling/)
+  })
+
+  it('accepts an input exactly at the byte ceiling', () => {
+    // Use a body-only document so the parser does not attempt
+    // to decode the entire payload as YAML. The cap targets the
+    // raw input size, not the decoded structure.
+    const cap = SAFE_MATTER_MAX_BYTES
+    const body = '#'.repeat(cap)
+    expect(() => safeMatter(body)).not.toThrow()
   })
 })
 
