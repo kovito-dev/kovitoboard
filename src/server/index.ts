@@ -19,6 +19,7 @@ import {
   createCleanupUploads,
   inFlightUploads,
 } from './upload-tracker'
+import { buildCSPHeader } from './security-headers'
 import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } from './logger'
 import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
@@ -166,13 +167,7 @@ app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY')
   res.setHeader('X-XSS-Protection', '0')  // Disabled as recommended for modern browsers
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
-  res.setHeader('Content-Security-Policy', [
-    "default-src 'self'",
-    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",  // Tailwind inline styles
-    "img-src 'self' data: blob:",
-  ].join('; '))
+  res.setHeader('Content-Security-Policy', buildCSPHeader())
   next()
 })
 
