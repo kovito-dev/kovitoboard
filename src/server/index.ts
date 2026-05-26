@@ -1306,15 +1306,17 @@ function handleBundledInstallerError(
   recipeId: string,
 ): void {
   if (err instanceof BundledInstallerError) {
+    // Forensic detail (raw exception text, absolute filesystem
+    // paths, internal probe values) stays in the server log via the
+    // structured `err` field. The wire body only carries the stable
+    // public error code so a hostile client cannot enumerate the
+    // installation layout from API responses
+    // (http-api-contract v1.7.1 §8.6 server-side redaction SSOT).
     apiLogger.warn(
-      { err, action, recipeId, code: err.errorCode },
+      { err, action, recipeId, code: err.errorCode, detail: err.detail },
       `Bundled ${action} rejected`,
     )
-    res.status(err.httpStatus).json({
-      error: err.errorCode,
-      message: err.message,
-      ...(err.detail ? { detail: err.detail } : {}),
-    })
+    res.status(err.httpStatus).json({ error: err.errorCode })
     return
   }
   apiLogger.error({ err, action, recipeId }, `Bundled ${action} failed (unexpected)`)

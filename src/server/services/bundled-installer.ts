@@ -628,16 +628,40 @@ export function disableBundledRecipe(
 // Internal helpers
 // =========================================
 
+/**
+ * Look up the single bundled/sample manifest for a `recipeId` and
+ * fail-closed when more than one matches.
+ *
+ * Source-scoped uniqueness is a v0.2.1 normative invariant
+ * (recipe-system v1.10 §10.9.3 Step 2 / Step 5, BS-L2' lookup
+ * semantics): exactly one of `{ bundled, sample }` per `recipeId`.
+ * A duplicate is a corruption signal — picking the first match
+ * would let `disableBundledRecipe` tear down an arbitrary app and
+ * leave the duplicate behind. Throwing surfaces the corruption to
+ * the user (`BundledManifestUniquenessViolation` 500) so they can
+ * clean up `recipes-installed/` by hand.
+ */
 function findManifestByRecipeId(
   manifestStore: RecipeManifestStore,
   recipeId: string,
 ): RecipeManifest | null {
+  const matches: RecipeManifest[] = []
   for (const manifest of manifestStore.list()) {
     if (manifest.recipeId === recipeId && isBundledOrSample(manifest.source)) {
-      return manifest
+      matches.push(manifest)
     }
   }
-  return null
+  if (matches.length === 0) return null
+  if (matches.length === 1) return matches[0]
+  throw new BundledInstallerError(
+    `Multiple bundled/sample manifests for recipeId "${recipeId}" — manual cleanup required`,
+    500,
+    'BundledManifestUniquenessViolation',
+    {
+      recipeId,
+      foundAppIds: matches.map((m) => m.appId),
+    },
+  )
 }
 
 function findHistoryMatchForBundled(

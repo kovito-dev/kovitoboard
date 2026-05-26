@@ -365,6 +365,56 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('fails closed when multiple bundled/sample manifests share the same recipeId', () => {
+    // Source-scoped uniqueness is normative (recipe-system v1.10
+    // §10.9.3 Step 2 SSOT): exactly one bundled/sample manifest per
+    // recipeId. Two matching manifests is a corruption signal —
+    // returning the first match would let the disable transaction
+    // tear down an arbitrary app while leaving the duplicate
+    // behind. Fail-closed with BundledManifestUniquenessViolation.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+
+    // Seed two bundled manifests for the same recipeId under
+    // different appIds.
+    for (const appId of ['app-alpha', 'app-beta']) {
+      h.manifestStore.save({
+        appId,
+        recipeId: SAMPLE_RECIPE_ID,
+        recipeVersion: '1.0.0',
+        hash: `hash-${appId}`,
+        installedAt: '2026-05-01T00:00:00.000Z',
+        approvedScopes: [],
+        api: { scopes: [], calls: [] },
+        captureRequires: [],
+        approvedCaptures: [],
+        trustLevel: 'code-trusted (bundled)',
+        source: 'bundled',
+      })
+    }
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledManifestUniquenessViolation')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.foundAppIds).toEqual(
+      expect.arrayContaining(['app-alpha', 'app-beta']),
+    )
+  })
+
   it('persists the freshly-parsed recipe hash, not the cached registry hash', () => {
     // The bundled-installer re-parses recipe.yaml right before
     // copying the artifacts, so the persisted hash should describe
