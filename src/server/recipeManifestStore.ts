@@ -318,6 +318,24 @@ function validateManifest(raw: unknown): string | null {
         'expected "unknown" until KovitoHub signature verification ships in v0.3.0'
       )
     }
+    // `'code-trusted (bundled)'` is the v0.2.1 bundled-enable literal
+    // — the bundled-installer flow is the only writer and is gated by
+    // OSS PR review (recipe-system v1.10 §10.9.5 BS-L4'). No extra
+    // verification beyond bundled-installer's own contract is required.
+  }
+
+  // v0.2.1 `source` field — optional for backward compat with v0.2.0
+  // manifests; the grandfather migration defaults absent values to
+  // `'sample'` (data-persistence v1.4 §6.4 SSOT).
+  if (obj.source !== undefined) {
+    if (
+      obj.source !== 'sample' &&
+      obj.source !== 'bundled' &&
+      obj.source !== 'import' &&
+      obj.source !== 'url'
+    ) {
+      return `"source" must be one of "sample" | "bundled" | "import" | "url" (got: ${String(obj.source)})`
+    }
   }
 
   return null
@@ -349,8 +367,9 @@ export function applyGrandfatherMigration(
   const hasRequires = 'captureRequires' in raw && Array.isArray(raw.captureRequires)
   const hasCaptures = 'approvedCaptures' in raw && Array.isArray(raw.approvedCaptures)
   const hasTrust = 'trustLevel' in raw && typeof raw.trustLevel === 'string'
+  const hasSource = 'source' in raw && typeof raw.source === 'string'
 
-  if (hasRequires && hasCaptures && hasTrust) {
+  if (hasRequires && hasCaptures && hasTrust && hasSource) {
     return { manifest: raw as unknown as RecipeManifest, migrated: false }
   }
 
@@ -365,12 +384,21 @@ export function applyGrandfatherMigration(
     ? (raw.approvedCaptures as CaptureKind[])
     : []
   const trustLevel: TrustLevel = hasTrust ? (raw.trustLevel as TrustLevel) : 'unknown'
+  // Pre-v0.2.1 manifests have no `source` field; v0.2.0 mark-installed
+  // only minted sample installs, so the migration defaults to
+  // `'sample'` for any legacy record (data-persistence v1.4 §6.4
+  // SSOT). The bundled-enable flow always writes the field
+  // explicitly, so this branch never runs on v0.2.1-minted manifests.
+  const source: 'sample' | 'bundled' | 'import' | 'url' = hasSource
+    ? (raw.source as 'sample' | 'bundled' | 'import' | 'url')
+    : 'sample'
 
   const migrated: RecipeManifest = {
     ...(raw as unknown as RecipeManifest),
     captureRequires,
     approvedCaptures,
     trustLevel,
+    source,
   }
   return { manifest: migrated, migrated: true }
 }

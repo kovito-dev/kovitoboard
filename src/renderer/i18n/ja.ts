@@ -590,6 +590,7 @@ const ja = {
   'trust.level.kbTrusted': 'KB 信頼済',
   'trust.level.codeTrusted': 'コード信頼済（署名）',
   'trust.level.codeTrustedSideloaded': 'コード信頼済（サイドロード）',
+  'trust.level.codeTrustedBundled': 'コード信頼済（同梱）',
   'trust.level.unknown': '不明（グランドファーザー）',
   'trust.marker.ariaLabel': 'レシピの信頼レベル: {label}',
   'trust.unknown.reinstall': 'KovitoHub (v0.3.0) 経由で再インストールして検証',

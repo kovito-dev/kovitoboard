@@ -88,6 +88,11 @@ import {
 } from './claude-code-settings-check'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
+import {
+  BundledInstallerError,
+  disableBundledRecipe,
+  enableBundledRecipe,
+} from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import {
@@ -273,6 +278,16 @@ try {
   manifestStore.loadAll()
 } catch (err) {
   startupLogger.error({ err }, 'Manifest store load failed (non-fatal)')
+}
+
+// Refresh sample-recipe enable-state now that the manifest store is
+// loaded. The initial `scanSampleRecipes(fs)` above runs before the
+// store exists, so the scanner cache has `enabled: false` for every
+// entry until this call rewires the derived fields (v0.2.1 §6.7.2).
+try {
+  refreshInstallStatus(fs, manifestStore)
+} catch (err) {
+  startupLogger.error({ err }, 'Sample recipe enable-state refresh failed (non-fatal)')
 }
 
 const sessionManager = new SessionManager()
@@ -1195,8 +1210,10 @@ app.get('/api/settings/rules', (_req, res) => {
 
 app.get('/api/recipes/sample', (_req, res) => {
   try {
-    // Refresh install status against current history before returning
-    refreshInstallStatus(fs)
+    // Refresh install + enable state against current history /
+    // manifest store before returning (v0.2.1: `enabled` + `source`
+    // are derived from the manifest store cache).
+    refreshInstallStatus(fs, manifestStore)
     const recipes = getSampleRecipes()
     res.json(recipes)
   } catch (err) {
@@ -1204,6 +1221,131 @@ app.get('/api/recipes/sample', (_req, res) => {
     res.status(500).json({ error: 'Failed to get sample recipes' })
   }
 })
+
+// --- v0.2.1 bundled sample enable/disable ---
+//
+// The generic install path (`POST /api/recipes/install`) stays 410
+// Gone in v0.2.x. Bundled samples — `recipes/document-viewer/` and
+// `recipes/todo/` — are re-enabled through a dedicated transaction
+// that bypasses the 7-layer install dialog (trust origin = KB
+// itself, OSS PR-merge gated; recipe-system v1.10 §10.9 +
+// http-api-contract v1.7.1 §6.3.8.B). The handlers below stay thin
+// — the transaction lives in services/bundled-installer.ts.
+
+app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
+  const recipeId = req.params.recipeId
+  if (typeof recipeId !== 'string' || recipeId.length === 0) {
+    res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  // Step 1: registry presence.
+  const samples = getSampleRecipes()
+  const sample = samples.find((s) => s.metadata.recipeId === recipeId)
+  if (sample === undefined) {
+    if (samples.length === 0) {
+      res.status(503).json({ error: 'BundledRegistryUnavailable' })
+      return
+    }
+    res.status(404).json({ error: 'BundledNotFound', recipeId })
+    return
+  }
+  try {
+    const result = enableBundledRecipe({
+      fs,
+      manifestStore,
+      projectRoot,
+      kovitoboardRoot: resolveKovitoboardInstallRoot(),
+      recipeId,
+      sample,
+    })
+    refreshInstallStatus(fs, manifestStore)
+    // ws-event broadcast: recipe_apps_changed (L11 cascade).
+    broadcastRecipeAppsChanged({
+      trigger: 'enable',
+      appId: result.appId,
+      source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
+    })
+    res.json(result)
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'enable', recipeId)
+  }
+})
+
+app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
+  const recipeId = req.params.recipeId
+  if (typeof recipeId !== 'string' || recipeId.length === 0) {
+    res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  try {
+    const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
+    refreshInstallStatus(fs, manifestStore)
+    if (result.appId !== undefined) {
+      broadcastRecipeAppsChanged({
+        trigger: 'disable',
+        appId: result.appId,
+        source: 'bundled', // persisted manifest.source is preserved in the audit; the wire enum is the same family
+      })
+    }
+    res.json(result)
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'disable', recipeId)
+  }
+})
+
+function handleBundledInstallerError(
+  _req: import('express').Request,
+  res: import('express').Response,
+  err: unknown,
+  action: 'enable' | 'disable',
+  recipeId: string,
+): void {
+  if (err instanceof BundledInstallerError) {
+    apiLogger.warn(
+      { err, action, recipeId, code: err.errorCode },
+      `Bundled ${action} rejected`,
+    )
+    res.status(err.httpStatus).json({
+      error: err.errorCode,
+      message: err.message,
+      ...(err.detail ? { detail: err.detail } : {}),
+    })
+    return
+  }
+  apiLogger.error({ err, action, recipeId }, `Bundled ${action} failed (unexpected)`)
+  res.status(500).json({ error: 'BundledTransactionUnexpected' })
+}
+
+function broadcastRecipeAppsChanged(payload: {
+  trigger: 'enable' | 'disable'
+  appId: string
+  source: 'bundled' | 'sample'
+}): void {
+  try {
+    broadcast({
+      type: 'recipe_apps_changed',
+      payload: { ...payload, ts: Date.now() },
+    })
+  } catch (err) {
+    apiLogger.warn({ err }, 'recipe_apps_changed broadcast failed (non-fatal)')
+  }
+}
+
+function resolveKovitoboardInstallRoot(): string {
+  // Identical resolution to recipe-scanner's own internal helper.
+  // Kept inline (rather than re-exported) so the install root and the
+  // sample-scanner cache stay impossible to drift via a separate
+  // override.
+  const here = fileURLToPath(import.meta.url)
+  const candidates = [
+    resolve(dirname(here), '..', '..'),
+    resolve(dirname(here), '..', '..', '..'),
+  ]
+  for (const c of candidates) {
+    if (fs.existsSync(join(c, 'package.json'))) return c
+  }
+  return candidates[0]
+}
 
 app.post('/api/recipes/parse', async (req, res) => {
   try {
