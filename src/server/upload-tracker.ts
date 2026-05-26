@@ -4,24 +4,60 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 /**
- * Upload-tracker helpers — defend `cleanupUploads` against the race
- * where a concurrent upload is mid-write when the periodic sweep
- * runs.
+ * Upload-tracker helpers — defence-in-depth bookkeeping for the
+ * cleanup-vs-upload interleave window.
  *
- * The TTL-based cleanup compares `stat.mtimeMs` against the
- * configured cutoff, so under normal conditions a freshly-written
- * file is far outside the deletion window. But the contract is
- * fragile: any future cleanup heuristic that reads more than mtime
- * (size > 0 check, content sniff, etc.) would suddenly start
- * racing against in-flight writes, and even today a system clock
- * jump or a re-mounted volume can produce an `mtimeMs` that is
- * older than wall-clock `now`. We therefore explicitly mark the
- * basename as in-flight for the duration of the write and skip
- * any in-flight basename from the sweep.
+ * **Threat model (what this guards against):**
  *
- * The implementation is split off from `index.ts` so the race
- * scenario can be exercised in unit tests without standing up
- * the full HTTP server.
+ *   1. Cleanup heuristic evolution. The current sweep only reads
+ *      `stat.mtimeMs`, and `/api/upload` today buffers the body
+ *      with `express.raw()` then performs a single synchronous
+ *      `fs.writeFileSync()` on the Node event loop — so the
+ *      sweep cannot interleave with a half-written file under
+ *      the v0.2.1 implementation. The tracker exists so that any
+ *      future cleanup heuristic that reads more than mtime
+ *      (size > 0 check, content sniff, partial-file detection,
+ *      fd-based identity) starts from a baseline where in-flight
+ *      basenames are already invisible to the sweep, instead of
+ *      racing the moment the new heuristic ships.
+ *
+ *   2. Streaming uploads. If `/api/upload` ever switches from
+ *      `express.raw()` to a streaming consumer (`fs.createWriteStream`
+ *      or busboy-style chunk pipes), the synchronous-write
+ *      guarantee disappears immediately. The tracker keeps the
+ *      sweep blind to streaming candidates for free.
+ *
+ *   3. Multi-process workers. A future deployment that forks
+ *      multiple Node workers against the same upload directory
+ *      would need shared coordination; the in-process tracker is
+ *      the local half of that contract (the cross-process half
+ *      would replace this Set with a file-lock or external
+ *      registry).
+ *
+ *   4. Clock skew / FS re-mount. The mtime comparison can also
+ *      misfire on a re-mounted volume or after a sysclock jump
+ *      that leaves a fresh upload's mtime older than the wall-
+ *      clock cutoff. The in-flight skip keeps the sweep from
+ *      acting on the (legitimate, in-progress) write under such
+ *      perturbations.
+ *
+ * **What this does NOT claim to solve:**
+ *
+ *   * A swap or unlink of a freshly-written file between the
+ *     handler returning and any downstream consumer reading
+ *     it back. That is a separate threat handled by the
+ *     scope-validator / artifact-path-validator pipeline.
+ *
+ * **Why a separate module.** Splitting the helper out of
+ * `index.ts` lets the race scenario be exercised in unit tests
+ * via an injected `FileAccessLayer` stub and `now` clock, without
+ * standing up the HTTP server or sleeping for the production
+ * 60-minute interval.
+ *
+ * See security-threat-model.md (compensatory review S9) for the
+ * original threat shape this PR closes (the defence is now
+ * surfaced as future-proofing rather than a directly-reachable
+ * race under v0.2.1's synchronous-write handler).
  */
 import { join } from 'path'
 import type { FileAccessLayer } from './fs-layer'
