@@ -74,14 +74,23 @@ afterEach(() => {
 
 interface MockFsOpts {
   /**
-   * Optional symlink map: `path → resolvedTarget`. When the
-   * production code calls `realpathSync(p)`, the mock returns
-   * `resolvedTarget` if `p` is in the map, otherwise `p`. Lets the
-   * Layer-3 symlink check be exercised without standing up a real
-   * temp-dir tree (which would also need cache resets across the
-   * config-cached projectRoot resolver).
+   * File-level symlinks: the path itself is a symlink whose
+   * target is the mapped value. `lstatSync(p).isSymbolicLink`
+   * returns `true` and `realpathSync(p)` returns the target.
+   * Catches file-level redirect attacks (`<id>/Index.tsx →
+   * /elsewhere/leak.tsx`).
    */
   symlinks?: Record<string, string>
+  /**
+   * Intermediate-directory symlinks expressed end-to-end at the
+   * candidate level: `lstatSync(p).isSymbolicLink` returns `false`
+   * (the candidate file itself is a plain regular file) while
+   * `realpathSync(p)` returns the canonical target the production
+   * fs layer would produce by walking the symlinked parent chain.
+   * Catches directory-level redirect attacks (`<id> →
+   * /elsewhere/evil-app/`).
+   */
+  directorySymlinks?: Record<string, string>
 }
 
 function makeMockFs(
@@ -97,7 +106,16 @@ function makeMockFs(
       dirs.add(parts.slice(0, i).join('/'))
     }
   }
-  const symlinkMap = new Map(Object.entries(opts.symlinks ?? {}))
+  const fileSymlinks = new Map(Object.entries(opts.symlinks ?? {}))
+  const dirSymlinks = new Map(Object.entries(opts.directorySymlinks ?? {}))
+  // Symlink lookups walk the file-level map first so a path that
+  // appears in both is treated as a file symlink (production
+  // behaviour: lstat reports the leaf as a link).
+  function realpathLookup(p: string): string {
+    if (fileSymlinks.has(p)) return fileSymlinks.get(p)!
+    if (dirSymlinks.has(p)) return dirSymlinks.get(p)!
+    return p
+  }
   return {
     readFileSync: (p) => {
       const v = fileMap.get(p)
@@ -111,18 +129,24 @@ function makeMockFs(
     writeFileAtomic: () => {
       throw new Error('not implemented in this stub')
     },
-    existsSync: (p) => fileMap.has(p) || dirs.has(p) || symlinkMap.has(p),
+    existsSync: (p) =>
+      fileMap.has(p) || dirs.has(p) || fileSymlinks.has(p) || dirSymlinks.has(p),
     statSync: (p) => {
       if (!fileMap.has(p)) throw new Error(`ENOENT: ${p}`)
       return { size: fileMap.get(p)!.length } as unknown as ReturnType<
         FileAccessLayer['statSync']
       >
     },
-    // The path-containment guard canonicalizes both `candidate`
-    // and `appDir` via `realpathSync`. The mock returns the
-    // symlink target when one is registered, otherwise the input
-    // unchanged.
-    realpathSync: (p) => symlinkMap.get(p) ?? p,
+    lstatSync: (p) =>
+      ({
+        size: fileMap.get(p)?.length ?? 0,
+        isSymbolicLink: fileSymlinks.has(p),
+      }) as unknown as ReturnType<FileAccessLayer['lstatSync']>,
+    // The path-containment guard canonicalizes the candidate
+    // and the app dir via `realpathSync`. The mock returns the
+    // mapped target when one is registered (file-level wins over
+    // directory-level), otherwise the input unchanged.
+    realpathSync: realpathLookup,
     mkdirSync: () => {},
     rmdirSync: () => {},
     unlinkSync: () => {},
@@ -398,7 +422,7 @@ describe('readUserMenuEntries — symlink defence (Layer 3)', () => {
         id: 'leaky-app',
         reason: 'symlink-redirect',
       }),
-      expect.stringContaining('resolves via a symlink'),
+      expect.stringContaining('page file is a symlink'),
     )
   })
 
@@ -418,30 +442,106 @@ describe('readUserMenuEntries — symlink defence (Layer 3)', () => {
         id: 'leaky-app',
         reason: 'symlink-redirect',
       }),
-      expect.stringContaining('resolves via a symlink'),
+      expect.stringContaining('page file is a symlink'),
     )
   })
 
-  it('refuses when an intermediate app/<id>/ directory is a symlink', () => {
+  it('refuses when the app/<id>/ directory itself is a symlink outside app/', () => {
+    // The entry's own `app/<id>/` directory is a symlink to a
+    // location outside `app/`. The candidate file is plain, so
+    // `lstatSync` returns `isSymbolicLink: false`, but both
+    // `realpathSync(appIdDir)` and `realpathSync(candidate)`
+    // canonicalize through the directory link. Layer 3b (outer
+    // containment: `realAppIdDir` under `realAppDir`) refuses
+    // the row.
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
     const appIdDir = `${projectRoot}/app/leaky-app`
     const candidatePath = `${appIdDir}/Index.tsx`
-    // app/leaky-app → /elsewhere/evil-app (directory symlink) makes
-    // candidate canonicalize to the foreign tree.
-    const fs = buildSymlinkFs({
-      [appIdDir]: '/elsewhere/evil-app',
-      [candidatePath]: '/elsewhere/evil-app/Index.tsx',
-    })
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'leaky-app', page: 'leaky-app/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        directorySymlinks: {
+          [appIdDir]: '/elsewhere/evil-app',
+          [candidatePath]: '/elsewhere/evil-app/Index.tsx',
+        },
+      },
+    )
     const entries = readUserMenuEntries(fs)
     expect(entries).toHaveLength(1)
     expect(entries[0].pageAbsolutePath).toBeNull()
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'leaky-app',
-        reason: 'symlink-redirect',
+        reason: 'app-id-dir-escape',
       }),
-      expect.stringContaining('resolves via a symlink'),
+      expect.stringContaining('app/<id>/ directory escapes app/'),
     )
+  })
+
+  it('refuses when canonical candidate lands outside its app/<id>/ but inside app/', () => {
+    // Cross-app intermediate symlink: realpath sends the
+    // candidate under `app/evil-app/...` rather than the entry's
+    // own `app/leaky-app/...`. Layer 3c (inner containment)
+    // catches it.
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'leaky-app', page: 'leaky-app/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        directorySymlinks: {
+          [candidatePath]: `${projectRoot}/app/evil-app/Index.tsx`,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'leaky-app',
+        reason: 'app-id-escape',
+      }),
+      expect.stringContaining('escapes app/<id>/'),
+    )
+  })
+
+  it('accepts a plain file whose canonical path differs only in casing (case-insensitive FS)', () => {
+    // Simulate a case-insensitive filesystem (macOS APFS): the
+    // candidate exists at its mixed-case form, lstat reports it
+    // as a plain file, but realpathSync returns a different
+    // casing for the canonical form. The containment compare
+    // must be prefix-based (not string equality), so the row is
+    // accepted instead of falsely flagged as `symlink-redirect`.
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const candidatePath = `${projectRoot}/app/leaky-app/Index.tsx`
+    const canonicalPath = `${projectRoot}/app/leaky-app/index.tsx`
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'leaky-app', page: 'leaky-app/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        directorySymlinks: {
+          // Layer 3a sees `lstatSync(candidate).isSymbolicLink === false`,
+          // Layer 3b sees `realpathSync(candidate) === canonicalPath`
+          // which stays under `app/leaky-app/` → accept.
+          [candidatePath]: canonicalPath,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBe(canonicalPath)
+    expect(warnSpy).not.toHaveBeenCalled()
   })
 
   it('accepts a plain (non-symlinked) page file and persists the lexical path', () => {

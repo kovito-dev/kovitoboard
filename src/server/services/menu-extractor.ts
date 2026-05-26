@@ -207,45 +207,80 @@ export function readUserMenuEntries(
         ? tsPath
         : null
     if (candidate !== null) {
-      // Layer 3 — symlink defence. We refuse any candidate whose
-      // canonical path differs from the lexical candidate. This
-      // catches both file-level symlinks
-      // (`<id>/Index.tsx → /elsewhere/...`) and intermediate-
-      // directory symlinks (`<id> → /elsewhere/...`). Allowing
-      // canonicalization here would silently change the page's
-      // import base path, breaking the page's own relative
-      // imports — so symlinked menu pages are not a supported
-      // feature in v0.2.x. Realpath failures (ELOOP, EACCES,
-      // missing target) are also refused via the surrounding
-      // try/catch. Logs intentionally carry only the user-
-      // supplied `page` and a stable reason code; absolute
-      // canonical paths are never emitted because they would
-      // leak host filesystem layout for exactly the attack
-      // shapes this guard is defending against.
+      // Layer 3 — symlink defence, split into two complementary
+      // checks so we do not falsely reject legitimate paths on
+      // case-insensitive or normalization-changing filesystems
+      // (macOS APFS, NTFS) where `realpathSync(candidate)` can
+      // legitimately differ from `candidate` in casing or NFD/NFC
+      // even when no symlink is involved:
+      //
+      //   3a. `lstatSync(candidate).isSymbolicLink` detects a
+      //       file-level symlink at the candidate itself. This
+      //       catches `<id>/Index.tsx → /elsewhere/...`.
+      //
+      //   3b. `realpathSync(candidate)` must canonicalize to a
+      //       path inside the canonical `<id>/` directory, which
+      //       must in turn live under the canonical `app/`. This
+      //       catches intermediate-directory symlinks
+      //       (`<id> → /elsewhere/...`) and any other parent-
+      //       chain redirection. Containment is verified by
+      //       prefix, not by string equality, so cased or
+      //       NFD-normalized differences on case-insensitive FS
+      //       no longer cause false rejects.
+      //
+      // Logs carry only the user-supplied `page` and a stable
+      // reason code; absolute canonical paths are never emitted
+      // because they would leak host filesystem layout for the
+      // exact attack shapes this guard is defending against.
+      const appIdDir = join(appDir, entry.id)
       try {
-        const realCandidate = fs.realpathSync(candidate)
-        if (realCandidate !== candidate) {
+        if (fs.lstatSync(candidate).isSymbolicLink) {
           serverLogger.warn(
             { id: entry.id, page: entry.page, reason: 'symlink-redirect' },
-            '[menu-extractor] Skipping menu entry whose page resolves via a symlink',
+            '[menu-extractor] Skipping menu entry whose page file is a symlink',
           )
           if (trustLookup) entry.trustLevel = null
           continue
         }
-        // Persist the canonical path. On the accept branch
-        // `realCandidate === candidate` is invariant (the
-        // divergence branch refused above), so storing the
-        // canonical form is semantically identical to storing the
-        // lexical form. We pick `realCandidate` so the value
-        // surfaces as canonical to any downstream consumer (logs,
-        // `/@fs/` URL composition) and so the validate/use story
-        // reads as "we verified this exact path and we are
-        // storing this exact path". The residual race — an
-        // attacker that swaps `realCandidate` into a symlink
-        // between this assignment and the renderer's later
-        // `/@fs/` import — requires a renderer-side
-        // re-canonicalization to close; that is tracked as a
-        // follow-up outside this PR.
+        const realAppDir = fs.realpathSync(appDir)
+        const realAppIdDir = fs.realpathSync(appIdDir)
+        const realCandidate = fs.realpathSync(candidate)
+        const appRootMarker = realAppDir.endsWith(sep)
+          ? realAppDir
+          : realAppDir + sep
+        if (
+          realAppIdDir !== realAppDir &&
+          !realAppIdDir.startsWith(appRootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, reason: 'app-id-dir-escape' },
+            '[menu-extractor] Skipping menu entry whose app/<id>/ directory escapes app/',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        const idRootMarker = realAppIdDir.endsWith(sep)
+          ? realAppIdDir
+          : realAppIdDir + sep
+        if (
+          realCandidate !== realAppIdDir &&
+          !realCandidate.startsWith(idRootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, reason: 'app-id-escape' },
+            '[menu-extractor] Skipping menu entry whose canonical path escapes app/<id>/',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        // Persist the canonical path. By this point we have
+        // verified (a) the candidate is not itself a symlink and
+        // (b) its canonical form lives under the canonical
+        // `app/<id>/`. The residual race — an attacker that
+        // converts `realCandidate` into a symlink between this
+        // assignment and the renderer's later `/@fs/` import —
+        // requires a renderer-side re-canonicalization to close;
+        // that is tracked as a follow-up outside this PR.
         entry.pageAbsolutePath = realCandidate
       } catch {
         serverLogger.warn(

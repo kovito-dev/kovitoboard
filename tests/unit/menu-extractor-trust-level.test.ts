@@ -88,10 +88,16 @@ function makeMockFs(projectRoot: string, files: Record<string, string>): FileAcc
       return { size: fileMap.get(p)!.length } as unknown as ReturnType<FileAccessLayer['statSync']>
     },
     // The path-containment guard added in v0.2.1 canonicalizes
-    // both `candidate` and `appDir` via `realpathSync`. The mock
-    // filesystem has no symlinks so the identity function is
-    // sufficient.
+    // both `candidate` and `appDir` via `realpathSync` and uses
+    // `lstatSync(candidate).isSymbolicLink` as the file-level
+    // symlink detector. The trust-level scenarios never plant
+    // symlinks so a non-link / identity pair is sufficient here.
     realpathSync: (p) => p,
+    lstatSync: (p) =>
+      ({
+        size: fileMap.get(p)?.length ?? 0,
+        isSymbolicLink: false,
+      }) as unknown as ReturnType<FileAccessLayer['lstatSync']>,
     mkdirSync: () => {},
     rmdirSync: () => {},
     unlinkSync: () => {},
