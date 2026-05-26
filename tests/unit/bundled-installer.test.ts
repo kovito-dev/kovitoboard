@@ -365,6 +365,42 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('disable history record carries the install record display name, not the machine recipeId', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    const installRecord = readRecipeHistory(h.fs).find(
+      (r) => r.recipeId === SAMPLE_RECIPE_ID && (r.action ?? 'install') === 'install',
+    )!
+    // Sanity: the install record stored the display name (from the
+    // recipe.yaml `name` field).
+    expect(installRecord.name).not.toBe(SAMPLE_RECIPE_ID)
+    expect(installRecord.name.length).toBeGreaterThan(0)
+    const displayName = installRecord.name
+
+    disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    const uninstallRecord = readRecipeHistory(h.fs).find(
+      (r) => r.recipeId === SAMPLE_RECIPE_ID && r.action === 'uninstall',
+    )!
+    // The uninstall row carries the human-readable display name,
+    // not the machine `recipeId` — UI / audit consumers expecting
+    // `name` to be a localized string keep working.
+    expect(uninstallRecord.name).toBe(displayName)
+    expect(uninstallRecord.name).not.toBe(SAMPLE_RECIPE_ID)
+  })
+
   it('cross-appId residue: same recipeId under a different appId fails closed (no duplicate manifest)', () => {
     // Same recipeId, different appId, non-coherent residue. The
     // Step 2 coherence gate short-circuits the coherent case;

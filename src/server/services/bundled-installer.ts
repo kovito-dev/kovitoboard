@@ -701,10 +701,15 @@ export function disableBundledRecipe(
   }
 
   // Step 4: history append.
+  // `name` is a localized display field — prefer the install
+  // record's stored display name so the uninstall row keeps the
+  // human-readable label, never the machine `recipeId`. The
+  // ultimate fallback is `recipeId` only when no install record
+  // has ever existed (registry-stale grandfather sample path).
   const historyEntry: RecipeHistoryEntry = {
     id: generateHistoryId(fs),
     action: 'uninstall',
-    name: manifest?.recipeId ?? installRecord?.name ?? recipeId,
+    name: installRecord?.name ?? recipeId,
     version: manifest?.recipeVersion ?? installRecord?.version ?? '0.0.0',
     source: persistedSource,
     hash: manifest?.hash ?? installRecord?.hash ?? '',

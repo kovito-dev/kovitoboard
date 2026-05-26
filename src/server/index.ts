@@ -1248,9 +1248,20 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
     res.status(404).json({ error: 'BundledNotFound' })
     return
   }
-  // Step 1: registry presence.
+  // Step 1: registry presence. The lookup is keyed on the
+  // **physical directory id** (`sample.id`, the `recipes/<id>/`
+  // folder name) and we then verify that `metadata.recipeId`
+  // matches verbatim. Without the second check, a malicious
+  // recipe.yaml under `recipes/evil/` declaring
+  // `metadata.recipeId: "document-viewer"` would slip through the
+  // allowlist (`isBundledEligibleRecipeId('document-viewer')`
+  // returns true) and the installer would then copy `recipes/evil/`
+  // under the bundled trust label. Pinning both axes closes that
+  // impersonation path.
   const samples = getSampleRecipes()
-  const sample = samples.find((s) => s.metadata.recipeId === recipeId)
+  const sample = samples.find(
+    (s) => s.id === recipeId && s.metadata.recipeId === recipeId,
+  )
   if (sample === undefined) {
     if (samples.length === 0) {
       res.status(503).json({ error: 'BundledRegistryUnavailable' })
