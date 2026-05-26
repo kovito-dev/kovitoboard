@@ -255,18 +255,39 @@ export interface RecipeManifest {
   /**
    * Trust level for this recipe install (v0.2.0).
    *
-   * v0.2.x always persists `'unknown'`: grandfather migrations set it
-   * explicitly, and the install path is disabled so no new manifest is
-   * minted with a different value. The remaining enum members are
-   * reserved for v0.3.0 (KovitoHub signed publisher → `'code-trusted'`,
-   * developer sideload → `'code-trusted (sideloaded)'`). See the
-   * separate trust-marker handoff for the v0.3.0 wiring.
+   * v0.2.x grandfather migrations set this to `'unknown'`; the
+   * generic install path stays disabled. v0.2.1 introduces
+   * `'code-trusted (bundled)'`, written by the bundled-installer
+   * flow when a sample recipe is enabled in-process. The remaining
+   * enum members are reserved for v0.3.0 (KovitoHub signed
+   * publisher → `'code-trusted'`, developer sideload →
+   * `'code-trusted (sideloaded)'`).
    *
-   * @see recipe-system.md v1.4 §6.10.3 / §6.10.4
+   * @see recipe-system.md v1.10 §10.9.5 BS-L4'
    * @see prompt-injection-threat-model.md v1.0 §2
    * @stable v0.2.0
    */
   trustLevel: TrustLevel
+  /**
+   * Source of the install (v0.2.1).
+   *
+   * Persisted four-value enum (`'sample' | 'bundled' | 'import' |
+   * 'url'`). Bundled enables write `'bundled'`; v0.2.0 grandfather
+   * sample installs keep their `'sample'` value verbatim (BS-L2
+   * grandfather idempotent merge — the bundled-enable flow must not
+   * rewrite this). The UI-facing alias `'sample (grandfather)'` is
+   * derived only and is not persisted (BS-L9).
+   *
+   * Optional only for backward compatibility with v0.2.0 manifests
+   * that predate this field; the migration in
+   * `recipeManifestStore.applyGrandfatherMigration` defaults absent
+   * `source` to `'sample'`.
+   *
+   * @see recipe-system.md v1.10 §10.9.5 BS-L9
+   * @see data-persistence.md v1.4 §6.4
+   * @stable v0.2.1
+   */
+  source?: 'sample' | 'bundled' | 'import' | 'url'
 }
 
 // =========================================

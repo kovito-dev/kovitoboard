@@ -181,6 +181,7 @@ export const TRUST_LEVEL_VALUES = [
   'KB-trusted',
   'code-trusted',
   'code-trusted (sideloaded)',
+  'code-trusted (bundled)',
   'unknown',
 ] as const
 export type TrustLevelValue = (typeof TRUST_LEVEL_VALUES)[number]
@@ -206,6 +207,7 @@ export function isTrustLevelValue(value: unknown): value is TrustLevelValue {
 export const RECIPE_PAGE_TRUST_LEVELS = [
   'code-trusted',
   'code-trusted (sideloaded)',
+  'code-trusted (bundled)',
   'unknown',
 ] as const
 export type RecipePageTrustLevel = (typeof RECIPE_PAGE_TRUST_LEVELS)[number]
@@ -342,6 +344,27 @@ export interface RecipeHistoryEntry {
    * the artifacts. Default behavior is to preserve user data.
    */
   ownDataDeleted?: boolean
+  /**
+   * Bundled-enable/disable monitoring metadata (v0.2.1).
+   *
+   * Set on bundled enable/disable history entries when the
+   * transaction took a non-default code path (registry stale,
+   * registry unavailable, manifest already absent, history rollback
+   * incomplete). Used by the audit-logging layer and operational
+   * monitoring to identify edge-case lifecycles. Always omitted on
+   * happy-path entries.
+   *
+   * @see recipe-system.md v1.10 §10.9.5.1
+   * @see data-persistence.md v1.4 §6.3
+   * @stable v0.2.1
+   */
+  metadata?: {
+    note?:
+      | 'bundled-registry-stale'
+      | 'bundled-registry-unavailable'
+      | 'manifest-already-absent'
+      | 'bundled-enable-history-rollback-incomplete'
+  }
 }
 
 // --- API request/response types ---

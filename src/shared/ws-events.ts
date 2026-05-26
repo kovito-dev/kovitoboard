@@ -162,6 +162,31 @@ export type ServerToClientEvent =
   | { type: 'app_menu_changed'; payload: AppMenuChangedPayload }
   | { type: 'agent_activity'; payload: AgentActivityPayload }
   | { type: 'agents_changed'; payload: AgentsChangedPayload }
+  | { type: 'recipe_apps_changed'; payload: RecipeAppsChangedPayload }
+
+/**
+ * Fired when a bundled sample recipe is enabled or disabled (v0.2.1).
+ *
+ * Carries the trigger action, the affected `appId`, and the persisted
+ * manifest `source` (so consumers can distinguish a fresh bundled
+ * enable from a grandfather-sample disable without re-querying the
+ * manifest store).
+ *
+ * The `source` field uses the persisted four-value enum (`'bundled' |
+ * 'sample'` for the bundled-installer paths covered by this event;
+ * the UI alias `'sample (grandfather)'` is derivation-only and not
+ * carried on the wire).
+ *
+ * @see docs/specs/ws-event-contract.md v1.4 §6.1 / §7.6.3
+ * @see docs/specs/http-api-contract.md v1.7.1 §6.3.8.B
+ * @stable v0.2.1
+ */
+export interface RecipeAppsChangedPayload {
+  trigger: 'enable' | 'disable'
+  appId: string
+  source: 'bundled' | 'sample'
+  ts: number
+}
 
 /**
  * Fired when the on-disk agent set changes (create / update / delete
