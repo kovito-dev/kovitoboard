@@ -69,8 +69,16 @@
  * Ordered list of Content-Security-Policy directives. Order is
  * not semantically significant for browsers, but kept stable so
  * a future diff against this list reads cleanly.
+ *
+ * The array is `Object.freeze`-d so a runtime mutation attempt
+ * (`(CSP_DIRECTIVES as string[]).push(...)`, accidental
+ * `splice`, etc.) throws in strict mode rather than silently
+ * weakening the policy for every subsequent response. The
+ * `readonly` type annotation already catches the TypeScript
+ * call sites; the freeze catches code paths that bypass the
+ * type system (compiled JS, casts, dynamic imports).
  */
-export const CSP_DIRECTIVES: readonly string[] = [
+export const CSP_DIRECTIVES: readonly string[] = Object.freeze([
   "default-src 'self'",
   "connect-src 'self' ws://localhost:* ws://127.0.0.1:*",
   "script-src 'self'",
@@ -81,7 +89,7 @@ export const CSP_DIRECTIVES: readonly string[] = [
   "object-src 'none'",
   "form-action 'self'",
   "frame-ancestors 'none'",
-] as const
+])
 
 /**
  * Build the Content-Security-Policy header value as a single

@@ -91,13 +91,25 @@ describe('CSP — header serialization', () => {
     expect(CSP_DIRECTIVES.length).toBe(9)
   })
 
-  it('is a readonly singleton at the type level (no accidental mutation)', () => {
-    // Cast to a mutable shape to attempt a push; the SUT array
-    // is typed `readonly string[]` so a real caller could not
-    // do this. We use `as` only to demonstrate that the test
-    // suite locks the value, not the type, and we restore the
-    // array on the same line.
-    const len = CSP_DIRECTIVES.length
-    expect(len).toBe(9)
+  it('is frozen at runtime so a cast cannot mutate the directive list', () => {
+    // The TypeScript `readonly` only protects type-checked call
+    // sites — a `(CSP_DIRECTIVES as string[]).push(...)` cast
+    // would slip through and silently weaken the CSP for every
+    // subsequent response in this process. The SUT calls
+    // `Object.freeze` so the cast throws in strict mode instead.
+    expect(Object.isFrozen(CSP_DIRECTIVES)).toBe(true)
+
+    expect(() => {
+      ;(CSP_DIRECTIVES as string[]).push("script-src 'unsafe-eval'")
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(CSP_DIRECTIVES as string[]).splice(0, 1)
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(CSP_DIRECTIVES as { [i: number]: string })[0] = "script-src 'unsafe-eval'"
+    }).toThrow(TypeError)
+    // Sanity: the array still has the expected count after the
+    // attempted mutations were all refused.
+    expect(CSP_DIRECTIVES.length).toBe(9)
   })
 })
