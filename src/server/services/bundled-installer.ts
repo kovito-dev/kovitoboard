@@ -328,6 +328,24 @@ export function enableBundledRecipe(
     )
   }
 
+  // Live cache-coherence check. The scanner cache was the basis
+  // for the allowlist match (the route handler verified
+  // `sample.id === recipeId && sample.metadata.recipeId === recipeId`
+  // upstream), but the bundled recipe on disk could have been
+  // edited between scan and enable. If `parsed.metadata.recipeId`
+  // no longer matches the requested allowlisted `recipeId`, the
+  // bundled directory has drifted away from the allowlist
+  // contract — refuse to mint a `code-trusted (bundled)` manifest
+  // for it and ask the caller to rescan.
+  if (parsed.metadata.recipeId !== recipeId) {
+    throw new BundledInstallerError(
+      `Bundled recipe "${recipeId}" parsed metadata.recipeId "${parsed.metadata.recipeId}" no longer matches the allowlist`,
+      503,
+      'BundledRegistryStaleCache',
+      { recipeId, parsedRecipeId: parsed.metadata.recipeId },
+    )
+  }
+
   // Step 3b: scope validation (BS-L5). The parser already rejects
   // unknown scopes, but we re-check here so the bundled-installer
   // contract stands on its own (recipe-system v1.10 §10.9.5).
@@ -672,8 +690,21 @@ export function disableBundledRecipe(
   assertSafeAppId(projectRoot, appId)
 
   // Step 2: delete `app/<appId>/` (artifacts only).
+  //
+  // Critical: in the history-only path (`manifestAlreadyAbsent ===
+  // true`) the manifest store does not corroborate that
+  // `app/<appId>/` still belongs to *this* bundled recipe. If the
+  // manifest was removed earlier and the same `appId` was later
+  // reused by another app — self-made or imported — running
+  // `rmSync` here would delete that unrelated app. Spec
+  // recipe-system v1.10 §10.9.4 SSOT routes the history-only case
+  // to "Step 5 only" (history append + audit log warning,
+  // `metadata.note: 'manifest-already-absent'`); the artifacts are
+  // assumed to be gone already because the manifest is. Honour
+  // that by skipping the `rmSync` whenever we cannot prove
+  // ownership through a live manifest.
   const appDir = join(projectRoot, 'app', appId)
-  if (fs.existsSync(appDir)) {
+  if (!manifestAlreadyAbsent && fs.existsSync(appDir)) {
     try {
       fs.rmSync(appDir, { recursive: true, force: true })
     } catch (err) {

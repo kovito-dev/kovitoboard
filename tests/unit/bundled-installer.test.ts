@@ -365,6 +365,47 @@ describe('enableBundledRecipe', () => {
     expect(manifest!.approvedCaptures).toEqual(manifest!.captureRequires)
   })
 
+  it('history-only path skips rmSync to avoid deleting a reused appId belonging to another app', () => {
+    // Reproduce the registry-stale grandfather sample state where
+    // the manifest was wiped but a bundled/sample install record
+    // is still in the JSONL log. Critical invariant: with no live
+    // manifest to prove ownership, the disable transaction must
+    // NOT touch `app/<appId>/` — that directory may have been
+    // re-used by an unrelated app since the manifest disappeared.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260401_001',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'sample',
+      hash: 'h',
+      appliedAt: '2026-04-01T00:00:00.000Z',
+      artifacts: [],
+      menu: ['document-viewer'],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    // Seed an "unrelated" app that happens to share the appId
+    // (e.g. user-created after the original sample manifest was
+    // hand-removed).
+    const appDir = join(h.projectRoot, 'app', SAMPLE_RECIPE_ID)
+    mkdirSync(appDir, { recursive: true })
+    writeFileSync(join(appDir, 'unrelated.tsx'), 'belongs to another app', 'utf-8')
+
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.metadata?.note).toBe('manifest-already-absent')
+    // The directory of the reused appId is left alone — exactly
+    // what BS-L3-A's "non-destructive cleanup on manifest-already-
+    // absent" semantics demand.
+    expect(existsSync(join(appDir, 'unrelated.tsx'))).toBe(true)
+  })
+
   it('disable history record carries the install record display name, not the machine recipeId', () => {
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!

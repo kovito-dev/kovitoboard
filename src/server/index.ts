@@ -1279,7 +1279,20 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
       recipeId,
       sample,
     })
-    refreshInstallStatus(fs, manifestStore)
+    // Post-commit work is best-effort. The artifacts copy +
+    // manifest write + history append have already landed; if the
+    // sample-cache refresh or ws-event broadcast throws we still
+    // need to acknowledge the state change. Throwing would turn
+    // a successful enable into a 500 and let clients retry — only
+    // to get `already-enabled`, which is the worst of both worlds.
+    try {
+      refreshInstallStatus(fs, manifestStore)
+    } catch (refreshErr) {
+      apiLogger.warn(
+        { err: refreshErr, action: 'enable', recipeId },
+        'refreshInstallStatus failed (non-fatal post-commit)',
+      )
+    }
     // ws-event broadcast: recipe_apps_changed (L11 cascade). Only
     // emit on an actual state change — `already-enabled` is an
     // idempotent retry that downstream consumers would otherwise
@@ -1327,7 +1340,14 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
   }
   try {
     const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
-    refreshInstallStatus(fs, manifestStore)
+    try {
+      refreshInstallStatus(fs, manifestStore)
+    } catch (refreshErr) {
+      apiLogger.warn(
+        { err: refreshErr, action: 'disable', recipeId },
+        'refreshInstallStatus failed (non-fatal post-commit)',
+      )
+    }
     if (
       result.status === 'disabled' &&
       result.appId !== undefined &&
