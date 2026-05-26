@@ -17,7 +17,7 @@
  * logged as warnings without throwing.
  */
 import { serverLogger } from '../logger'
-import { join, normalize, sep } from 'path'
+import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
@@ -161,12 +161,135 @@ export function readUserMenuEntries(
   // `null` if neither exists; the renderer surfaces a clear error
   // in that case rather than silently dropping the menu entry.
   for (const entry of entries) {
+    // Reject menu rows whose `page` path resolves outside the
+    // canonical `app/` directory before letting `join(appDir, ...)`
+    // walk a `../` segment. The parser regex (`import('./<page>')`)
+    // already strips the leading `./`, but `<page>` itself may
+    // contain `..` segments, an absolute path, or Windows
+    // separators — any of those would let a hand-edited menu row
+    // address a file outside `app/` and the renderer would
+    // dynamic-import it via Vite's `/@fs/` URL scheme. The
+    // canonical-app-id check at line 181 below only governs
+    // trust-badge attribution; the file-resolution gap is what is
+    // closed here.
+    // Layer 1 — lexical containment under `app/`. Refuses
+    // parent-directory escapes, absolute paths, drive-qualified
+    // shapes, and Windows separators before we touch the
+    // filesystem.
+    if (!isWithinAppDir(entry.page, appDir)) {
+      serverLogger.warn(
+        { id: entry.id, page: entry.page },
+        '[menu-extractor] Skipping menu entry whose page path escapes app/',
+      )
+      if (trustLookup) entry.trustLevel = null
+      continue
+    }
+    // Layer 2 — app-id binding. `app-directory-extension.md` binds
+    // menu `id`, the `app/<appId>/` subtree, and the
+    // `window.kb.call` bridge to the same `appId`. Loading a
+    // sibling app's pages on this route would inject the wrong
+    // app's runtime capability context (recipe-scoped bridge),
+    // so we refuse cross-app drift outright instead of merely
+    // stripping the trust badge downstream.
+    if (!isCanonicalAppIdPath(entry.page, entry.id)) {
+      serverLogger.warn(
+        { id: entry.id, page: entry.page },
+        '[menu-extractor] Skipping menu entry whose page path does not live under app/<id>/',
+      )
+      if (trustLookup) entry.trustLevel = null
+      continue
+    }
     const tsxPath = join(appDir, `${entry.page}.tsx`)
     const tsPath = join(appDir, `${entry.page}.ts`)
-    if (fs.existsSync(tsxPath)) {
-      entry.pageAbsolutePath = tsxPath
-    } else if (fs.existsSync(tsPath)) {
-      entry.pageAbsolutePath = tsPath
+    const candidate = fs.existsSync(tsxPath)
+      ? tsxPath
+      : fs.existsSync(tsPath)
+        ? tsPath
+        : null
+    if (candidate !== null) {
+      // Layer 3 — symlink defence, split into two complementary
+      // checks so we do not falsely reject legitimate paths on
+      // case-insensitive or normalization-changing filesystems
+      // (macOS APFS, NTFS) where `realpathSync(candidate)` can
+      // legitimately differ from `candidate` in casing or NFD/NFC
+      // even when no symlink is involved:
+      //
+      //   3a. `lstatSync(candidate).isSymbolicLink` detects a
+      //       file-level symlink at the candidate itself. This
+      //       catches `<id>/Index.tsx → /elsewhere/...`.
+      //
+      //   3b. `realpathSync(candidate)` must canonicalize to a
+      //       path inside the canonical `<id>/` directory, which
+      //       must in turn live under the canonical `app/`. This
+      //       catches intermediate-directory symlinks
+      //       (`<id> → /elsewhere/...`) and any other parent-
+      //       chain redirection. Containment is verified by
+      //       prefix, not by string equality, so cased or
+      //       NFD-normalized differences on case-insensitive FS
+      //       no longer cause false rejects.
+      //
+      // Logs carry only the user-supplied `page` and a stable
+      // reason code; absolute canonical paths are never emitted
+      // because they would leak host filesystem layout for the
+      // exact attack shapes this guard is defending against.
+      const appIdDir = join(appDir, entry.id)
+      try {
+        if (fs.lstatSync(candidate).isSymbolicLink) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, reason: 'symlink-redirect' },
+            '[menu-extractor] Skipping menu entry whose page file is a symlink',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        const realAppDir = fs.realpathSync(appDir)
+        const realAppIdDir = fs.realpathSync(appIdDir)
+        const realCandidate = fs.realpathSync(candidate)
+        const appRootMarker = realAppDir.endsWith(sep)
+          ? realAppDir
+          : realAppDir + sep
+        if (
+          realAppIdDir !== realAppDir &&
+          !realAppIdDir.startsWith(appRootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, reason: 'app-id-dir-escape' },
+            '[menu-extractor] Skipping menu entry whose app/<id>/ directory escapes app/',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        const idRootMarker = realAppIdDir.endsWith(sep)
+          ? realAppIdDir
+          : realAppIdDir + sep
+        if (
+          realCandidate !== realAppIdDir &&
+          !realCandidate.startsWith(idRootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, reason: 'app-id-escape' },
+            '[menu-extractor] Skipping menu entry whose canonical path escapes app/<id>/',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        // Persist the canonical path. By this point we have
+        // verified (a) the candidate is not itself a symlink and
+        // (b) its canonical form lives under the canonical
+        // `app/<id>/`. The residual race — an attacker that
+        // converts `realCandidate` into a symlink between this
+        // assignment and the renderer's later `/@fs/` import —
+        // requires a renderer-side re-canonicalization to close;
+        // that is tracked as a follow-up outside this PR.
+        entry.pageAbsolutePath = realCandidate
+      } catch {
+        serverLogger.warn(
+          { id: entry.id, page: entry.page, reason: 'realpath-failure' },
+          '[menu-extractor] Skipping menu entry whose path could not be canonicalized',
+        )
+        if (trustLookup) entry.trustLevel = null
+        continue
+      }
     }
     if (trustLookup) {
       // Only attach the manifest's trust level when the menu row is
@@ -187,6 +310,79 @@ export function readUserMenuEntries(
   }
 
   return entries
+}
+
+/**
+ * Returns true when `page` (as parsed out of `import('./<page>')`)
+ * resolves to a location strictly inside `app/` once joined with
+ * `appDir`. This is **Layer 1** of the three-layer path-containment
+ * check in `readUserMenuEntries` — it refuses parent-directory
+ * escapes, absolute paths, Windows separators, and drive-qualified
+ * paths before we touch the filesystem.
+ *
+ * The check is intentionally coarser than `isCanonicalAppIdPath`:
+ * it does NOT require the path to live under `app/<appId>/`. The
+ * sibling-drift refusal (cross-app capability mixup per
+ * `app-directory-extension.md`) is enforced by `isCanonicalAppIdPath`
+ * one layer further in. Splitting the predicates keeps each one's
+ * invariant crisp and lets the trust-badge layer evolve
+ * independently of the file-resolution gate.
+ *
+ * `appDir`, when supplied, enables a defence-in-depth post-resolve
+ * check: the candidate path is rebuilt via `resolve(appDir, page)`
+ * and must end up under `appDir`. This catches Win32-only escapes
+ * such as `C:/../../bar` whose drive-qualified prefix bypasses the
+ * lexical traversal checks because `normalize` collapses them away
+ * from the project tree on Windows hosts.
+ *
+ * Exported so unit tests can drive the predicate directly.
+ */
+export function isWithinAppDir(page: string, appDir?: string): boolean {
+  // Cheap structural rejections first: forward slash is the only
+  // separator the recipe layout uses, so any absolute path or
+  // backslash is already non-canonical (and avoids quirks on
+  // Windows hosts).
+  if (page.length === 0) return false
+  if (page.startsWith('/') || page.startsWith('\\')) return false
+  if (page.includes('\\')) return false
+
+  // Reject Win32 drive-qualified shapes (`C:foo`, `C:/foo`,
+  // `D:bar`). On Windows hosts `path.normalize` quietly strips
+  // the drive prefix and emits a relative tail (`C:/../../bar` →
+  // `bar` on Win32), so the POSIX-style `..` checks below would
+  // otherwise let drive-qualified inputs through.
+  if (/^[A-Za-z]:/.test(page)) return false
+
+  // `normalize` collapses `./` and `../` segments. After this:
+  //   - `pages/Foo`              → `pages/Foo`           (kept)
+  //   - `./pages/Foo`            → `pages/Foo`           (kept)
+  //   - `doc-viewer/../evil-app` → `evil-app`            (kept; the
+  //       trust-badge attribution catches sibling drift separately)
+  //   - `../etc/passwd`          → `../etc/passwd`       (rejected)
+  //   - `pages/../../etc/passwd` → `../etc/passwd`       (rejected)
+  //   - `..`                     → `..`                  (rejected)
+  const normalized = normalize(page)
+  if (
+    normalized === '..' ||
+    normalized.startsWith('..') ||
+    normalized.includes(`${sep}..${sep}`) ||
+    normalized.endsWith(`${sep}..`)
+  ) {
+    return false
+  }
+
+  // Defence in depth: rebuild the candidate path against the
+  // concrete `appDir` and verify lexical containment. This catches
+  // any platform-specific quirk in `normalize` we did not anticipate.
+  // The check is platform-aware via `resolve` + `sep`.
+  if (appDir !== undefined) {
+    const candidate = resolve(appDir, page)
+    const rootMarker = appDir.endsWith(sep) ? appDir : appDir + sep
+    if (candidate !== appDir && !candidate.startsWith(rootMarker)) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
