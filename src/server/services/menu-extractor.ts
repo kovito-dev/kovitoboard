@@ -223,14 +223,34 @@ export function readUserMenuEntries(
       // cross-app read primitive.
       const appIdDir = join(appDir, entry.id)
       try {
-        const realCandidate = fs.realpathSync(candidate)
+        const realAppDir = fs.realpathSync(appDir)
         const realAppIdDir = fs.realpathSync(appIdDir)
-        const rootMarker = realAppIdDir.endsWith(sep)
+        const realCandidate = fs.realpathSync(candidate)
+        const appRootMarker = realAppDir.endsWith(sep)
+          ? realAppDir
+          : realAppDir + sep
+        // Inner-to-outer containment: `app/<id>/` itself must
+        // stay inside `app/`. Without this an attacker who plants
+        // `app/<id>` as a symlink to `/elsewhere/evil-app` would
+        // make every later check operate on the foreign tree
+        // while the source-side comparison still passes.
+        if (
+          realAppIdDir !== realAppDir &&
+          !realAppIdDir.startsWith(appRootMarker)
+        ) {
+          serverLogger.warn(
+            { id: entry.id, page: entry.page, candidate, realAppIdDir },
+            '[menu-extractor] Skipping menu entry whose app/<id>/ directory itself escapes app/ via symlink',
+          )
+          if (trustLookup) entry.trustLevel = null
+          continue
+        }
+        const idRootMarker = realAppIdDir.endsWith(sep)
           ? realAppIdDir
           : realAppIdDir + sep
         if (
           realCandidate !== realAppIdDir &&
-          !realCandidate.startsWith(rootMarker)
+          !realCandidate.startsWith(idRootMarker)
         ) {
           serverLogger.warn(
             { id: entry.id, page: entry.page, candidate, realCandidate },

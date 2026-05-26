@@ -459,6 +459,42 @@ describe('readUserMenuEntries — symlink containment (Layer 3)', () => {
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
+  it('rejects when the app/<id>/ directory itself is a symlink outside app/', () => {
+    // Plant a menu row whose page path lexically looks fine, but
+    // the entry's own `app/<id>/` directory is a symlink to a
+    // location outside `app/`. The candidate file (which lives
+    // physically under the foreign target) would otherwise pass
+    // the inner containment check because the comparison root is
+    // the foreign target itself. The new outer check refuses it.
+    process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
+    const appIdDir = `${projectRoot}/app/doc-viewer`
+    const foreignAppDir = `${projectRoot}/elsewhere/evil-app`
+    const candidatePath = `${appIdDir}/Index.tsx`
+    const fs = makeMockFs(
+      projectRoot,
+      {
+        [menuPath]: menuTs([{ id: 'doc-viewer', page: 'doc-viewer/Index' }]),
+        [candidatePath]: '// placeholder\n',
+      },
+      {
+        symlinks: {
+          // app/doc-viewer → /elsewhere/evil-app
+          [appIdDir]: foreignAppDir,
+          // The candidate, when canonicalized, points at the
+          // foreign target file.
+          [candidatePath]: `${foreignAppDir}/Index.tsx`,
+        },
+      },
+    )
+    const entries = readUserMenuEntries(fs)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].pageAbsolutePath).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'doc-viewer' }),
+      expect.stringContaining('app/<id>/ directory itself escapes app/'),
+    )
+  })
+
   it('rejects when realpathSync throws (broken or denied link)', () => {
     process.env.KOVITOBOARD_PROJECT_ROOT = projectRoot
     const candidatePath = `${projectRoot}/app/broken-app/Index.tsx`
