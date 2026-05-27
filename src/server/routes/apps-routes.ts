@@ -682,16 +682,25 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
   router.patch('/:appId/menu-label', async (req, res) => {
     const appId = req.params.appId
     if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
-      // Spec note (attempt 12): do NOT record the raw
-      // rejected appId in audit. Express's route pattern accepts
-      // an arbitrary path segment, so a caller could otherwise
+      // Spec note (attempt 12): do NOT record the raw rejected
+      // appId in audit. Express's route pattern accepts an
+      // arbitrary path segment, so a caller could otherwise
       // submit very long / hostile bytes and force unbounded
-      // audit-log amplification per request. We record only the
-      // rejection itself plus the byte length of the offending
-      // segment (capped) so operators can still observe an
-      // abusive scan pattern without storing the payload.
+      // audit-log amplification per request. The rejected
+      // segment's BYTE LENGTH is the only forensic signal worth
+      // keeping, and the verbose detail (capped to 1024 bytes
+      // to stay bounded under abuse) goes to the server log,
+      // not the HTTP route audit stream — keeping it out of
+      // `audit.labelLength` avoids overloading that field with
+      // two different meanings (the canonical meaning is
+      // userMenuLabel length on the menu-label-update path;
+      // Spec note (attempt 16) Finding 1 fix).
       const rawAppIdLength =
         typeof appId === 'string' ? Math.min(appId.length, 1024) : 0
+      apiLogger.warn(
+        { rawAppIdLength },
+        'PATCH /api/apps/:appId/menu-label: rejected invalid appId',
+      )
       respondAndAudit(res, apiLogger, {
         status: 400,
         body: { error: 'InvalidAppId' },
@@ -700,13 +709,10 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           path: '/api/apps/:appId/menu-label',
           // appId is intentionally absent from pathParams here —
           // the value failed the regex and would be a bad audit
-          // payload. The `audit.labelLength` field doubles as the
-          // "offending segment size" signal for this branch
-          // (cheap, bounded, no raw content).
+          // payload.
           pathParams: {},
           audit: {
             action: 'menu-label-update',
-            labelLength: rawAppIdLength,
           },
           errorCode: 'InvalidAppId',
         },

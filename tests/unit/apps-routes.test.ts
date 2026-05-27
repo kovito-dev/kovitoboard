@@ -136,6 +136,19 @@ interface HttpReply {
   body: Record<string, unknown> | null
 }
 
+/**
+ * Yield to the event loop once so any `setImmediate(...)` callbacks
+ * scheduled during the previous request — notably the deferred
+ * `app_menu_changed` broadcast in `apps-routes.ts` — run before the
+ * test inspects observable side effects. Without this flush the
+ * broadcast assertion would be timing-dependent: on some
+ * scheduler outcomes the response could resolve before the
+ * deferred callback fires (Spec note attempt 16 Finding 2).
+ */
+function flushSetImmediate(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve))
+}
+
 async function sendJson(
   app: Express,
   method: 'PUT' | 'PATCH',
@@ -185,6 +198,12 @@ async function sendJson(
     })
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
+    // Flush one event-loop tick so any setImmediate-scheduled
+    // post-response work (notably the deferred app_menu_changed
+    // broadcast added in attempt 14 Finding 2) has run before
+    // the test inspects observable side effects. Without this
+    // flush the broadcast assertion would be timing-dependent.
+    await flushSetImmediate()
   }
 }
 
