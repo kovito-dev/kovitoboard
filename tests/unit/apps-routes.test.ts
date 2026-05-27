@@ -369,6 +369,28 @@ describe('PUT /api/apps/menu-order', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('400 InvalidMenuOrder when batch exceeds MENU_ORDER_MAX_ENTRIES', async () => {
+    writeManifest(h.projectRoot, buildManifest('alpha'))
+
+    // Build a 1001-entry batch — one above the cap. All ids are
+    // syntactically valid so the rejection must come from the size
+    // gate, not the per-entry shape check.
+    const order = Array.from({ length: 1001 }, (_, i) => ({
+      appId: `alpha-${i.toString(36)}`,
+      menuOrder: i,
+    }))
+
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order,
+    })
+
+    expect(reply.status).toBe(400)
+    expect(reply.body?.error).toBe('InvalidMenuOrder')
+    // The handler MUST not have taken any per-app lock for the
+    // 1001 hypothetical apps before rejecting.
+    expect(h.broadcasts).toHaveLength(0)
+  })
+
   it('200 no-op short-circuit: skips write + broadcast when order matches disk state', async () => {
     writeManifest(h.projectRoot, buildManifest('alpha', 0))
     writeManifest(h.projectRoot, buildManifest('beta', 1))

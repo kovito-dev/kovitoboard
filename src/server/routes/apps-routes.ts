@@ -50,6 +50,19 @@ import {
 /** Maximum length of a user-provided menu label string. */
 export const MENU_LABEL_MAX_LENGTH = 80
 
+/**
+ * Upper bound on the number of entries the `PUT /api/apps/menu-order`
+ * endpoint will accept in a single closed-world batch.
+ *
+ * Realistic project app sets are well under a hundred entries — the
+ * cap is set generously above that so a legitimate caller has never
+ * been clamped, while still bounding the amount of work an
+ * authenticated caller can force per request. Bodies that exceed this
+ * are rejected with 400 `InvalidMenuOrder` before any per-app lock is
+ * acquired (codex attempt 5 Finding 2 — lock amplification / DoS).
+ */
+export const MENU_ORDER_MAX_ENTRIES = 1000
+
 /** Path parameter regex shared with `/api/apps/:appId/request-removal`. */
 const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
 
@@ -89,6 +102,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         errorCode: 'InvalidMenuOrder',
       })
       res.status(400).json({ error: 'InvalidMenuOrder' })
+      return
+    }
+
+    // Codex attempt 5 Finding 2 fix: clamp oversized batches before
+    // any lock is acquired. An authenticated caller could otherwise
+    // send a very large `order` array whose appIds will fail the
+    // post-lock coverage check, but only after the handler had
+    // already taken N per-app locks (and held them long enough to
+    // run the scan). Bounding the array size at MENU_ORDER_MAX_ENTRIES
+    // keeps lock-acquisition work proportional to a single legitimate
+    // project app set (realistic ceiling is well under 100).
+    if (rawOrder.length > MENU_ORDER_MAX_ENTRIES) {
+      respondMenuOrderError(res, apiLogger, 'InvalidMenuOrder')
       return
     }
 
