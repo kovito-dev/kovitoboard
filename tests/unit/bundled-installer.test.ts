@@ -41,7 +41,9 @@ import {
   disableBundledRecipe,
   enableBundledRecipe,
   isEnabledAndManifestCoherent,
+  loadRecipeHistorySnapshot,
   resolveBundledAppIdForDisable,
+  type RecipeHistorySnapshot,
 } from '../../src/server/services/bundled-installer'
 import { scanSampleRecipes, getSampleRecipes } from '../../src/server/services/recipe-scanner'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
@@ -1578,5 +1580,232 @@ describe('resolveBundledAppIdForDisable (BL-2026-176)', () => {
     const err = thrown as BundledInstallerError
     expect(err.errorCode).toBe('BundledLocalStateCorrupted')
     expect(err.httpStatus).toBe(500)
+  })
+})
+
+// =========================================
+// loadRecipeHistorySnapshot + snapshot threading
+// (PR #56 codex attempt 2 Finding "resource exhaustion")
+// =========================================
+
+/**
+ * Wrap a `DirectFsLayer` so we can count `readFileSync` invocations
+ * without changing any other behaviour. Used to prove that snapshot
+ * threading collapses the worst-case 3× sync history reads
+ * (handler classify + resolver classify + resolver fallback) into a
+ * single per-request read.
+ */
+function wrapFsWithReadCounter(fs: DirectFsLayer): {
+  fs: DirectFsLayer
+  countFor: (path: string) => number
+  reset: () => void
+} {
+  const counts = new Map<string, number>()
+  const originalReadFileSync = fs.readFileSync.bind(fs)
+  // Augment the layer in place (DirectFsLayer instances are
+  // per-test, so this does not leak between tests).
+  ;(fs as unknown as { readFileSync: typeof fs.readFileSync }).readFileSync = (
+    p: Parameters<typeof originalReadFileSync>[0],
+    enc?: Parameters<typeof originalReadFileSync>[1],
+  ) => {
+    const key = typeof p === 'string' ? p : String(p)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+    return originalReadFileSync(p, enc)
+  }
+  return {
+    fs,
+    countFor: (path: string) => counts.get(path) ?? 0,
+    reset: () => counts.clear(),
+  }
+}
+
+describe('loadRecipeHistorySnapshot (PR #56 attempt 2)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('returns an empty snapshot when recipe-history.jsonl is absent', () => {
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+  })
+
+  it('returns parsed entries from recipe-history.jsonl when present', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_snapshot',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries.length).toBe(1)
+    expect(snapshot.entries[0].recipeId).toBe(SAMPLE_RECIPE_ID)
+  })
+
+  it('surfaces BundledLocalStateUnavailable 503 on probe IO failure', () => {
+    // Seed a history file, then chmod 000 to force EACCES on the
+    // probe `readFileSync`. The probe contract is to map any errno
+    // (EACCES / EPERM / EIO / EBUSY) to a 503; the precise errno
+    // surfaces through the structured detail field.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_io_fail',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    // The chmod is per-process and the test harness runs as a
+    // non-root user, so 000 reliably blocks read. We restore in a
+    // `finally` to avoid blocking the rmSync in cleanup.
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(historyPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        loadRecipeHistorySnapshot(h.fs)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(historyPath, 0o644)
+    }
+  })
+})
+
+describe('classifyLocalResidue / resolveBundledAppIdForDisable snapshot threading (PR #56 attempt 2)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('reuses the caller-provided snapshot in classifyLocalResidue (no redundant readFileSync)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_thread_classify',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot: RecipeHistorySnapshot = loadRecipeHistorySnapshot(counter.fs)
+    // loadRecipeHistorySnapshot itself reads the file once via the
+    // probe (the parse step reads it again through fs.readFileSync
+    // inside readRecipeHistory).
+    const baselineReads = counter.countFor(historyPath)
+    expect(baselineReads).toBeGreaterThanOrEqual(1)
+    counter.reset()
+    const residue = classifyLocalResidue({
+      fs: counter.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(residue).toBe('present')
+    expect(counter.countFor(historyPath)).toBe(0)
+  })
+
+  it('reuses the caller-provided snapshot in resolveBundledAppIdForDisable (no redundant readFileSync)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_thread_resolve',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'sample',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot: RecipeHistorySnapshot = loadRecipeHistorySnapshot(counter.fs)
+    counter.reset()
+    const result = resolveBundledAppIdForDisable({
+      fs: counter.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(result).toEqual({
+      appId: SAMPLE_RECIPE_ID,
+      source: 'sample',
+      manifestAlreadyAbsent: true,
+    })
+    // With the snapshot threaded, neither the embedded
+    // classifyLocalResidue call nor the history-backed fallback
+    // re-reads the file.
+    expect(counter.countFor(historyPath)).toBe(0)
+  })
+
+  it('falls back to its own snapshot load when no historySnapshot is provided (back-compat)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_backcompat',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    // No snapshot threading — the call should still succeed
+    // because the function loads its own snapshot internally
+    // (preserves the existing single-arg contract used by callers
+    // that have not been migrated yet).
+    const result = resolveBundledAppIdForDisable({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result?.appId).toBe(SAMPLE_RECIPE_ID)
+    expect(result?.source).toBe('bundled')
   })
 })
