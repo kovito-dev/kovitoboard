@@ -1306,7 +1306,23 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
       res.status(503).json({ error: 'BundledAppLockTimeout' })
       return
     }
-    throw lockErr
+    // The app-lock contract only models the wait-timeout failure
+    // mode (`AppLockWaitTimeoutError`), but the async signature does
+    // not statically prevent an unrelated rejection (e.g. a future
+    // implementation bug, a `setTimeout` failure under host stress).
+    // Letting such a rejection escape from this async route handler
+    // would hand control to Express's default error handler, which
+    // serves an HTML body / hangs the response — a JSON API contract
+    // violation. Local-catch + structured 500 keeps the surface
+    // consistent with `handleBundledInstallerError` and lets clients
+    // recover deterministically (PR #56 codex attempt 3 Finding
+    // "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+      'Bundled enable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
   }
   // Hold the lock only for the destructive disk transaction
   // (artifacts copy + manifest write + history append). The
@@ -1470,7 +1486,18 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
       res.status(503).json({ error: 'BundledAppLockTimeout' })
       return
     }
-    throw lockErr
+    // Mirror the enable handler local-catch: an unexpected lock
+    // rejection must not escape an async route handler (no
+    // centralized JSON error middleware exists, so Express's default
+    // handler would serve HTML and break the API contract). See the
+    // matching block in the enable handler for the full rationale
+    // (PR #56 codex attempt 3 Finding "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'disable', recipeId, appId: resolved.appId },
+      'Bundled disable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
   }
   // Hold the lock only for the destructive disk transaction
   // (`disableBundledRecipe`: rmSync appDir + manifest unlink +
