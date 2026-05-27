@@ -661,6 +661,14 @@ function probeAppDirAnomaly(
     }
   }
 
+  // `probeTarget` is the canonical path the step 4 readdir will run
+  // against. For a non-symlink entry this is just `appDir`; the
+  // symlink branch below overwrites it with `realpathSync(appDir)`
+  // so step 4 sees the same canonical path the boundary check
+  // verified, closing the TOCTOU window a swap-after-check would
+  // otherwise open.
+  let probeTarget = appDir
+
   // Step 2: entry kind discrimination. `lstatSync` is the only way to
   // tell a symlink apart from its target — `existsSync` follows
   // symlinks and would mistreat a broken link as "absent".
@@ -711,24 +719,33 @@ function probeAppDirAnomaly(
     // review attempt 1 Medium 1 surfaced this; spec v1.11 §10.9.3
     // (ii-f) pins the new state. Same errno routing as step 3.
     const appBoundary = join(projectRoot, 'app')
-    let resolvedTarget: string
     try {
-      resolvedTarget = fs.realpathSync(appDir)
+      probeTarget = fs.realpathSync(appDir)
     } catch (err) {
       return classifySymlinkResolveError(err)
     }
-    if (!isWithin(resolvedTarget, appBoundary)) {
-      return { state: 'symlink-out-of-app-root', resolvedTarget }
+    if (!isWithin(probeTarget, appBoundary)) {
+      return { state: 'symlink-out-of-app-root', resolvedTarget: probeTarget }
     }
     // Live symlink whose target stays under <projectRoot>/app/ →
-    // fallthrough to step 4 (readdirSync via the symlink).
+    // fallthrough to step 4 (readdirSync via the resolved canonical
+    // path, NOT the original symlink). Using the realpath here
+    // closes the TOCTOU race a local attacker could otherwise win
+    // by swapping the symlink target between the boundary check
+    // and the readdir — the canonical path was captured under the
+    // boundary verification, so a post-check swap cannot redirect
+    // us out of `<projectRoot>/app/` (PR #56 codex attempt 7
+    // Finding "TOCTOU path-boundary bypass").
   } else if (!lstat.isDirectory) {
     return { state: 'non-directory-entry' }
   }
 
-  // Step 4: readability probe.
+  // Step 4: readability probe. Operate on `probeTarget` (the
+  // resolved canonical path when step 3.5 ran, otherwise `appDir`
+  // itself) so the readdir cannot follow a swapped-after-check
+  // symlink to an out-of-root directory.
   try {
-    fs.readdirSync(appDir)
+    fs.readdirSync(probeTarget)
   } catch (err) {
     const code =
       err && typeof err === 'object' && 'code' in err

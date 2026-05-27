@@ -1512,12 +1512,23 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
         manifestStore,
         projectRoot,
         recipeId,
-        // Thread the pre-lock snapshot into the locked transaction
-        // so classifyLocalResidue + findHistoryMatchForBundled reuse
-        // the same parsed history (PR #56 codex attempt 6 Finding
-        // "resource exhaustion" — the snapshot optimization
-        // previously stopped at the lock boundary).
-        historySnapshot,
+        // Deliberately do NOT thread the pre-lock historySnapshot
+        // into the locked transaction. The pre-lock snapshot is
+        // taken BEFORE acquireAppLock; if a concurrent enable /
+        // disable for the same appId commits while this waiter is
+        // queued, the snapshot becomes stale and the locked
+        // classifyLocalResidue would mis-decide (returning
+        // already-disabled even though enable just finished, or
+        // appending a second uninstall record after the first
+        // disable already completed). disableBundledRecipe falls
+        // back to its own internal loadRecipeHistorySnapshot under
+        // the lock, which sees the post-wait state (PR #56 codex
+        // attempt 7 Finding "stale state across lock boundary").
+        // The pre-lock snapshot is still consumed by the upstream
+        // residue / appId-resolution probes that derive the
+        // tentative lock key — those run *before* the lock and
+        // tolerate the stale-state race because their decisions
+        // are re-validated under the lock anyway.
       })
     } finally {
       release()
