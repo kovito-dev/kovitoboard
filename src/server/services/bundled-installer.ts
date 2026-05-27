@@ -939,6 +939,41 @@ export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResid
 
   const installRecord = findHistoryMatchForBundled(snapshot.entries, recipeId)
 
+  // Cache-miss disk probe (PR #56 codex attempt 9 Finding "fail-
+  // closed gap in local-state validation"): if the cache says
+  // "no manifest" but a history install record gives us a candidate
+  // appId, the on-disk `recipes-installed/<appId>/manifest.json`
+  // may still exist as a malformed file that `manifestStore.loadAll()`
+  // dropped at boot (warn log only). Surfacing that as 503 /
+  // 500 keeps the disable path fail-closed against stale corrupt
+  // manifests — otherwise disable would silently take the
+  // manifest-already-absent branch and return success without
+  // cleaning up the corrupt file. The probe is `probeManifestFileOnDisk`
+  // (cache-ignoring) so it doesn't loop back through the same null
+  // cache lookup that got us here.
+  if (manifest === null && installRecord !== undefined) {
+    const recordAppId = installRecord.appId ?? installRecord.recipeId ?? recipeId
+    const cacheMissProbe = probeManifestFileOnDisk(fs, manifestStore, recordAppId)
+    if (cacheMissProbe.state === 'present-io-failure') {
+      throw new BundledInstallerError(
+        `Manifest IO failure for "${recipeId}" (appId="${recordAppId}", cache-miss probe)`,
+        503,
+        'BundledLocalStateUnavailable',
+        { fileName: 'manifest.json', appId: recordAppId, errno: cacheMissProbe.errno, detail: cacheMissProbe.detail },
+      )
+    }
+    if (cacheMissProbe.state === 'present-parse-failure') {
+      throw new BundledInstallerError(
+        `Manifest parse failure for "${recipeId}" (appId="${recordAppId}", cache-miss probe): ${cacheMissProbe.detail}`,
+        500,
+        'BundledManifestUnreadable',
+        { appId: recordAppId, detail: cacheMissProbe.detail },
+      )
+    }
+    // probe.state === 'absent' → genuine manifestAlreadyAbsent, no
+    // change to the residue classification flow below.
+  }
+
   const manifestPresent = manifest !== null
   const recordPresent = installRecord !== undefined
 

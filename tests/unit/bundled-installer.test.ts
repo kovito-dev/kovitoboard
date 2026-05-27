@@ -202,6 +202,63 @@ describe('classifyLocalResidue', () => {
     ).toBe('corrupted')
   })
 
+  it('cache-miss + history-resolved appId still probes disk for malformed manifest (PR #56 attempt 9)', () => {
+    // Codex attempt 9 Finding "fail-closed gap in local-state
+    // validation": classifyLocalResidue used to only probe
+    // manifest.json on disk when findManifestByRecipeId returned a
+    // cached manifest. A manifest that exists on disk but was
+    // dropped from manifestStore.loadAll() at boot for schema
+    // reasons (warn log only) would fall through as manifest === null,
+    // and the disable transaction would silently take the
+    // manifestAlreadyAbsent branch — never deleting the stale
+    // corrupt manifest file. The fix adds a cache-miss disk probe:
+    // when manifest is null but a history record gives us an appId,
+    // probeManifestFileOnDisk(recordAppId) surfaces present-io-failure
+    // (503) and present-parse-failure (500) instead of silent
+    // fallthrough.
+    //
+    // Seed a history install record + plant an unparseable manifest
+    // at the resolved appId WITHOUT going through manifestStore.save.
+    // The cache misses (we never registered the manifest), the
+    // disk probe sees `not-json{` and routes to present-parse-failure
+    // → 500 BundledManifestUnreadable.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_cache_miss_probe',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const manifestDir = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+    )
+    mkdirSync(manifestDir, { recursive: true })
+    writeFileSync(join(manifestDir, 'manifest.json'), 'not-json{', 'utf-8')
+    let thrown: unknown = null
+    try {
+      classifyLocalResidue({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledManifestUnreadable')
+    expect(err.httpStatus).toBe(500)
+  })
+
 })
 
 // =========================================
