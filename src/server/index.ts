@@ -130,6 +130,7 @@ import type {
 import { RecipeManifestStore } from './recipeManifestStore'
 import {
   acquireAppLock,
+  acquireGlobalMenuTsLock,
   AppLockWaitTimeoutError,
   dispatch as dispatchHandler,
 } from './handlerDispatcher'
@@ -197,6 +198,19 @@ app.use((_req, res, next) => {
 // JSON body parsing. Without this ordering an attacker could keep the
 // server busy parsing megabyte-sized JSON bodies even though the
 // request would ultimately be rejected.
+//
+// The `verifyTokenAndOrigin` mount below is **the** authentication
+// + authorization gate for every `/api/...` route in this server,
+// including the bundled-installer endpoints
+// (`POST /api/recipes/sample/:recipeId/enable` and `.../disable`).
+// Spec recipe-system v1.12 §10.9.3 + §10.9.4 normatively pin
+// `middleware: verifyTokenAndOrigin` for both endpoints; placing
+// the gate at the `/api` namespace level (rather than per-route)
+// is what makes that contract robust against a future route
+// registration that forgets to declare the middleware. The guard
+// itself (`createTokenAndOriginGuard` in `auth/`) verifies the
+// launch-token bearer header + the Origin allowlist before the
+// JSON body parser ever sees the request payload.
 app.use('/api', verifyTokenAndOrigin)
 app.use(express.json())
 
@@ -1309,6 +1323,34 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
   // and we acquire it here, before `enableBundledRecipe` opens its
   // first file.
   const appIdForLock = sample.id
+  // Spec v1.12 §10.9.3 Step 5.6 + §10.9.5 BS-L1' rollback lock
+  // discipline: acquire the global menu.ts lock **before** the
+  // per-app lock so the bundled-installer transaction (Step 5.6
+  // append + rollback path) and the disable transaction (Step 4.5
+  // remove + rollback) cannot race against each other for the
+  // shared `app/menu.ts` resource. Release order is reverse
+  // (acquire global → app → release app → release global) so a
+  // deadlocked counter-party can never observe a half-released
+  // lock pair.
+  let releaseMenuTs: (() => void)
+  try {
+    releaseMenuTs = await acquireGlobalMenuTsLock()
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+        'Bundled enable rejected (global menu.ts lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    apiLogger.error(
+      { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+      'Bundled enable failed (acquireGlobalMenuTsLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
   // Acquire the lock outside the result `try` so a wait-queue
   // timeout (503 `BundledAppLockTimeout`) returns immediately
   // without running the post-commit work that the success path
@@ -1317,6 +1359,7 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
   try {
     release = await acquireAppLock(appIdForLock)
   } catch (lockErr) {
+    releaseMenuTs()
     if (lockErr instanceof AppLockWaitTimeoutError) {
       apiLogger.warn(
         { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
@@ -1364,6 +1407,7 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
       })
     } finally {
       release()
+      releaseMenuTs()
     }
   } catch (err) {
     handleBundledInstallerError(req, res, err, 'enable', recipeId)
@@ -1497,6 +1541,32 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   // line 1430 already returned 404; reaching the `undefined` branch
   // therefore implies bundled-eligible.
   const appIdForLock = resolved?.appId ?? recipeId
+  // Spec v1.12 §10.9.4 Step 4.5 + §10.9.5 BS-L1' lock acquisition
+  // order: global menu.ts lock acquired before per-app lock, mirror
+  // of the enable handler. The disable transaction's Step 4.5 also
+  // mutates `app/menu.ts`, so without the global lock a concurrent
+  // enable could be Step 5.6-appending an entry while this disable
+  // is Step 4.5-removing one — the file would race in the kernel
+  // tempdir + rename layer.
+  let releaseMenuTs: (() => void)
+  try {
+    releaseMenuTs = await acquireGlobalMenuTsLock()
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+        'Bundled disable rejected (global menu.ts lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    apiLogger.error(
+      { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+      'Bundled disable failed (acquireGlobalMenuTsLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
   // Acquire the lock outside the result `try` so a wait-queue
   // timeout (503 `BundledAppLockTimeout`) returns immediately
   // without running the post-commit work that the success path
@@ -1506,6 +1576,7 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   try {
     release = await acquireAppLock(appIdForLock)
   } catch (lockErr) {
+    releaseMenuTs()
     if (lockErr instanceof AppLockWaitTimeoutError) {
       apiLogger.warn(
         { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
@@ -1560,6 +1631,7 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
       })
     } finally {
       release()
+      releaseMenuTs()
     }
   } catch (err) {
     handleBundledInstallerError(req, res, err, 'disable', recipeId)
