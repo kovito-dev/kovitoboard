@@ -73,6 +73,7 @@ import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
+import { createAppsRouter } from './routes/apps-routes'
 import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
@@ -380,6 +381,24 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
 app.use('/api/app', createAppRouter(fs, manifestStore))
+// Apps menu-metadata routes (`PUT /api/apps/menu-order`,
+// `PATCH /api/apps/:appId/menu-label`). Mounted at the plural
+// `/api/apps` path because the previously-inline `/api/apps/...`
+// handlers (`request-removal`, `check-id-availability`) are also
+// declared on `app.<verb>('/api/apps/...')` later in this file;
+// mounting the router here ensures the closed-world batch path is
+// captured at the same prefix without conflicting with those
+// pre-existing leaf routes (Express 5 matches by mount order and
+// the leaf handlers carry an exact path).
+app.use(
+  '/api/apps',
+  createAppsRouter({
+    fs,
+    projectRoot,
+    broadcast,
+    apiLogger,
+  }),
+)
 // Capture-token issuance / revoke endpoints
 // (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
 // MUST be mounted before the `/api/app/capture` router because
