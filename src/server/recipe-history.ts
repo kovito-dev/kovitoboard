@@ -157,19 +157,7 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     recipeLogger.error({ err }, '[recipe-history] Failed to stat history file')
     return []
   }
-  if (size > MAX_HISTORY_BYTES) {
-    const corruptedPath = makeCorruptedArchivePath(path)
-    try {
-      fs.renameSync(path, corruptedPath)
-      recipeLogger.error(
-        `[recipe-history] File size ${size} bytes exceeds ${MAX_HISTORY_BYTES} byte cap; rotated to ${corruptedPath}.`,
-      )
-    } catch (err) {
-      recipeLogger.error(
-        { err },
-        '[recipe-history] Failed to rotate oversized history file',
-      )
-    }
+  if (enforceHistorySizeGate(fs, path, size)) {
     return []
   }
 
@@ -182,6 +170,50 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
   }
 
   return parseRecipeHistoryContent(fs, content)
+}
+
+/**
+ * Enforce the `MAX_HISTORY_BYTES` cap on `recipe-history.jsonl`.
+ * Returns `true` if the file was over-cap (and an attempt was made
+ * to rotate it to `.corrupted.<ts>`), so the caller knows to abort
+ * the read and treat the active history as empty. Returns `false`
+ * when the file is within budget and the caller may proceed to
+ * `readFileSync` + parse.
+ *
+ * The size cap exists because the synchronous read + per-line
+ * parse on the request path can starve the Express event loop on
+ * multi-megabyte files. Both `readRecipeHistory` (best-effort) and
+ * `loadRecipeHistorySnapshot` (throwing IO contract) call this
+ * helper so the DoS guard applies uniformly to every reader (PR
+ * #56 codex attempt 5 Finding "resource exhaustion" — the snapshot
+ * loader previously skipped the gate after the attempt 4 refactor
+ * collapsed the probe + parse into a single function).
+ *
+ * Rotation failures are logged but do not surface to the caller:
+ * the size cap is a defensive ceiling, not a correctness invariant,
+ * so a failed rename should not block the request — the caller
+ * simply walks away from the over-cap file and the next append
+ * starts a fresh one.
+ */
+export function enforceHistorySizeGate(
+  fs: FileAccessLayer,
+  path: string,
+  size: number,
+): boolean {
+  if (size <= MAX_HISTORY_BYTES) return false
+  const corruptedPath = makeCorruptedArchivePath(path)
+  try {
+    fs.renameSync(path, corruptedPath)
+    recipeLogger.error(
+      `[recipe-history] File size ${size} bytes exceeds ${MAX_HISTORY_BYTES} byte cap; rotated to ${corruptedPath}.`,
+    )
+  } catch (err) {
+    recipeLogger.error(
+      { err },
+      '[recipe-history] Failed to rotate oversized history file',
+    )
+  }
+  return true
 }
 
 /**

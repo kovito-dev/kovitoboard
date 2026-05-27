@@ -39,6 +39,7 @@ import { getKovitoboardDir } from '../paths'
 import { isWithin } from '../pathResolver'
 import {
   appendRecipeHistory,
+  enforceHistorySizeGate,
   generateHistoryId,
   getRecipeHistoryPath,
   parseRecipeHistoryContent,
@@ -215,14 +216,51 @@ export interface RecipeHistorySnapshot {
  */
 export function loadRecipeHistorySnapshot(fs: FileAccessLayer): RecipeHistorySnapshot {
   const path = getRecipeHistoryPath(fs)
-  if (!fs.existsSync(path)) return { entries: [] }
+  // statSync as the first probe — do NOT preflight with existsSync.
+  // existsSync silently collapses EACCES / EPERM / EIO into false on
+  // some platforms, which would let an unreadable history file fall
+  // through to the empty-snapshot branch and defeat the fail-closed
+  // contract this helper exists for (PR #56 codex attempt 5 Finding
+  // "fail-closed regression"). ENOENT is the only errno that maps to
+  // an empty snapshot; every other errno surfaces as 503
+  // BundledLocalStateUnavailable.
+  let size = 0
+  try {
+    size = fs.statSync(path).size
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') return { entries: [] }
+    throw new BundledInstallerError(
+      `Failed to stat recipe-history.jsonl for residue probe`,
+      503,
+      'BundledLocalStateUnavailable',
+      {
+        fileName: 'recipe-history.jsonl',
+        errno: code,
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    )
+  }
+  // Size gate (SSOT: enforceHistorySizeGate in recipe-history.ts).
+  // Both snapshot + best-effort readers share the same MAX_HISTORY_BYTES
+  // cap so the DoS guard applies uniformly to every entry point on
+  // the request path (PR #56 codex attempt 5 Finding "resource
+  // exhaustion" — the snapshot loader previously skipped the gate
+  // after the attempt 4 refactor collapsed probe + parse into one
+  // function). When the file is rotated for being over-cap, the
+  // active history is effectively empty until the next append, so
+  // return an empty snapshot rather than throwing — the cap is a
+  // defensive ceiling, not a correctness invariant.
+  if (enforceHistorySizeGate(fs, path, size)) {
+    return { entries: [] }
+  }
   let content: string
   try {
-    // statSync surfaces permission / IO errors that existsSync hides
-    // (existsSync silently maps EACCES / EPERM to false on some
-    // platforms). The subsequent readFileSync is the single full
-    // read of the file for this request.
-    fs.statSync(path)
+    // Single full read of the file for this request. parseRecipeHistoryContent
+    // shares the corruption-rotate logic with readRecipeHistory.
     content = fs.readFileSync(path, 'utf-8')
   } catch (err) {
     const code =
