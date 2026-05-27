@@ -1394,6 +1394,69 @@ describe('enable edge cases (BL-2026-176)', () => {
     expect(manifest!.source).toBe('bundled')
   })
 
+  it('rejects partial-residue recovery when history record claims a different appId (PR #56 attempt 8)', () => {
+    // Codex attempt 8 Finding "fail-closed misclassification":
+    // probeAppDirAnomaly used to return `partial-residue` whenever
+    // findHistoryMatchForBundled matched on recipeId alone, even if
+    // the historic install record claimed a different appId. That
+    // would let the enable recovery path Step 4 rmSync(appDir) wipe
+    // a self-made / user-authored directory that has no relation to
+    // this bundled recipe instance. The fix requires the matched
+    // record's resolved appId to equal the target appId; mismatches
+    // downgrade to `self-made`, which the caller throws as 400
+    // `BundledAppIdConflict` rather than running the destructive
+    // recovery.
+    //
+    // Seed a history install record claiming the same recipeId but
+    // under a DIFFERENT appId, plant a self-made directory at the
+    // target appId, and run enableBundledRecipe. The probe should
+    // route to self-made (BundledAppIdConflict 400), preserving
+    // the existing directory.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_appid_mismatch',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: 'a-completely-different-app-id',
+    })
+    // Plant a self-made directory at the bundled default appId
+    // (== recipeId for bundled samples). probeAppDirAnomaly will
+    // see it exists; the history match's recordAppId
+    // (`a-completely-different-app-id`) differs from the target
+    // appId (`SAMPLE_RECIPE_ID`), so the probe must NOT classify
+    // this as partial-residue.
+    const targetAppDir = join(h.projectRoot, 'app', SAMPLE_RECIPE_ID)
+    mkdirSync(targetAppDir, { recursive: true })
+    writeFileSync(join(targetAppDir, 'self-made.txt'), 'user-authored', 'utf-8')
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    // The self-made directory must be preserved (no rmSync executed).
+    expect(existsSync(join(targetAppDir, 'self-made.txt'))).toBe(true)
+  })
+
   it('BundledLocalStateUnavailable: probeManifestOnDisk routes EACCES to present-io-failure instead of existsSync absent (PR #56 attempt 4)', () => {
     // Codex attempt 4 Finding "fail-open filesystem probe":
     // probeManifestOnDisk previously used existsSync(manifestPath)
