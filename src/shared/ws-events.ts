@@ -137,15 +137,41 @@ export interface AgentActivityPayload {
 }
 
 /**
- * `app/menu.ts` was created, modified, or removed on disk.
+ * `app/menu.ts` was created, modified, or removed on disk, or one of
+ * the v0.2.1 menu metadata routes (`PUT /api/apps/menu-order` /
+ * `PATCH /api/apps/:appId/menu-label`) committed a change.
  *
  * The renderer should re-fetch `GET /api/app/menu-entries` so newly
  * installed recipes (which write `app/menu.ts` via the agent) appear
- * in the navigation without requiring a page reload.
+ * in the navigation, and re-fetch the affected `AppManifest`(s) when
+ * the event carries a `menu-order-update` / `menu-label-update`
+ * trigger.
+ *
+ * For `event: 'menu-label-update'` the `appId` field is set so a
+ * narrow refetch is possible; for `event: 'menu-order-update'` the
+ * `appId` is omitted because the closed-world batch update affects
+ * every eligible app at once.
+ *
+ * @see docs/specs/ws-event-contract.md v1.4 §6.1 / §7.6.2
  */
 export interface AppMenuChangedPayload {
-  /** chokidar event kind: 'add' | 'change' | 'unlink'. */
-  event: 'add' | 'change' | 'unlink'
+  /**
+   * Either a chokidar watcher event (`'add' | 'change' | 'unlink'`,
+   * `appId` omitted) or a v0.2.1 menu-metadata HTTP route emission
+   * (`'menu-order-update' | 'menu-label-update'`, see comment above).
+   */
+  event:
+    | 'add'
+    | 'change'
+    | 'unlink'
+    | 'menu-order-update'
+    | 'menu-label-update'
+  /**
+   * Optional KB-local app identifier. Set when `event` is
+   * `'menu-label-update'`; omitted for the closed-world
+   * `'menu-order-update'` and the three chokidar watcher events.
+   */
+  appId?: string
   /** Server-side timestamp the change was observed. */
   ts: number
 }
