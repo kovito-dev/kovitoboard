@@ -33,6 +33,8 @@
 
 import { join, resolve, sep } from 'path'
 import { createHash } from 'crypto'
+import * as nodeFs from 'node:fs'
+import { fileURLToPath as nodeFileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
 import { recipeLogger } from '../logger'
 import { getKovitoboardDir } from '../paths'
@@ -56,7 +58,7 @@ import {
   isAppManifest,
   writeAppManifest,
 } from './app-manifest'
-import { isCanonicalAppIdPath } from './menu-extractor'
+import { isCanonicalAppIdPath, parseMenuTs } from './menu-extractor'
 import {
   appendMenuEntry,
   buildEmptyMenuTs,
@@ -188,22 +190,85 @@ export class BundledInstallerError extends Error {
  * `app-directory-extension.md` v1.6 §6.2) to record the
  * `kovitoboardVersion` field. The spec allows either
  * `process.env.npm_package_version` (set by `npm run start`) or the
- * `package.json` `version` field; we prefer the env var because it is
- * already exposed by the build system, and fall back to a final
- * `'0.0.0'` placeholder only when both are unavailable (test harnesses
- * that import the helper without the harness env).
+ * `package.json` `version` field.
+ *
+ * Resolution order:
+ *   1. `process.env.npm_package_version` — set by `npm run start`
+ *      and the build system, fastest path.
+ *   2. The OSS root `package.json` `version` field — covers the
+ *      `node tools/kb-start.mjs` / direct `node dist/...` startup
+ *      paths where npm did not set the env var.
+ *   3. `'0.0.0'` placeholder — final fallback so a test harness that
+ *      imports the helper without either source still produces a
+ *      schema-valid AppManifest.
+ *
+ * The result is cached after the first lookup so each enable
+ * transaction does not re-read `package.json` from disk.
  */
+let cachedKovitoboardVersion: string | null = null
 function resolveKovitoboardVersion(): string {
+  if (cachedKovitoboardVersion !== null) return cachedKovitoboardVersion
   const env = process.env.npm_package_version
-  if (typeof env === 'string' && env.length > 0) return env
-  // Avoid synchronous filesystem reads here — the env var is what the
-  // build system uses, and a missing env in a test harness should
-  // surface as a recognisable sentinel rather than crashing the
-  // enable transaction. Spec recipe-system v1.12 §10.9.3 Step 5.5
-  // does not normatively pin the placeholder; `'0.0.0'` matches the
-  // existing convention used by `disableBundledRecipe`'s history
-  // append for unknown recipe versions.
-  return '0.0.0'
+  if (typeof env === 'string' && env.length > 0) {
+    cachedKovitoboardVersion = env
+    return env
+  }
+  // package.json read fallback. `getKovitoboardDir` resolves the
+  // OSS install root through the same paths layer the recipe-history
+  // helpers use, so the lookup honours the test harness env override
+  // (`KOVITOBOARD_PROJECT_ROOT`) when one is in effect. The version
+  // file lives at the repo root, which is the *parent* of the
+  // `<projectRoot>/.kovitoboard/` directory `getKovitoboardDir` resolves;
+  // we therefore use a direct path resolution against the install root.
+  try {
+    const installRoot = resolveKovitoboardInstallRootForVersion()
+    if (installRoot !== null) {
+      const pkgPath = join(installRoot, 'package.json')
+      // Best-effort read — failure falls through to the sentinel.
+      // We deliberately use a raw `node:fs` read instead of routing
+      // through the `FileAccessLayer` because the version probe must
+      // not depend on the per-request `fs` instance threaded into
+      // `enableBundledRecipe` (which targets the user project root,
+      // not the OSS install root).
+      const fsModule = nodeFs
+      const raw = fsModule.readFileSync(pkgPath, 'utf-8')
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && typeof (parsed as { version?: unknown }).version === 'string') {
+        const v = (parsed as { version: string }).version
+        if (v.length > 0) {
+          cachedKovitoboardVersion = v
+          return v
+        }
+      }
+    }
+  } catch {
+    // Fall through to the sentinel — a missing / corrupt package.json
+    // at the install root is not a fatal condition for the enable
+    // transaction (the user-facing AppManifest still gets a stable
+    // string value the renderer can display).
+  }
+  cachedKovitoboardVersion = '0.0.0'
+  return cachedKovitoboardVersion
+}
+
+/**
+ * Resolve the OSS install root for the `package.json` version probe.
+ * Returns the directory above the running source file (covers both
+ * the `tsx` dev path and the `dist/` production path) by walking up
+ * from `import.meta.url`. Returns `null` when the resolution fails
+ * (the caller falls through to the sentinel placeholder).
+ */
+function resolveKovitoboardInstallRootForVersion(): string | null {
+  try {
+    // bundled-installer.ts lives at `src/server/services/` (dev) or
+    // `dist/server/services/` (prod). Two directory levels above the
+    // file always lands on the install root, regardless of which one
+    // is running.
+    const here = nodeFileURLToPath(import.meta.url)
+    return resolve(here, '..', '..', '..', '..')
+  } catch {
+    return null
+  }
 }
 
 // =========================================
@@ -663,18 +728,17 @@ function probeAppRootAnomaly(
     }
   }
   const appRoot = join(projectRoot, 'app')
-  // Step 2: app-root presence. A fresh project that has never enabled
-  // a recipe legitimately has no `app/` directory; Step 4's
-  // `mkdirSync(appDir, { recursive: true })` will create both `app/`
-  // and `app/<appId>/`. Returning `'ok'` here keeps the new-project
-  // path identical to the v0.2.0 behaviour.
-  if (!fs.existsSync(appRoot)) {
-    return { state: 'ok' }
-  }
-  // Step 3: entry-kind discrimination. `lstatSync` (not `existsSync`)
-  // is the only way to distinguish a symlink from its target — a
-  // broken symlink would silently make `existsSync` return `false` on
-  // some platforms and bypass the entire gate.
+  // Step 2 + 3: entry-kind discrimination via direct `lstatSync`.
+  //
+  // `existsSync(appRoot)` is **deliberately not used** here: it
+  // follows symlinks, so a broken `<projectRoot>/app` symlink would
+  // return `false` and the function would fall through to the
+  // `'ok'` branch, bypassing the `app-root-broken-symlink` reject
+  // path the threat model relies on. Spec recipe-system v1.12
+  // §10.9.3 Step 1.5 pins direct `lstatSync` for exactly this
+  // reason — only the `ENOENT` errno is the "absent / fresh project"
+  // case; every other failure is either an anomaly state or a
+  // retry-after IO fault.
   let lstat: { isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
   try {
     lstat = fs.lstatSync(appRoot)
@@ -683,6 +747,12 @@ function probeAppRootAnomaly(
       err && typeof err === 'object' && 'code' in err
         ? String((err as { code: unknown }).code)
         : undefined
+    if (code === 'ENOENT') {
+      // Fresh project: Step 4's `mkdirSync(appDir, { recursive: true })`
+      // will create both `app/` and `app/<appId>/` together. Behaviour
+      // is identical to the v0.2.0 fast-path.
+      return { state: 'ok' }
+    }
     return {
       state: 'app-root-unreadable',
       errno: code,
@@ -1426,8 +1496,32 @@ export function isEnabledAndManifestCoherent(
   if (manifest.recipeId !== recipeId) {
     return false
   }
+  // appDir path-boundary + symlink check (codex review #58 attempt 1
+  // HIGH 1, BL-2026-179 cascade).
+  //
+  // The Phase 1.5 transaction skips the Step 3d (ii) anomaly probe
+  // when this coherence helper returns `true`, so a tampered
+  // `app/<appId>` that became a live symlink to a different sibling
+  // would otherwise slip past the alias-attack defence. Run the same
+  // structural checks (`lstatSync` regular directory + `realpathSync`
+  // identity equality) so a non-canonical state surfaces as
+  // "not coherent" and the next enable repairs it through the full
+  // Step 3d / Step 4 sequence.
   const appDir = join(projectRoot, 'app', manifest.appId)
-  if (!fs.existsSync(appDir)) {
+  let appDirStat: { isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
+  try {
+    appDirStat = fs.lstatSync(appDir)
+  } catch {
+    return false
+  }
+  if (appDirStat.isSymbolicLink) {
+    // Live symlink at `app/<appId>` — even if the realpath stays in
+    // boundary, the canonical layout requires the directory itself
+    // to be a real directory (Step 3d (ii-g) defence). Treat as
+    // non-coherent so the next enable runs the probe.
+    return false
+  }
+  if (!appDirStat.isDirectory) {
     return false
   }
 
@@ -1484,6 +1578,13 @@ export function isEnabledAndManifestCoherent(
   // Critical 4): `GET /api/app/menu-entries` reads menu.ts only, so
   // a missing entry means the bundled app is invisible in the UI
   // even though every manifest is on disk.
+  //
+  // Validation is delegated to `parseMenuTs` (the same parser the
+  // renderer uses) rather than a raw regex — codex review #58
+  // attempt 1 Medium #3 surfaced that a regex match would also fire
+  // on a commented-out snippet or an unrelated string literal,
+  // making a no-entry state look coherent and suppressing the next
+  // enable transaction's repair pass.
   const menuTsPath = join(projectRoot, 'app', 'menu.ts')
   if (!fs.existsSync(menuTsPath)) {
     return false
@@ -1494,18 +1595,24 @@ export function isEnabledAndManifestCoherent(
   } catch {
     return false
   }
-  // Cheap regex check — the same shape `appendMenuEntry` /
-  // `removeMenuEntry` already keys on. Reusing the regex keeps the
-  // three helpers' "is this entry present?" verdicts in sync.
-  const idRe = new RegExp(`\\bid\\s*:\\s*['"\`]${escapeRegexForCoherence(manifest.appId)}['"\`]`)
-  if (!idRe.test(menuTsContent)) {
+  let menuEntries
+  try {
+    menuEntries = parseMenuTs(menuTsContent)
+  } catch {
+    return false
+  }
+  const matchingEntry = menuEntries.find((entry) => entry.id === manifest.appId)
+  if (matchingEntry === undefined) {
+    return false
+  }
+  // Path-boundary invariant: the entry's import path must stay under
+  // `<appId>/` (matches the enable Step 5.6 normative check). A
+  // hand-edited entry whose page escapes the subtree is non-coherent
+  // and routes the next enable through the full repair path.
+  if (!isCanonicalAppIdPath(matchingEntry.page, manifest.appId)) {
     return false
   }
   return true
-}
-
-function escapeRegexForCoherence(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // =========================================
