@@ -20,7 +20,12 @@
  *     `menu-extractor.parseMenuTs`.
  */
 import { describe, expect, it } from 'vitest'
-import { removeMenuEntry, buildEmptyMenuTs } from '../../src/server/services/menu-ts-editor'
+import {
+  appendMenuEntry,
+  buildEmptyMenuTs,
+  MenuTsParseFailedError,
+  removeMenuEntry,
+} from '../../src/server/services/menu-ts-editor'
 import { parseMenuTs } from '../../src/server/services/menu-extractor'
 
 const HEAD = `import type { AppMenuEntry } from '../src/renderer/types/app-types'\n\n`
@@ -151,5 +156,131 @@ describe('buildEmptyMenuTs', () => {
     expect(parseMenuTs(src)).toEqual([])
     expect(src).toContain("import type { AppMenuEntry } from '../src/renderer/types/app-types'")
     expect(src).toContain('export const menuEntries: AppMenuEntry[] = []')
+  })
+})
+
+// =========================================
+// Phase 1.5 — appendMenuEntry (v1.12 BL-2026-179)
+// =========================================
+
+describe('appendMenuEntry', () => {
+  it('appends a single entry to an empty menu.ts and round-trips through parseMenuTs', () => {
+    const src = buildEmptyMenuTs()
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'ドキュメント',
+      icon: 'content',
+      page: 'document-viewer/pages/DocumentViewer',
+    })
+    expect(result.kind).toBe('appended')
+    if (result.kind !== 'appended') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0].id).toBe('document-viewer')
+    expect(parsed[0].label).toBe('ドキュメント')
+    expect(parsed[0].icon).toBe('content')
+    expect(parsed[0].page).toBe('document-viewer/pages/DocumentViewer')
+  })
+
+  it('appends a second entry without disturbing the first', () => {
+    const src = buildMenuTs([
+      { id: 'todo', label: 'TODO', icon: 'content', page: 'todo/pages/TodoPage' },
+    ])
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'Docs',
+      icon: 'content',
+      page: 'document-viewer/pages/DocumentViewer',
+    })
+    expect(result.kind).toBe('appended')
+    if (result.kind !== 'appended') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed.map((e) => e.id)).toEqual(['todo', 'document-viewer'])
+  })
+
+  it('returns already-present when the appId entry exists (idempotent no-op, BS-L2)', () => {
+    const src = buildMenuTs([
+      { id: 'todo', label: 'TODO', icon: 'content', page: 'todo/pages/TodoPage' },
+      { id: 'document-viewer', label: 'Docs', icon: 'content', page: 'document-viewer/pages/DocumentViewer' },
+    ])
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'Different Label',
+      icon: 'box',
+      page: 'document-viewer/pages/Other',
+    })
+    expect(result).toEqual({ kind: 'already-present' })
+  })
+
+  it('throws MenuTsParseFailedError when the menuEntries array is missing', () => {
+    expect(() =>
+      appendMenuEntry('// menu.ts mauled by a hand edit\n', {
+        id: 'document-viewer',
+        label: 'Docs',
+        icon: 'content',
+        page: 'document-viewer/pages/DocumentViewer',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+  })
+
+  it('rejects label / icon / page values that the menu reader cannot parse back', () => {
+    // Writer / reader grammar consistency (codex review #58 attempt
+    // 2 Medium #2). `parseMenuTs` uses a simple `[^'"]+` regex that
+    // does not handle escaped quotes / backslashes; if the writer
+    // emitted those, the runtime menu reader would silently drop
+    // the entry and a successfully-enabled bundled app would never
+    // surface in the UI. Reject the unsafe characters at the writer
+    // so the contract surfaces as a `MenuTsParseFailedError` rather
+    // than a phantom "enable succeeded but the menu is empty" state.
+    const src = buildEmptyMenuTs()
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: "Doc's",
+        icon: 'content',
+        page: 'document-viewer/pages/DocumentViewer',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'Docs',
+        icon: 'content',
+        page: 'document-viewer/pages/Doc"Viewer',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'ends-with-\\',
+        icon: 'box',
+        page: 'document-viewer/pages/Index',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    // Backtick is also rejected even though `parseMenuTs` does
+    // accept it as a quote — the writer keeps the entry on the
+    // single-quoted shape every other call site emits.
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'with-backtick`',
+        icon: 'content',
+        page: 'document-viewer/pages/Index',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+  })
+
+  it('tolerates a single-line `[ {...}, {...} ]` body and appends without breaking it', () => {
+    const src = `${HEAD}export const menuEntries: AppMenuEntry[] = [{ id: 'todo', label: 'TODO', icon: 'content', component: () => import('./todo/pages/TodoPage') }]\n`
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'Docs',
+      icon: 'content',
+      page: 'document-viewer/pages/DocumentViewer',
+    })
+    expect(result.kind).toBe('appended')
+    if (result.kind !== 'appended') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed.map((e) => e.id)).toEqual(['todo', 'document-viewer'])
   })
 })

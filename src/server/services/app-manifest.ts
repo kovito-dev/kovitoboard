@@ -196,8 +196,15 @@ export function scanAppManifests(
  * for both `AppManifest` itself and the `AppSourceInfo` discriminator.
  * Optional / future fields are not gated here; we do not want a
  * v0.2.0 manifest to be rejected by a v0.1.0 reader.
+ *
+ * Exported (v0.2.1) so the bundled-installer can re-run the same
+ * schema check while computing `isEnabledAndManifestCoherent`'s
+ * coherence verdict — the readAppManifest helper trusts its callers
+ * not to wrap the disk read in try/catch, but the coherence path
+ * needs to silently downgrade any schema-invalid AppManifest to
+ * "not coherent" without surfacing a warn line on every scan.
  */
-function isAppManifest(value: unknown): value is AppManifest {
+export function isAppManifest(value: unknown): value is AppManifest {
   if (!isPlainObject(value)) return false
   if (typeof value.appId !== 'string' || value.appId.length === 0) return false
   if (typeof value.displayName !== 'string') return false
@@ -211,6 +218,7 @@ function isAppManifest(value: unknown): value is AppManifest {
       typeof src.recipeId === 'string' &&
       typeof src.recipeVersion === 'string' &&
       (src.recipeSource === 'sample' ||
+        src.recipeSource === 'bundled' ||
         src.recipeSource === 'import' ||
         src.recipeSource === 'url')
     )

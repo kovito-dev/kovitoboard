@@ -55,8 +55,23 @@ export type AppSourceInfo =
       recipeId: string
       /** The `version` from `recipe.yaml` at install time. */
       recipeVersion: string
-      /** Where the recipe was sourced from. */
-      recipeSource: 'sample' | 'import' | 'url'
+      /**
+       * Where the recipe was sourced from.
+       *
+       * - `'bundled'`: enabled via `POST /api/recipes/sample/:recipeId/enable`
+       *   for a recipe that ships with KovitoBoard (`recipes/<recipeId>/`).
+       *   Trust origin = KB itself (`code-trusted (bundled)`).
+       * - `'sample'`: legacy installed via the v0.1.x `recipes/install` flow
+       *   (grandfathered; persisted source is never rewritten — BS-L2).
+       * - `'import'`: YAML / ZIP import (currently disabled in v0.2.x).
+       * - `'url'`: URL-based install (v0.3.0+).
+       *
+       * Spec SSOT: docs/specs/app-directory-extension.md v1.6 §6.2
+       * (v1.5.1 added `'bundled'`); docs/specs/recipe-system.md v1.10
+       * §10.9.1 (bundled trust model) / §10.9.5 BS-L9 (4-value persisted
+       * source).
+       */
+      recipeSource: 'sample' | 'bundled' | 'import' | 'url'
     }
   | {
       type: 'user-creation'

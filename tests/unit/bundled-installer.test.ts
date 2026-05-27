@@ -1339,14 +1339,17 @@ describe('enable edge cases (BL-2026-176)', () => {
     expect(err.detail?.resolvedTarget as string).toContain('external-target')
   })
 
-  it('a live symlink whose target stays under <projectRoot>/app/ falls through to the readable-directory branch', () => {
-    // Spec recipe-system v1.11 §10.9.3 Step 3d (ii) step 2.5
-    // path-boundary verification only rejects targets outside
-    // `<projectRoot>/app/`. A symlink pointing to a sibling app
-    // directory (in-boundary) must keep the legacy probe outcome:
-    // readdir succeeds, then the history-match decides between
-    // `partial-residue` (recovery) and `self-made` (400). With no
-    // bundled/sample install record the result is the latter.
+  it('a live symlink whose target is a different in-boundary appId is rejected by Step 3d (ii-g) (v1.12 BL-2026-179)', () => {
+    // Spec recipe-system v1.12 §10.9.3 Step 3d (ii-g) (Round 2 High
+    // 11): a live symlink whose realpath stays under
+    // `<projectRoot>/app/` (the ii-f gate passed) but resolves to a
+    // **different** sibling under the boundary now fails closed.
+    // Earlier versions (v1.10 / v1.11) routed this case to either
+    // the partial-residue recovery (with a history match) or the
+    // self-made 400 (without one); the in-boundary alias attack
+    // defence supersedes both because the rollback rmSync on the
+    // symlink would unlink the link without touching the aliased
+    // directory's artifacts.
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
     const appBase = join(h.projectRoot, 'app')
@@ -1371,12 +1374,24 @@ describe('enable edge cases (BL-2026-176)', () => {
     }
     expect(thrown).toBeInstanceOf(BundledInstallerError)
     const err = thrown as BundledInstallerError
-    expect(err.errorCode).toBe('BundledAppIdConflict')
-    expect(err.httpStatus).toBe(400)
-    expect(err.detail?.conflictSource).toBe('self-made')
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('symlink-in-boundary-alias')
+    expect(err.detail?.resolvedTarget).toBe(internalDir)
+    expect(err.detail?.requestedAppId).toBe(SAMPLE_RECIPE_ID)
   })
 
-  it('BundledAppIdConflictAnomaly: a sibling leftover temp dir fails closed', () => {
+  it('BundledRegistryAnomaly: a sibling leftover temp dir fails closed at Step 1.5 (v1.12 BL-2026-177)', () => {
+    // Spec v1.12 §10.9.3 Step 1.5 (BL-2026-177 same-PR fix):
+    // the endpoint-entry gate scans `<projectRoot>/app/` root-wide
+    // for `<appId>.tmp*` / `<appId>.staging*` siblings before any
+    // per-appId probe runs. Previously this case fell through to
+    // Step 3d (ii-e) and surfaced as
+    // `BundledAppIdConflictAnomaly` (`leftover-temp-dir`); the
+    // v1.12 gate routes it to `BundledRegistryAnomaly`
+    // (`app-root-leftover-temp`) instead. Spec notes the two
+    // checks are "logically overlapping"; the endpoint-entry
+    // version wins because it runs first.
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
     // Plant a sibling .tmp* dir matching the leftover-temp prefix.
@@ -1398,9 +1413,12 @@ describe('enable edge cases (BL-2026-176)', () => {
     }
     expect(thrown).toBeInstanceOf(BundledInstallerError)
     const err = thrown as BundledInstallerError
-    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.errorCode).toBe('BundledRegistryAnomaly')
     expect(err.httpStatus).toBe(500)
-    expect(err.detail?.anomalyType).toBe('leftover-temp-dir')
+    expect(err.detail?.anomalyType).toBe('app-root-leftover-temp')
+    expect(err.detail?.leftoverPath).toBe(
+      join(appBase, `${SAMPLE_RECIPE_ID}.tmp123`),
+    )
   })
 
   it('partial-residue recovery: manifest absent + bundled install record present → 200 enabled (Step 4-7)', () => {
@@ -2214,5 +2232,532 @@ describe('classifyLocalResidue / resolveBundledAppIdForDisable snapshot threadin
     })
     expect(result?.appId).toBe(SAMPLE_RECIPE_ID)
     expect(result?.source).toBe('bundled')
+  })
+})
+
+// =========================================
+// Phase 1.5 completion (v1.12, BL-2026-179 / BL-2026-177 same-PR)
+// =========================================
+//
+// These tests cover the spec recipe-system v1.12 cascade:
+//
+//   - Step 1.5 endpoint-entry app-root anomaly check (BL-2026-177)
+//   - Step 3d (ii-g) in-boundary alias attack defence
+//   - Step 5.5 AppManifest write (BL-2026-179)
+//   - Step 5.6 menu.ts entry append (BL-2026-179)
+//   - Step 4.5 menu.ts entry removal on disable (BL-2026-179)
+//   - isEnabledAndManifestCoherent three-way equality + AppManifest /
+//     menu.ts visibility coherence
+//
+// The judgment doc v2.9 §4.12.1 SSOT pins these as required for the
+// Phase 1 completion criteria — every bundled enable transaction
+// must leave behind a complete visibility chain (RecipeManifest +
+// AppManifest + menu.ts entry) before a 2xx response.
+
+describe('Phase 1.5 enable: AppManifest + menu.ts entry (BL-2026-179)', () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = buildHarness()
+  })
+
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('writes app/<appId>/manifest.json with the full required-field set', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    const appManifestPath = join(h.projectRoot, 'app', result.appId, 'manifest.json')
+    expect(existsSync(appManifestPath)).toBe(true)
+    const raw = JSON.parse(readFileSync(appManifestPath, 'utf-8'))
+    expect(raw.appId).toBe(SAMPLE_RECIPE_ID)
+    expect(typeof raw.displayName).toBe('string')
+    expect(raw.displayName.length).toBeGreaterThan(0)
+    expect(typeof raw.createdAt).toBe('string')
+    expect(typeof raw.kovitoboardVersion).toBe('string')
+    expect(raw.source).toEqual({
+      type: 'recipe',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: sample.metadata.version,
+      recipeSource: 'bundled',
+    })
+    // menuOrder / userMenuLabel must be ABSENT (undefined), not null.
+    // Spec v1.12 Round 2 Critical 2: `null` has explicit-reset
+    // semantics for userMenuLabel; pre-writing it would defeat the
+    // scanner's provisional-order assignment for menuOrder.
+    expect('menuOrder' in raw).toBe(false)
+    expect('userMenuLabel' in raw).toBe(false)
+  })
+
+  it('appends a menu.ts entry whose page composes <appId>/<recipe-yaml-page>', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    const menuTsPath = join(h.projectRoot, 'app', 'menu.ts')
+    expect(existsSync(menuTsPath)).toBe(true)
+    const content = readFileSync(menuTsPath, 'utf-8')
+    expect(content).toContain(`id: '${SAMPLE_RECIPE_ID}'`)
+    // Path-boundary invariant: the composed import path stays inside
+    // `<appId>/`.
+    expect(content).toContain(`import('./${SAMPLE_RECIPE_ID}/pages/DocumentViewer')`)
+  })
+
+  it('grandfather sample where menu.ts entry already exists is idempotent (touch-free)', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Pre-plant a menu.ts with the appId entry already in place — the
+    // canonical recipe-applicator shape the existing `removeMenuEntry`
+    // tests use.
+    const menuTsDir = join(h.projectRoot, 'app')
+    mkdirSync(menuTsDir, { recursive: true })
+    const preExisting = [
+      `import type { AppMenuEntry } from '../src/renderer/types/app-types'`,
+      '',
+      'export const menuEntries: AppMenuEntry[] = [',
+      `  {`,
+      `    id: '${SAMPLE_RECIPE_ID}',`,
+      `    label: 'Hand-edited label',`,
+      `    icon: 'content',`,
+      `    component: () => import('./${SAMPLE_RECIPE_ID}/pages/DocumentViewer'),`,
+      `  },`,
+      ']',
+      '',
+    ].join('\n')
+    writeFileSync(join(menuTsDir, 'menu.ts'), preExisting, 'utf-8')
+
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    // The pre-existing label must survive the idempotent gate —
+    // appendMenuEntry returns `'already-present'` and the file is
+    // untouched.
+    const after = readFileSync(join(menuTsDir, 'menu.ts'), 'utf-8')
+    expect(after).toBe(preExisting)
+    expect(after).toContain(`label: 'Hand-edited label'`)
+  })
+
+  it('isEnabledAndManifestCoherent treats a missing AppManifest as non-coherent (v1.12 Round 2 Critical 4)', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    // Yank the AppManifest by hand to simulate the Phase 1 PR #55/#56-
+    // era state that v1.12 §10.9.5 BS-L2' wants the coherence check to
+    // surface as non-coherent (so the next enable re-establishes it).
+    const appManifestPath = join(h.projectRoot, 'app', SAMPLE_RECIPE_ID, 'manifest.json')
+    rmSync(appManifestPath, { force: true })
+    expect(
+      isEnabledAndManifestCoherent({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+        projectRoot: h.projectRoot,
+      }),
+    ).toBe(false)
+  })
+
+  it('isEnabledAndManifestCoherent treats a missing menu.ts entry as non-coherent', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    // Hand-remove the menu.ts entry while leaving everything else in
+    // place. The renderer would otherwise show no UI tile for the
+    // bundled app even though the RecipeManifest + AppManifest +
+    // artifacts are coherent — exactly the visibility regression
+    // judgment doc v2.9 §4.12.1 is meant to catch.
+    const menuTsPath = join(h.projectRoot, 'app', 'menu.ts')
+    writeFileSync(menuTsPath, buildEmptyMenuTsForTest(), 'utf-8')
+    expect(
+      isEnabledAndManifestCoherent({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+        projectRoot: h.projectRoot,
+      }),
+    ).toBe(false)
+  })
+
+  it('isEnabledAndManifestCoherent treats a split source state (Recipe=sample, App=bundled) as non-coherent', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    // Stub the RecipeManifest's persisted source to `'sample'` so the
+    // three-way equality check sees a split state (RecipeManifest
+    // says sample, AppManifest says bundled). Spec v1.12 Round 5
+    // routes that to `false` so the next enable can re-converge.
+    const recipeManifestPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+      'manifest.json',
+    )
+    const raw = JSON.parse(readFileSync(recipeManifestPath, 'utf-8'))
+    raw.source = 'sample'
+    writeFileSync(recipeManifestPath, JSON.stringify(raw, null, 2), 'utf-8')
+    // The manifestStore cache still holds the bundled source from the
+    // enable above; rebuild the store so the on-disk mutation lands
+    // in the cache.
+    const reloadedStore = new RecipeManifestStore(
+      join(h.projectRoot, '.kovitoboard'),
+      h.fs,
+    )
+    expect(
+      isEnabledAndManifestCoherent({
+        fs: h.fs,
+        manifestStore: reloadedStore,
+        recipeId: SAMPLE_RECIPE_ID,
+        projectRoot: h.projectRoot,
+      }),
+    ).toBe(false)
+  })
+})
+
+// Convenience helper: re-create the canonical empty menu.ts body
+// without re-importing from menu-ts-editor (which is the unit under
+// test in another suite). Keeps the import block at the top of this
+// file untouched.
+function buildEmptyMenuTsForTest(): string {
+  return [
+    `import type { AppMenuEntry } from '../src/renderer/types/app-types'`,
+    '',
+    'export const menuEntries: AppMenuEntry[] = []',
+    '',
+  ].join('\n')
+}
+
+describe('Phase 1.5 enable: Step 1.5 app-root anomaly check (BL-2026-177)', () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = buildHarness()
+  })
+
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('rejects with BundledRegistryAnomaly app-root-symlink when <projectRoot>/app is a symlink', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Plant `app` as a symlink to a real external directory. The
+    // target stays valid so the broken-symlink branch does not match;
+    // the live-symlink-to-directory branch is the one we want to
+    // exercise.
+    const externalDir = join(h.projectRoot, 'external-app-root')
+    mkdirSync(externalDir, { recursive: true })
+    symlinkSync(externalDir, join(h.projectRoot, 'app'))
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledRegistryAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('app-root-symlink')
+    expect(err.detail?.appRootPath).toBe(join(h.projectRoot, 'app'))
+  })
+
+  it('rejects with BundledRegistryAnomaly app-root-non-directory when <projectRoot>/app is a regular file', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    writeFileSync(join(h.projectRoot, 'app'), 'i am not a directory', 'utf-8')
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledRegistryAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('app-root-non-directory')
+  })
+
+  it('app-root absent (fresh project) falls through to ok and creates app/ at Step 4', () => {
+    // Spec note (1.5-a): a missing `<projectRoot>/app/` is the normal
+    // new-project state, not an anomaly. Step 4 mkdirSync owns the
+    // creation.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    expect(existsSync(join(h.projectRoot, 'app', SAMPLE_RECIPE_ID))).toBe(true)
+  })
+})
+
+describe('Phase 1.5 disable: Step 4.5 menu.ts entry removal cascade (BL-2026-179)', () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = buildHarness()
+  })
+
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('removes the menu.ts entry while preserving app/data/<appId>/ (BS-L3-A)', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const enableResult = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(enableResult.status).toBe('enabled')
+    // Plant a data file so we can verify BS-L3-A preserves it.
+    const dataFile = join(h.projectRoot, 'app', 'data', SAMPLE_RECIPE_ID, 'state.json')
+    writeFileSync(dataFile, '{"hello":"world"}', 'utf-8')
+
+    const disableResult = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(disableResult.status).toBe('disabled')
+    expect(disableResult.dataPreserved).toBe(true)
+    // The menu.ts entry must be gone.
+    const menuContent = readFileSync(join(h.projectRoot, 'app', 'menu.ts'), 'utf-8')
+    expect(menuContent).not.toContain(`id: '${SAMPLE_RECIPE_ID}'`)
+    // Artifacts gone (Step 3 rmSync), data preserved (BS-L3-A).
+    expect(existsSync(join(h.projectRoot, 'app', SAMPLE_RECIPE_ID))).toBe(false)
+    expect(existsSync(dataFile)).toBe(true)
+  })
+
+  it('partial-residue cleanup: history-only state still scrubs the menu.ts entry', () => {
+    // Spec v1.12 §10.9.4 partial residue path: manifest absent +
+    // history install record present + menu.ts entry left over. The
+    // disable transaction must still remove the menu.ts row so the
+    // UI does not show a dead tile after the partial cleanup.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    // Hand-remove the RecipeManifest to simulate the partial state
+    // (the menu.ts entry + history install record + app/<appId>/
+    // artifacts are still on disk).
+    const recipeManifestPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+      'manifest.json',
+    )
+    rmSync(recipeManifestPath, { force: true })
+    rmSync(join(h.projectRoot, '.kovitoboard', 'recipes-installed', SAMPLE_RECIPE_ID), {
+      recursive: true,
+      force: true,
+    })
+    // Reload the manifest store so the cache reflects the on-disk
+    // removal — the partial-residue path depends on the store
+    // returning null for the missing manifest.
+    const reloadedStore = new RecipeManifestStore(
+      join(h.projectRoot, '.kovitoboard'),
+      h.fs,
+    )
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: reloadedStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.metadata?.note).toBe('manifest-already-absent')
+    const menuContent = readFileSync(join(h.projectRoot, 'app', 'menu.ts'), 'utf-8')
+    expect(menuContent).not.toContain(`id: '${SAMPLE_RECIPE_ID}'`)
+  })
+})
+
+describe('Phase 1.5 enable: multi-entry constraint (Round 4 Critical fix)', () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = buildHarness()
+  })
+
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('rejects 503 BundledRecipeMalformed when recipe.yaml menu has >1 entry', () => {
+    // The current bundled registry honours the constraint by
+    // construction (document-viewer / todo each declare exactly one
+    // menu entry). To exercise the rejection branch we inject a
+    // fabricated `sample` whose `metadata.menu` carries two entries
+    // — `parseRecipe` will be re-run against the real bundled
+    // directory, so the fixture has to come from a clone in tmp.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Stage a tmp recipes/<appId>/ tree with an inflated menu entry
+    // list and point `kovitoboardRoot` at it.
+    const tmpKb = mkdtempSync(join(tmpdir(), 'kb-multi-entry-'))
+    const tmpRecipeDir = join(tmpKb, 'recipes', SAMPLE_RECIPE_ID)
+    mkdirSync(tmpRecipeDir, { recursive: true })
+    cpSync(join(KB_INSTALL_ROOT, 'recipes', SAMPLE_RECIPE_ID), tmpRecipeDir, {
+      recursive: true,
+    })
+    const yamlPath = join(tmpRecipeDir, 'recipe.yaml')
+    const baseYaml = readFileSync(yamlPath, 'utf-8')
+    // Inject a second menu entry. The first entry's id still matches
+    // the appId so we land squarely on the multi-entry branch.
+    const tamperedYaml = baseYaml.replace(
+      /^menu:\s*\n\s*-\s*id:\s*"document-viewer"[\s\S]*?page:\s*"pages\/DocumentViewer"\s*\n/m,
+      [
+        'menu:',
+        '  - id: "document-viewer"',
+        '    label: "ドキュメント"',
+        '    icon: "content"',
+        '    page: "pages/DocumentViewer"',
+        '  - id: "phantom-second"',
+        '    label: "Phantom"',
+        '    icon: "content"',
+        '    page: "pages/Phantom"',
+        '',
+      ].join('\n'),
+    )
+    writeFileSync(yamlPath, tamperedYaml, 'utf-8')
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: tmpKb,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    } finally {
+      rmSync(tmpKb, { recursive: true, force: true })
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledRecipeMalformed')
+    expect(err.httpStatus).toBe(503)
+    expect(err.detail?.detail).toBe('menu array must have exactly 1 entry for bundled recipe')
+  })
+})
+
+describe('Phase 1.5 closed-world batch coverage: PUT /api/apps/menu-order eligibility', () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = buildHarness()
+  })
+
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('a bundled-enabled app becomes eligible for menu-order (AppManifest visible to scanAppManifests)', async () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    // `scanAppManifests` is the eligible-set probe `PUT /api/apps/menu-order`
+    // uses to decide which appIds belong in the closed-world batch.
+    // Phase 1 PR #55/#56 did not write the AppManifest, so the
+    // bundled app would have been invisible to this scan and the
+    // batch would have rejected with `MenuOrderCoverageMismatch`
+    // (judgment doc v2.9 §4.12.1 SSOT). Phase 1.5 closes the gap.
+    const { scanAppManifests } = await import('../../src/server/services/app-manifest')
+    const manifests = scanAppManifests(h.fs, h.projectRoot)
+    const found = manifests.find((m) => m.appId === SAMPLE_RECIPE_ID)
+    expect(found).toBeDefined()
+    expect(found!.source.type).toBe('recipe')
+    if (found!.source.type === 'recipe') {
+      expect(found!.source.recipeSource).toBe('bundled')
+      expect(found!.source.recipeId).toBe(SAMPLE_RECIPE_ID)
+    }
   })
 })
