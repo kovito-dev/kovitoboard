@@ -41,6 +41,7 @@ import {
   appendRecipeHistory,
   generateHistoryId,
   getRecipeHistoryPath,
+  parseRecipeHistoryContent,
   readRecipeHistory,
 } from '../recipe-history'
 import { parseRecipe } from '../recipe-parser'
@@ -191,43 +192,38 @@ export interface RecipeHistorySnapshot {
 }
 
 /**
- * Probe `recipe-history.jsonl` for filesystem-level I/O readability
- * and return the parsed entries as a single snapshot. Combines the
- * probe + read pair so a request path that needs both classification
- * and appId resolution pays the IO cost exactly once.
+ * Probe readability + parse `recipe-history.jsonl` for a single
+ * request path. Performs exactly one `readFileSync` (plus the
+ * cheap `existsSync` + `statSync` metadata calls the read needs
+ * anyway) and feeds the loaded content directly to
+ * {@link parseRecipeHistoryContent} so the parsed entries are
+ * available without a second disk read (PR #56 codex attempt 4
+ * Finding "sync I/O amplification" — the previous implementation
+ * called `probeRecipeHistoryReadability` for a full `readFileSync`
+ * and then `readRecipeHistory` did a second `readFileSync`).
+ *
+ * Distinct from `readRecipeHistory` only in the IO-error contract:
+ * a genuine read failure surfaces as `BundledLocalStateUnavailable`
+ * 503 (spec recipe-system v1.10 §10.9.4 Step 1 fail-closed) instead
+ * of being swallowed into an empty-array fallback. The parse +
+ * rotation logic is shared (single SSOT in
+ * `parseRecipeHistoryContent`).
  *
  * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503)
- *   on `EACCES` / `EPERM` / `EIO` / `EBUSY` etc. (same contract as
- *   {@link probeRecipeHistoryReadability}).
+ *   on `EACCES` / `EPERM` / `EIO` / `EBUSY` etc. while reading the
+ *   history file.
  */
 export function loadRecipeHistorySnapshot(fs: FileAccessLayer): RecipeHistorySnapshot {
-  probeRecipeHistoryReadability(fs)
-  return { entries: readRecipeHistory(fs) }
-}
-
-/**
- * Probe `recipe-history.jsonl` for filesystem-level I/O readability.
- *
- * `readRecipeHistory` swallows I/O failures and returns `[]`, which is
- * appropriate for callers that prefer best-effort behaviour. The
- * bundled-installer must distinguish "no install record" from "we
- * could not read the file at all" so the disable endpoint surfaces
- * a 503 `BundledLocalStateUnavailable` (spec recipe-system v1.10
- * §10.9.4 Step 1 SSOT) instead of falling through to a misleading
- * `already-disabled` 200.
- *
- * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503)
- *   on `EACCES` / `EPERM` / `EIO` / `EBUSY` etc.
- */
-function probeRecipeHistoryReadability(fs: FileAccessLayer): void {
   const path = getRecipeHistoryPath(fs)
-  if (!fs.existsSync(path)) return
+  if (!fs.existsSync(path)) return { entries: [] }
+  let content: string
   try {
-    // statSync surfaces permission / IO errors that existsSync hides.
+    // statSync surfaces permission / IO errors that existsSync hides
+    // (existsSync silently maps EACCES / EPERM to false on some
+    // platforms). The subsequent readFileSync is the single full
+    // read of the file for this request.
     fs.statSync(path)
-    // readFileSync re-runs the open(2)+read(2) the actual parser will
-    // use, so any deferred failure surfaces here rather than mid-parse.
-    fs.readFileSync(path, 'utf-8')
+    content = fs.readFileSync(path, 'utf-8')
   } catch (err) {
     const code =
       err && typeof err === 'object' && 'code' in err
@@ -244,6 +240,7 @@ function probeRecipeHistoryReadability(fs: FileAccessLayer): void {
       },
     )
   }
+  return { entries: parseRecipeHistoryContent(fs, content) }
 }
 
 /**
@@ -279,6 +276,27 @@ type ManifestProbeOutcome =
  * to surface the correct error code (`BundledManifestUnreadable` 500
  * vs `BundledLocalStateUnavailable` 503) per spec recipe-system
  * v1.10 §10.9.3 Step 3d (iv) / §10.9.4 Step 1.
+ *
+ * Cache short-circuit invariant: `manifestStore.get(appId)` is the
+ * single source of truth for manifest presence at runtime. Boot-time
+ * `loadAll()` validates every on-disk manifest before it lands in the
+ * cache (schema + I-CR1), and runtime mutations go exclusively
+ * through `manifestStore.save` / `manifestStore.delete`, which keep
+ * the cache and disk synchronised inside the per-appId lock. External
+ * direct disk mutations (e.g. an operator `rm`-ing the manifest file
+ * out-of-band) are out of scope for the v0.2.x local trust model; if
+ * they happen, the next destructive write under
+ * `enableBundledRecipe` / `disableBundledRecipe` surfaces the
+ * mismatch and the user-driven recovery path takes over (PR #56
+ * codex attempt 4 Finding "fail-open filesystem probe" partial
+ * rationale — the cache short-circuit is design intent, not a bug).
+ *
+ * Errno-based classification (cache-miss path only): permission /
+ * IO failures from `statSync` map to `present-io-failure` rather
+ * than the prior `existsSync`-based `absent` fall-through. The
+ * latter silently downgraded `EACCES` / `EPERM` into "file does
+ * not exist", which defeated the fail-closed posture (`existsSync`
+ * returns `false` for any failure including permission errors).
  */
 function probeManifestOnDisk(
   fs: FileAccessLayer,
@@ -291,8 +309,28 @@ function probeManifestOnDisk(
   }
   const baseDir = join(getKovitoboardDir(fs), 'recipes-installed', appId)
   const manifestPath = join(baseDir, 'manifest.json')
-  if (!fs.existsSync(manifestPath)) {
-    return { state: 'absent' }
+  // statSync over existsSync: existsSync silently maps any failure
+  // (including EACCES / EPERM / EIO) to false on some platforms,
+  // which would route a permission-denied file to the `'absent'`
+  // branch and let enable / disable proceed as if no manifest were
+  // there. Distinguish `ENOENT` (true absent) from other errnos
+  // (`'present-io-failure'`) so the bundled-installer error table
+  // emits the spec-normative `BundledLocalStateUnavailable` 503 on
+  // the disable path / `BundledManifestUnreadable` 500 on the
+  // enable path instead of a misleading `'absent'` short-circuit.
+  try {
+    fs.statSync(manifestPath)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') return { state: 'absent' }
+    return {
+      state: 'present-io-failure',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
   }
   let raw: string
   try {

@@ -181,6 +181,24 @@ export function readRecipeHistory(fs: FileAccessLayer): RecipeHistoryEntry[] {
     return []
   }
 
+  return parseRecipeHistoryContent(fs, content)
+}
+
+/**
+ * Parse + validate a pre-loaded recipe-history.jsonl payload and
+ * apply the corruption-rotate self-heal rule. Exposed so callers
+ * with a throwing IO contract (`loadRecipeHistorySnapshot` in
+ * `bundled-installer.ts`) can read the file exactly once and reuse
+ * the parsed entries without re-running `readFileSync` (PR #56
+ * codex attempt 4 Finding "sync I/O amplification"). The rotation
+ * logic mirrors `readRecipeHistory` so both call paths share the
+ * same self-heal behaviour on corruption.
+ */
+export function parseRecipeHistoryContent(
+  fs: FileAccessLayer,
+  content: string,
+): RecipeHistoryEntry[] {
+  const path = getRecipeHistoryPath(fs)
   const lines = content.split('\n').filter((line) => line.trim().length > 0)
   const entries: RecipeHistoryEntry[] = []
   // Both syntax errors *and* shape mismatches count toward the
