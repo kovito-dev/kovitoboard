@@ -203,48 +203,45 @@ export class BundledInstallerError extends Error {
  *      imports the helper without either source still produces a
  *      schema-valid AppManifest.
  *
- * The first **successful** resolution is cached so each enable
- * transaction does not re-read `package.json` from disk. The
- * `'0.0.0'` sentinel branch is **deliberately not cached**: a
- * transient IO failure (EACCES during the first enable, file
- * appears later) would otherwise poison every subsequent
- * `AppManifest.kovitoboardVersion` write for the lifetime of the
- * process. Codex review #58 attempt 3 Low #3 surfaced this; the
- * retry-on-failure semantics is cheap because each call adds at
- * most one `readFileSync` of a small file once the cache populates.
+ * Resolution happens **once at module load time** and is then served
+ * from `RESOLVED_KOVITOBOARD_VERSION_AT_STARTUP` for every enable
+ * transaction. Each strategy is best-effort:
+ *
+ *   - codex review #58 attempt 3 Low warned about the previous
+ *     resolver permanently caching the `'0.0.0'` sentinel after a
+ *     transient IO failure.
+ *   - codex review #58 attempt 7 Low warned about the follow-up
+ *     resolver retrying the `readFileSync` on every enable when the
+ *     env var was unset and `package.json` was unavailable, turning
+ *     a persistent deployment fault into per-request event-loop
+ *     blocking.
+ *
+ * Resolving at startup makes both failure modes structural: any
+ * transient IO at module-load is essentially a deployment fault
+ * (the server is starting in a broken state), and a recovering
+ * filesystem requires a process restart to surface the real version.
+ * That mirrors how every other process-wide config snapshot behaves
+ * in this server.
  */
-let cachedKovitoboardVersion: string | null = null
-function resolveKovitoboardVersion(): string {
-  if (cachedKovitoboardVersion !== null) return cachedKovitoboardVersion
+function resolveKovitoboardVersionOnce(): string {
   const env = process.env.npm_package_version
   if (typeof env === 'string' && env.length > 0) {
-    cachedKovitoboardVersion = env
     return env
   }
-  // package.json read fallback. `getKovitoboardDir` resolves the
-  // OSS install root through the same paths layer the recipe-history
-  // helpers use, so the lookup honours the test harness env override
-  // (`KOVITOBOARD_PROJECT_ROOT`) when one is in effect. The version
-  // file lives at the repo root, which is the *parent* of the
-  // `<projectRoot>/.kovitoboard/` directory `getKovitoboardDir` resolves;
-  // we therefore use a direct path resolution against the install root.
+  // package.json read fallback. We deliberately use a raw `node:fs`
+  // read instead of routing through the `FileAccessLayer` because
+  // the version probe must not depend on the per-request `fs`
+  // instance threaded into `enableBundledRecipe` (which targets the
+  // user project root, not the OSS install root).
   try {
     const installRoot = resolveKovitoboardInstallRootForVersion()
     if (installRoot !== null) {
       const pkgPath = join(installRoot, 'package.json')
-      // Best-effort read — failure falls through to the sentinel.
-      // We deliberately use a raw `node:fs` read instead of routing
-      // through the `FileAccessLayer` because the version probe must
-      // not depend on the per-request `fs` instance threaded into
-      // `enableBundledRecipe` (which targets the user project root,
-      // not the OSS install root).
-      const fsModule = nodeFs
-      const raw = fsModule.readFileSync(pkgPath, 'utf-8')
+      const raw = nodeFs.readFileSync(pkgPath, 'utf-8')
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object' && typeof (parsed as { version?: unknown }).version === 'string') {
         const v = (parsed as { version: string }).version
         if (v.length > 0) {
-          cachedKovitoboardVersion = v
           return v
         }
       }
@@ -255,10 +252,13 @@ function resolveKovitoboardVersion(): string {
     // transaction (the user-facing AppManifest still gets a stable
     // string value the renderer can display).
   }
-  // **Do not cache** the sentinel — return it for this call only so a
-  // recovering filesystem can surface the real version on the next
-  // enable transaction.
   return '0.0.0'
+}
+
+const RESOLVED_KOVITOBOARD_VERSION_AT_STARTUP = resolveKovitoboardVersionOnce()
+
+function resolveKovitoboardVersion(): string {
+  return RESOLVED_KOVITOBOARD_VERSION_AT_STARTUP
 }
 
 /**
@@ -2361,10 +2361,50 @@ export function enableBundledRecipe(
       ? parsed.metadata.name
       : null) ??
     appId
+
+  // Preserve user-owned AppManifest fields on the repair path (codex
+  // review #58 attempt 7 Medium). `enableBundledRecipe` doubles as
+  // the recovery path when only `menu.ts` or another coherence
+  // check fails — in that case the existing AppManifest already
+  // carries user-PATCHed `menuOrder` / `userMenuLabel` values from
+  // `PUT /api/apps/menu-order` / `PATCH /api/apps/:appId/menu-label`,
+  // and the original `createdAt` is the canonical "when did this app
+  // become visible" timestamp. Rebuilding the manifest from scratch
+  // would silently reset every one of those, so a coherence-driven
+  // repair would surface as a UX regression for the user. Parse the
+  // snapshot we captured above (kind check + read already succeeded)
+  // and carry forward the user-owned subset.
+  let preservedMenuOrder: number | undefined
+  let preservedUserMenuLabel: string | null | undefined
+  let preservedCreatedAt: string | undefined
+  if (existingAppManifestContent !== null) {
+    try {
+      const parsedExisting = JSON.parse(existingAppManifestContent)
+      if (isAppManifest(parsedExisting) && parsedExisting.appId === appId) {
+        if (typeof parsedExisting.menuOrder === 'number' && Number.isInteger(parsedExisting.menuOrder)) {
+          preservedMenuOrder = parsedExisting.menuOrder
+        }
+        if (
+          parsedExisting.userMenuLabel === null ||
+          (typeof parsedExisting.userMenuLabel === 'string' && parsedExisting.userMenuLabel.length > 0)
+        ) {
+          preservedUserMenuLabel = parsedExisting.userMenuLabel
+        }
+        if (typeof parsedExisting.createdAt === 'string' && parsedExisting.createdAt.length > 0) {
+          preservedCreatedAt = parsedExisting.createdAt
+        }
+      }
+    } catch {
+      // Schema-invalid snapshot — fall through to a fresh-install
+      // AppManifest. The Step 5.5 rollback regime restores the
+      // original bytes on failure, so a parse-failed snapshot does
+      // not corrupt the user state.
+    }
+  }
   const appManifest: AppManifest = {
     appId,
     displayName,
-    createdAt: manifest.installedAt,
+    createdAt: preservedCreatedAt ?? manifest.installedAt,
     kovitoboardVersion: resolveKovitoboardVersion(),
     source: {
       type: 'recipe',
@@ -2372,10 +2412,15 @@ export function enableBundledRecipe(
       recipeVersion: parsed.metadata.version,
       recipeSource: 'bundled',
     },
-    // menuOrder / userMenuLabel are intentionally omitted (spec
-    // v1.12 Round 2 Critical 2 / Round 3 C2-fix): the scanner assigns
-    // a provisional menuOrder, and `null` for userMenuLabel has
-    // explicit-reset semantics that we must not pre-write.
+    // menuOrder / userMenuLabel are intentionally omitted on a fresh
+    // install (spec v1.12 Round 2 Critical 2 / Round 3 C2-fix): the
+    // scanner assigns a provisional menuOrder, and `null` for
+    // userMenuLabel has explicit-reset semantics that we must not
+    // pre-write. On the repair path the user-owned values are
+    // carried over verbatim above so a coherence-driven re-enable
+    // does not silently reset them.
+    ...(preservedMenuOrder !== undefined ? { menuOrder: preservedMenuOrder } : {}),
+    ...(preservedUserMenuLabel !== undefined ? { userMenuLabel: preservedUserMenuLabel } : {}),
   }
   try {
     writeAppManifest(fs, projectRoot, appManifest)

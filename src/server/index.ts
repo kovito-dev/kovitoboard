@@ -198,6 +198,19 @@ app.use((_req, res, next) => {
 // JSON body parsing. Without this ordering an attacker could keep the
 // server busy parsing megabyte-sized JSON bodies even though the
 // request would ultimately be rejected.
+//
+// The `verifyTokenAndOrigin` mount below is **the** authentication
+// + authorization gate for every `/api/...` route in this server,
+// including the bundled-installer endpoints
+// (`POST /api/recipes/sample/:recipeId/enable` and `.../disable`).
+// Spec recipe-system v1.12 §10.9.3 + §10.9.4 normatively pin
+// `middleware: verifyTokenAndOrigin` for both endpoints; placing
+// the gate at the `/api` namespace level (rather than per-route)
+// is what makes that contract robust against a future route
+// registration that forgets to declare the middleware. The guard
+// itself (`createTokenAndOriginGuard` in `auth/`) verifies the
+// launch-token bearer header + the Origin allowlist before the
+// JSON body parser ever sees the request payload.
 app.use('/api', verifyTokenAndOrigin)
 app.use(express.json())
 
