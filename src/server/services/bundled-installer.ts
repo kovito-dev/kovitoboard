@@ -1623,8 +1623,26 @@ export function isEnabledAndManifestCoherent(
   // on a commented-out snippet or an unrelated string literal,
   // making a no-entry state look coherent and suppressing the next
   // enable transaction's repair pass.
+  //
+  // File-kind check (codex review #58 attempt 5 Medium): mirror the
+  // Step 5.6 + Step 4.5 `lstatSync` gate so a symlinked
+  // `app/menu.ts` (or FIFO / socket / directory) does not slip past
+  // the coherence helper into an `'already-enabled'` short-circuit.
+  // The mutation paths reject the same anomaly with
+  // `BundledMenuTsAnomaly`; treating the same state as "not
+  // coherent" here routes the next enable into the structured
+  // reject branch instead of the silent `'already-enabled'` reply.
   const menuTsPath = join(projectRoot, 'app', 'menu.ts')
   if (!fs.existsSync(menuTsPath)) {
+    return false
+  }
+  let menuTsStat: { isFile: boolean }
+  try {
+    menuTsStat = fs.lstatSync(menuTsPath)
+  } catch {
+    return false
+  }
+  if (!menuTsStat.isFile) {
     return false
   }
   let menuTsContent: string
@@ -2900,6 +2918,111 @@ export function disableBundledRecipe(
   // `<projectRoot>/app/`. Fail-closed before any filesystem write
   // so even a corrupted state cannot escalate to arbitrary deletion.
   assertSafeAppId(projectRoot, appId)
+
+  // Root anomaly check (codex review #58 attempt 5 HIGH, owner
+  // approval (B) — implement the fix in this PR, the
+  // spec recipe-system v1.12 §10.9.4 cascade is tracked as a
+  // follow-up). The v1.12 disable transaction added Step 4.5
+  // (`app/menu.ts` mutation), which `<projectRoot>/app/` symlinking
+  // can redirect to an external tree. Spec §10.9.3 line 2274 still
+  // reads "Step 1.5 is enable-only" because the rationale predates
+  // the v1.12 disable Step 4.5 NEW write path; reuse the same
+  // probe here so the disable side matches the enable side's
+  // boundary contract end-to-end. `'app-root-leftover-temp'` is
+  // ignored for disable — leftover siblings are an enable-time
+  // concern (atomic rename safety for the upcoming write) and do
+  // not affect the artifact removal / menu.ts edit that disable
+  // performs.
+  const rootProbe = probeAppRootAnomaly(fs, projectRoot, appId)
+  switch (rootProbe.state) {
+    case 'ok':
+    case 'app-root-leftover-temp':
+      break
+    case 'project-root-unreadable':
+      recipeLogger.error(
+        { event: 'bundled-app-root-unreadable', action: 'disable', recipeId, appId, projectRoot, errno: rootProbe.errno, detail: rootProbe.detail },
+        'Bundled disable rejected: project root unreadable',
+      )
+      throw new BundledInstallerError(
+        `Project root "${projectRoot}" is unreadable: ${rootProbe.detail}`,
+        503,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'project-root-unreadable',
+          errno: rootProbe.errno,
+          detail: rootProbe.detail,
+        },
+      )
+    case 'app-root-symlink':
+      recipeLogger.error(
+        { event: 'bundled-app-root-symlink-reject', action: 'disable', recipeId, appId, appRootPath: join(projectRoot, 'app') },
+        'Bundled disable rejected: <projectRoot>/app is a symbolic link',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is a symbolic link; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-symlink',
+        },
+      )
+    case 'app-root-non-directory':
+      recipeLogger.error(
+        { event: 'bundled-app-root-anomaly', action: 'disable', recipeId, appId, appRootPath: join(projectRoot, 'app'), anomalyType: 'app-root-non-directory' },
+        'Bundled disable rejected: <projectRoot>/app is not a directory',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is not a directory; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-non-directory',
+        },
+      )
+    case 'app-root-broken-symlink':
+      recipeLogger.error(
+        { event: 'bundled-app-root-anomaly', action: 'disable', recipeId, appId, appRootPath: join(projectRoot, 'app'), anomalyType: 'app-root-broken-symlink' },
+        'Bundled disable rejected: <projectRoot>/app is a broken symlink',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is a broken symbolic link; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-broken-symlink',
+        },
+      )
+    case 'app-root-unreadable':
+      recipeLogger.error(
+        { event: 'bundled-app-root-unreadable', action: 'disable', recipeId, appId, appRootPath: join(projectRoot, 'app'), errno: rootProbe.errno, detail: rootProbe.detail },
+        'Bundled disable rejected: <projectRoot>/app is unreadable',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is unreadable: ${rootProbe.detail}`,
+        503,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-unreadable',
+          errno: rootProbe.errno,
+          detail: rootProbe.detail,
+        },
+      )
+  }
 
   // Step 2: probe bundled-registry presence so the history append
   // below records `metadata.note: 'bundled-registry-stale' |
