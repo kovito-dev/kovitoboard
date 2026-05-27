@@ -512,6 +512,18 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       return
     }
 
+    // Captured before the lock is released so the post-commit
+    // broadcast + 200 response can read the committed values back.
+    // Stays `null` on every error path within the try block (which
+    // sends its own response and returns), so we use that as the
+    // "response already sent above" sentinel after `finally` runs.
+    // Mirrors the PUT /api/apps/menu-order structure introduced in
+    // codex attempt 1 Finding 1 fix — both endpoints now keep the
+    // app lock as short as possible by moving the post-commit
+    // broadcast / response outside the locked region (codex attempt
+    // 2 Finding 2: keeping the lock during broadcast can turn a
+    // slow ws fan-out into AppLockTimeout for the same app).
+    let postCommit: { userMenuLabel: string | null } | null = null
     try {
       const manifestPath = getAppManifestPath(projectRoot, appId)
       // The existence check is what distinguishes 404 AppNotFound
@@ -576,6 +588,10 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
+      // Still inside the lock-protected section. Emit the 200
+      // audit record and capture the post-commit payload before
+      // releasing the lock — the broadcast + response will run
+      // after `finally` so the lock hold time stays tight.
       emitHttpRouteAudit(apiLogger, {
         method: 'PATCH',
         path: '/api/apps/:appId/menu-label',
@@ -588,24 +604,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           labelLength: userMenuLabel === null ? null : userMenuLabel.length,
         },
       })
-
-      try {
-        broadcast({
-          type: 'app_menu_changed',
-          payload: {
-            event: 'menu-label-update',
-            appId,
-            ts: Date.now(),
-          },
-        })
-      } catch (broadcastErr) {
-        apiLogger.warn(
-          { err: broadcastErr, appId },
-          'app_menu_changed broadcast failed (non-fatal post-commit)',
-        )
-      }
-
-      res.json({ appId, userMenuLabel })
+      postCommit = { userMenuLabel }
     } finally {
       try {
         release()
@@ -616,6 +615,32 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         )
       }
     }
+
+    // Reachable only on the success path: every error path inside
+    // the try block returned without setting `postCommit`. We could
+    // not run the broadcast + response inside the locked section
+    // because broadcast latency would extend the time the per-app
+    // lock is held (codex attempt 2 Finding 2 — symmetric with
+    // PUT /api/apps/menu-order).
+    if (postCommit === null) return
+
+    try {
+      broadcast({
+        type: 'app_menu_changed',
+        payload: {
+          event: 'menu-label-update',
+          appId,
+          ts: Date.now(),
+        },
+      })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, appId },
+        'app_menu_changed broadcast failed (non-fatal post-commit)',
+      )
+    }
+
+    res.json({ appId, userMenuLabel: postCommit.userMenuLabel })
   })
 
   return router
