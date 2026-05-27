@@ -1740,6 +1740,56 @@ describe('loadRecipeHistorySnapshot (PR #56 attempt 2)', () => {
     cleanup(h)
   })
 
+  it('returns an empty snapshot on ENOENT without preflighting existsSync (PR #56 attempt 5)', () => {
+    // Codex attempt 5 Finding "fail-closed regression": the previous
+    // snapshot loader started with `if (!fs.existsSync(path)) return
+    // { entries: [] }`. existsSync silently maps EACCES / EPERM to
+    // false on some platforms, which would let an unreadable history
+    // file fall through to the empty-snapshot branch and defeat the
+    // fail-closed contract. The refactor uses statSync as the first
+    // probe: ENOENT → empty entries (true absence), every other errno
+    // → 503 BundledLocalStateUnavailable.
+    //
+    // This test exercises the happy ENOENT path: no history file
+    // exists, snapshot returns empty entries without throwing.
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    expect(existsSync(historyPath)).toBe(false)
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+  })
+
+  it('rotates oversized recipe-history.jsonl via the shared size gate and returns empty (PR #56 attempt 5)', () => {
+    // Codex attempt 5 Finding "resource exhaustion": the snapshot
+    // loader previously skipped the MAX_HISTORY_BYTES (10 MiB) DoS
+    // guard that readRecipeHistory enforces. The size gate is now
+    // extracted into a shared enforceHistorySizeGate helper and both
+    // call paths share it.
+    //
+    // Write an 11 MiB dummy history file (just over the 10 MiB cap)
+    // and assert that the snapshot loader rotates it to
+    // .corrupted.<ts> and returns an empty snapshot without parsing.
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const ELEVEN_MIB = 11 * 1024 * 1024
+    // Padding line; the parser never sees it because the size gate
+    // trips first. We use a single long line to keep the write cheap.
+    writeFileSync(historyPath, 'x'.repeat(ELEVEN_MIB), 'utf-8')
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+    // After rotation, the live path no longer holds the oversize
+    // file (it was renamed to a `.corrupted.<ts>` sibling). The
+    // exact suffix is timestamp-driven, so we just verify the live
+    // path is gone.
+    expect(existsSync(historyPath)).toBe(false)
+  })
+
   it('performs exactly one readFileSync of recipe-history.jsonl (PR #56 attempt 4)', () => {
     // Codex attempt 4 Finding "sync I/O amplification": the previous
     // implementation called probeRecipeHistoryReadability for a full
