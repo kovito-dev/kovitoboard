@@ -401,6 +401,90 @@ function probeManifestOnDisk(
 }
 
 /**
+ * Force a disk-level read/parse health probe on
+ * `recipes-installed/<appId>/manifest.json` regardless of whether
+ * the manifestStore has the appId cached. Used by callers (the
+ * disable path / `classifyLocalResidue`) that need to detect
+ * post-boot corruption or tampering of the manifest file — the
+ * cache reflects boot-time validity, so a cache hit alone cannot
+ * guarantee the disk is still healthy at the moment of the check
+ * (PR #56 codex attempt 6 Finding "fail-closed check bypass").
+ *
+ * Distinct from {@link probeManifestOnDisk}: the enable path
+ * still uses the cached short-circuit because its goal is to
+ * decide whether a manifest *could* exist before deciding to write
+ * a new one, not to detect runtime tampering. Splitting the
+ * concern keeps the cache-trust invariant intact for the enable
+ * path while giving the disable path the fail-closed guarantee
+ * spec recipe-system §10.9.4 Step 1 expects.
+ *
+ * Returns the same `ManifestProbeOutcome` enum, with the
+ * `'cached'` variant replaced by a synthetic `'cached'` shape
+ * built from a successful disk read — callers that branched on
+ * `'cached'` can keep using the manifest object surfaced in the
+ * `manifest` field. Note: validateManifest schema enforcement is
+ * delegated to manifestStore.loadAll at boot; this probe only
+ * checks JSON parse health, identical to the enable-side semantics.
+ */
+function probeManifestFileOnDisk(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  appId: string,
+): ManifestProbeOutcome {
+  const baseDir = join(getKovitoboardDir(fs), 'recipes-installed', appId)
+  const manifestPath = join(baseDir, 'manifest.json')
+  try {
+    fs.statSync(manifestPath)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') return { state: 'absent' }
+    return {
+      state: 'present-io-failure',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  let raw: string
+  try {
+    raw = fs.readFileSync(manifestPath, 'utf-8')
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'present-io-failure',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  try {
+    JSON.parse(raw)
+  } catch (err) {
+    return {
+      state: 'present-parse-failure',
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  // Disk-read succeeded and parsed cleanly. Use the cached manifest
+  // as the canonical "present" object when one exists (so downstream
+  // coherence checks have the same shape they had under the prior
+  // cache-short-circuit semantics); otherwise fall back to treating
+  // it as absent — manifestStore.loadAll would have rejected the
+  // file on schema grounds at boot, and a manually-planted manifest
+  // that bypasses the store is out of v0.2.x scope (same rationale
+  // as the cache-trust invariant for the enable path).
+  const cached = manifestStore.get(appId)
+  if (cached !== null) {
+    return { state: 'cached', manifest: cached }
+  }
+  return { state: 'present-parse-failure', detail: 'manifest present on disk but not registered in manifestStore (post-boot tamper or schema-rejected)' }
+}
+
+/**
  * Probe `recipes/<recipeId>/recipe.yaml` for filesystem-level read
  * health. Spec recipe-system v1.10 §10.9.3 Step 3a separates the
  * "asset unreadable" 503 (`BundledRecipeUnreadable`) from the parse
@@ -794,9 +878,13 @@ export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResid
     // Cross-check the on-disk manifest: a cache-hit guarantees the
     // file parsed at boot time, but a corruption introduced after boot
     // (manual edit + signal) would still serve from cache while the
-    // file is unreadable. Re-probe to surface the IO / parse failure
-    // before the disable transaction proceeds.
-    const probe = probeManifestOnDisk(fs, manifestStore, manifest.appId)
+    // file is unreadable. Use the disk-forcing probe so the check
+    // actually reaches the filesystem regardless of cache state
+    // (PR #56 codex attempt 6 Finding "fail-closed check bypass" —
+    // the previous `probeManifestOnDisk` short-circuited on any
+    // cache hit, which on the disable path defeated the spec
+    // recipe-system §10.9.4 Step 1 fail-closed posture).
+    const probe = probeManifestFileOnDisk(fs, manifestStore, manifest.appId)
     if (probe.state === 'present-io-failure') {
       throw new BundledInstallerError(
         `Manifest IO failure for "${recipeId}" (appId="${manifest.appId}")`,
@@ -1446,6 +1534,17 @@ export interface DisableBundledRecipeArgs {
   manifestStore: RecipeManifestStore
   projectRoot: string
   recipeId: string
+  /**
+   * Optional pre-loaded `recipe-history.jsonl` snapshot. When
+   * provided, the locked transaction reuses the same parsed history
+   * across `classifyLocalResidue` and the `findHistoryMatchForBundled`
+   * fallback, avoiding the redundant sync reads + parses on the
+   * lock-held hot path that the disable HTTP handler's pre-lock
+   * snapshot was already paying for (PR #56 codex attempt 6 Finding
+   * "resource exhaustion" — the snapshot optimization previously
+   * stopped at the lock boundary).
+   */
+  historySnapshot?: RecipeHistorySnapshot
 }
 
 export interface DisableBundledRecipeResult {
@@ -1505,10 +1604,23 @@ export interface DisableBundledRecipeResult {
 export function disableBundledRecipe(
   args: DisableBundledRecipeArgs,
 ): DisableBundledRecipeResult {
-  const { fs, manifestStore, projectRoot, recipeId } = args
+  const { fs, manifestStore, projectRoot, recipeId, historySnapshot } = args
+
+  // Load (or reuse) the snapshot once for the whole transaction so
+  // the locked critical section pays the history read cost at most
+  // once. The HTTP handler already passes its pre-lock snapshot
+  // through `args.historySnapshot`; standalone callers (tests, future
+  // CLI entry points) fall back to a fresh load (PR #56 codex
+  // attempt 6 Finding "resource exhaustion").
+  const snapshot = historySnapshot ?? loadRecipeHistorySnapshot(fs)
 
   // Step 1: local-state classification.
-  const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+  const residue = classifyLocalResidue({
+    fs,
+    manifestStore,
+    recipeId,
+    historySnapshot: snapshot,
+  })
   if (residue === 'none') {
     return { status: 'already-disabled', dataPreserved: true }
   }
@@ -1522,8 +1634,7 @@ export function disableBundledRecipe(
   }
 
   const manifest = findManifestByRecipeId(manifestStore, recipeId)
-  const history = readRecipeHistory(fs)
-  const installRecord = findHistoryMatchForBundled(history, recipeId)
+  const installRecord = findHistoryMatchForBundled(snapshot.entries, recipeId)
 
   // Resolve appId + source from whichever side is present.
   // Fail-closed: when the manifest is present we trust its appId

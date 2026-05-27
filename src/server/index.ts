@@ -1507,7 +1507,18 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   let result: ReturnType<typeof disableBundledRecipe>
   try {
     try {
-      result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
+      result = disableBundledRecipe({
+        fs,
+        manifestStore,
+        projectRoot,
+        recipeId,
+        // Thread the pre-lock snapshot into the locked transaction
+        // so classifyLocalResidue + findHistoryMatchForBundled reuse
+        // the same parsed history (PR #56 codex attempt 6 Finding
+        // "resource exhaustion" — the snapshot optimization
+        // previously stopped at the lock boundary).
+        historySnapshot,
+      })
     } finally {
       release()
     }
