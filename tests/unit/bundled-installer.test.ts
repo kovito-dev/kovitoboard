@@ -34,12 +34,16 @@ import {
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { symlinkSync } from 'node:fs'
 import {
   BundledInstallerError,
   classifyLocalResidue,
   disableBundledRecipe,
   enableBundledRecipe,
   isEnabledAndManifestCoherent,
+  loadRecipeHistorySnapshot,
+  resolveBundledAppIdForDisable,
+  type RecipeHistorySnapshot,
 } from '../../src/server/services/bundled-installer'
 import { scanSampleRecipes, getSampleRecipes } from '../../src/server/services/recipe-scanner'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
@@ -197,6 +201,64 @@ describe('classifyLocalResidue', () => {
       }),
     ).toBe('corrupted')
   })
+
+  it('cache-miss + history-resolved appId still probes disk for malformed manifest (PR #56 attempt 9)', () => {
+    // Codex attempt 9 Finding "fail-closed gap in local-state
+    // validation": classifyLocalResidue used to only probe
+    // manifest.json on disk when findManifestByRecipeId returned a
+    // cached manifest. A manifest that exists on disk but was
+    // dropped from manifestStore.loadAll() at boot for schema
+    // reasons (warn log only) would fall through as manifest === null,
+    // and the disable transaction would silently take the
+    // manifestAlreadyAbsent branch — never deleting the stale
+    // corrupt manifest file. The fix adds a cache-miss disk probe:
+    // when manifest is null but a history record gives us an appId,
+    // probeManifestFileOnDisk(recordAppId) surfaces present-io-failure
+    // (503) and present-parse-failure (500) instead of silent
+    // fallthrough.
+    //
+    // Seed a history install record + plant an unparseable manifest
+    // at the resolved appId WITHOUT going through manifestStore.save.
+    // The cache misses (we never registered the manifest), the
+    // disk probe sees `not-json{` and routes to present-parse-failure
+    // → 500 BundledManifestUnreadable.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_cache_miss_probe',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const manifestDir = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+    )
+    mkdirSync(manifestDir, { recursive: true })
+    writeFileSync(join(manifestDir, 'manifest.json'), 'not-json{', 'utf-8')
+    let thrown: unknown = null
+    try {
+      classifyLocalResidue({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledManifestUnreadable')
+    expect(err.httpStatus).toBe(500)
+  })
+
 })
 
 // =========================================
@@ -673,12 +735,15 @@ describe('enableBundledRecipe', () => {
     expect(installRecord.hash).not.toBe('STALE-CACHE-HASH-DO-NOT-USE')
   })
 
-  it('appDir anomaly: a pre-existing app/<appId>/ without a manifest fails closed', () => {
+  it('appDir self-made conflict: a pre-existing app/<appId>/ without a bundled/sample install record is rejected as self-made (BL-2026-176)', () => {
     // Without a coherent (or even non-coherent) bundled/sample
-    // manifest at the target appId, an existing `app/<appId>/`
-    // directory cannot have been authored by the bundled-installer.
-    // Promoting its contents to `'code-trusted (bundled)'` would
-    // bless tampered files under a trusted label — fail closed.
+    // manifest at the target appId AND without a bundled/sample
+    // install record in recipe-history.jsonl, the existing
+    // `app/<appId>/` directory must have been authored by the user.
+    // Spec recipe-system v1.10 §10.9.3 Step 3d (ii-a-self-made)
+    // routes this to a 400 BundledAppIdConflict so the user can
+    // rename / clean up by hand; the request-removal endpoint is
+    // the correct destructive surface for self-made apps.
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
 
@@ -703,8 +768,9 @@ describe('enableBundledRecipe', () => {
     }
     expect(thrown).toBeInstanceOf(BundledInstallerError)
     const err = thrown as BundledInstallerError
-    expect(err.errorCode).toBe('BundledAppDirAnomaly')
-    expect(err.httpStatus).toBe(500)
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    expect(err.detail?.conflictSource).toBe('self-made')
     // The stray file is left untouched (no Step 4 ran).
     expect(existsSync(join(appDir, 'evil.tsx'))).toBe(true)
     // No manifest was written.
@@ -1108,5 +1174,1045 @@ describe('disableBundledRecipe', () => {
     // The persisted source must round-trip — hard-coding 'bundled'
     // here would break later already-disabled lookups.
     expect(uninstallRecord!.source).toBe('sample')
+  })
+})
+
+// =========================================
+// BL-2026-176 Phase 1 edge-case coverage
+// =========================================
+//
+// Coverage targets (spec recipe-system v1.10 §10.9.3 / §10.9.4):
+//
+//   - `BundledManifestUnreadable` 500 (enable Step 3d (iv))
+//   - `BundledAppIdConflictAnomaly` 500 / 503 probe-order branches
+//   - `BundledAppIdConflict` (`'self-made'`) — already covered by the
+//     pre-existing "appDir self-made conflict" test above; not
+//     duplicated.
+//   - partial-residue recovery (Step 4-7 driven by history match)
+//   - `disable` metadata.note 4-value enum
+//   - `resolveBundledAppIdForDisable` four-case branching
+
+describe('enable edge cases (BL-2026-176)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('BundledManifestUnreadable: an unparseable existing manifest is rejected with 500', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Plant a corrupt manifest at the target appId. The validator
+    // skips it at boot (silent warn), so the manifestStore cache
+    // does not surface the corruption — only the on-disk probe does.
+    const manifestDir = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+    )
+    mkdirSync(manifestDir, { recursive: true })
+    writeFileSync(join(manifestDir, 'manifest.json'), 'not-json{', 'utf-8')
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledManifestUnreadable')
+    expect(err.httpStatus).toBe(500)
+  })
+
+  it('BundledAppIdConflictAnomaly: a non-directory entry at app/<appId> fails closed', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Plant a regular file at the appDir path. Step 3d (ii) probe
+    // reports it as `'non-directory-entry'`.
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    writeFileSync(join(appBase, SAMPLE_RECIPE_ID), 'i am a file', 'utf-8')
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('non-directory-entry')
+  })
+
+  it('BundledAppIdConflictAnomaly: a broken symlink at app/<appId> fails closed', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Plant a symlink whose target does not exist.
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    symlinkSync(
+      join(h.projectRoot, 'nonexistent-target'),
+      join(appBase, SAMPLE_RECIPE_ID),
+    )
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('broken-symlink')
+  })
+
+  it('BundledAppIdConflictAnomaly: a live symlink whose target leaves <projectRoot>/app/ fails closed', () => {
+    // Spec recipe-system v1.11 §10.9.3 Step 3d (ii-f). PR #56 codex
+    // attempt 1 Medium 1: a crafted `app/<appId>` symlink that
+    // resolves outside `<projectRoot>/app/` would let step 3
+    // `readdirSync` list (and step 5 act on) an external directory.
+    // The step 2.5 path-boundary verification must reject this
+    // before the readdir runs.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    // Plant a real directory outside `<projectRoot>/app/` and
+    // symlink the appDir to it. The target exists, so the probe
+    // cannot fall through to the broken-symlink (ii-c) branch.
+    const externalDir = join(h.projectRoot, 'external-target')
+    mkdirSync(externalDir, { recursive: true })
+    writeFileSync(join(externalDir, 'secret.txt'), 'do-not-read', 'utf-8')
+    symlinkSync(externalDir, join(appBase, SAMPLE_RECIPE_ID))
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('symlink-out-of-app-root')
+    // The resolvedTarget must canonicalise to the planted external
+    // dir. On macOS the project root sits under `/private/var/...`
+    // so we substring-match on the leaf rather than the full path.
+    expect(typeof err.detail?.resolvedTarget).toBe('string')
+    expect(err.detail?.resolvedTarget as string).toContain('external-target')
+  })
+
+  it('a live symlink whose target stays under <projectRoot>/app/ falls through to the readable-directory branch', () => {
+    // Spec recipe-system v1.11 §10.9.3 Step 3d (ii) step 2.5
+    // path-boundary verification only rejects targets outside
+    // `<projectRoot>/app/`. A symlink pointing to a sibling app
+    // directory (in-boundary) must keep the legacy probe outcome:
+    // readdir succeeds, then the history-match decides between
+    // `partial-residue` (recovery) and `self-made` (400). With no
+    // bundled/sample install record the result is the latter.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    const internalDir = join(appBase, 'other-real-app')
+    mkdirSync(internalDir, { recursive: true })
+    writeFileSync(join(internalDir, 'placeholder.txt'), 'x', 'utf-8')
+    symlinkSync(internalDir, join(appBase, SAMPLE_RECIPE_ID))
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    expect(err.detail?.conflictSource).toBe('self-made')
+  })
+
+  it('BundledAppIdConflictAnomaly: a sibling leftover temp dir fails closed', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Plant a sibling .tmp* dir matching the leftover-temp prefix.
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(join(appBase, `${SAMPLE_RECIPE_ID}.tmp123`), { recursive: true })
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('leftover-temp-dir')
+  })
+
+  it('partial-residue recovery: manifest absent + bundled install record present → 200 enabled (Step 4-7)', () => {
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Simulate a partial residue: a bundled install record + a
+    // readable app/<appId>/ directory, but no manifest. Spec routes
+    // this case to the recovery path (Step 4-7), not to the
+    // self-made / anomaly reject paths.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260526_part1',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'partial-residue-hash',
+      appliedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(join(appBase, SAMPLE_RECIPE_ID), { recursive: true })
+    writeFileSync(
+      join(appBase, SAMPLE_RECIPE_ID, 'stale-artifact.tsx'),
+      'stale',
+      'utf-8',
+    )
+
+    const result = enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    expect(result.status).toBe('enabled')
+    expect(result.source).toBe('bundled')
+    // The stale artifact is replaced (recovery wiped the appDir).
+    expect(
+      existsSync(join(appBase, SAMPLE_RECIPE_ID, 'stale-artifact.tsx')),
+    ).toBe(false)
+    // A coherent manifest is now in place.
+    const manifest = h.manifestStore.get(SAMPLE_RECIPE_ID)
+    expect(manifest).not.toBeNull()
+    expect(manifest!.source).toBe('bundled')
+  })
+
+  it('rejects partial-residue recovery when history record claims a different appId (PR #56 attempt 8)', () => {
+    // Codex attempt 8 Finding "fail-closed misclassification":
+    // probeAppDirAnomaly used to return `partial-residue` whenever
+    // findHistoryMatchForBundled matched on recipeId alone, even if
+    // the historic install record claimed a different appId. That
+    // would let the enable recovery path Step 4 rmSync(appDir) wipe
+    // a self-made / user-authored directory that has no relation to
+    // this bundled recipe instance. The fix requires the matched
+    // record's resolved appId to equal the target appId; mismatches
+    // downgrade to `self-made`, which the caller throws as 400
+    // `BundledAppIdConflict` rather than running the destructive
+    // recovery.
+    //
+    // Seed a history install record claiming the same recipeId but
+    // under a DIFFERENT appId, plant a self-made directory at the
+    // target appId, and run enableBundledRecipe. The probe should
+    // route to self-made (BundledAppIdConflict 400), preserving
+    // the existing directory.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_appid_mismatch',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: 'a-completely-different-app-id',
+    })
+    // Plant a self-made directory at the bundled default appId
+    // (== recipeId for bundled samples). probeAppDirAnomaly will
+    // see it exists; the history match's recordAppId
+    // (`a-completely-different-app-id`) differs from the target
+    // appId (`SAMPLE_RECIPE_ID`), so the probe must NOT classify
+    // this as partial-residue.
+    const targetAppDir = join(h.projectRoot, 'app', SAMPLE_RECIPE_ID)
+    mkdirSync(targetAppDir, { recursive: true })
+    writeFileSync(join(targetAppDir, 'self-made.txt'), 'user-authored', 'utf-8')
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    // The self-made directory must be preserved (no rmSync executed).
+    expect(existsSync(join(targetAppDir, 'self-made.txt'))).toBe(true)
+  })
+
+  it('BundledLocalStateUnavailable: probeManifestOnDisk routes EACCES to present-io-failure instead of existsSync absent (PR #56 attempt 4)', () => {
+    // Codex attempt 4 Finding "fail-open filesystem probe":
+    // probeManifestOnDisk previously used existsSync(manifestPath)
+    // on the cache-miss branch, which silently maps EACCES / EPERM
+    // to false and routes a permission-denied manifest into the
+    // 'absent' path. That defeats the fail-closed posture (an
+    // unreadable manifest is then treated as "no manifest" and the
+    // enable transaction proceeds). The refactor uses statSync +
+    // errno-based classification: ENOENT stays 'absent', any other
+    // errno surfaces as 'present-io-failure' → 503
+    // BundledLocalStateUnavailable on the enable path.
+    //
+    // Plant a chmod-000 manifest on disk WITHOUT going through
+    // manifestStore.save (so the cache misses on the appId lookup).
+    // The Step 3d (iv) cache-miss disk probe inside
+    // enableBundledRecipe is the exact callsite that previously
+    // fell through to 'absent' under existsSync.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const manifestDir = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+    )
+    mkdirSync(manifestDir, { recursive: true })
+    const manifestPath = join(manifestDir, 'manifest.json')
+    writeFileSync(manifestPath, '{"valid":"json"}', 'utf-8')
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(manifestPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        enableBundledRecipe({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          projectRoot: h.projectRoot,
+          kovitoboardRoot: KB_INSTALL_ROOT,
+          recipeId: SAMPLE_RECIPE_ID,
+          sample,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(manifestPath, 0o644)
+    }
+  })
+
+  it('BundledLocalStateUnavailable: unreadable recipe-history.jsonl surfaces 503 instead of fail-open self-made (PR #56 attempt 3)', () => {
+    // Codex attempt 3 Finding "fail-open local state probe":
+    // the enable transaction's appDir anomaly probe previously fed
+    // its history input from `readRecipeHistory(fs)` directly,
+    // which silently returns `[]` on IO failure. A history file
+    // that the process cannot read should *not* be downgraded to
+    // "no history" — it must surface as 503 so the operator can
+    // recover the disk state, and the partial-residue branch never
+    // mis-routes to `self-made`.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Seed a history entry so the file exists, then chmod 000 to
+    // force EACCES on read. Without the snapshot loader fix, the
+    // enable path would swallow the failure and probe as "no
+    // history".
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_enable_io_fail',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(historyPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        enableBundledRecipe({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          projectRoot: h.projectRoot,
+          kovitoboardRoot: KB_INSTALL_ROOT,
+          recipeId: SAMPLE_RECIPE_ID,
+          sample,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(historyPath, 0o644)
+    }
+  })
+})
+
+describe('disable edge cases (BL-2026-176)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('metadata.note "bundled-registry-stale" when the recipe id is no longer in the bundled registry', () => {
+    // Populate the scanner cache so it is in the 'initialised' state
+    // (i.e. not 'unavailable'), but pick a recipeId that is not in
+    // the cache. That is the spec-normative `'stale'` branch: a
+    // future KB release rename / removal leaves the local state in
+    // place while the recipe id falls off the registry.
+    scanSamples(h)
+    const PHANTOM_RECIPE_ID = 'phantom-recipe'
+    h.manifestStore.save({
+      appId: PHANTOM_RECIPE_ID,
+      recipeId: PHANTOM_RECIPE_ID,
+      recipeVersion: '0.0.0',
+      hash: 'fakehash',
+      installedAt: '2026-04-01T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    mkdirSync(join(h.projectRoot, 'app', PHANTOM_RECIPE_ID), { recursive: true })
+
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: PHANTOM_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.metadata?.note).toBe('bundled-registry-stale')
+  })
+
+  it('metadata.note "manifest-already-absent" wins over registry note when manifest is gone', () => {
+    // Seed a history install record but NO manifest — the partial
+    // residue path. Spec recipe-system v1.10 §10.9.4 Step 2 routes
+    // this case to the `manifest-already-absent` metadata.note,
+    // overriding any registry-derived note value.
+    scanSamples(h)
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260526_pr',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.metadata?.note).toBe('manifest-already-absent')
+  })
+})
+
+describe('resolveBundledAppIdForDisable (BL-2026-176)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('returns undefined when no manifest and no install record exist', () => {
+    expect(
+      resolveBundledAppIdForDisable({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('resolves the appId + source from a bundled manifest hit', () => {
+    h.manifestStore.save({
+      appId: SAMPLE_RECIPE_ID,
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'fakehash',
+      installedAt: '2026-05-26T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    const result = resolveBundledAppIdForDisable({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result).toEqual({
+      appId: SAMPLE_RECIPE_ID,
+      source: 'bundled',
+      manifestAlreadyAbsent: false,
+    })
+  })
+
+  it('resolves the appId from a history install record with manifestAlreadyAbsent=true', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260526_resolve',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'sample',
+      hash: 'fakehash',
+      appliedAt: '2026-04-01T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const result = resolveBundledAppIdForDisable({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result).toEqual({
+      appId: SAMPLE_RECIPE_ID,
+      source: 'sample',
+      manifestAlreadyAbsent: true,
+    })
+  })
+
+  it('throws BundledLocalStateCorrupted when manifest and history disagree on appId', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260526_corrupted',
+      action: 'install',
+      name: 'document-viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: 'history-side-app',
+    })
+    h.manifestStore.save({
+      appId: 'manifest-side-app',
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'fakehash',
+      installedAt: '2026-05-26T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+
+    let thrown: unknown = null
+    try {
+      resolveBundledAppIdForDisable({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        recipeId: SAMPLE_RECIPE_ID,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledLocalStateCorrupted')
+    expect(err.httpStatus).toBe(500)
+  })
+})
+
+// =========================================
+// loadRecipeHistorySnapshot + snapshot threading
+// (PR #56 codex attempt 2 Finding "resource exhaustion")
+// =========================================
+
+/**
+ * Wrap a `DirectFsLayer` so we can count `readFileSync` invocations
+ * without changing any other behaviour. Used to prove that snapshot
+ * threading collapses the worst-case 3× sync history reads
+ * (handler classify + resolver classify + resolver fallback) into a
+ * single per-request read.
+ */
+function wrapFsWithReadCounter(fs: DirectFsLayer): {
+  fs: DirectFsLayer
+  countFor: (path: string) => number
+  reset: () => void
+} {
+  const counts = new Map<string, number>()
+  const originalReadFileSync = fs.readFileSync.bind(fs)
+  // Augment the layer in place (DirectFsLayer instances are
+  // per-test, so this does not leak between tests).
+  ;(fs as unknown as { readFileSync: typeof fs.readFileSync }).readFileSync = (
+    p: Parameters<typeof originalReadFileSync>[0],
+    enc?: Parameters<typeof originalReadFileSync>[1],
+  ) => {
+    const key = typeof p === 'string' ? p : String(p)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+    return originalReadFileSync(p, enc)
+  }
+  return {
+    fs,
+    countFor: (path: string) => counts.get(path) ?? 0,
+    reset: () => counts.clear(),
+  }
+}
+
+describe('loadRecipeHistorySnapshot (PR #56 attempt 2)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('classifyLocalResidue forces a disk health probe even when manifestStore caches the manifest (PR #56 attempt 6)', () => {
+    // Codex attempt 6 Finding "fail-closed check bypass":
+    // probeManifestOnDisk used to short-circuit on any cache hit, so
+    // a manifest that was chmod-ed / corrupted after boot would still
+    // be treated as healthy and the disable transaction would proceed.
+    // The attempt 6 fix introduces a separate `probeManifestFileOnDisk`
+    // path that always reaches the filesystem, and classifyLocalResidue
+    // now uses it on the disable code path.
+    //
+    // Seed a cached manifest via manifestStore.save (boot-time
+    // contract), then chmod 000 the on-disk file to simulate post-boot
+    // tampering. The classify step must surface
+    // BundledLocalStateUnavailable 503 instead of silently treating
+    // the manifest as healthy via the cache.
+    h.manifestStore.save({
+      appId: SAMPLE_RECIPE_ID,
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'fakehash',
+      installedAt: '2026-05-27T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    const manifestPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+      'manifest.json',
+    )
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(manifestPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        classifyLocalResidue({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          recipeId: SAMPLE_RECIPE_ID,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(manifestPath, 0o644)
+    }
+  })
+
+  it('disableBundledRecipe accepts a caller-provided historySnapshot and completes the transaction (PR #56 attempt 6)', () => {
+    // Codex attempt 6 Finding "resource exhaustion": the snapshot
+    // optimization stopped at the lock boundary — once the route
+    // entered disableBundledRecipe, it called classifyLocalResidue
+    // again without the snapshot and then readRecipeHistory a second
+    // time, both inside the per-appId lock. The attempt 6 fix adds
+    // an optional historySnapshot parameter to the transaction so
+    // the locked critical section reuses the same parsed history
+    // already loaded by the HTTP handler.
+    //
+    // Seed a real install record + manifest via enableBundledRecipe,
+    // then disable with the snapshot threaded in. Verify the
+    // transaction returns 'disabled' (so the locked path actually
+    // ran with the snapshot wired through classifyLocalResidue +
+    // findHistoryMatchForBundled).
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.source).toBe('bundled')
+  })
+
+  it('returns an empty snapshot on ENOENT without preflighting existsSync (PR #56 attempt 5)', () => {
+    // Codex attempt 5 Finding "fail-closed regression": the previous
+    // snapshot loader started with `if (!fs.existsSync(path)) return
+    // { entries: [] }`. existsSync silently maps EACCES / EPERM to
+    // false on some platforms, which would let an unreadable history
+    // file fall through to the empty-snapshot branch and defeat the
+    // fail-closed contract. The refactor uses statSync as the first
+    // probe: ENOENT → empty entries (true absence), every other errno
+    // → 503 BundledLocalStateUnavailable.
+    //
+    // This test exercises the happy ENOENT path: no history file
+    // exists, snapshot returns empty entries without throwing.
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    expect(existsSync(historyPath)).toBe(false)
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+  })
+
+  it('rotates oversized recipe-history.jsonl via the shared size gate and returns empty (PR #56 attempt 5)', () => {
+    // Codex attempt 5 Finding "resource exhaustion": the snapshot
+    // loader previously skipped the MAX_HISTORY_BYTES (10 MiB) DoS
+    // guard that readRecipeHistory enforces. The size gate is now
+    // extracted into a shared enforceHistorySizeGate helper and both
+    // call paths share it.
+    //
+    // Write an 11 MiB dummy history file (just over the 10 MiB cap)
+    // and assert that the snapshot loader rotates it to
+    // .corrupted.<ts> and returns an empty snapshot without parsing.
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const ELEVEN_MIB = 11 * 1024 * 1024
+    // Padding line; the parser never sees it because the size gate
+    // trips first. We use a single long line to keep the write cheap.
+    writeFileSync(historyPath, 'x'.repeat(ELEVEN_MIB), 'utf-8')
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+    // After rotation, the live path no longer holds the oversize
+    // file (it was renamed to a `.corrupted.<ts>` sibling). The
+    // exact suffix is timestamp-driven, so we just verify the live
+    // path is gone.
+    expect(existsSync(historyPath)).toBe(false)
+  })
+
+  it('performs exactly one readFileSync of recipe-history.jsonl (PR #56 attempt 4)', () => {
+    // Codex attempt 4 Finding "sync I/O amplification": the previous
+    // implementation called probeRecipeHistoryReadability for a full
+    // readFileSync and then readRecipeHistory did a second
+    // readFileSync, doubling the per-request IO. The refactored
+    // snapshot loader now performs exactly one readFileSync per
+    // call. Verify with the same readFileSync counter used in the
+    // attempt 2 threading tests.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_single_read',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot = loadRecipeHistorySnapshot(counter.fs)
+    expect(snapshot.entries.length).toBe(1)
+    expect(counter.countFor(historyPath)).toBe(1)
+  })
+
+  it('returns an empty snapshot when recipe-history.jsonl is absent', () => {
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries).toEqual([])
+  })
+
+  it('returns parsed entries from recipe-history.jsonl when present', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_snapshot',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    expect(snapshot.entries.length).toBe(1)
+    expect(snapshot.entries[0].recipeId).toBe(SAMPLE_RECIPE_ID)
+  })
+
+  it('surfaces BundledLocalStateUnavailable 503 on probe IO failure', () => {
+    // Seed a history file, then chmod 000 to force EACCES on the
+    // probe `readFileSync`. The probe contract is to map any errno
+    // (EACCES / EPERM / EIO / EBUSY) to a 503; the precise errno
+    // surfaces through the structured detail field.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_io_fail',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    // The chmod is per-process and the test harness runs as a
+    // non-root user, so 000 reliably blocks read. We restore in a
+    // `finally` to avoid blocking the rmSync in cleanup.
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(historyPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        loadRecipeHistorySnapshot(h.fs)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(historyPath, 0o644)
+    }
+  })
+})
+
+describe('classifyLocalResidue / resolveBundledAppIdForDisable snapshot threading (PR #56 attempt 2)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = buildHarness()
+  })
+  afterEach(() => {
+    cleanup(h)
+  })
+
+  it('reuses the caller-provided snapshot in classifyLocalResidue (no redundant readFileSync)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_thread_classify',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot: RecipeHistorySnapshot = loadRecipeHistorySnapshot(counter.fs)
+    // loadRecipeHistorySnapshot itself reads the file once via the
+    // probe (the parse step reads it again through fs.readFileSync
+    // inside readRecipeHistory).
+    const baselineReads = counter.countFor(historyPath)
+    expect(baselineReads).toBeGreaterThanOrEqual(1)
+    counter.reset()
+    const residue = classifyLocalResidue({
+      fs: counter.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(residue).toBe('present')
+    expect(counter.countFor(historyPath)).toBe(0)
+  })
+
+  it('reuses the caller-provided snapshot in resolveBundledAppIdForDisable (no redundant readFileSync)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_thread_resolve',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'sample',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot: RecipeHistorySnapshot = loadRecipeHistorySnapshot(counter.fs)
+    counter.reset()
+    const result = resolveBundledAppIdForDisable({
+      fs: counter.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(result).toEqual({
+      appId: SAMPLE_RECIPE_ID,
+      source: 'sample',
+      manifestAlreadyAbsent: true,
+    })
+    // With the snapshot threaded, neither the embedded
+    // classifyLocalResidue call nor the history-backed fallback
+    // re-reads the file.
+    expect(counter.countFor(historyPath)).toBe(0)
+  })
+
+  it('falls back to its own snapshot load when no historySnapshot is provided (back-compat)', () => {
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_backcompat',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    // No snapshot threading — the call should still succeed
+    // because the function loads its own snapshot internally
+    // (preserves the existing single-arg contract used by callers
+    // that have not been migrated yet).
+    const result = resolveBundledAppIdForDisable({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      recipeId: SAMPLE_RECIPE_ID,
+    })
+    expect(result?.appId).toBe(SAMPLE_RECIPE_ID)
+    expect(result?.source).toBe('bundled')
   })
 })

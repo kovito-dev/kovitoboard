@@ -45,9 +45,22 @@ interface RecipesPageProps {
     options?: { origin?: SessionOrigin },
   ) => Promise<NewSessionResponse>
   theme?: 'dark' | 'light'
+  /**
+   * Monotonic counter from `useIPC()` that bumps whenever the server
+   * broadcasts `recipe_apps_changed`. Forwarded to RecipeSample so it
+   * refetches `/api/recipes/sample` after a bundled enable / disable
+   * transaction completes (BL-2026-176 (b), ws-event-contract v1.4
+   * §7.6.3).
+   */
+  sampleRecipeVersion?: number
 }
 
-export function RecipesPage({ agents, startNewSession, theme = 'dark' }: RecipesPageProps) {
+export function RecipesPage({
+  agents,
+  startNewSession,
+  theme = 'dark',
+  sampleRecipeVersion,
+}: RecipesPageProps) {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TabId>('sample')
   const [showCreateAppModal, setShowCreateAppModal] = useState(false)
@@ -178,7 +191,9 @@ export function RecipesPage({ agents, startNewSession, theme = 'dark' }: Recipes
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
-        {activeTab === 'sample' && <RecipeSample />}
+        {activeTab === 'sample' && (
+          <RecipeSample sampleRecipeVersion={sampleRecipeVersion} />
+        )}
         {activeTab === 'history' && <RecipeHistory />}
       </div>
 

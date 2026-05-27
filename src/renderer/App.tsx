@@ -74,7 +74,7 @@ export function App() {
     setSessionAgent, isSessionSendable, rollbackOptimisticMessage,
     getDraft, setDraft, agentActivities,
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
-    wsConnected, appMenuVersion,
+    wsConnected, appMenuVersion, sampleRecipeVersion,
   } = ipc
 
   // Admin status polling (5s interval, combined with WS state)
@@ -474,6 +474,7 @@ export function App() {
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}
+                sampleRecipeVersion={sampleRecipeVersion}
               />
             } />
             <Route path="/sessions" element={<SessionsPage defaultSessionId={selectedId} />} />

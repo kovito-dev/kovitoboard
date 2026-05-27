@@ -98,6 +98,13 @@ export function useIPC() {
   // `GET /api/app/menu-entries` when a recipe install writes `app/menu.ts`,
   // so the navigation updates without a manual page reload.
   const [appMenuVersion, setAppMenuVersion] = useState(0)
+  // Monotonic counter bumped whenever the server reports
+  // `recipe_apps_changed` (BL-2026-176 (b)). RecipeSample (and any other
+  // sample-list consumer) uses it as a useEffect dependency to refetch
+  // `GET /api/recipes/sample` so the new `enabled` / `source` fields
+  // refresh without a manual page reload after a bundled enable /
+  // disable transaction. Mirrors the `appMenuVersion` bump pattern.
+  const [sampleRecipeVersion, setSampleRecipeVersion] = useState(0)
   // WebSocket ref (used to send trust-prompt responses)
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -360,6 +367,14 @@ export function useIPC() {
           // Bumping the version triggers consumers to refetch the
           // menu entries so the new page appears immediately.
           setAppMenuVersion((v) => v + 1)
+        } else if (type === 'recipe_apps_changed') {
+          // A bundled sample recipe was enabled / disabled. Bump the
+          // version so RecipeSample (and any other sample-list
+          // consumer) refetches `/api/recipes/sample` and the new
+          // `enabled` / `source` field state propagates without a
+          // page reload (BL-2026-176 (b), spec ws-event-contract v1.4
+          // §7.6.3 + recipe-system v1.10 §10.9).
+          setSampleRecipeVersion((v) => v + 1)
         }
       } catch {
         // ignore parse errors
@@ -679,5 +694,8 @@ export function useIPC() {
     // Bumped when the server reports `app_menu_changed`; use as a
     // useEffect dependency to refetch user menu entries.
     appMenuVersion,
+    // Bumped when the server reports `recipe_apps_changed`; use as a
+    // useEffect dependency to refetch `/api/recipes/sample`.
+    sampleRecipeVersion,
   }
 }
