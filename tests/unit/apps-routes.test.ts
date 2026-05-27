@@ -796,6 +796,33 @@ describe('PATCH /api/apps/:appId/menu-label', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('500 AppManifestUnreadable when app/<appId> is a symlink to an external dir that has no manifest.json', async () => {
+    // Plant `app/escape-no-manifest` pointing at an external
+    // directory that lacks `manifest.json`. Without the attempt
+    // 15 fix, the helper would fall through to the manifest-file
+    // lstat, see ENOENT, and classify the case as `not-found` →
+    // 404 AppNotFound, even though the directory-level escape is
+    // the primary anomaly we want to surface.
+    const outside = mkdtempSync(join(tmpdir(), 'kb-apps-routes-noman-'))
+    try {
+      // Intentionally NO manifest.json inside `outside`.
+      symlinkSync(outside, join(h.projectRoot, 'app', 'escape-no-manifest'), 'dir')
+
+      const reply = await sendJson(
+        h.app,
+        'PATCH',
+        '/api/apps/escape-no-manifest/menu-label',
+        { userMenuLabel: 'X' },
+      )
+
+      expect(reply.status).toBe(500)
+      expect(reply.body?.error).toBe('AppManifestUnreadable')
+      expect(h.broadcasts).toHaveLength(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('500 AppManifestUnreadable when manifest.json itself is a dangling symlink', async () => {
     // app/dangling/manifest.json is a symlink whose target does
     // not exist. existsSync(manifestPath) would return `false`

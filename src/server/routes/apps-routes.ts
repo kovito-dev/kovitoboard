@@ -1212,6 +1212,48 @@ function resolveManifestPathInAppRoot(
   projectRoot: string,
   appId: string,
 ): { canonical: string } | { error: 'not-found' | 'escaped' | 'resolve-failed' } {
+  // Spec note (attempt 15) Finding 2: check the `app/<appId>`
+  // directory itself BEFORE looking at the manifest file inside
+  // it. Without this gate, `app/<appId>` could be a symlink to
+  // an external directory that simply lacks `manifest.json`; the
+  // later `lstatSync(manifestPath)` would then return ENOENT and
+  // the helper would mis-classify the case as `not-found` (→ 404
+  // AppNotFound) even though the directory-level escape is the
+  // primary anomaly the boundary check is meant to catch.
+  const appDir = resolvePath(projectRoot, 'app', appId)
+  try {
+    fs.lstatSync(appDir)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') {
+      return { error: 'not-found' }
+    }
+    return { error: 'resolve-failed' }
+  }
+  // Resolve `app/<appId>` to its canonical path and verify it
+  // lives under `<canonicalProjectRoot>/app`. `verifyAppRoot()`
+  // already pinned the parent boundary in the calling sites; here
+  // we ensure the per-entry directory stays inside it.
+  let canonicalAppDir: string
+  try {
+    canonicalAppDir = fs.realpathSync(appDir)
+  } catch {
+    return { error: 'resolve-failed' }
+  }
+  let canonicalProjectRoot: string
+  try {
+    canonicalProjectRoot = fs.realpathSync(projectRoot)
+  } catch {
+    return { error: 'resolve-failed' }
+  }
+  const appBoundary = resolvePath(canonicalProjectRoot, 'app')
+  if (!isWithin(canonicalAppDir, appBoundary)) {
+    return { error: 'escaped' }
+  }
+
   const manifestPath = getAppManifestPath(projectRoot, appId)
   // Use `lstatSync` (not `existsSync`) so a dangling symlink is
   // distinguishable from a genuinely missing file: `existsSync`
@@ -1236,45 +1278,12 @@ function resolveManifestPathInAppRoot(
     // needs to repair, not the API contract's "no such app".
     return { error: 'resolve-failed' }
   }
-  // Canonicalize `projectRoot` first so the "app must live under
-  // the project root" assertion that follows is robust to the
-  // common deployment shape where `projectRoot` itself sits behind
-  // a symlink (a versioned release directory exposed via a stable
-  // `current` link, a developer who symlinks `~/work` to an
-  // external drive, etc.). Without this step, `<projectRoot>/app`
-  // resolved through realpathSync would compare against a
-  // not-canonical literal and every manifest would be
-  // mis-classified.
-  let canonicalProjectRoot: string
-  try {
-    canonicalProjectRoot = fs.realpathSync(projectRoot)
-  } catch {
-    return { error: 'resolve-failed' }
-  }
-  // The boundary is the literal `<canonicalProjectRoot>/app`
-  // sub-path — NOT whatever an `app` symlink might resolve to.
-  // Spec note (attempt 11): realpathSync on the app root
-  // would let an `app -> /malicious-dir` symlink make the boundary
-  // become `/malicious-dir`, so any manifest under that external
-  // directory would still pass `isWithin`. Pinning the boundary to
-  // the project-root subtree restores the documented
-  // `<projectRoot>/app/**` invariant.
-  const appBoundary = resolvePath(canonicalProjectRoot, 'app')
-  let appBoundaryResolved: string
-  try {
-    appBoundaryResolved = fs.realpathSync(appBoundary)
-  } catch {
-    return { error: 'resolve-failed' }
-  }
-  // Reject when `app` itself is a symlink to anywhere other than
-  // its own canonical location (so a real on-disk
-  // `<canonicalProjectRoot>/app` directory is allowed, but
-  // `app -> /elsewhere` is not). Comparing the literal sub-path to
-  // its `realpathSync` result is the cheapest catch-all: if they
-  // disagree, `app` resolves outside the project root.
-  if (appBoundaryResolved !== appBoundary) {
-    return { error: 'escaped' }
-  }
+  // Resolve the manifest file itself and verify its canonical
+  // path stays inside the boundary the per-entry check above
+  // already approved. This second `isWithin` catches the rare
+  // case where `manifest.json` is itself a symlink pointing
+  // outside the per-entry `app/<appId>/` directory (even though
+  // the directory itself was already in-bounds).
   let canonical: string
   try {
     canonical = fs.realpathSync(manifestPath)
