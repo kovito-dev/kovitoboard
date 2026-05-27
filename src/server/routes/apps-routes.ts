@@ -629,20 +629,15 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // locks are held.
     if (postCommit === null) return
 
-    if (postCommit.broadcast) {
-      try {
-        broadcast({
-          type: 'app_menu_changed',
-          payload: { event: 'menu-order-update', ts: Date.now() },
-        })
-      } catch (broadcastErr) {
-        apiLogger.warn(
-          { err: broadcastErr },
-          'app_menu_changed broadcast failed (non-fatal post-commit)',
-        )
-      }
-    }
-
+    // Send the HTTP response FIRST, then emit the audit record,
+    // then defer the ws broadcast onto the next tick via
+    // `setImmediate`. Without the defer, a slow ws subscriber
+    // (or a buggy broadcaster) would bleed its latency into the
+    // request-critical path and the audit emission would also
+    // wait on the fan-out — a ws backpressure incident would
+    // turn into both API latency AND audit timing drift
+    // (Spec note (attempt 14) Finding 2: pre-response broadcast
+    // latency).
     res.json({
       updated: postCommit.updatedCount,
       snapshotVersion: postCommit.newSnapshot,
@@ -661,6 +656,24 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         snapshotProvided: requestedSnapshot !== undefined,
       },
     })
+    // Defer the ws fan-out so it cannot bleed back into the
+    // request-critical path (Finding 2 above). Errors stay
+    // best-effort; the disk transaction has already committed.
+    if (postCommit.broadcast) {
+      setImmediate(() => {
+        try {
+          broadcast({
+            type: 'app_menu_changed',
+            payload: { event: 'menu-order-update', ts: Date.now() },
+          })
+        } catch (broadcastErr) {
+          apiLogger.warn(
+            { err: broadcastErr },
+            'app_menu_changed broadcast failed (non-fatal post-commit)',
+          )
+        }
+      })
+    }
   })
 
   // -----------------------------------------------------------------
@@ -1055,24 +1068,12 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // PUT /api/apps/menu-order).
     if (postCommit === null) return
 
-    if (postCommit.broadcast) {
-      try {
-        broadcast({
-          type: 'app_menu_changed',
-          payload: {
-            event: 'menu-label-update',
-            appId,
-            ts: Date.now(),
-          },
-        })
-      } catch (broadcastErr) {
-        apiLogger.warn(
-          { err: broadcastErr, appId },
-          'app_menu_changed broadcast failed (non-fatal post-commit)',
-        )
-      }
-    }
-
+    // Send the HTTP response FIRST, then emit the audit record,
+    // then defer the ws broadcast onto the next tick via
+    // `setImmediate` (symmetric with PUT, Spec note (attempt 14)
+    // Finding 2). A slow ws subscriber would otherwise bleed
+    // its latency into the request-critical path and the audit
+    // emission would also wait on the fan-out.
     res.json({ appId, userMenuLabel: postCommit.userMenuLabel })
     // Audit AFTER res.json (audit-logging v1.2 §6.6.2). The raw
     // user-input label is never recorded — only its length, so
@@ -1091,6 +1092,28 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
             : postCommit.userMenuLabel.length,
       },
     })
+    // Defer the ws fan-out so it cannot bleed back into the
+    // request-critical path (Finding 2 above). Errors stay
+    // best-effort; the disk transaction has already committed.
+    if (postCommit.broadcast) {
+      setImmediate(() => {
+        try {
+          broadcast({
+            type: 'app_menu_changed',
+            payload: {
+              event: 'menu-label-update',
+              appId,
+              ts: Date.now(),
+            },
+          })
+        } catch (broadcastErr) {
+          apiLogger.warn(
+            { err: broadcastErr, appId },
+            'app_menu_changed broadcast failed (non-fatal post-commit)',
+          )
+        }
+      })
+    }
   })
 
   return router
