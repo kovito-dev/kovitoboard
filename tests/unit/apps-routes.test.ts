@@ -441,6 +441,48 @@ describe('PUT /api/apps/menu-order', () => {
     expect(wrongdirReply.body?.error).toBe('MenuOrderCoverageMismatch')
   })
 
+  it('500 MenuOrderAtomicWriteFailed when the `app` root itself is a symlink that escapes the project root', async () => {
+    // Wipe the auto-created `app/` directory and replace it with a
+    // symlink pointing at an external location. Without the
+    // attempt 11 fix the boundary check would have realpathSync'd
+    // `<projectRoot>/app` to the external target and then treated
+    // anything under that target as in-bounds, defeating the
+    // documented `<projectRoot>/app/**` invariant.
+    rmSync(join(h.projectRoot, 'app'), { recursive: true, force: true })
+    const outside = mkdtempSync(join(tmpdir(), 'kb-apps-routes-app-link-'))
+    try {
+      // Plant a manifest at the external location so any boundary
+      // misclassification would silently succeed.
+      const externalApp = join(outside, 'foo')
+      mkdirSync(externalApp, { recursive: true })
+      writeFileSync(
+        join(externalApp, 'manifest.json'),
+        JSON.stringify(buildManifest('foo'), null, 2) + '\n',
+        'utf-8',
+      )
+      symlinkSync(outside, join(h.projectRoot, 'app'), 'dir')
+
+      const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+        order: [{ appId: 'foo', menuOrder: 0 }],
+      })
+
+      expect(reply.status).toBe(500)
+      expect(reply.body?.error).toBe('MenuOrderAtomicWriteFailed')
+
+      // The external manifest stays unchanged — the symlinked
+      // app root is rejected before any read of foo/manifest.json
+      // happens.
+      const after = JSON.parse(
+        readFileSync(join(externalApp, 'manifest.json'), 'utf-8'),
+      ) as Record<string, unknown>
+      expect(after.menuOrder).toBeUndefined()
+
+      expect(h.broadcasts).toHaveLength(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('500 MenuOrderAtomicWriteFailed when an app directory is a symlink that escapes the app root', async () => {
     // Create a legitimate app under `app/alpha/`.
     writeManifest(h.projectRoot, buildManifest('alpha', 0))

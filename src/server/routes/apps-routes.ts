@@ -1111,23 +1111,44 @@ function resolveManifestPathInAppRoot(
   if (!fs.existsSync(manifestPath)) {
     return { error: 'not-found' }
   }
-  // Codex attempt 10 Finding 1 fix: canonicalize the app root too.
-  // If `projectRoot` itself sits behind a symlink, a non-canonical
-  // appBoundary would not be a prefix of the canonical manifest
-  // path (`realpathSync` of the leaf), so a legitimate manifest
-  // would be mis-classified as "escaped". Resolving the app root
-  // via `realpathSync` puts both sides of `isWithin` in the same
-  // canonical world.
-  const appBoundaryRaw = resolvePath(projectRoot, 'app')
-  let appBoundary: string
+  // Canonicalize `projectRoot` first so the "app must live under
+  // the project root" assertion that follows is robust to the
+  // common deployment shape where `projectRoot` itself sits behind
+  // a symlink (a versioned release directory exposed via a stable
+  // `current` link, a developer who symlinks `~/work` to an
+  // external drive, etc.). Without this step, `<projectRoot>/app`
+  // resolved through realpathSync would compare against a
+  // not-canonical literal and every manifest would be
+  // mis-classified.
+  let canonicalProjectRoot: string
   try {
-    appBoundary = fs.realpathSync(appBoundaryRaw)
+    canonicalProjectRoot = fs.realpathSync(projectRoot)
   } catch {
-    // The app root itself does not exist or could not be
-    // resolved. This is a structural problem we cannot work
-    // around — surface it as a resolve-failed error so the
-    // caller can fail closed.
     return { error: 'resolve-failed' }
+  }
+  // The boundary is the literal `<canonicalProjectRoot>/app`
+  // sub-path — NOT whatever an `app` symlink might resolve to.
+  // Codex attempt 11 Finding 1 fix: realpathSync on the app root
+  // would let an `app -> /malicious-dir` symlink make the boundary
+  // become `/malicious-dir`, so any manifest under that external
+  // directory would still pass `isWithin`. Pinning the boundary to
+  // the project-root subtree restores the documented
+  // `<projectRoot>/app/**` invariant.
+  const appBoundary = resolvePath(canonicalProjectRoot, 'app')
+  let appBoundaryResolved: string
+  try {
+    appBoundaryResolved = fs.realpathSync(appBoundary)
+  } catch {
+    return { error: 'resolve-failed' }
+  }
+  // Reject when `app` itself is a symlink to anywhere other than
+  // its own canonical location (so a real on-disk
+  // `<canonicalProjectRoot>/app` directory is allowed, but
+  // `app -> /elsewhere` is not). Comparing the literal sub-path to
+  // its `realpathSync` result is the cheapest catch-all: if they
+  // disagree, `app` resolves outside the project root.
+  if (appBoundaryResolved !== appBoundary) {
+    return { error: 'escaped' }
   }
   let canonical: string
   try {
