@@ -161,7 +161,10 @@ const ja = {
   'screen.unknown': '不明な画面',
   'screen.agents': 'エージェント',
   'screen.sessions': 'セッション',
-  'screen.recipes': 'アプリレシピ',
+  // 'screen.recipes' is now rebranded as 'Apps' per the v0.2.1 BL-2026-162
+  // judgment doc §4'.1 (sidebar menu rebrand). The legacy key is kept
+  // so existing kbcontext / screenLabel references keep resolving.
+  'screen.recipes': 'アプリ',
 
   // チャット
   'chat.message.action.copy': 'コピー',
@@ -189,9 +192,14 @@ const ja = {
   'agent.edit.description': '{id} の属性を編集します',
 
   // レシピ
-  'recipe.title': 'アプリレシピ',
+  // v0.2.1 BL-2026-162 §4'.1 で「アプリレシピ」→「アプリ」に rebrand。
+  // 既存 key は維持し値だけ更新（backward compat）。
+  'recipe.title': 'アプリ',
   'recipe.button.createApp': 'アプリ新規作成',
   'recipe.code.button.expandAll': 'すべて展開',
+  // recipe.tab.sample / recipe.tab.history は v0.2.1 のアプリ画面 3 タブ
+  // 再構成（appsScreen.tab.*）に置き換えられ orphan 化。RecipesPage 自体
+  // が AppsScreen に統合されるため参照は撤去済。key は wire compat のため残置。
   'recipe.tab.sample': 'サンプルレシピ',
   'recipe.tab.history': '履歴',
   // recipe.tab.export was retired earlier — recipe export now runs
@@ -267,7 +275,9 @@ const ja = {
   // ナビゲーション（メニュー）
   'nav.menu.agents': 'エージェント',
   'nav.menu.sessions': 'セッション',
-  'nav.menu.recipes': 'アプリレシピ',
+  // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT で「アプリレシピ」→「アプリ」に
+  // rebrand。key は維持し値だけ更新（backward compat）。
+  'nav.menu.recipes': 'アプリ',
   'nav.menu.workRoots': '作業ルート',
 
   // 作業ルート設定画面（仕様 cwd-allowlist.md v1.0 §7.4）。
@@ -777,6 +787,66 @@ const ja = {
   'error.boundary.button.copyFailed': 'コピーに失敗しました（手動で選択してコピーしてください）',
   'error.boundary.diag.heading': '診断メッセージ（Claude Code エージェント向け）',
   'error.boundary.diag.promptHeader': 'KovitoBoard の Web UI で React レンダーエラーが発生しました。次の情報をもとに原因を調査して修正してください。',
+
+  // ---------------------------------------------------------------------
+  // v0.2.1 BL-2026-162 — Apps screen rebrand + 3-tab restructure
+  // SSOT: docs/design/discussions/v021-bundled-sample-enable-disable-decision-2026-05-18.md
+  //       §4'.2 wireframe + §6 i18n SSOT (group 6.2 / 6.3 / 6.4 / 6.5 / 6.6 / 6.7)
+  // ---------------------------------------------------------------------
+
+  // Tab labels for the new AppsScreen 3-tab layout (Apps / Sample apps /
+  // Recipes preview). The tab ids themselves are spec'd as 'apps',
+  // 'samples', 'recipes' (§4'.2 wireframe).
+  'appsScreen.tab.apps': 'アプリ',
+  'appsScreen.tab.samples': 'サンプルアプリ',
+  'appsScreen.tab.recipes': 'レシピ',
+
+  // App source identifier badges (§4.9 / §6.3 i18n SSOT). 4 persisted
+  // values + the scanner-derived 'self-made' category. The grandfather
+  // sample row (source: 'sample') reuses the bundled badge per
+  // judgment doc §4.9 (no UX distinction required).
+  'app.source.selfMade': '自作',
+  'app.source.bundled': '同梱',
+  'app.source.import': 'インポート',
+  'app.source.url': 'URL',
+
+  // Apps tab controls (§6.4). The "+ Add app" button jumps to the
+  // Sample apps tab in v0.2.x (network-silent, BS-L8). The "+ Create
+  // self-made app" sub-button keeps the AppCreateModal entry alive
+  // from the apps tab. Rename + drag handle drive the inline-edit /
+  // D&D affordances.
+  'appsScreen.button.addApp': '+ アプリ追加',
+  'appsScreen.button.createSelfMade': '+ 自作アプリ作成',
+  'appsScreen.button.rename': '名前変更',
+  'appsScreen.label.dragHandle': 'ドラッグで並び替え',
+  'appsScreen.label.renamePlaceholder': 'アプリメニュー名を入力',
+  'appsScreen.error.menuLabelTooLong': 'メニュー名が長すぎます (最大 80 文字)。',
+
+  // Sample apps tab (§6.5). Top notice explains the v0.3.0 KovitoHub
+  // arrival. Enable / Enabled buttons drive the bundled enable
+  // transaction; the manage link routes users back to the Apps tab.
+  'samplesTab.info.comingSoon':
+    'v0.3.0 で KovitoHub からのアプリインストールが追加されます。まずは下のサンプルアプリをお試しください。',
+  'samplesTab.button.enable': '有効化',
+  'samplesTab.label.enabled': '有効化済み',
+  'samplesTab.label.openInAppsTab': 'アプリタブで管理',
+
+  // Recipes tab preview UI (§6.6 / §4.10 BS-L10). Network silence is
+  // mandatory — these strings render a disabled mock-up only.
+  'recipeTab.banner.comingSoon': 'v0.3.0 で KovitoHub と連動して提供予定',
+  'recipeTab.banner.description':
+    'KovitoHub から署名済みレシピをインストールできます。各レシピは publisher により署名され、KovitoBoard が監査します。',
+  'recipeTab.mockup.exampleRecipeTitle': '例: レシピ',
+  'recipeTab.mockup.signBadge': '署名済み',
+  'recipeTab.mockup.installButton': 'インストール',
+  'recipeTab.footnote.previewOnly': 'プレビュー表示のみ。実機能は v0.3.0 で提供予定です。',
+
+  // Bundled enable / disable user-facing strings (§6.7). The confirm
+  // dialog wording is reused by the disable transaction (BS-L3-A:
+  // data preserved guarantee).
+  'recipe.bundled.enable.button': '有効化',
+  'recipe.bundled.disable.confirm': 'このアプリを無効化しますか？データは保持されます。',
+  'recipe.bundled.dataPreservedNotice': 'アプリデータは保持されました。再有効化で復元できます。',
 } as const
 
 export type MessageKey = keyof typeof ja

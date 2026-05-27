@@ -165,7 +165,9 @@ const en: Record<MessageKey, string> = {
   'screen.unknown': 'Unknown screen',
   'screen.agents': 'Agents',
   'screen.sessions': 'Sessions',
-  'screen.recipes': 'App recipes',
+  // v0.2.1 BL-2026-162 §4'.1 (sidebar rebrand): legacy 'App recipes'
+  // value is rebranded to 'Apps'. Key kept for backward compat.
+  'screen.recipes': 'Apps',
 
   // Chat
   'chat.message.action.copy': 'Copy',
@@ -194,9 +196,14 @@ const en: Record<MessageKey, string> = {
   'agent.edit.description': 'Edit attributes of {id}',
 
   // Recipe
-  'recipe.title': 'App recipes',
+  // v0.2.1 BL-2026-162 §4'.1: 'App recipes' → 'Apps' (value-only
+  // rebrand; key intentionally retained).
+  'recipe.title': 'Apps',
   'recipe.button.createApp': 'Create new app',
   'recipe.code.button.expandAll': 'Expand all',
+  // recipe.tab.sample / recipe.tab.history are now orphan in v0.2.1.
+  // The 3-tab restructure (§4'.2) replaces them with appsScreen.tab.*.
+  // Keys kept for wire compatibility (legacy clients).
   'recipe.tab.sample': 'Sample recipes',
   'recipe.tab.history': 'History',
   // recipe.tab.export was retired earlier — recipe export now runs
@@ -272,7 +279,9 @@ const en: Record<MessageKey, string> = {
   // Navigation (menu)
   'nav.menu.agents': 'Agents',
   'nav.menu.sessions': 'Sessions',
-  'nav.menu.recipes': 'App recipes',
+  // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT: 'App recipes' → 'Apps'.
+  // Key retained so existing nav references stay valid.
+  'nav.menu.recipes': 'Apps',
   'nav.menu.workRoots': 'Work roots',
 
   // Work roots settings page (spec cwd-allowlist.md v1.0 §7.4). The
@@ -781,6 +790,54 @@ const en: Record<MessageKey, string> = {
   'error.boundary.button.copyFailed': 'Copy failed (please select and copy manually)',
   'error.boundary.diag.heading': 'Diagnostic message (for the Claude Code agent)',
   'error.boundary.diag.promptHeader': 'A React render error occurred in the KovitoBoard web UI. Please investigate the root cause and fix it using the information below.',
+
+  // ---------------------------------------------------------------------
+  // v0.2.1 BL-2026-162 — Apps screen rebrand + 3-tab restructure
+  // SSOT: docs/design/discussions/v021-bundled-sample-enable-disable-decision-2026-05-18.md
+  //       §4'.2 wireframe + §6 i18n SSOT (group 6.2 / 6.3 / 6.4 / 6.5 / 6.6 / 6.7)
+  // ---------------------------------------------------------------------
+
+  // Tab labels for the new AppsScreen 3-tab layout.
+  'appsScreen.tab.apps': 'Apps',
+  'appsScreen.tab.samples': 'Sample apps',
+  'appsScreen.tab.recipes': 'Recipes',
+
+  // App source identifier badges (§4.9 / §6.3). 4 persisted values +
+  // the scanner-derived 'self-made' category. Grandfather sample
+  // (source: 'sample') reuses the bundled badge in v0.2.x.
+  'app.source.selfMade': 'Self-made',
+  'app.source.bundled': 'Bundled',
+  'app.source.import': 'Imported',
+  'app.source.url': 'URL',
+
+  // Apps tab controls (§6.4).
+  'appsScreen.button.addApp': '+ Add app',
+  'appsScreen.button.createSelfMade': '+ Create self-made app',
+  'appsScreen.button.rename': 'Rename',
+  'appsScreen.label.dragHandle': 'Drag to reorder',
+  'appsScreen.label.renamePlaceholder': 'Enter app menu label',
+  'appsScreen.error.menuLabelTooLong': 'Menu label is too long (max 80 characters).',
+
+  // Sample apps tab (§6.5).
+  'samplesTab.info.comingSoon':
+    'Coming in v0.3.0: install apps from KovitoHub. For now, try sample apps below.',
+  'samplesTab.button.enable': 'Enable',
+  'samplesTab.label.enabled': 'Enabled',
+  'samplesTab.label.openInAppsTab': 'Manage in Apps tab',
+
+  // Recipes tab preview UI (§6.6 / §4.10 BS-L10 — network silent).
+  'recipeTab.banner.comingSoon': 'Coming in v0.3.0 with KovitoHub',
+  'recipeTab.banner.description':
+    'Install signed recipes from KovitoHub. Each recipe is verified by the publisher and audited by KovitoBoard.',
+  'recipeTab.mockup.exampleRecipeTitle': 'Example Recipe',
+  'recipeTab.mockup.signBadge': 'Signed',
+  'recipeTab.mockup.installButton': 'Install',
+  'recipeTab.footnote.previewOnly': 'Preview only. Full functionality in v0.3.0.',
+
+  // Bundled enable / disable user-facing strings (§6.7).
+  'recipe.bundled.enable.button': 'Enable',
+  'recipe.bundled.disable.confirm': 'Disable this app? Your data will be preserved.',
+  'recipe.bundled.dataPreservedNotice': 'App data preserved. Re-enable to restore.',
 }
 
 export default en
