@@ -278,9 +278,30 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
             // `scanAppManifests` semantics).
             continue
           }
-          // 'escaped' or 'resolve-failed' on a directory listed
-          // inside `app/`: the read path would have opened an
-          // out-of-root file. Fail closed.
+          if (pathCheck.error === 'resolve-failed') {
+            // Codex attempt 10 Finding 2 fix: a transient
+            // realpathSync failure (broken symlink chain, ELOOP,
+            // missing intermediate component, etc.) on one
+            // directory entry must NOT take down the entire
+            // closed-world batch for every other app. The spec
+            // defines the eligible set as "apps with a readable
+            // AppManifest", so a structurally unreadable entry
+            // is treated the same way `scanAppManifests` already
+            // treats parse-fail manifests: skipped from the
+            // eligible set. Confirmed `escaped` path-boundary
+            // violations stay fail-closed below — only that
+            // class signals an active attempt to redirect a
+            // write outside <projectRoot>/app/.
+            apiLogger.warn(
+              { appId: entry, kind: pathCheck.error },
+              'PUT /api/apps/menu-order: manifest path resolve failed; treating as ineligible',
+            )
+            continue
+          }
+          // `escaped` only: the boundary check confirmed the
+          // symlink resolves outside the app root, which is the
+          // active "attempt to redirect a write" signal. Fail
+          // closed.
           apiLogger.warn(
             { appId: entry, kind: pathCheck.error },
             'PUT /api/apps/menu-order: manifest path failed boundary check',
@@ -1090,7 +1111,24 @@ function resolveManifestPathInAppRoot(
   if (!fs.existsSync(manifestPath)) {
     return { error: 'not-found' }
   }
-  const appBoundary = resolvePath(projectRoot, 'app')
+  // Codex attempt 10 Finding 1 fix: canonicalize the app root too.
+  // If `projectRoot` itself sits behind a symlink, a non-canonical
+  // appBoundary would not be a prefix of the canonical manifest
+  // path (`realpathSync` of the leaf), so a legitimate manifest
+  // would be mis-classified as "escaped". Resolving the app root
+  // via `realpathSync` puts both sides of `isWithin` in the same
+  // canonical world.
+  const appBoundaryRaw = resolvePath(projectRoot, 'app')
+  let appBoundary: string
+  try {
+    appBoundary = fs.realpathSync(appBoundaryRaw)
+  } catch {
+    // The app root itself does not exist or could not be
+    // resolved. This is a structural problem we cannot work
+    // around — surface it as a resolve-failed error so the
+    // caller can fail closed.
+    return { error: 'resolve-failed' }
+  }
   let canonical: string
   try {
     canonical = fs.realpathSync(manifestPath)

@@ -370,6 +370,40 @@ describe('PUT /api/apps/menu-order', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('skips a broken symlink during scan instead of failing the whole batch', async () => {
+    // Legitimate app under app/alpha/.
+    writeManifest(h.projectRoot, buildManifest('alpha'))
+    // app/broken-link points at a target that no longer exists —
+    // realpathSync throws ENOENT here. The route MUST treat this
+    // entry as ineligible (skip) and let the rest of the batch
+    // proceed, rather than 500'ing every menu reorder until the
+    // operator cleans up the dangling link.
+    symlinkSync(
+      '/nonexistent-target-' + Math.random().toString(36).slice(2),
+      join(h.projectRoot, 'app', 'broken-link'),
+      'dir',
+    )
+
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [{ appId: 'alpha', menuOrder: 0 }],
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body?.updated).toBe(1)
+
+    // The dangling entry never made it into the eligible set, so a
+    // batch that names `broken-link` is rejected with
+    // MenuOrderCoverageMismatch (not 500).
+    h.broadcasts.length = 0
+    const overshoot = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [
+        { appId: 'alpha', menuOrder: 0 },
+        { appId: 'broken-link', menuOrder: 1 },
+      ],
+    })
+    expect(overshoot.status).toBe(400)
+    expect(overshoot.body?.error).toBe('MenuOrderCoverageMismatch')
+  })
+
   it('400 MenuOrderCoverageMismatch when a manifest.appId disagrees with its directory name', async () => {
     // app/alpha/manifest.json carries {appId: "alpha"} (legitimate).
     writeManifest(h.projectRoot, buildManifest('alpha'))
