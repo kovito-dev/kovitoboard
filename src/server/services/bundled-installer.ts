@@ -2226,6 +2226,17 @@ export function enableBundledRecipe(
     // Rollback Step 4: remove the partial `app/<appId>/` directory.
     // We always created (or recreated) it above, so it is safe to
     // wipe — the data dir lives at the sibling `app/data/<appId>/`.
+    //
+    // Recovery-path note (codex review #58 attempt 9 Medium): on
+    // `isRecoveryPath === true` the existing artifacts were already
+    // wiped above (line 2211) before Step 4 attempted to repaint
+    // them, so the original state is irrecoverable at this point
+    // regardless of what we do here. Spec recipe-system v1.12
+    // §10.9.5 Atomicity residual explicitly accepts this:
+    // "POSIX には複数 file の atomic rename API が存在しないため、
+    // 本 transaction は per-file atomic + cross-file は best-effort
+    // rollback". The user retries the enable to bring the state
+    // back to coherent (BS-L2').
     tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to copy bundled artifacts for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
@@ -2269,10 +2280,17 @@ export function enableBundledRecipe(
   try {
     manifestStore.save(manifest)
   } catch (err) {
-    // Step 4 always created (or re-created) appDir, so it is safe
-    // to wipe on rollback — `app/data/<appId>/` is on a sibling
-    // path and stays put (BS-L3-A).
-    tryRm(fs, appDir)
+    // Step 4 always created (or re-created) appDir on the fresh
+    // path. On the recovery path the existing RecipeManifest is
+    // still on disk (the failure happened on the in-memory
+    // `manifestStore.save`), so skip the wipe to keep the user's
+    // previous enable intact — spec recipe-system v1.12 §10.9.5
+    // BS-L1' Atomicity residual + codex review #58 attempt 9
+    // Medium. The user retries to bring the state back to
+    // coherent.
+    if (!isRecoveryPath) {
+      tryRm(fs, appDir)
+    }
     throw new BundledInstallerError(
       `Failed to write manifest for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -2306,8 +2324,7 @@ export function enableBundledRecipe(
       // RecipeManifest was just written above, so we own the
       // rollback for the partial state. AppDir always created by
       // Step 4, so `tryRm(appDir)` brings us back to a clean state.
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Failed to stat existing AppManifest for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
         500,
@@ -2320,8 +2337,7 @@ export function enableBundledRecipe(
         { event: 'bundled-app-manifest-anomaly', recipeId, appId, appManifestPath },
         'Bundled enable rejected: existing AppManifest is not a regular file',
       )
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Existing AppManifest "${appManifestPath}" is not a regular file`,
         500,
@@ -2336,8 +2352,7 @@ export function enableBundledRecipe(
       // fail-closed write error — the rollback path needs the
       // snapshot to restore the recovery-path original state, and
       // we cannot guarantee it without the read.
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Failed to snapshot existing AppManifest for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
         500,
@@ -2450,8 +2465,7 @@ export function enableBundledRecipe(
         )
       }
     }
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     recipeLogger.error(
       { event: 'bundled-enable-app-manifest-write-failed', recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
       'Bundled enable rolled back: AppManifest write failed',
@@ -2487,8 +2501,7 @@ export function enableBundledRecipe(
   const recipeMenu = parsed.menu ?? []
   if (recipeMenu.length === 0) {
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     recipeLogger.error(
       { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-empty' },
       'Bundled enable rejected: recipe.yaml menu array is empty or absent',
@@ -2502,8 +2515,7 @@ export function enableBundledRecipe(
   }
   if (recipeMenu.length > 1) {
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     recipeLogger.error(
       { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'multi-entry-menu', entryCount: recipeMenu.length },
       'Bundled enable rejected: recipe.yaml menu array must have exactly 1 entry',
@@ -2523,8 +2535,7 @@ export function enableBundledRecipe(
   const recipeMenuEntry = recipeMenu[0]
   if (recipeMenuEntry.id !== appId) {
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     recipeLogger.error(
       { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'entry-id-mismatch', entryId: recipeMenuEntry.id },
       'Bundled enable rejected: recipe.yaml menu entry id does not match appId',
@@ -2547,8 +2558,7 @@ export function enableBundledRecipe(
   const composedPage = `${appId}/${recipeMenuEntry.page}`
   if (!isCanonicalAppIdPath(composedPage, appId)) {
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     recipeLogger.error(
       { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-entry-page-escape', composedPage },
       'Bundled enable rejected: recipe menu entry page escapes <appId>/ subtree',
@@ -2588,8 +2598,7 @@ export function enableBundledRecipe(
   for (const [field, value] of recipeContentFieldChecks) {
     if (containsUnsafeMenuLiteralChar(value)) {
       rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       recipeLogger.error(
         { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-entry-unsafe-character', field },
         'Bundled enable rejected: recipe menu entry field contains a character the menu reader cannot parse',
@@ -2619,8 +2628,7 @@ export function enableBundledRecipe(
       menuTsStat = fs.lstatSync(menuTsPath)
     } catch (err) {
       rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Failed to stat existing menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
         500,
@@ -2634,8 +2642,7 @@ export function enableBundledRecipe(
         'Bundled enable rejected: existing app/menu.ts is not a regular file',
       )
       rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Existing app/menu.ts "${menuTsPath}" is not a regular file`,
         500,
@@ -2647,8 +2654,7 @@ export function enableBundledRecipe(
       existingMenuTsContent = fs.readFileSync(menuTsPath, 'utf-8')
     } catch (err) {
       rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       throw new BundledInstallerError(
         `Failed to snapshot existing menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
         500,
@@ -2678,8 +2684,7 @@ export function enableBundledRecipe(
     appendResult = appendMenuEntry(baseMenuTsContent, appendInput)
   } catch (err) {
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     const reason = err instanceof MenuTsParseFailedError ? err.reason : err instanceof Error ? err.message : String(err)
     recipeLogger.error(
       { event: 'bundled-enable-menu-ts-append-failed', recipeId, appId, reason },
@@ -2700,8 +2705,7 @@ export function enableBundledRecipe(
     } catch (err) {
       rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
       rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-      manifestStore.delete(appId)
-      tryRm(fs, appDir)
+      teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
       recipeLogger.error(
         { event: 'bundled-enable-menu-ts-append-failed', recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
         'Bundled enable rolled back: menu.ts atomic write failed',
@@ -2731,8 +2735,7 @@ export function enableBundledRecipe(
       rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
     }
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     throw new BundledInstallerError(
       `Failed to create data dir for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -2767,8 +2770,7 @@ export function enableBundledRecipe(
       rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
     }
     rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
-    manifestStore.delete(appId)
-    tryRm(fs, appDir)
+    teardownPartialFreshEnable(fs, manifestStore, appDir, appId, isRecoveryPath)
     throw new BundledInstallerError(
       `Failed to append history for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
       500,
@@ -2778,6 +2780,45 @@ export function enableBundledRecipe(
   }
 
   return { status: 'enabled', source: 'bundled', appId }
+}
+
+/**
+ * Tear down the partial state of a **fresh** bundled enable on
+ * rollback. Codex review #58 attempt 9 Medium surfaced that the
+ * previous unconditional `manifestStore.delete(appId)` +
+ * `tryRm(fs, appDir)` collapsed every Step 5 / 5.5 / 5.6 / 6 / 7
+ * failure into a "wipe everything bundled" branch, which on the
+ * recovery path (where the bundled app was already installed when
+ * the request came in) escalates a late-step failure into a full
+ * uninstall instead of a "try again, BS-L2' will absorb the
+ * incoherent intermediate state" outcome.
+ *
+ * Spec recipe-system v1.12 §10.9.5 BS-L1' Atomicity residual
+ * normatively accepts that a Step 4 / mid-write crash leaves
+ * artifacts in a non-coherent state which the next enable repairs
+ * (idempotent retry-safe). What it does **not** accept is the
+ * rollback path actively destroying the pre-request enable. So on
+ * `isRecoveryPath === true` we skip the manifestStore + appDir
+ * teardown entirely: the AppManifest snapshot has already been
+ * restored separately (snapshot was captured before Step 5.5), the
+ * menu.ts snapshot likewise, and the new Step 4 artifacts that
+ * replaced the old ones are best-effort retained — the user runs
+ * one more enable to bring the state back to coherent.
+ *
+ * On a fresh enable (`isRecoveryPath === false`) we keep the
+ * v0.2.0 behaviour: drop the partially-written RecipeManifest +
+ * appDir together so a retry sees a clean slate.
+ */
+function teardownPartialFreshEnable(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  appDir: string,
+  appId: string,
+  isRecoveryPath: boolean,
+): void {
+  if (isRecoveryPath) return
+  manifestStore.delete(appId)
+  tryRm(fs, appDir)
 }
 
 /**
