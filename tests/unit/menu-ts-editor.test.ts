@@ -223,40 +223,51 @@ describe('appendMenuEntry', () => {
     ).toThrow(MenuTsParseFailedError)
   })
 
-  it('escapes single quotes / backslashes in label so the output is a valid TypeScript string literal', () => {
-    // `parseMenuTs` uses a permissive regex that only matches simple
-    // `[^'"]+` literals (it does not handle escaped quotes), so we
-    // verify the escape contract at the source-string level instead
-    // of round-tripping through the parser. The bundled samples
-    // (`document-viewer` / `todo`) do not declare labels with quotes
-    // in their recipe.yaml, so the regex's limit is not a problem in
-    // practice — but `appendMenuEntry` still has to emit a well-
-    // formed TypeScript source for the rare hand-edited / imported
-    // case where a label does contain an apostrophe.
+  it('rejects label / icon / page values that the menu reader cannot parse back', () => {
+    // Writer / reader grammar consistency (codex review #58 attempt
+    // 2 Medium #2). `parseMenuTs` uses a simple `[^'"]+` regex that
+    // does not handle escaped quotes / backslashes; if the writer
+    // emitted those, the runtime menu reader would silently drop
+    // the entry and a successfully-enabled bundled app would never
+    // surface in the UI. Reject the unsafe characters at the writer
+    // so the contract surfaces as a `MenuTsParseFailedError` rather
+    // than a phantom "enable succeeded but the menu is empty" state.
     const src = buildEmptyMenuTs()
-    const result = appendMenuEntry(src, {
-      id: 'document-viewer',
-      label: "Doc's",
-      icon: 'content',
-      page: 'document-viewer/pages/DocumentViewer',
-    })
-    expect(result.kind).toBe('appended')
-    if (result.kind !== 'appended') return
-    // The emitted source must contain the escaped form so the TS
-    // module loader parses it as a single-quoted literal containing
-    // an apostrophe rather than as a syntax error.
-    expect(result.content).toContain(`label: 'Doc\\'s'`)
-    // A trailing backslash inside the label must double up so the
-    // surrounding single quote does not get escaped accidentally.
-    const second = appendMenuEntry(result.content, {
-      id: 'with-backslash',
-      label: 'ends-with-\\',
-      icon: 'box',
-      page: 'with-backslash/Index',
-    })
-    expect(second.kind).toBe('appended')
-    if (second.kind !== 'appended') return
-    expect(second.content).toContain(`label: 'ends-with-\\\\'`)
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: "Doc's",
+        icon: 'content',
+        page: 'document-viewer/pages/DocumentViewer',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'Docs',
+        icon: 'content',
+        page: 'document-viewer/pages/Doc"Viewer',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'ends-with-\\',
+        icon: 'box',
+        page: 'document-viewer/pages/Index',
+      }),
+    ).toThrow(MenuTsParseFailedError)
+    // Backtick is also rejected even though `parseMenuTs` does
+    // accept it as a quote — the writer keeps the entry on the
+    // single-quoted shape every other call site emits.
+    expect(() =>
+      appendMenuEntry(src, {
+        id: 'document-viewer',
+        label: 'with-backtick`',
+        icon: 'content',
+        page: 'document-viewer/pages/Index',
+      }),
+    ).toThrow(MenuTsParseFailedError)
   })
 
   it('tolerates a single-line `[ {...}, {...} ]` body and appends without breaking it', () => {

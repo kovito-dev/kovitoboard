@@ -24,6 +24,8 @@
  * surface a helpful error to the user.
  */
 
+import { parseMenuTs } from './menu-extractor'
+
 const RECIPE_APPLICATOR_TEMPLATE_HEAD =
   "import type { AppMenuEntry } from '../src/renderer/types/app-types'"
 
@@ -339,13 +341,14 @@ function escapeRegex(input: string): string {
  * row for a bundled-enable transaction.
  *
  * Behavior:
- *   - When an entry whose `id` already matches `entry.id` is present,
- *     returns `{ kind: 'already-present' }` and **does NOT touch the
- *     file**. This is the idempotent no-op path bundled re-enable
- *     relies on (BS-L2 grandfather idempotent merge + bundled retry-
- *     safety BS-L2'). Skipping the write also matters for the
- *     rollback contract: a touch-free idempotent return leaves no
- *     rollback work for downstream failures.
+ *   - When `parseMenuTs(content)` already surfaces an entry whose
+ *     `id` matches `entry.id`, returns `{ kind: 'already-present' }`
+ *     and **does NOT touch the file**. The presence check uses the
+ *     same parser the renderer and `isEnabledAndManifestCoherent`
+ *     run, so writer and reader never disagree about whether a row
+ *     exists. A raw regex would also match commented-out snippets
+ *     or unrelated string literals (codex review #58 attempt 2
+ *     Medium #1).
  *   - When the entry is absent, appends it to the end of the array
  *     using the canonical recipe-applicator entry shape
  *     (`{ id, label, icon, component: () => import('./<page>') }`)
@@ -357,6 +360,21 @@ function escapeRegex(input: string): string {
  *     variant the way `removeMenuEntry` does) because a corrupted
  *     `menu.ts` at enable time is a fail-closed condition; the
  *     install transaction must not silently downgrade to a no-op.
+ *
+ * Grammar restriction: the helper accepts only the simple ASCII +
+ * BMP characters `parseMenuTs` can read back (no single quotes,
+ * double quotes, backticks, or backslashes in `id` / `label` /
+ * `icon` / `page`). Inputs that contain those characters are
+ * rejected with a `MenuTsParseFailedError`. The bundled-installer
+ * already validates `id` / `page` against
+ * `isCanonicalAppIdPath` + the `appId` slug regex, both of which
+ * are ASCII-only by construction. `label` is the only field that
+ * can carry user-facing punctuation; recipe authors that need
+ * quote characters must pick a quote-free fallback for the menu
+ * row (the `recipe.yaml` `name` field stays free-form). This
+ * keeps writer and reader on the same grammar so a successful
+ * write always round-trips through the renderer (codex review #58
+ * attempt 2 Medium #2).
  *
  * The caller is responsible for path-boundary verification — the
  * editor writes `entry.page` verbatim into the `import('./<page>')`
@@ -371,13 +389,56 @@ export class MenuTsParseFailedError extends Error {
   }
 }
 
+/** Characters the simple `parseMenuTs` regex cannot read back. */
+const UNSAFE_MENU_LITERAL_RE = /['"`\\]/
+
+function assertSafeMenuLiteral(field: string, value: string): void {
+  if (UNSAFE_MENU_LITERAL_RE.test(value)) {
+    throw new MenuTsParseFailedError(
+      `menu entry ${field} contains a quote / backtick / backslash character that the menu reader cannot parse back: ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 export function appendMenuEntry(
   content: string,
   entry: AppendMenuEntryInput,
 ): MenuAppendResult {
-  // Locate the menuEntries array — same gate as removeMenuEntry so
-  // the editor stays consistent about what counts as a parseable
-  // menu.ts.
+  // Grammar guard. The bundled enable contract requires the menu
+  // row to round-trip through `parseMenuTs`; rejecting unsafe
+  // characters at the writer is the only way to keep that invariant
+  // without rewriting the reader's regex grammar (codex review #58
+  // attempt 2 Medium #2). We validate every string field — the
+  // bundled-installer already narrows `id` and `page` to ASCII
+  // alphanumeric + hyphen + `/`, but the validation here is
+  // defensive in case a future caller bypasses those gates.
+  assertSafeMenuLiteral('id', entry.id)
+  assertSafeMenuLiteral('label', entry.label)
+  assertSafeMenuLiteral('icon', entry.icon)
+  assertSafeMenuLiteral('page', entry.page)
+
+  // Idempotent gate (codex review #58 attempt 2 Medium #1).
+  // Delegate the presence check to `parseMenuTs` so writer and
+  // reader observe the same set of entries; a raw regex would also
+  // match a commented-out snippet or a literal containing the same
+  // id substring and short-circuit a legitimate append.
+  let parsedEntries: { id: string }[]
+  try {
+    parsedEntries = parseMenuTs(content)
+  } catch (err) {
+    throw new MenuTsParseFailedError(
+      `Could not parse "menuEntries" while checking idempotence: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (parsedEntries.some((e) => e.id === entry.id)) {
+    return { kind: 'already-present' }
+  }
+
+  // Locate the `menuEntries[]` array. Same gate as `removeMenuEntry`
+  // so the editor stays consistent about what counts as a parseable
+  // menu.ts. (`parseMenuTs` succeeding above only means *some* entries
+  // were extracted — the regex below confirms the array shape we are
+  // about to splice into.)
   const arrayMatch = /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.exec(content)
   if (!arrayMatch) {
     throw new MenuTsParseFailedError(
@@ -390,26 +451,18 @@ export function appendMenuEntry(
     throw new MenuTsParseFailedError('"menuEntries = [" array is not terminated')
   }
 
-  // Idempotent gate: scan the array body for an entry whose `id`
-  // already matches. The regex follows the same shape `removeMenuEntry`
-  // uses so the two helpers agree on what counts as a present entry.
   const arrayBody = content.slice(arrayBodyStart, closeIndex)
-  const idRe = new RegExp(`\\bid\\s*:\\s*['"\`]${escapeRegex(entry.id)}['"\`]`)
-  if (idRe.test(arrayBody)) {
-    return { kind: 'already-present' }
-  }
 
   // Emit the new entry in the canonical recipe-applicator template
-  // shape. We use single quotes throughout so the output round-trips
-  // through `parseMenuTs` (its `entryPattern` regex accepts single,
-  // double, and backtick quotes, but single quote is what the rest
-  // of the codebase emits — see buildEmptyMenuTs above).
+  // shape. `assertSafeMenuLiteral` above guarantees no escape work
+  // is required — every field is quote / backtick / backslash free,
+  // so a single-quoted literal interpolates the value verbatim.
   const newEntry =
     `  {\n` +
-    `    id: '${escapeStringLiteral(entry.id)}',\n` +
-    `    label: '${escapeStringLiteral(entry.label)}',\n` +
-    `    icon: '${escapeStringLiteral(entry.icon)}',\n` +
-    `    component: () => import('./${escapeStringLiteral(entry.page)}'),\n` +
+    `    id: '${entry.id}',\n` +
+    `    label: '${entry.label}',\n` +
+    `    icon: '${entry.icon}',\n` +
+    `    component: () => import('./${entry.page}'),\n` +
     `  }`
 
   // Re-stitch the file. Three layout cases to keep the output a
@@ -463,18 +516,6 @@ export function appendMenuEntry(
       ',\n' +
       tail,
   }
-}
-
-/**
- * Escape backslash + single-quote so an arbitrary string literal
- * can be embedded inside `'...'` without breaking the surrounding
- * TypeScript source. Only callers that pass `appendMenuEntry`
- * input strings (validated upstream by the bundled-installer)
- * should ever need this — recipe.yaml content is sanitised by
- * `parseRecipe` before it reaches the menu editor.
- */
-function escapeStringLiteral(input: string): string {
-  return input.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
 /**
