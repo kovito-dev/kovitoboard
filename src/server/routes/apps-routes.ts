@@ -376,6 +376,29 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           )
           continue
         }
+        // Spec note (attempt 17) Finding 1: also re-apply the
+        // public `APP_ID_PATTERN` to the on-disk identity. A
+        // corrupt `manifest.json` that paired a bad-shape
+        // directory name with a matching bad-shape `appId`
+        // would otherwise slip into the eligible set even
+        // though the request validator rejects every client
+        // submission for that id (path-parameter / order entry
+        // both gate on `APP_ID_PATTERN`). That mismatch would
+        // wedge the whole reorder endpoint into a permanent
+        // `MenuOrderCoverageMismatch`. The scan now treats any
+        // such entry as ineligible (same shape as the previous
+        // skip semantics for missing / parse-fail manifests).
+        if (!APP_ID_PATTERN.test(entry) || !APP_ID_PATTERN.test(manifest.appId)) {
+          apiLogger.warn(
+            {
+              directory: entry,
+              manifestAppId: manifest.appId,
+              path: pathCheck.canonical,
+            },
+            'PUT /api/apps/menu-order: manifest appId fails public APP_ID_PATTERN; treating as ineligible',
+          )
+          continue
+        }
         manifests.push(manifest)
         canonicalManifestPaths.set(manifest.appId, pathCheck.canonical)
       }

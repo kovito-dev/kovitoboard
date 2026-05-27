@@ -423,6 +423,35 @@ describe('PUT /api/apps/menu-order', () => {
     expect(overshoot.body?.error).toBe('MenuOrderCoverageMismatch')
   })
 
+  it('skips a manifest whose on-disk appId fails the public APP_ID_PATTERN', async () => {
+    // app/Bad_Id/manifest.json with internal appId "Bad_Id"
+    // (both fail APP_ID_PATTERN). The directory + manifest.appId
+    // match each other, so the previous identity check passes,
+    // but the request validator forbids clients from ever
+    // submitting "Bad_Id" so leaving it in the eligible set
+    // would wedge every reorder request into
+    // MenuOrderCoverageMismatch (Spec note attempt 17 Finding 1
+    // — closed-world DoS via one bad manifest).
+    const badDir = join(h.projectRoot, 'app', 'Bad_Id')
+    mkdirSync(badDir, { recursive: true })
+    writeFileSync(
+      join(badDir, 'manifest.json'),
+      JSON.stringify(buildManifest('Bad_Id'), null, 2) + '\n',
+      'utf-8',
+    )
+    // A well-formed manifest alongside it.
+    writeManifest(h.projectRoot, buildManifest('alpha'))
+
+    // Reorder request that targets only the well-formed alpha
+    // succeeds; the corrupt Bad_Id entry stayed out of the
+    // eligible set.
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [{ appId: 'alpha', menuOrder: 0 }],
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body?.updated).toBe(1)
+  })
+
   it('400 MenuOrderCoverageMismatch when a manifest.appId disagrees with its directory name', async () => {
     // app/alpha/manifest.json carries {appId: "alpha"} (legitimate).
     writeManifest(h.projectRoot, buildManifest('alpha'))
