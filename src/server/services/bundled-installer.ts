@@ -177,6 +177,35 @@ export class BundledInstallerError extends Error {
 const LEFTOVER_TEMP_DIR_PREFIXES: readonly string[] = ['.tmp', '.staging']
 
 /**
+ * One-shot snapshot of `recipe-history.jsonl` for a single request
+ * path. Threading a snapshot through {@link classifyLocalResidue} and
+ * {@link resolveBundledAppIdForDisable} avoids redundant O(n) sync
+ * reads + parses per disable HTTP call (PR #56 codex attempt 2
+ * Finding "resource exhaustion"). Always go through
+ * {@link loadRecipeHistorySnapshot} to obtain one — direct
+ * construction would skip the readability probe that drives the
+ * fail-closed 503 (`BundledLocalStateUnavailable`).
+ */
+export interface RecipeHistorySnapshot {
+  readonly entries: readonly RecipeHistoryEntry[]
+}
+
+/**
+ * Probe `recipe-history.jsonl` for filesystem-level I/O readability
+ * and return the parsed entries as a single snapshot. Combines the
+ * probe + read pair so a request path that needs both classification
+ * and appId resolution pays the IO cost exactly once.
+ *
+ * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503)
+ *   on `EACCES` / `EPERM` / `EIO` / `EBUSY` etc. (same contract as
+ *   {@link probeRecipeHistoryReadability}).
+ */
+export function loadRecipeHistorySnapshot(fs: FileAccessLayer): RecipeHistorySnapshot {
+  probeRecipeHistoryReadability(fs)
+  return { entries: readRecipeHistory(fs) }
+}
+
+/**
  * Probe `recipe-history.jsonl` for filesystem-level I/O readability.
  *
  * `readRecipeHistory` swallows I/O failures and returns `[]`, which is
@@ -636,6 +665,17 @@ interface ClassifyLocalResidueArgs {
   fs: FileAccessLayer
   manifestStore: RecipeManifestStore
   recipeId: string
+  /**
+   * Optional pre-loaded `recipe-history.jsonl` snapshot. When
+   * provided, the function skips the internal probe + read pair and
+   * uses the snapshot directly. Disable HTTP handlers thread a
+   * single per-request snapshot through both
+   * {@link classifyLocalResidue} and
+   * {@link resolveBundledAppIdForDisable} to avoid redundant O(n)
+   * sync reads of the history file per request (PR #56 codex
+   * attempt 2 Finding "resource exhaustion").
+   */
+  historySnapshot?: RecipeHistorySnapshot
 }
 
 /**
@@ -663,13 +703,15 @@ interface ClassifyLocalResidueArgs {
  *     3d (iv) error code).
  */
 export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResidueState {
-  const { fs, manifestStore, recipeId } = args
+  const { fs, manifestStore, recipeId, historySnapshot } = args
 
   // Probe IO readability before the silent-skip swallowing in
   // `readRecipeHistory`. A genuine I/O failure must surface as a 503;
   // an empty / absent file is fine (the gate below treats it as
-  // "no record").
-  probeRecipeHistoryReadability(fs)
+  // "no record"). When a caller-supplied snapshot is present, the
+  // probe + parse have already run via `loadRecipeHistorySnapshot`,
+  // so we reuse those entries instead of re-reading the file.
+  const snapshot = historySnapshot ?? loadRecipeHistorySnapshot(fs)
 
   const manifest = findManifestByRecipeId(manifestStore, recipeId)
   if (manifest !== null) {
@@ -697,8 +739,7 @@ export function classifyLocalResidue(args: ClassifyLocalResidueArgs): LocalResid
     }
   }
 
-  const history = readRecipeHistory(fs)
-  const installRecord = findHistoryMatchForBundled(history, recipeId)
+  const installRecord = findHistoryMatchForBundled(snapshot.entries, recipeId)
 
   const manifestPresent = manifest !== null
   const recordPresent = installRecord !== undefined
@@ -742,6 +783,14 @@ interface ResolveBundledAppIdArgs {
   fs: FileAccessLayer
   manifestStore: RecipeManifestStore
   recipeId: string
+  /**
+   * Optional pre-loaded `recipe-history.jsonl` snapshot. See
+   * {@link ClassifyLocalResidueArgs.historySnapshot}. Threading a
+   * caller-supplied snapshot collapses the worst-case 3× sync history
+   * reads (handler classify + resolver classify + resolver fallback)
+   * down to a single read shared across the whole request path.
+   */
+  historySnapshot?: RecipeHistorySnapshot
 }
 
 /**
@@ -771,8 +820,21 @@ interface ResolveBundledAppIdArgs {
 export function resolveBundledAppIdForDisable(
   args: ResolveBundledAppIdArgs,
 ): ResolveBundledAppIdResult | undefined {
-  const { fs, manifestStore, recipeId } = args
-  const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+  const { fs, manifestStore, recipeId, historySnapshot } = args
+  // Load (or reuse) the snapshot up-front so the residue classify
+  // and the history-backed fallback below share a single read. The
+  // worst case (non-bundled-eligible recipeId, no manifest, history-
+  // only install record) previously paid 3× `readRecipeHistory`
+  // (handler classify + resolver classify + resolver fallback) plus
+  // 2× `readFileSync` probes; with the snapshot it pays exactly 1×
+  // each (PR #56 codex attempt 2 Finding "resource exhaustion").
+  const snapshot = historySnapshot ?? loadRecipeHistorySnapshot(fs)
+  const residue = classifyLocalResidue({
+    fs,
+    manifestStore,
+    recipeId,
+    historySnapshot: snapshot,
+  })
   if (residue === 'none') return undefined
   if (residue === 'corrupted') {
     throw new BundledInstallerError(
@@ -792,8 +854,7 @@ export function resolveBundledAppIdForDisable(
       manifestAlreadyAbsent: false,
     }
   }
-  const history = readRecipeHistory(fs)
-  const installRecord = findHistoryMatchForBundled(history, recipeId)
+  const installRecord = findHistoryMatchForBundled(snapshot.entries, recipeId)
   if (installRecord !== undefined) {
     const persisted = narrowPersistedSource(installRecord.source)
     const broadcastSource: 'bundled' | 'sample' = persisted === 'sample' ? 'sample' : 'bundled'
@@ -1579,7 +1640,7 @@ function findManifestByRecipeId(
  * the bundled-installer until a dedicated migration ships.
  */
 function findHistoryMatchForBundled(
-  history: RecipeHistoryEntry[],
+  history: readonly RecipeHistoryEntry[],
   recipeId: string,
 ): RecipeHistoryEntry | undefined {
   for (let i = history.length - 1; i >= 0; i--) {

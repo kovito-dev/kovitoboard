@@ -94,6 +94,7 @@ import {
   disableBundledRecipe,
   enableBundledRecipe,
   isBundledEligibleRecipeId,
+  loadRecipeHistorySnapshot,
   resolveBundledAppIdForDisable,
 } from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
@@ -1353,12 +1354,28 @@ app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
   // idempotent retry that downstream consumers would otherwise
   // re-handle as a fresh enable (refetching menus, replaying
   // audit work, etc.).
+  //
+  // Best-effort wrap: symmetric with the refreshInstallStatus
+  // block above. `broadcastRecipeAppsChanged` already swallows
+  // and logs broadcast failures internally (see the helper
+  // below), but the callsite wrap removes any visual asymmetry
+  // and guards against future helper refactors that might
+  // accidentally let an exception escape after the destructive
+  // disk transaction already committed (PR #56 codex attempt 2
+  // Finding "post-commit error handling").
   if (result.status === 'enabled') {
-    broadcastRecipeAppsChanged({
-      trigger: 'enable',
-      appId: result.appId,
-      source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
-    })
+    try {
+      broadcastRecipeAppsChanged({
+        trigger: 'enable',
+        appId: result.appId,
+        source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
+      })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'enable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
+    }
   }
   res.json(result)
 })
@@ -1367,6 +1384,22 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   const recipeId = req.params.recipeId
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  // Load `recipe-history.jsonl` once per request path. The same
+  // snapshot is threaded into both `classifyLocalResidue` (the
+  // allowlist short-circuit gate, when applicable) and
+  // `resolveBundledAppIdForDisable` to avoid redundant O(n) sync
+  // reads of the append-only history file as it grows (PR #56
+  // codex attempt 2 Finding "resource exhaustion"). Probe failures
+  // (`EACCES` / `EPERM` / `EIO` / `EBUSY` etc.) surface as 503
+  // `BundledLocalStateUnavailable`, identical to the embedded
+  // probe path before the dedup.
+  let historySnapshot
+  try {
+    historySnapshot = loadRecipeHistorySnapshot(fs)
+  } catch (snapshotErr) {
+    handleBundledInstallerError(req, res, snapshotErr, 'disable', recipeId)
     return
   }
   // Authorization gate: disable accepts a recipeId iff either
@@ -1380,7 +1413,12 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   // primitive.
   if (!isBundledEligibleRecipeId(recipeId)) {
     try {
-      const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+      const residue = classifyLocalResidue({
+        fs,
+        manifestStore,
+        recipeId,
+        historySnapshot,
+      })
       if (residue === 'none') {
         res.status(404).json({ error: 'BundledNotFound' })
         return
@@ -1398,7 +1436,12 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   // `BundledInstallerError` with the spec-normative error code.
   let resolved
   try {
-    resolved = resolveBundledAppIdForDisable({ fs, manifestStore, recipeId })
+    resolved = resolveBundledAppIdForDisable({
+      fs,
+      manifestStore,
+      recipeId,
+      historySnapshot,
+    })
   } catch (resolveErr) {
     handleBundledInstallerError(req, res, resolveErr, 'disable', recipeId)
     return
@@ -1465,11 +1508,21 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
     // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
     // Skip the broadcast on `already-disabled` no-ops — see the
     // matching guard on the enable handler.
-    broadcastRecipeAppsChanged({
-      trigger: 'disable',
-      appId: result.appId,
-      source: result.source,
-    })
+    //
+    // Best-effort wrap mirrors the enable handler (PR #56 codex
+    // attempt 2 Finding "post-commit error handling").
+    try {
+      broadcastRecipeAppsChanged({
+        trigger: 'disable',
+        appId: result.appId,
+        source: result.source,
+      })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'disable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
+    }
   }
   res.json(result)
 })
@@ -1499,6 +1552,17 @@ function handleBundledInstallerError(
   res.status(500).json({ error: 'BundledTransactionUnexpected' })
 }
 
+/**
+ * Best-effort post-commit notifier for the bundled enable / disable
+ * lifecycle (recipe-system v1.11 §10.9 + http-api-contract v1.7.3
+ * §6.3.8.B BS-L3-B). Broadcast failures are **swallowed and logged
+ * internally** — this function is contractually non-throwing so the
+ * destructive disk transaction (already committed by the caller)
+ * cannot be retroactively reported as a 500 to the HTTP client. The
+ * callsites add a defensive try/catch wrap on top of this internal
+ * guard for symmetry with `refreshInstallStatus` and to insulate
+ * against future refactors.
+ */
 function broadcastRecipeAppsChanged(payload: {
   trigger: 'enable' | 'disable'
   appId: string
