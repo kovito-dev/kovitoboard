@@ -166,7 +166,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // can still report the new state. Stays `null` on every error
     // path inside the try block; the post-lock code uses that as
     // the "response was already sent above" sentinel.
-    let postCommit: { newSnapshot: string; updatedCount: number } | null = null
+    let postCommit:
+      | { newSnapshot: string; updatedCount: number; broadcast: boolean }
+      | null = null
+    // Codex attempt 3 Finding 1 fix: wrap the lock-protected
+    // section in an outer try/catch so an unexpected throw from
+    // anywhere inside (notably a non-timeout rejection from
+    // `acquireAppLock` whose contract only models the wait-timeout
+    // path) lands on a structured 500 JSON envelope instead of
+    // Express's default HTML error handler. The lock-release
+    // `finally` stays attached to the inner try so locks are
+    // released along every path, including a thrown
+    // unexpected error.
+    try {
     try {
       for (const appId of sortedAppIds) {
         try {
@@ -256,6 +268,22 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // snapshot so a stale view from before the lock can no longer
       // slip through.
       const currentSnapshot = computeMenuOrderSnapshot(manifests)
+
+      // Codex attempt 3 Finding 2 fix: no-op short-circuit. When
+      // the requested order already matches what is on disk for
+      // every eligible app, skip the rewrite + broadcast pair so
+      // an authenticated caller cannot turn repeated no-op
+      // submissions into a DoS surface (full app-set lock
+      // contention + N writeFileAtomic calls every time). The
+      // wire-contract surface is unchanged — clients still get a
+      // 200 with the same `snapshotVersion` they would have seen
+      // had we rewritten the manifests — only the audit field
+      // `updatedCount` drops to 0 so the no-op path stays
+      // distinguishable in the server log.
+      const isNoOp = manifests.every(
+        (m) => orderMap.get(m.appId) === m.menuOrder,
+      )
+
       if (
         requestedSnapshot !== undefined &&
         requestedSnapshot !== currentSnapshot
@@ -274,6 +302,31 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         res.status(409).json({ error: 'MenuOrderSnapshotDrift' })
         return
       }
+
+      if (isNoOp) {
+        // Skip write + broadcast (Finding 2 fix). The 200 audit
+        // still fires so the no-op submission is auditable. We
+        // fall through to the `finally` block (locks are released
+        // in the normal order) and the post-lock response code
+        // picks up `postCommit` to emit the 200 envelope without
+        // broadcasting.
+        emitHttpRouteAudit(apiLogger, {
+          method: 'PUT',
+          path: '/api/apps/menu-order',
+          pathParams: {},
+          status: 200,
+          audit: {
+            action: 'menu-order-update',
+            updatedCount: 0,
+            snapshotProvided: requestedSnapshot !== undefined,
+          },
+        })
+        postCommit = {
+          newSnapshot: currentSnapshot,
+          updatedCount: 0,
+          broadcast: false,
+        }
+      } else {
 
       // Atomic batch write. There is no POSIX primitive for "rename
       // many files atomically", so we fall back to (a) snapshot the
@@ -359,7 +412,12 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           snapshotProvided: requestedSnapshot !== undefined,
         },
       })
-      postCommit = { newSnapshot, updatedCount: manifests.length }
+      postCommit = {
+        newSnapshot,
+        updatedCount: manifests.length,
+        broadcast: true,
+      }
+      }
     } finally {
       // Always release in reverse acquisition order. Failures here
       // can only happen if the lock has already been released; we
@@ -376,6 +434,31 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         }
       }
     }
+    } catch (unexpectedErr) {
+      // Codex attempt 3 Finding 1 fix: anything that escapes the
+      // inner try block lands here. Treat it as an unexpected
+      // server error — emit the audit record, return the JSON
+      // envelope the API contract promises, and avoid Express's
+      // default HTML error handler. `res.headersSent` is the gate
+      // for callers that already responded inside the inner block;
+      // we never send a second response.
+      apiLogger.error(
+        { err: unexpectedErr },
+        'PUT /api/apps/menu-order: unexpected exception',
+      )
+      if (!res.headersSent) {
+        emitHttpRouteAudit(apiLogger, {
+          method: 'PUT',
+          path: '/api/apps/menu-order',
+          pathParams: {},
+          status: 500,
+          audit: { action: 'menu-order-update' },
+          errorCode: 'MenuOrderAtomicWriteFailed',
+        })
+        res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
+      }
+      return
+    }
 
     // Reachable only on the success path: every error path inside
     // the try block returned without setting `postCommit`. We could
@@ -384,16 +467,18 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // locks are held.
     if (postCommit === null) return
 
-    try {
-      broadcast({
-        type: 'app_menu_changed',
-        payload: { event: 'menu-order-update', ts: Date.now() },
-      })
-    } catch (broadcastErr) {
-      apiLogger.warn(
-        { err: broadcastErr },
-        'app_menu_changed broadcast failed (non-fatal post-commit)',
-      )
+    if (postCommit.broadcast) {
+      try {
+        broadcast({
+          type: 'app_menu_changed',
+          payload: { event: 'menu-order-update', ts: Date.now() },
+        })
+      } catch (broadcastErr) {
+        apiLogger.warn(
+          { err: broadcastErr },
+          'app_menu_changed broadcast failed (non-fatal post-commit)',
+        )
+      }
     }
 
     res.json({

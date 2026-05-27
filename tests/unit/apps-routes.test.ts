@@ -368,6 +368,56 @@ describe('PUT /api/apps/menu-order', () => {
     })
     expect(h.broadcasts).toHaveLength(0)
   })
+
+  it('200 no-op short-circuit: skips write + broadcast when order matches disk state', async () => {
+    writeManifest(h.projectRoot, buildManifest('alpha', 0))
+    writeManifest(h.projectRoot, buildManifest('beta', 1))
+
+    // Snapshot the manifest bytes so we can verify the no-op
+    // path did not rewrite the file (the post-write JSON layout
+    // adds a trailing newline, so a rewrite would change the
+    // bytes verbatim even when the value is identical).
+    const alphaBefore = readFileSync(
+      join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+      'utf-8',
+    )
+    const betaBefore = readFileSync(
+      join(h.projectRoot, 'app', 'beta', 'manifest.json'),
+      'utf-8',
+    )
+
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [
+        { appId: 'alpha', menuOrder: 0 },
+        { appId: 'beta', menuOrder: 1 },
+      ],
+    })
+
+    expect(reply.status).toBe(200)
+    // The 200 envelope still carries the full snapshot so the
+    // client cannot tell a no-op apart from a write; this matches
+    // the wire-contract surface defined in http-api-contract.md
+    // v1.7.3 §6.3.9.A.
+    expect(typeof reply.body?.snapshotVersion).toBe('string')
+
+    // No file rewrite happened.
+    expect(
+      readFileSync(
+        join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+        'utf-8',
+      ),
+    ).toBe(alphaBefore)
+    expect(
+      readFileSync(
+        join(h.projectRoot, 'app', 'beta', 'manifest.json'),
+        'utf-8',
+      ),
+    ).toBe(betaBefore)
+
+    // No broadcast either — clients that listen for refetch
+    // signals stay quiet on no-op submissions.
+    expect(h.broadcasts).toHaveLength(0)
+  })
 })
 
 // =====================================================================
