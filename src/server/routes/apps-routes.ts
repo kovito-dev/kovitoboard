@@ -34,11 +34,14 @@ import { createHash } from 'crypto'
 import { Router } from 'express'
 import type { Logger } from 'pino'
 
+import { resolve as resolvePath } from 'path'
+
 import type { FileAccessLayer } from '../fs-layer'
 import {
   acquireAppLock,
   AppLockWaitTimeoutError,
 } from '../handlerDispatcher'
+import { isWithin } from '../pathResolver'
 import type { AppManifest } from '../../shared/app-manifest-types'
 import type { ServerToClientEvent } from '../../shared/ws-events'
 import {
@@ -54,12 +57,33 @@ export const MENU_LABEL_MAX_LENGTH = 80
  * Upper bound on the number of entries the `PUT /api/apps/menu-order`
  * endpoint will accept in a single closed-world batch.
  *
- * Realistic project app sets are well under a hundred entries — the
- * cap is set generously above that so a legitimate caller has never
- * been clamped, while still bounding the amount of work an
- * authenticated caller can force per request. Bodies that exceed this
- * are rejected with 400 `InvalidMenuOrder` before any per-app lock is
- * acquired (codex attempt 5 Finding 2 — lock amplification / DoS).
+ * **Derivation (not a wire-contract limit):** Express's default JSON
+ * body parser caps the request body at 100 KB
+ * (`app.use(express.json())` with no `limit` option, as documented in
+ * the Related Code section of the PR description). A worst-case `order`
+ * entry — `{"appId":"abcdefghijklmnopqrstuvwxyz1234567890abcd","menuOrder":99999}`
+ * — is roughly 55 bytes serialised, so the 100 KB ceiling already
+ * bounds the array at approximately `100 * 1024 / 55 ≈ 1900` entries
+ * before the body parser itself rejects oversized payloads. We pick a
+ * round `1000` cap that sits below that ceiling with a comfortable
+ * safety margin (≈ 2× headroom for JSON whitespace and over-long
+ * appIds), so a legitimate request never reaches this check by
+ * accident while a hostile loop is rejected before per-app lock
+ * acquisition runs (codex attempt 5 Finding 2 — lock amplification /
+ * DoS).
+ *
+ * The cap is therefore **derived from the existing body-size limit**,
+ * not an independent wire-contract change: `http-api-contract.md`
+ * v1.7.3 §6.3.9.A's `0..(N-1)` closed-world batch model stays
+ * accurate for every project app set that is realistically reachable
+ * through the public API. Bodies above the cap are rejected with
+ * `400 InvalidMenuOrder` (the same shape used for every other
+ * malformed payload on this route), so no new error code surface
+ * appears either.
+ *
+ * Realistic project app sets are well under a hundred entries; a
+ * future project that legitimately grows past this cap can revisit
+ * the value alongside the body-parser `limit` configuration.
  */
 export const MENU_ORDER_MAX_ENTRIES = 1000
 
@@ -279,6 +303,43 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         }
       }
 
+      // Codex attempt 7 Finding 1 fix: path-boundary verification
+      // for every manifest the batch is about to rewrite. A planted
+      // `app/<appId>` symlink would otherwise let writeFileAtomic
+      // land outside <projectRoot>/app/. Each appId's canonical
+      // manifest path is captured here and reused in the write loop
+      // below so the path the boundary check approved is exactly
+      // the path the write touches (no TOCTOU swap window). Spec
+      // SSOT: recipe-system v1.11 §10.9.3 step 2.5 for bundled
+      // installer, replicated here for the apps-routes parallel.
+      const canonicalManifestPaths = new Map<string, string>()
+      for (const manifest of manifests) {
+        const pathCheck = resolveManifestPathInAppRoot(
+          fs,
+          projectRoot,
+          manifest.appId,
+        )
+        if ('error' in pathCheck) {
+          apiLogger.warn(
+            { appId: manifest.appId, kind: pathCheck.error },
+            'PUT /api/apps/menu-order: manifest path failed boundary check',
+          )
+          respondAndAudit(res, apiLogger, {
+            status: 500,
+            body: { error: 'MenuOrderAtomicWriteFailed' },
+            audit: {
+              method: 'PUT',
+              path: '/api/apps/menu-order',
+              pathParams: {},
+              audit: { action: 'menu-order-update' },
+              errorCode: 'MenuOrderAtomicWriteFailed',
+            },
+          })
+          return
+        }
+        canonicalManifestPaths.set(manifest.appId, pathCheck.canonical)
+      }
+
       // Contiguous 0..(N-1) check on menuOrder values.
       const N = manifests.length
       const seenValues = new Set<number>()
@@ -371,11 +432,23 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // lock is still held (acquired above), so a concurrent
       // bundled enable/disable / handler dispatch cannot observe a
       // half-applied batch.
+      // Use the canonical paths captured under the boundary check
+      // above so a TOCTOU swap of an original symlink between the
+      // gate and the rewrite cannot redirect a write out of
+      // <projectRoot>/app/ (mirror of PR #56 bundled-installer step
+      // 3.5 TOCTOU defence; codex attempt 7 Finding 1 fix).
       const previousBytes = new Map<string, string>()
       const writtenAppIds: string[] = []
       try {
         for (const manifest of manifests) {
-          const path = getAppManifestPath(projectRoot, manifest.appId)
+          const path = canonicalManifestPaths.get(manifest.appId)
+          if (path === undefined) {
+            // Defensive — every appId went through the boundary
+            // check loop above before we got here.
+            throw new Error(
+              `menu-order: ${manifest.appId} missing canonical path`,
+            )
+          }
           previousBytes.set(path, fs.readFileSync(path, 'utf-8'))
         }
         for (const manifest of manifests) {
@@ -387,14 +460,17 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
             )
           }
           const updated: AppManifest = { ...manifest, menuOrder: desired }
-          const path = getAppManifestPath(projectRoot, manifest.appId)
+          const path = canonicalManifestPaths.get(manifest.appId)!
           fs.writeFileAtomic(path, JSON.stringify(updated, null, 2) + '\n')
           writtenAppIds.push(manifest.appId)
         }
       } catch (writeErr) {
         // Rollback every successful write to the pre-snapshot bytes.
+        // Use the same canonical paths the forward write used so the
+        // rollback cannot follow a different symlink target.
         for (const appId of writtenAppIds) {
-          const path = getAppManifestPath(projectRoot, appId)
+          const path = canonicalManifestPaths.get(appId)
+          if (path === undefined) continue
           const prev = previousBytes.get(path)
           if (prev === undefined) continue
           try {
@@ -677,23 +753,50 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       | { userMenuLabel: string | null; broadcast: boolean }
       | null = null
     try {
-      const manifestPath = getAppManifestPath(projectRoot, appId)
       // The existence check is what distinguishes 404 AppNotFound
       // from 500 AppManifestUnreadable: a missing file is a
       // legitimate "no such app" signal, while a present-but-broken
       // file is server-side state that the user must repair.
-      if (!fs.existsSync(manifestPath)) {
+      // The boundary check that follows the existsSync path also
+      // rejects symlinks whose canonical target escapes
+      // <projectRoot>/app/ — codex attempt 7 Finding 1 fix,
+      // recipe-system v1.11 §10.9.3 step 2.5 path-boundary
+      // verification SSOT replicated for apps-routes.
+      const pathCheck = resolveManifestPathInAppRoot(fs, projectRoot, appId)
+      if ('error' in pathCheck) {
+        if (pathCheck.error === 'not-found') {
+          respondAndAudit(res, apiLogger, {
+            status: 404,
+            body: { error: 'AppNotFound' },
+            audit: {
+              method: 'PATCH',
+              path: '/api/apps/:appId/menu-label',
+              pathParams: { appId },
+              audit: { appId, action: 'menu-label-update' },
+              errorCode: 'AppNotFound',
+            },
+          })
+          return
+        }
+        // Both 'escaped' and 'resolve-failed' collapse into the
+        // existing 500 AppManifestUnreadable wire-contract surface
+        // (http-api-contract v1.7.3 §6.3.9.A): from the client's
+        // viewpoint the manifest is no longer addressable in a
+        // way the server is willing to honour. The forensic
+        // distinction lives in the server log line below.
+        apiLogger.warn(
+          { appId, kind: pathCheck.error },
+          'PATCH /api/apps/:appId/menu-label: manifest path failed boundary check',
+        )
         respondAndAudit(res, apiLogger, {
-          status: 404,
-          body: { error: 'AppNotFound' },
+          status: 500,
+          body: { error: 'AppManifestUnreadable' },
           audit: {
-            
             method: 'PATCH',
             path: '/api/apps/:appId/menu-label',
             pathParams: { appId },
             audit: { appId, action: 'menu-label-update' },
-            errorCode: 'AppNotFound',
-            
+            errorCode: 'AppManifestUnreadable',
           },
         })
         return
@@ -750,13 +853,18 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
 
       const updated: AppManifest = { ...manifest, userMenuLabel }
       try {
+        // Use the canonical path captured under the boundary check
+        // above so a TOCTOU swap of the original symlink between
+        // the gate and the write cannot redirect us out of
+        // <projectRoot>/app/ (mirror of PR #56 bundled-installer
+        // step 3.5 TOCTOU fix).
         fs.writeFileAtomic(
-          manifestPath,
+          pathCheck.canonical,
           JSON.stringify(updated, null, 2) + '\n',
         )
       } catch (writeErr) {
         apiLogger.error(
-          { err: writeErr, appId, path: manifestPath },
+          { err: writeErr, appId, path: pathCheck.canonical },
           'PATCH /api/apps/:appId/menu-label: atomic write failed',
         )
         respondAndAudit(res, apiLogger, {
@@ -867,6 +975,54 @@ function respondMenuOrderError(
       errorCode,
     },
   })
+}
+
+/**
+ * Verify that the canonical path of `app/<appId>/manifest.json` stays
+ * under `<projectRoot>/app/` before any read or write touches it.
+ *
+ * Without this gate, a planted `app/<appId>` symlink pointing at an
+ * external directory (e.g. `/etc/`) would let the route operate on
+ * `/etc/manifest.json` instead of the intended file. The check is
+ * borrowed from `bundled-installer.ts` step 3.5 introduced in PR #56
+ * for the same class of issue
+ * (`recipe-system.md` v1.11 §10.9.3 step 2.5 path-boundary
+ * verification) — the apps-routes parallel was missed in attempt 1-6
+ * and surfaced in attempt 7 Finding 1.
+ *
+ * `realpathSync` resolves every intermediate symlink, so a chain of
+ * links is normalised before the containment check. `isWithin` uses
+ * the trailing-separator prefix rule from `pathResolver.ts` so a
+ * `<projectRoot>/app-other/<appId>/...` target is correctly rejected
+ * even though `app-other` starts with the same letters as `app`.
+ *
+ * Returns the canonical path on success, or `null` if the file does
+ * not exist, cannot be resolved, or resolves outside the app root.
+ * Callers funnel a `null` return into the existing
+ * `404 AppNotFound` (when the missing path is just absent) or
+ * `500 AppManifestUnreadable` (when the resolved target escaped the
+ * boundary) decision the route already makes for unreadable files.
+ */
+function resolveManifestPathInAppRoot(
+  fs: FileAccessLayer,
+  projectRoot: string,
+  appId: string,
+): { canonical: string } | { error: 'not-found' | 'escaped' | 'resolve-failed' } {
+  const manifestPath = getAppManifestPath(projectRoot, appId)
+  if (!fs.existsSync(manifestPath)) {
+    return { error: 'not-found' }
+  }
+  const appBoundary = resolvePath(projectRoot, 'app')
+  let canonical: string
+  try {
+    canonical = fs.realpathSync(manifestPath)
+  } catch {
+    return { error: 'resolve-failed' }
+  }
+  if (!isWithin(canonical, appBoundary)) {
+    return { error: 'escaped' }
+  }
+  return { canonical }
 }
 
 /**

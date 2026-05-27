@@ -39,6 +39,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -369,6 +370,48 @@ describe('PUT /api/apps/menu-order', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('500 MenuOrderAtomicWriteFailed when an app directory is a symlink that escapes the app root', async () => {
+    // Create a legitimate app under `app/alpha/`.
+    writeManifest(h.projectRoot, buildManifest('alpha', 0))
+
+    // Plant an `app/beta` symlink pointing outside the app root.
+    // The scanner can still read the manifest through the symlink
+    // (so the request looks coverage-valid), but the boundary
+    // check must catch it before any write touches the foreign
+    // location.
+    const outside = mkdtempSync(join(tmpdir(), 'kb-apps-routes-outside-'))
+    try {
+      writeFileSync(
+        join(outside, 'manifest.json'),
+        JSON.stringify(buildManifest('beta'), null, 2) + '\n',
+        'utf-8',
+      )
+      symlinkSync(outside, join(h.projectRoot, 'app', 'beta'), 'dir')
+
+      const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+        order: [
+          { appId: 'alpha', menuOrder: 0 },
+          { appId: 'beta', menuOrder: 1 },
+        ],
+      })
+
+      expect(reply.status).toBe(500)
+      expect(reply.body?.error).toBe('MenuOrderAtomicWriteFailed')
+
+      // The outside manifest stays unchanged — the gate ran
+      // before any writeFileAtomic touched it.
+      const after = JSON.parse(
+        readFileSync(join(outside, 'manifest.json'), 'utf-8'),
+      ) as Record<string, unknown>
+      expect(after.menuOrder).toBeUndefined()
+
+      // No broadcast either.
+      expect(h.broadcasts).toHaveLength(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('400 InvalidMenuOrder when batch exceeds MENU_ORDER_MAX_ENTRIES', async () => {
     writeManifest(h.projectRoot, buildManifest('alpha'))
 
@@ -654,6 +697,42 @@ describe('PATCH /api/apps/:appId/menu-label', () => {
     ).toBe(before)
 
     expect(h.broadcasts).toHaveLength(0)
+  })
+
+  it('500 AppManifestUnreadable when the app directory is a symlink that escapes the app root', async () => {
+    // Plant an `app/beta` symlink pointing outside the app root with
+    // a valid-shape manifest behind it. existsSync passes (the
+    // symlink target exists), but the boundary check must catch the
+    // escape before write touches the foreign location.
+    const outside = mkdtempSync(join(tmpdir(), 'kb-apps-routes-outside-'))
+    try {
+      writeFileSync(
+        join(outside, 'manifest.json'),
+        JSON.stringify(buildManifest('beta'), null, 2) + '\n',
+        'utf-8',
+      )
+      symlinkSync(outside, join(h.projectRoot, 'app', 'beta'), 'dir')
+
+      const reply = await sendJson(
+        h.app,
+        'PATCH',
+        '/api/apps/beta/menu-label',
+        { userMenuLabel: 'Hijacked' },
+      )
+
+      expect(reply.status).toBe(500)
+      expect(reply.body?.error).toBe('AppManifestUnreadable')
+
+      // The outside manifest stays unchanged.
+      const after = JSON.parse(
+        readFileSync(join(outside, 'manifest.json'), 'utf-8'),
+      ) as Record<string, unknown>
+      expect(after.userMenuLabel).toBeUndefined()
+
+      expect(h.broadcasts).toHaveLength(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('preserves unrelated AppManifest fields when writing back', async () => {
