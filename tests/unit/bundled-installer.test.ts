@@ -1740,6 +1740,99 @@ describe('loadRecipeHistorySnapshot (PR #56 attempt 2)', () => {
     cleanup(h)
   })
 
+  it('classifyLocalResidue forces a disk health probe even when manifestStore caches the manifest (PR #56 attempt 6)', () => {
+    // Codex attempt 6 Finding "fail-closed check bypass":
+    // probeManifestOnDisk used to short-circuit on any cache hit, so
+    // a manifest that was chmod-ed / corrupted after boot would still
+    // be treated as healthy and the disable transaction would proceed.
+    // The attempt 6 fix introduces a separate `probeManifestFileOnDisk`
+    // path that always reaches the filesystem, and classifyLocalResidue
+    // now uses it on the disable code path.
+    //
+    // Seed a cached manifest via manifestStore.save (boot-time
+    // contract), then chmod 000 the on-disk file to simulate post-boot
+    // tampering. The classify step must surface
+    // BundledLocalStateUnavailable 503 instead of silently treating
+    // the manifest as healthy via the cache.
+    h.manifestStore.save({
+      appId: SAMPLE_RECIPE_ID,
+      recipeId: SAMPLE_RECIPE_ID,
+      recipeVersion: '1.0.0',
+      hash: 'fakehash',
+      installedAt: '2026-05-27T00:00:00.000Z',
+      approvedScopes: [],
+      api: { scopes: [], calls: [] },
+      captureRequires: [],
+      approvedCaptures: [],
+      trustLevel: 'code-trusted (bundled)',
+      source: 'bundled',
+    })
+    const manifestPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+      'manifest.json',
+    )
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(manifestPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        classifyLocalResidue({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          recipeId: SAMPLE_RECIPE_ID,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(manifestPath, 0o644)
+    }
+  })
+
+  it('disableBundledRecipe accepts a caller-provided historySnapshot and completes the transaction (PR #56 attempt 6)', () => {
+    // Codex attempt 6 Finding "resource exhaustion": the snapshot
+    // optimization stopped at the lock boundary — once the route
+    // entered disableBundledRecipe, it called classifyLocalResidue
+    // again without the snapshot and then readRecipeHistory a second
+    // time, both inside the per-appId lock. The attempt 6 fix adds
+    // an optional historySnapshot parameter to the transaction so
+    // the locked critical section reuses the same parsed history
+    // already loaded by the HTTP handler.
+    //
+    // Seed a real install record + manifest via enableBundledRecipe,
+    // then disable with the snapshot threaded in. Verify the
+    // transaction returns 'disabled' (so the locked path actually
+    // ran with the snapshot wired through classifyLocalResidue +
+    // findHistoryMatchForBundled).
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    enableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      kovitoboardRoot: KB_INSTALL_ROOT,
+      recipeId: SAMPLE_RECIPE_ID,
+      sample,
+    })
+    const snapshot = loadRecipeHistorySnapshot(h.fs)
+    const result = disableBundledRecipe({
+      fs: h.fs,
+      manifestStore: h.manifestStore,
+      projectRoot: h.projectRoot,
+      recipeId: SAMPLE_RECIPE_ID,
+      historySnapshot: snapshot,
+    })
+    expect(result.status).toBe('disabled')
+    expect(result.source).toBe('bundled')
+  })
+
   it('returns an empty snapshot on ENOENT without preflighting existsSync (PR #56 attempt 5)', () => {
     // Codex attempt 5 Finding "fail-closed regression": the previous
     // snapshot loader started with `if (!fs.existsSync(path)) return
