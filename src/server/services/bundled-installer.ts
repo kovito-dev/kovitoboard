@@ -202,8 +202,15 @@ export class BundledInstallerError extends Error {
  *      imports the helper without either source still produces a
  *      schema-valid AppManifest.
  *
- * The result is cached after the first lookup so each enable
- * transaction does not re-read `package.json` from disk.
+ * The first **successful** resolution is cached so each enable
+ * transaction does not re-read `package.json` from disk. The
+ * `'0.0.0'` sentinel branch is **deliberately not cached**: a
+ * transient IO failure (EACCES during the first enable, file
+ * appears later) would otherwise poison every subsequent
+ * `AppManifest.kovitoboardVersion` write for the lifetime of the
+ * process. Codex review #58 attempt 3 Low #3 surfaced this; the
+ * retry-on-failure semantics is cheap because each call adds at
+ * most one `readFileSync` of a small file once the cache populates.
  */
 let cachedKovitoboardVersion: string | null = null
 function resolveKovitoboardVersion(): string {
@@ -247,8 +254,10 @@ function resolveKovitoboardVersion(): string {
     // transaction (the user-facing AppManifest still gets a stable
     // string value the renderer can display).
   }
-  cachedKovitoboardVersion = '0.0.0'
-  return cachedKovitoboardVersion
+  // **Do not cache** the sentinel — return it for this call only so a
+  // recovering filesystem can surface the real version on the next
+  // enable transaction.
+  return '0.0.0'
 }
 
 /**

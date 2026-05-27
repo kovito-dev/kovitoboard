@@ -389,13 +389,28 @@ export class MenuTsParseFailedError extends Error {
   }
 }
 
-/** Characters the simple `parseMenuTs` regex cannot read back. */
-const UNSAFE_MENU_LITERAL_RE = /['"`\\]/
+/**
+ * Characters that break the single-quoted literal grammar the helper
+ * emits and the simple `parseMenuTs` regex consumes:
+ *
+ *   - Single quote / double quote / backtick / backslash — break the
+ *     quote pairing or trigger escape interpretation.
+ *   - Line terminators (`\n`, `\r`, U+2028, U+2029) — TS/JS terminate
+ *     a single-quoted string literal at any line terminator, so
+ *     interpolating one verbatim produces invalid TypeScript and the
+ *     module loader rejects the entire `app/menu.ts` file. Codex
+ *     review #58 attempt 3 Medium #1 surfaced this.
+ *   - Other ASCII control characters (U+0000-U+001F minus the line
+ *     terminators above, plus U+007F) — `parseMenuTs` would either
+ *     mis-read or silently drop them depending on the runtime; reject
+ *     so the writer never persists a value the renderer cannot read.
+ */
+const UNSAFE_MENU_LITERAL_RE = /['"`\\\u0000-\u001F\u007F\u2028\u2029]/
 
 function assertSafeMenuLiteral(field: string, value: string): void {
   if (UNSAFE_MENU_LITERAL_RE.test(value)) {
     throw new MenuTsParseFailedError(
-      `menu entry ${field} contains a quote / backtick / backslash character that the menu reader cannot parse back: ${JSON.stringify(value)}`,
+      `menu entry ${field} contains a quote, backslash, line terminator, or other control character that the menu reader cannot parse back: ${JSON.stringify(value)}`,
     )
   }
 }
