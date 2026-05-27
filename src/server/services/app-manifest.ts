@@ -64,7 +64,30 @@ export function readAppManifest(
 ): AppManifest | null {
   const path = getAppManifestPath(projectRoot, appId)
   if (!fs.existsSync(path)) return null
+  return readAppManifestAtPath(fs, path, appId)
+}
 
+/**
+ * Read an `AppManifest` from a caller-resolved canonical path,
+ * skipping the `appId` to path resolution that {@link readAppManifest}
+ * does internally.
+ *
+ * Use this when the caller has already verified that the path is
+ * safe to open (e.g. the apps-routes handlers run a `realpathSync`
+ * + `isWithin` boundary check before this call, so the read cannot
+ * follow a symlink out of `<projectRoot>/app/`). Returns `null`
+ * with the same warn-on-failure semantics as {@link readAppManifest};
+ * `appId` is accepted as a hint for the warn line metadata so the
+ * server log stays grep-able by app identifier even when the path
+ * is canonical / resolved.
+ *
+ * @stable v0.2.1
+ */
+export function readAppManifestAtPath(
+  fs: FileAccessLayer,
+  path: string,
+  appId: string,
+): AppManifest | null {
   let raw: string
   try {
     raw = fs.readFileSync(path, 'utf-8')

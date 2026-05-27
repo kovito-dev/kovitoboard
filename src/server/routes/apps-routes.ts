@@ -46,46 +46,24 @@ import type { AppManifest } from '../../shared/app-manifest-types'
 import type { ServerToClientEvent } from '../../shared/ws-events'
 import {
   getAppManifestPath,
-  readAppManifest,
-  scanAppManifests,
+  readAppManifestAtPath,
 } from '../services/app-manifest'
 
 /** Maximum length of a user-provided menu label string. */
 export const MENU_LABEL_MAX_LENGTH = 80
 
-/**
- * Upper bound on the number of entries the `PUT /api/apps/menu-order`
- * endpoint will accept in a single closed-world batch.
- *
- * **Derivation (not a wire-contract limit):** Express's default JSON
- * body parser caps the request body at 100 KB
- * (`app.use(express.json())` with no `limit` option, as documented in
- * the Related Code section of the PR description). A worst-case `order`
- * entry — `{"appId":"abcdefghijklmnopqrstuvwxyz1234567890abcd","menuOrder":99999}`
- * — is roughly 55 bytes serialised, so the 100 KB ceiling already
- * bounds the array at approximately `100 * 1024 / 55 ≈ 1900` entries
- * before the body parser itself rejects oversized payloads. We pick a
- * round `1000` cap that sits below that ceiling with a comfortable
- * safety margin (≈ 2× headroom for JSON whitespace and over-long
- * appIds), so a legitimate request never reaches this check by
- * accident while a hostile loop is rejected before per-app lock
- * acquisition runs (codex attempt 5 Finding 2 — lock amplification /
- * DoS).
- *
- * The cap is therefore **derived from the existing body-size limit**,
- * not an independent wire-contract change: `http-api-contract.md`
- * v1.7.3 §6.3.9.A's `0..(N-1)` closed-world batch model stays
- * accurate for every project app set that is realistically reachable
- * through the public API. Bodies above the cap are rejected with
- * `400 InvalidMenuOrder` (the same shape used for every other
- * malformed payload on this route), so no new error code surface
- * appears either.
- *
- * Realistic project app sets are well under a hundred entries; a
- * future project that legitimately grows past this cap can revisit
- * the value alongside the body-parser `limit` configuration.
- */
-export const MENU_ORDER_MAX_ENTRIES = 1000
+// Codex attempt 8 Finding 2 fix: the previously-defined
+// MENU_ORDER_MAX_ENTRIES = 1000 cap is removed. The DoS surface
+// it guarded (lock amplification on a flood of fake appIds) is
+// already bounded by Express's default JSON body-size limit
+// (`app.use(express.json())` with no `limit` option, 100 KB
+// default) — a worst-case order entry is ~55 bytes serialised,
+// so the body parser already rejects payloads above ~1900
+// entries before any handler code runs. Removing the application
+// -level cap eliminates the spec drift (the wire contract
+// described an open `0..count-1` closed-world batch, the cap
+// added an undocumented rejection path) without re-exposing
+// a meaningful new DoS surface.
 
 /** Path parameter regex shared with `/api/apps/:appId/request-removal`. */
 const APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
@@ -131,21 +109,11 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       return
     }
 
-    // Codex attempt 5 Finding 2 fix: clamp oversized batches before
-    // any lock is acquired. An authenticated caller could otherwise
-    // send a very large `order` array whose appIds will fail the
-    // post-lock coverage check, but only after the handler had
-    // already taken N per-app locks (and held them long enough to
-    // run the scan). Bounding the array size at MENU_ORDER_MAX_ENTRIES
-    // keeps lock-acquisition work proportional to a single legitimate
-    // project app set (realistic ceiling is well under 100).
-    if (rawOrder.length > MENU_ORDER_MAX_ENTRIES) {
-      respondMenuOrderError(res, apiLogger, 'InvalidMenuOrder')
-      return
-    }
-
     // Validate every entry shape before touching disk so a malformed
     // payload cannot leave the lock acquired for partial work.
+    // (The previously-defined `MENU_ORDER_MAX_ENTRIES` cap is now
+    // delegated to the Express body-size limit — see the comment
+    // block at the top of this file for the derivation.)
     const requestedAppIds = new Set<string>()
     const orderMap = new Map<string, number>()
     for (const entry of rawOrder) {
@@ -262,13 +230,27 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // can no longer mutate any of the manifests we are about to
       // copy / rewrite. The eligible set we observe here is the
       // single source of truth for coverage and snapshot validation.
-      let manifests: AppManifest[]
+      //
+      // Codex attempt 8 Finding 1 fix: the scan itself routes every
+      // read through the boundary check (`resolveManifestPathInAppRoot`)
+      // and reads from the canonical path, so a planted
+      // `app/<appId>` symlink can no longer make the scan open a
+      // file outside <projectRoot>/app/. attempt 7's boundary check
+      // protected the write path only; this extends the gate to the
+      // read path as well. Spec SSOT: recipe-system v1.11 §10.9.3
+      // step 2.5 + security-threat-model.md path-boundary layer.
+      const manifests: AppManifest[] = []
+      const canonicalManifestPaths = new Map<string, string>()
+      const appRootDir = resolvePath(projectRoot, 'app')
+      let appDirEntries: string[]
       try {
-        manifests = scanAppManifests(fs, projectRoot)
+        appDirEntries = fs.existsSync(appRootDir)
+          ? fs.readdirSync(appRootDir)
+          : []
       } catch (err) {
         apiLogger.error(
           { err },
-          'PUT /api/apps/menu-order: scanAppManifests threw',
+          'PUT /api/apps/menu-order: readdir on app root failed',
         )
         respondAndAudit(res, apiLogger, {
           status: 500,
@@ -282,6 +264,45 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           },
         })
         return
+      }
+      for (const entry of appDirEntries) {
+        const pathCheck = resolveManifestPathInAppRoot(
+          fs,
+          projectRoot,
+          entry,
+        )
+        if ('error' in pathCheck) {
+          if (pathCheck.error === 'not-found') {
+            // Directory exists but the entry has no manifest. Skip;
+            // it is not eligible (matches the previous
+            // `scanAppManifests` semantics).
+            continue
+          }
+          // 'escaped' or 'resolve-failed' on a directory listed
+          // inside `app/`: the read path would have opened an
+          // out-of-root file. Fail closed.
+          apiLogger.warn(
+            { appId: entry, kind: pathCheck.error },
+            'PUT /api/apps/menu-order: manifest path failed boundary check',
+          )
+          respondAndAudit(res, apiLogger, {
+            status: 500,
+            body: { error: 'MenuOrderAtomicWriteFailed' },
+            audit: {
+              method: 'PUT',
+              path: '/api/apps/menu-order',
+              pathParams: {},
+              audit: { action: 'menu-order-update' },
+              errorCode: 'MenuOrderAtomicWriteFailed',
+            },
+          })
+          return
+        }
+        // Read from the canonical path the boundary check approved.
+        const manifest = readAppManifestAtPath(fs, pathCheck.canonical, entry)
+        if (manifest === null) continue
+        manifests.push(manifest)
+        canonicalManifestPaths.set(manifest.appId, pathCheck.canonical)
       }
 
       // Eligible set R is the appIds with a readable AppManifest.
@@ -301,43 +322,6 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
           return
         }
-      }
-
-      // Codex attempt 7 Finding 1 fix: path-boundary verification
-      // for every manifest the batch is about to rewrite. A planted
-      // `app/<appId>` symlink would otherwise let writeFileAtomic
-      // land outside <projectRoot>/app/. Each appId's canonical
-      // manifest path is captured here and reused in the write loop
-      // below so the path the boundary check approved is exactly
-      // the path the write touches (no TOCTOU swap window). Spec
-      // SSOT: recipe-system v1.11 §10.9.3 step 2.5 for bundled
-      // installer, replicated here for the apps-routes parallel.
-      const canonicalManifestPaths = new Map<string, string>()
-      for (const manifest of manifests) {
-        const pathCheck = resolveManifestPathInAppRoot(
-          fs,
-          projectRoot,
-          manifest.appId,
-        )
-        if ('error' in pathCheck) {
-          apiLogger.warn(
-            { appId: manifest.appId, kind: pathCheck.error },
-            'PUT /api/apps/menu-order: manifest path failed boundary check',
-          )
-          respondAndAudit(res, apiLogger, {
-            status: 500,
-            body: { error: 'MenuOrderAtomicWriteFailed' },
-            audit: {
-              method: 'PUT',
-              path: '/api/apps/menu-order',
-              pathParams: {},
-              audit: { action: 'menu-order-update' },
-              errorCode: 'MenuOrderAtomicWriteFailed',
-            },
-          })
-          return
-        }
-        canonicalManifestPaths.set(manifest.appId, pathCheck.canonical)
       }
 
       // Contiguous 0..(N-1) check on menuOrder values.
@@ -802,15 +786,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      // Codex attempt 1 Finding 2 fix: route the read through the
-      // canonical `readAppManifest()` so this endpoint agrees with
-      // `services/app-manifest.ts` and `scanAppManifests` on what
-      // counts as a readable manifest. `readAppManifest` returns
-      // null for read failure / JSON parse failure / schema
-      // mismatch alike and emits a structured warn line in each
-      // case, so all three are collapsed into one 500
+      // Codex attempt 1 Finding 2 fix + attempt 8 Finding 1 fix:
+      // route the read through `readAppManifestAtPath()` so this
+      // endpoint agrees with `services/app-manifest.ts` on what
+      // counts as a readable manifest AND opens the canonical path
+      // that the boundary check above already approved. Going
+      // through `readAppManifest(fs, projectRoot, appId)` here
+      // would re-resolve `app/<appId>/manifest.json` and follow
+      // any planted symlink, defeating the boundary gate. The
+      // helper still returns `null` on read failure / JSON parse
+      // failure / schema mismatch with a structured warn line in
+      // each case, so all three are collapsed into one 500
       // AppManifestUnreadable surface here.
-      const manifest = readAppManifest(fs, projectRoot, appId)
+      const manifest = readAppManifestAtPath(fs, pathCheck.canonical, appId)
       if (manifest === null) {
         respondAndAudit(res, apiLogger, {
           status: 500,
