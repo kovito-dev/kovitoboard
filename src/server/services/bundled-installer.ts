@@ -1664,21 +1664,21 @@ export function isEnabledAndManifestCoherent(
   }
   // Spec recipe-system v1.12 §10.9.3 Step 5.6 explicitly scopes
   // existing-entry shape verification (page / label / icon
-  // canonicality) as **out of band for the v0.2.x cycle** ("既存
-  // entry の component path / label / icon の整合性 verify は本 spec
-  // section 範囲外、v0.2.x 期間中は 「既 enable 経路として通過、UI
-  // 表示の正確性は user 観察で補完」 posture"). Codex review #58
-  // attempt 4 HIGH surfaced that adding a `isCanonicalAppIdPath`
-  // gate here would cascade with the Step 5.6 idempotent
-  // `'already-present'` short-circuit and produce a converge loop
-  // (coherence says "broken, repair", append says "already there,
-  // skip"). Drop the extra gate so the coherence check stays at the
-  // "entry exists with matching id" level the spec normatively
-  // pins. Path-escape attacks are still defeated end-to-end:
-  // `appendMenuEntry` rejects unsafe characters at write time, and
-  // the renderer's own `isCanonicalAppIdPath` filter
-  // (`menu-extractor.ts`) refuses to surface a non-canonical entry
-  // to the UI.
+  // canonicality) as out of band for the v0.2.x cycle: the spec
+  // states that the existing entry's component path / label / icon
+  // are not re-checked here, that the path treats the row as
+  // already-enabled, and that surface correctness is left for the
+  // user to spot. Codex review attempt 4 surfaced that adding an
+  // `isCanonicalAppIdPath` gate here would cascade with the Step
+  // 5.6 idempotent `'already-present'` short-circuit and produce
+  // a converge loop (coherence says "broken, repair", append says
+  // "already there, skip"). Drop the extra gate so the coherence
+  // check stays at the "entry exists with matching id" level the
+  // spec normatively pins. Path-escape attacks are still defeated
+  // end-to-end: `appendMenuEntry` rejects unsafe characters at
+  // write time, and the renderer's own `isCanonicalAppIdPath`
+  // filter (`menu-extractor.ts`) refuses to surface a
+  // non-canonical entry to the UI.
   return true
 }
 
@@ -2227,16 +2227,15 @@ export function enableBundledRecipe(
     // We always created (or recreated) it above, so it is safe to
     // wipe — the data dir lives at the sibling `app/data/<appId>/`.
     //
-    // Recovery-path note (codex review #58 attempt 9 Medium): on
+    // Recovery-path note (codex review attempt 9 Medium): on
     // `isRecoveryPath === true` the existing artifacts were already
-    // wiped above (line 2211) before Step 4 attempted to repaint
-    // them, so the original state is irrecoverable at this point
-    // regardless of what we do here. Spec recipe-system v1.12
-    // §10.9.5 Atomicity residual explicitly accepts this:
-    // "POSIX には複数 file の atomic rename API が存在しないため、
-    // 本 transaction は per-file atomic + cross-file は best-effort
-    // rollback". The user retries the enable to bring the state
-    // back to coherent (BS-L2').
+    // wiped above before Step 4 attempted to repaint them, so the
+    // original state is irrecoverable at this point regardless of
+    // what we do here. Spec recipe-system v1.12 §10.9.5 Atomicity
+    // residual explicitly accepts this — POSIX has no multi-file
+    // atomic rename, so this transaction is per-file atomic plus
+    // best-effort cross-file rollback, and the user retries the
+    // enable to bring the state back to coherent (BS-L2').
     tryRm(fs, appDir)
     throw new BundledInstallerError(
       `Failed to copy bundled artifacts for "${recipeId}": ${err instanceof Error ? err.message : String(err)}`,
