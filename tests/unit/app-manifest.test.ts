@@ -87,6 +87,29 @@ describe('writeAppManifest / readAppManifest', () => {
     expect(restored).toEqual(manifest)
   })
 
+  it('round-trips a recipe-source manifest with recipeSource: bundled (v1.5.1 BL-2026-179 cascade)', () => {
+    // Spec app-directory-extension.md v1.5.1 §6.2 added `'bundled'`
+    // to the `recipeSource` enum. The bundled-installer Step 5.5
+    // emits manifests with this value; the reader must accept them
+    // round-trip without rejecting on the schema check (the v1.4
+    // implementation only listed `'sample' | 'import' | 'url'`).
+    const manifest: AppManifest = {
+      appId: 'document-viewer',
+      displayName: 'ドキュメント',
+      createdAt: '2026-05-27T00:00:00.000Z',
+      kovitoboardVersion: '0.2.1',
+      source: {
+        type: 'recipe',
+        recipeId: 'document-viewer',
+        recipeVersion: '1.1.0',
+        recipeSource: 'bundled',
+      },
+    }
+    writeAppManifest(fs, projectRoot, manifest)
+    const restored = readAppManifest(fs, projectRoot, 'document-viewer')
+    expect(restored).toEqual(manifest)
+  })
+
   it('round-trips a user-creation manifest', () => {
     const manifest: AppManifest = {
       appId: 'my-notes',

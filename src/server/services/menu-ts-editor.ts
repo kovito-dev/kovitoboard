@@ -34,6 +34,43 @@ export type MenuRemoveResult =
   | { kind: 'parse-failed'; reason: string }
 
 /**
+ * A single `menuEntries[]` entry to append. Mirrors the shape the
+ * recipe-applicator template emits and the renderer reads through
+ * `menu-extractor.parseMenuTs`.
+ *
+ * The `page` field is the relative import path **after** the
+ * `<appId>/` prefix has been composed — `appendMenuEntry` writes it
+ * unchanged into the `component: () => import('./<page>')` thunk,
+ * so callers MUST compose `<appId>/<sub-path>` themselves (spec
+ * recipe-system v1.12 §10.9.3 Step 5.6 path-boundary invariant).
+ * Pre-composing in the caller keeps the editor agnostic about the
+ * appId/page relationship and lets the unit test exercise the
+ * `isCanonicalAppIdPath` check at the boundary instead of duplicating
+ * it here.
+ */
+export interface AppendMenuEntryInput {
+  /** Menu entry id — matches the recipe.yaml `menu[i].id` field. */
+  id: string
+  /** Display label — matches the recipe.yaml `menu[i].label` field. */
+  label: string
+  /** Icon name — matches the recipe.yaml `menu[i].icon` field, default `'box'`. */
+  icon: string
+  /**
+   * Pre-composed page path of the form `<appId>/<sub-path>` (no
+   * leading `./`, no extension). The thunk emitted as
+   * `component: () => import('./<page>')` runs through the renderer's
+   * `menu-extractor.isCanonicalAppIdPath` check, which requires the
+   * `<appId>/` prefix (spec v1.12 §10.9.3 Step 5.6).
+   */
+  page: string
+}
+
+/** Outcome of {@link appendMenuEntry}. */
+export type MenuAppendResult =
+  | { kind: 'appended'; content: string }
+  | { kind: 'already-present' }
+
+/**
  * Remove the entry whose `id` field matches `entryId` from a
  * `menu.ts` file's contents and return the rewritten source.
  *
@@ -293,6 +330,151 @@ function findMatchingBrace(body: string, openIndex: number): number {
 
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Append `entry` to the `menuEntries[]` array of a `menu.ts` file
+ * and return the rewritten source. Used by the bundled-installer
+ * Step 5.6 (spec recipe-system v1.12 §10.9.3) to register the menu
+ * row for a bundled-enable transaction.
+ *
+ * Behavior:
+ *   - When an entry whose `id` already matches `entry.id` is present,
+ *     returns `{ kind: 'already-present' }` and **does NOT touch the
+ *     file**. This is the idempotent no-op path bundled re-enable
+ *     relies on (BS-L2 grandfather idempotent merge + bundled retry-
+ *     safety BS-L2'). Skipping the write also matters for the
+ *     rollback contract: a touch-free idempotent return leaves no
+ *     rollback work for downstream failures.
+ *   - When the entry is absent, appends it to the end of the array
+ *     using the canonical recipe-applicator entry shape
+ *     (`{ id, label, icon, component: () => import('./<page>') }`)
+ *     and returns `{ kind: 'appended', content }`.
+ *   - Throws a `MenuTsParseFailedError` when `menuEntries` cannot be
+ *     located in the source. The bundled-installer routes this to
+ *     500 `EnableMenuTsAppendFailed` per spec v1.12 §10.9.3 Step 5.6.
+ *     `appendMenuEntry` throws (rather than returning a `parse-failed`
+ *     variant the way `removeMenuEntry` does) because a corrupted
+ *     `menu.ts` at enable time is a fail-closed condition; the
+ *     install transaction must not silently downgrade to a no-op.
+ *
+ * The caller is responsible for path-boundary verification — the
+ * editor writes `entry.page` verbatim into the `import('./<page>')`
+ * thunk. `bundled-installer` runs `isCanonicalAppIdPath(page, appId)`
+ * before calling this helper (spec v1.12 §10.9.3 Step 5.6 path-
+ * boundary invariant).
+ */
+export class MenuTsParseFailedError extends Error {
+  constructor(readonly reason: string) {
+    super(`menu-ts-editor: ${reason}`)
+    this.name = 'MenuTsParseFailedError'
+  }
+}
+
+export function appendMenuEntry(
+  content: string,
+  entry: AppendMenuEntryInput,
+): MenuAppendResult {
+  // Locate the menuEntries array — same gate as removeMenuEntry so
+  // the editor stays consistent about what counts as a parseable
+  // menu.ts.
+  const arrayMatch = /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.exec(content)
+  if (!arrayMatch) {
+    throw new MenuTsParseFailedError(
+      'Could not locate "export const menuEntries" array in app/menu.ts',
+    )
+  }
+  const arrayBodyStart = arrayMatch.index + arrayMatch[0].length
+  const closeIndex = findMatchingClose(content, arrayBodyStart - 1)
+  if (closeIndex === -1) {
+    throw new MenuTsParseFailedError('"menuEntries = [" array is not terminated')
+  }
+
+  // Idempotent gate: scan the array body for an entry whose `id`
+  // already matches. The regex follows the same shape `removeMenuEntry`
+  // uses so the two helpers agree on what counts as a present entry.
+  const arrayBody = content.slice(arrayBodyStart, closeIndex)
+  const idRe = new RegExp(`\\bid\\s*:\\s*['"\`]${escapeRegex(entry.id)}['"\`]`)
+  if (idRe.test(arrayBody)) {
+    return { kind: 'already-present' }
+  }
+
+  // Emit the new entry in the canonical recipe-applicator template
+  // shape. We use single quotes throughout so the output round-trips
+  // through `parseMenuTs` (its `entryPattern` regex accepts single,
+  // double, and backtick quotes, but single quote is what the rest
+  // of the codebase emits — see buildEmptyMenuTs above).
+  const newEntry =
+    `  {\n` +
+    `    id: '${escapeStringLiteral(entry.id)}',\n` +
+    `    label: '${escapeStringLiteral(entry.label)}',\n` +
+    `    icon: '${escapeStringLiteral(entry.icon)}',\n` +
+    `    component: () => import('./${escapeStringLiteral(entry.page)}'),\n` +
+    `  }`
+
+  // Re-stitch the file. Three layout cases to keep the output a
+  // valid TypeScript module regardless of how the existing array is
+  // formatted:
+  //
+  //   (a) Empty array (`menuEntries: AppMenuEntry[] = []` or
+  //       `[\n]`): emit a fresh multi-line body with a trailing
+  //       comma so the result matches `buildEmptyMenuTs`-style
+  //       round-trips.
+  //   (b) Non-empty array whose body already ends with `,\n` (the
+  //       buildMenuTs layout in the test fixtures): just append our
+  //       entry + trailing comma.
+  //   (c) Non-empty array with no trailing comma (hand-edit /
+  //       single-line layout): inject the leading `,` ourselves.
+  const head = content.slice(0, arrayBodyStart)
+  const tail = content.slice(closeIndex)
+
+  // Whitespace-only body counts as case (a). Anything else is a
+  // populated array.
+  if (arrayBody.trim().length === 0) {
+    return {
+      kind: 'appended',
+      content: head + '\n' + newEntry + ',\n' + tail,
+    }
+  }
+
+  const trimmedRight = arrayBody.replace(/\s+$/, '')
+  if (trimmedRight.endsWith(',')) {
+    // Case (b): trailing comma exists, just append the new entry +
+    // trailing comma.
+    return {
+      kind: 'appended',
+      content:
+        head +
+        trimmedRight +
+        '\n' +
+        newEntry +
+        ',\n' +
+        tail,
+    }
+  }
+  // Case (c): no trailing comma yet — inject one before appending.
+  return {
+    kind: 'appended',
+    content:
+      head +
+      trimmedRight +
+      ',\n' +
+      newEntry +
+      ',\n' +
+      tail,
+  }
+}
+
+/**
+ * Escape backslash + single-quote so an arbitrary string literal
+ * can be embedded inside `'...'` without breaking the surrounding
+ * TypeScript source. Only callers that pass `appendMenuEntry`
+ * input strings (validated upstream by the bundled-installer)
+ * should ever need this — recipe.yaml content is sanitised by
+ * `parseRecipe` before it reaches the menu editor.
+ */
+function escapeStringLiteral(input: string): string {
+  return input.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
 /**

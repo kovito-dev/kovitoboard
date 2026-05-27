@@ -179,6 +179,52 @@ export function resetAppLocks(): void {
   appLocks.clear()
 }
 
+/**
+ * Sentinel `appId` reserved for the global `app/menu.ts` write lock.
+ * Spec recipe-system v1.12 §10.9.3 Step 5.6 + §10.9.4 Step 4.5 SSOT.
+ *
+ * Underscores are intentionally chosen so the sentinel cannot collide
+ * with any real `appId` (the `APP_ID_PATTERN` validators require
+ * `[a-z][a-z0-9-]*`, which rejects leading underscore). The lock
+ * manager itself is pattern-agnostic — it just keys a map — so the
+ * sentinel slots into the existing per-appId lock infrastructure
+ * without a parallel implementation.
+ */
+const GLOBAL_MENU_TS_LOCK_SENTINEL = '__menu_ts__'
+
+/**
+ * Acquire the global `app/menu.ts` write lock.
+ *
+ * Why a dedicated lock? `app/menu.ts` is a **shared resource across
+ * every app** — bundled enable / disable, recipe install / uninstall,
+ * and user hand edits all race on the same file. A per-appId lock
+ * cannot serialise those writers, because two different appIds would
+ * each take their own lock and step on each other's `atomicWrite`.
+ *
+ * Spec recipe-system v1.12 §10.9.3 Step 5.6 + §10.9.4 Step 4.5 +
+ * §10.9.5 BS-L1' Rollback lock acquisition discipline normative pin
+ * the **acquisition order** for the bundled-installer transaction:
+ *
+ *   1. `acquireGlobalMenuTsLock()` (this function)
+ *   2. `acquireAppLock(<appId>)`
+ *   3. ... critical section + rollback ...
+ *   4. release in reverse order
+ *
+ * The order is the same in disable Step 4.5 so cross-endpoint
+ * deadlocks are structurally absent.
+ *
+ * Implementation: routes through `acquireAppLock` with a sentinel
+ * `appId` so the wait-timeout, deadlock-detection, and map-cleanup
+ * semantics stay identical to the existing per-appId locks. Callers
+ * MUST call the returned release in a `finally`.
+ *
+ * @throws AppLockWaitTimeoutError when the wait exceeds
+ *   `APP_LOCK_WAIT_TIMEOUT_MS`.
+ */
+export async function acquireGlobalMenuTsLock(): Promise<() => void> {
+  return acquireAppLock(GLOBAL_MENU_TS_LOCK_SENTINEL)
+}
+
 // =========================================
 // Rate limiter (token bucket, per appId+callId)
 // =========================================

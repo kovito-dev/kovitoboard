@@ -50,6 +50,20 @@ import type { RecipeManifestStore } from '../recipeManifestStore'
 import type { ParsedRecipe, RecipeHistoryEntry } from '../../shared/recipe-types'
 import type { ApiSection, RecipeManifest } from '../recipe/apiTypes'
 import type { Scope } from '../handlers/types'
+import type { AppManifest } from '../../shared/app-manifest-types'
+import {
+  getAppManifestPath,
+  isAppManifest,
+  writeAppManifest,
+} from './app-manifest'
+import { isCanonicalAppIdPath } from './menu-extractor'
+import {
+  appendMenuEntry,
+  buildEmptyMenuTs,
+  MenuTsParseFailedError,
+  removeMenuEntry,
+  type AppendMenuEntryInput,
+} from './menu-ts-editor'
 import {
   findHistoryMatch,
   getSampleRecipes,
@@ -162,6 +176,34 @@ export class BundledInstallerError extends Error {
     super(message)
     this.name = 'BundledInstallerError'
   }
+}
+
+// =========================================
+// KovitoBoard version lookup (Phase 1.5, BL-2026-179)
+// =========================================
+
+/**
+ * Best-effort lookup of the running KovitoBoard version. Used by the
+ * Step 5.5 `AppManifest` write (spec recipe-system v1.12 §10.9.3 +
+ * `app-directory-extension.md` v1.6 §6.2) to record the
+ * `kovitoboardVersion` field. The spec allows either
+ * `process.env.npm_package_version` (set by `npm run start`) or the
+ * `package.json` `version` field; we prefer the env var because it is
+ * already exposed by the build system, and fall back to a final
+ * `'0.0.0'` placeholder only when both are unavailable (test harnesses
+ * that import the helper without the harness env).
+ */
+function resolveKovitoboardVersion(): string {
+  const env = process.env.npm_package_version
+  if (typeof env === 'string' && env.length > 0) return env
+  // Avoid synchronous filesystem reads here — the env var is what the
+  // build system uses, and a missing env in a test harness should
+  // surface as a recognisable sentinel rather than crashing the
+  // enable transaction. Spec recipe-system v1.12 §10.9.3 Step 5.5
+  // does not normatively pin the placeholder; `'0.0.0'` matches the
+  // existing convention used by `disableBundledRecipe`'s history
+  // append for unknown recipe versions.
+  return '0.0.0'
 }
 
 // =========================================
@@ -524,6 +566,195 @@ function probeBundledRecipeAssetReadable(
 }
 
 /**
+ * Outcome of {@link probeAppRootAnomaly}.
+ *
+ * Five normative anomaly states from spec recipe-system v1.12
+ * §10.9.3 Step 1.5 (endpoint-entry fail-closed gate) plus the
+ * "ok" branch the caller falls through to Step 2.
+ *
+ * Spec rationale (BL-2026-177 same-PR resolution): the probe runs
+ * once per enable invocation at the endpoint entry so every
+ * downstream path-boundary check (Step 3d (ii) probe, Step 4 artifact
+ * copy, Step 5.5 AppManifest write, Step 5.6 menu.ts write) executes
+ * against a verified `<projectRoot>/app/` directory. Without this
+ * gate, an attacker / misconfiguration that planted `app` as a
+ * symlink to an external directory would let every per-entry check
+ * pass while the bulk of the transaction wrote into the foreign tree.
+ *
+ * The seven states map 1:1 to the spec error table:
+ *
+ *   - `'ok'` — `<projectRoot>/app/` either does not exist (normal
+ *     new-project state — Step 4 mkdirSync handles creation) or is a
+ *     regular directory with no leftover-temp siblings (Step 1.5
+ *     leftover scan). Fall through to Step 2.
+ *   - `'app-root-symlink'` — `<projectRoot>/app/` itself is a
+ *     symbolic link. 500 `BundledRegistryAnomaly`.
+ *   - `'app-root-non-directory'` — `<projectRoot>/app/` exists as a
+ *     regular file / FIFO / socket etc. 500.
+ *   - `'app-root-broken-symlink'` — `<projectRoot>/app/` is a
+ *     symbolic link whose realpath surfaces `ENOENT` / `ELOOP` /
+ *     `ENOTDIR`. 500 (structural resolution failure).
+ *   - `'app-root-unreadable'` — `<projectRoot>/app/` cannot be
+ *     stat-ed / read with errno `EACCES` / `EPERM` / `EIO` / `EBUSY`
+ *     etc. 503 (retry-after — transient I/O fault).
+ *   - `'project-root-unreadable'` — `<projectRoot>` itself is
+ *     unreadable. 503 (same retry-after envelope).
+ *   - `'app-root-leftover-temp'` — sibling `<appId>.tmp*` /
+ *     `<appId>.staging*` directory exists. 500 (previous transaction
+ *     left a temp directory behind; user must clean it up by hand).
+ *     Carries `leftoverPath` so the audit log records the offending
+ *     path without needing a second filesystem probe.
+ */
+type AppRootAnomalyOutcome =
+  | { state: 'ok' }
+  | { state: 'app-root-symlink' }
+  | { state: 'app-root-non-directory' }
+  | { state: 'app-root-broken-symlink' }
+  | { state: 'app-root-unreadable'; errno?: string; detail: string }
+  | { state: 'project-root-unreadable'; errno?: string; detail: string }
+  | { state: 'app-root-leftover-temp'; leftoverPath: string }
+
+/**
+ * Probe `<projectRoot>/app/` (the app-root directory itself) for the
+ * five anomaly states pinned by spec recipe-system v1.12 §10.9.3
+ * Step 1.5 (the new endpoint-entry fail-closed gate that resolves
+ * BL-2026-177 in the same PR as the rest of Phase 1.5 completion).
+ *
+ * Step ordering (normative, mirrors apps-routes `verifyAppRoot` from
+ * PR #57 attempt 11 — different surface, identical semantics):
+ *
+ *   1. `lstatSync(<projectRoot>)` — surface a 503 if the parent
+ *      directory is itself unreadable.
+ *   2. `existsSync(<projectRoot>/app)`. Absent → `'ok'` (Step 4 will
+ *      create it).
+ *   3. `lstatSync(<projectRoot>/app)`. Symlink → step 4; non-dir →
+ *      `'app-root-non-directory'`.
+ *   4. Symlink target resolution via `realpathSync`. Errno-routed
+ *      to `'app-root-broken-symlink'` (structural) or
+ *      `'app-root-unreadable'` (permission / I/O).
+ *   5. Real-directory case: `readdirSync` to enumerate siblings, scan
+ *      for `<appId>.tmp*` / `<appId>.staging*`.
+ *
+ * @param fs — file access layer.
+ * @param projectRoot — the absolute path of the user's project root.
+ * @param appId — the bundled-registry default appId for the enable
+ *   transaction; used to bound the leftover-temp sibling scan to the
+ *   directory the next steps actually need to write into.
+ */
+function probeAppRootAnomaly(
+  fs: FileAccessLayer,
+  projectRoot: string,
+  appId: string,
+): AppRootAnomalyOutcome {
+  // Step 1: project-root readability. A missing project root is out
+  // of scope (the harness would not have started); a permission-
+  // denied read is a 503 retry-after.
+  try {
+    fs.lstatSync(projectRoot)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'project-root-unreadable',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  const appRoot = join(projectRoot, 'app')
+  // Step 2: app-root presence. A fresh project that has never enabled
+  // a recipe legitimately has no `app/` directory; Step 4's
+  // `mkdirSync(appDir, { recursive: true })` will create both `app/`
+  // and `app/<appId>/`. Returning `'ok'` here keeps the new-project
+  // path identical to the v0.2.0 behaviour.
+  if (!fs.existsSync(appRoot)) {
+    return { state: 'ok' }
+  }
+  // Step 3: entry-kind discrimination. `lstatSync` (not `existsSync`)
+  // is the only way to distinguish a symlink from its target — a
+  // broken symlink would silently make `existsSync` return `false` on
+  // some platforms and bypass the entire gate.
+  let lstat: { isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
+  try {
+    lstat = fs.lstatSync(appRoot)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'app-root-unreadable',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  if (lstat.isSymbolicLink) {
+    // Spec recipe-system v1.12 §10.9.3 Step 1.5-b: any symlink at the
+    // app-root level is fail-closed reject. The realpath check below
+    // distinguishes broken-symlink (500 structural anomaly) from
+    // permission failures (503 retry-after) so ops can tell a
+    // typo'd link apart from a transient `EACCES`.
+    try {
+      fs.realpathSync(appRoot)
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : undefined
+      if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') {
+        return { state: 'app-root-broken-symlink' }
+      }
+      return {
+        state: 'app-root-unreadable',
+        errno: code,
+        detail: err instanceof Error ? err.message : String(err),
+      }
+    }
+    // Live symlink whose realpath resolved successfully — still a
+    // hard reject (spec v1.12 §10.9.3 Step 1.5-b). The path-escape
+    // attack vector is structural, not target-dependent, because
+    // the spec requires `app/` to be a regular directory so the
+    // boundary contract `<projectRoot>/app/**` cannot be aliased.
+    return { state: 'app-root-symlink' }
+  }
+  if (!lstat.isDirectory) {
+    return { state: 'app-root-non-directory' }
+  }
+  // Step 5: leftover-temp sibling scan. Re-uses the suffix prefixes
+  // owned by the atomic-rename layer of the enable transaction
+  // (`LEFTOVER_TEMP_DIR_PREFIXES`). The spec routes the per-appId
+  // sibling check (Step 3d (ii-e)) and this endpoint-entry root-wide
+  // scan to the same `'app-root-leftover-temp'` state because both
+  // signify a previous transaction that did not finish.
+  let siblings: string[]
+  try {
+    siblings = fs.readdirSync(appRoot)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    return {
+      state: 'app-root-unreadable',
+      errno: code,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  for (const name of siblings) {
+    for (const prefix of LEFTOVER_TEMP_DIR_PREFIXES) {
+      if (name.startsWith(appId + prefix)) {
+        return {
+          state: 'app-root-leftover-temp',
+          leftoverPath: join(appRoot, name),
+        }
+      }
+    }
+  }
+  return { state: 'ok' }
+}
+
+/**
  * Outcome of {@link probeAppDirAnomaly}.
  *
  * The five normative anomaly states from spec recipe-system v1.11
@@ -543,6 +774,7 @@ type AppDirProbeOutcome =
   | { state: 'non-directory-entry' }
   | { state: 'broken-symlink' }
   | { state: 'symlink-out-of-app-root'; resolvedTarget: string }
+  | { state: 'symlink-in-boundary-alias'; resolvedTarget: string }
   | { state: 'unreadable'; errno?: string; detail: string }
   | { state: 'partial-residue' }
   | { state: 'self-made' }
@@ -726,6 +958,32 @@ function probeAppDirAnomaly(
     }
     if (!isWithin(probeTarget, appBoundary)) {
       return { state: 'symlink-out-of-app-root', resolvedTarget: probeTarget }
+    }
+    // Step 3d (ii-g) (spec v1.12 Round 2 High 11, BL-2026-179
+    // cascade): in-boundary alias attack defence. The live symlink's
+    // realpath is inside `<projectRoot>/app/` (ii-f gate passed), but
+    // the recovery path's `rmSync(<projectRoot>/app/<appId>)` would
+    // unlink the symlink and never touch the aliased directory —
+    // dropping `<appId>` from the menu yet leaving the aliased
+    // `<projectRoot>/app/<otherAppId>/` artifacts in place. Worse,
+    // the Step 4 artifact copy would write into the aliased
+    // directory, overwriting another bundled / sample / self-made
+    // app's files under the boundary contract. Both attack surfaces
+    // collapse if `<projectRoot>/app/<appId>` is required to resolve
+    // to itself — the only canonical layout the spec normalizes on.
+    //
+    // The check is a literal path-string equality: `path.resolve`
+    // already canonicalises `appDir`, so any divergence between
+    // `probeTarget` (realpath of `appDir`) and the canonical
+    // `<projectRoot>/app/<appId>` shape signals that a directory
+    // entry redirects to a different sibling under the same
+    // boundary. Fail-closed reject with a structured payload so the
+    // audit log records both the requested appId and the alias
+    // target — ops can recover by unlinking the symlink and
+    // retrying without needing a separate filesystem probe.
+    const canonicalAppDir = resolve(appBoundary, appId)
+    if (probeTarget !== canonicalAppDir) {
+      return { state: 'symlink-in-boundary-alias', resolvedTarget: probeTarget }
     }
     // Live symlink whose target stays under <projectRoot>/app/ →
     // fallthrough to step 4 (readdirSync via the resolved canonical
@@ -1122,15 +1380,40 @@ interface IsEnabledAndManifestCoherentArgs {
 /**
  * Is the bundled recipe currently enabled with a coherent manifest?
  *
- * Returns true iff a manifest with `source ∈ {'bundled', 'sample'}`
- * exists for the recipe id **and** the `app/<appId>/` directory is
- * present on disk. The latter guards against the
- * "manifest still on disk but artifacts swept by hand" case.
+ * v1.12 strengthened semantics (BL-2026-179 Phase 1.5 cascade, spec
+ * recipe-system v1.12 §10.9.5 BS-L2'): coherence requires every link
+ * in the visibility chain. Without each check a `Phase 1 PR #55/#56`-era
+ * enable (which never wrote the AppManifest / menu.ts entry) would
+ * make this helper short-circuit on `'already-enabled'` and prevent
+ * the v1.12 enable transaction from re-establishing the UI display
+ * invariant (judgment doc v2.9 §4.12.1).
  *
- * Callers (enable endpoint Step 2) short-circuit on a true result
- * with `200 already-enabled` (idempotent no-op, BS-L2 / BS-L2').
+ * Returns true iff **all** of the following hold:
  *
- * @see docs/specs/recipe-system.md v1.10 §10.9.5 BS-L2'
+ *   1. A `RecipeManifest` with `source ∈ {'bundled', 'sample'}`
+ *      exists for `recipeId` (source-scoped uniqueness).
+ *   2. `manifest.recipeId === recipeId` (pair coherence).
+ *   3. `app/<appId>/` directory is present on disk (artifacts
+ *      coherence).
+ *   4. **`app/<appId>/manifest.json` (AppManifest) is present, is a
+ *      regular file, parses as JSON, and passes `isAppManifest`
+ *      schema validation.**
+ *   5. **The AppManifest's appId / recipeId match
+ *      `manifest.appId` / `recipeId` respectively; the AppManifest's
+ *      `source.recipeSource` matches `manifest.source` (three-way
+ *      equality, spec v1.12 Round 5).**
+ *   6. **`app/menu.ts` is present and contains an entry whose `id`
+ *      matches `manifest.appId` (UI display visibility, spec v1.12
+ *      Round 2 Critical 4).**
+ *
+ * Any failure of (4)-(6) routes the enable transaction to Step 3
+ * onwards so the missing AppManifest / menu.ts entry is written
+ * (recovery path). The check is silent — schema-invalid or absent
+ * AppManifest / menu.ts surfaces as `false` (not a thrown error)
+ * because the caller already handles the recovery via the existing
+ * Step 3d / Step 5 / Step 5.5 / Step 5.6 transaction.
+ *
+ * @see docs/specs/recipe-system.md v1.12 §10.9.5 BS-L2'
  */
 export function isEnabledAndManifestCoherent(
   args: IsEnabledAndManifestCoherentArgs,
@@ -1144,7 +1427,85 @@ export function isEnabledAndManifestCoherent(
     return false
   }
   const appDir = join(projectRoot, 'app', manifest.appId)
-  return fs.existsSync(appDir)
+  if (!fs.existsSync(appDir)) {
+    return false
+  }
+
+  // AppManifest readability + schema + three-way equality (spec
+  // v1.12 §10.9.5 BS-L2' Round 2-5).
+  const appManifestPath = getAppManifestPath(projectRoot, manifest.appId)
+  if (!fs.existsSync(appManifestPath)) {
+    return false
+  }
+  let appManifestStat: { isFile: boolean }
+  try {
+    appManifestStat = fs.lstatSync(appManifestPath)
+  } catch {
+    return false
+  }
+  if (!appManifestStat.isFile) {
+    return false
+  }
+  let appManifestRaw: string
+  try {
+    appManifestRaw = fs.readFileSync(appManifestPath, 'utf-8')
+  } catch {
+    return false
+  }
+  let appManifestParsed: unknown
+  try {
+    appManifestParsed = JSON.parse(appManifestRaw)
+  } catch {
+    return false
+  }
+  if (!isAppManifest(appManifestParsed)) {
+    return false
+  }
+  if (appManifestParsed.appId !== manifest.appId) {
+    return false
+  }
+  if (appManifestParsed.source.type !== 'recipe') {
+    return false
+  }
+  if (appManifestParsed.source.recipeId !== recipeId) {
+    return false
+  }
+  // Three-way equality (spec v1.12 Round 5): AppManifest's
+  // `recipeSource` must agree with the RecipeManifest's persisted
+  // `source` (4-value enum `'bundled' | 'sample' | 'import' | 'url'`).
+  // A split state (RecipeManifest `'sample'` + AppManifest `'bundled'`)
+  // signals partial Phase 1.5 migration and must route through Step
+  // 3 onwards for repair.
+  if (appManifestParsed.source.recipeSource !== manifest.source) {
+    return false
+  }
+
+  // menu.ts entry presence (spec v1.12 §10.9.5 BS-L2' Round 2
+  // Critical 4): `GET /api/app/menu-entries` reads menu.ts only, so
+  // a missing entry means the bundled app is invisible in the UI
+  // even though every manifest is on disk.
+  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
+  if (!fs.existsSync(menuTsPath)) {
+    return false
+  }
+  let menuTsContent: string
+  try {
+    menuTsContent = fs.readFileSync(menuTsPath, 'utf-8')
+  } catch {
+    return false
+  }
+  // Cheap regex check — the same shape `appendMenuEntry` /
+  // `removeMenuEntry` already keys on. Reusing the regex keeps the
+  // three helpers' "is this entry present?" verdicts in sync.
+  const idRe = new RegExp(`\\bid\\s*:\\s*['"\`]${escapeRegexForCoherence(manifest.appId)}['"\`]`)
+  if (!idRe.test(menuTsContent)) {
+    return false
+  }
+  return true
+}
+
+function escapeRegexForCoherence(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // =========================================
@@ -1169,30 +1530,198 @@ export interface EnableBundledRecipeResult {
 }
 
 /**
- * Enable a bundled sample recipe (v0.2.1).
+ * Enable a bundled sample recipe (v0.2.1, extended in v1.12 Phase 1.5
+ * for BL-2026-179 + BL-2026-177 same-PR resolution).
  *
- * Sequential steps (see recipe-system v1.10 §10.9.3):
+ * Sequential steps (spec recipe-system v1.12 §10.9.3):
  *
- *   1. `parseRecipe` the bundled artifacts on disk.
- *   2. Reject if `api.scopes` carries `agents-write` / `skills-write`
- *      (BS-L5, defence in depth — the parser already rejects them).
- *   3. Detect coherent enable → return `already-enabled` (idempotent).
+ *   1. Bundled-registry presence check (route handler responsibility,
+ *      passes the resolved `sample` in via {@link EnableBundledRecipeArgs}).
+ *   **1.5. `<projectRoot>/app/` root anomaly check (v1.12 NEW,
+ *      endpoint-entry fail-closed gate, BL-2026-177 same-PR fix —
+ *      same semantics as the apps-routes `verifyAppRoot` check, see
+ *      {@link probeAppRootAnomaly}).**
+ *   2. Idempotent gate (BS-L2 / BS-L2'): `isEnabledAndManifestCoherent`
+ *      returns true → 200 `already-enabled`.
+ *   3a. `parseRecipe` the bundled artifacts on disk.
+ *   3b. Reject if `api.scopes` carries `agents-write` / `skills-write`
+ *       (BS-L5, defence in depth — the parser already rejects them).
+ *   3d. appId collision check + appDir anomaly probe (Step 3d (ii)
+ *       including the new (ii-g) in-boundary alias defense).
  *   4. Copy artifacts atomically into `app/<appId>/`.
- *   5. Write the manifest (`source: 'bundled'`,
- *      `trustLevel: 'code-trusted (bundled)'`, capture auto-approve).
- *   6. Ensure `app/data/<appId>/` exists.
+ *   5. Write the `RecipeManifest` (`recipes-installed/<appId>/manifest.json`,
+ *      `source: 'bundled'`, `trustLevel: 'code-trusted (bundled)'`,
+ *      capture auto-approve).
+ *   **5.5. (v1.12 NEW) Write the `AppManifest`
+ *      (`app/<appId>/manifest.json`) so the closed-world batch
+ *      `PUT /api/apps/menu-order` includes bundled apps (judgment
+ *      doc v2.9 §4.12.1 SSOT). Snapshot the existing AppManifest
+ *      content first so a downstream Step 5.6 / 6 / 7 failure can
+ *      restore it (BS-L1' rollback discipline).**
+ *   **5.6. (v1.12 NEW) Append the `appId` entry to
+ *      `app/menu.ts` so the bundled app appears in the UI
+ *      (`GET /api/app/menu-entries` reads only menu.ts, not the
+ *      AppManifest). Snapshot the existing menu.ts content for the
+ *      rollback path; track `menuTsCreatedInTransaction` so a fresh
+ *      menu.ts is unlinked (not snapshot-restored) on rollback.**
+ *   6. Ensure `app/data/<appId>/` exists (BS-L3-A: existing data
+ *      preserved).
  *   7. Append install record to `recipe-history.jsonl`.
  *
- * Rollback (BS-L1'): on any post-Step 4 failure we recursively
- * delete the freshly-written `app/<appId>/` and the manifest,
- * leaving `app/data/<appId>/` untouched (BS-L3-A).
+ * Rollback discipline (BS-L1' v2.9, spec v1.12 §10.9.5):
+ *
+ *   - Step 4 failure: delete the partial appDir; AppManifest /
+ *     menu.ts / history untouched.
+ *   - Step 5 failure: delete appDir; AppManifest / menu.ts / history
+ *     untouched. `app/data/<appId>/` preserved (BS-L3-A).
+ *   - **Step 5.5 failure: snapshot-restore existing AppManifest (if
+ *     any) or leave temp file removed; delete RecipeManifest +
+ *     appDir; menu.ts / history untouched.**
+ *   - **Step 5.6 failure: snapshot-restore existing AppManifest (if
+ *     any) or remove the file; snapshot-restore existing menu.ts (if
+ *     any) or unlink (if created in this transaction); delete
+ *     RecipeManifest + appDir; history untouched.**
+ *   - Step 6 / 7 failure: full menu.ts + AppManifest + RecipeManifest +
+ *     appDir teardown.
+ *
+ * Concurrency: the route handler MUST hold `acquireGlobalMenuTsLock()`
+ * AND `acquireAppLock(appId)` (acquisition order normative per spec
+ * v1.12 §10.9.5 BS-L1' rollback lock discipline) for the entire
+ * duration of this call, including the rollback paths. Without the
+ * global menu.ts lock the Step 5.6 + rollback writes race against
+ * concurrent recipe install / disable transactions.
  */
 export function enableBundledRecipe(
   args: EnableBundledRecipeArgs,
 ): EnableBundledRecipeResult {
   const { fs, manifestStore, projectRoot, kovitoboardRoot, recipeId, sample } = args
 
-  // Step 2: idempotent gate (BS-L2 / BS-L2').
+  // Step 1.5: `<projectRoot>/app/` root anomaly check (spec v1.12
+  // §10.9.3 Step 1.5, BL-2026-177 same-PR fix). The endpoint-entry
+  // gate fails closed before Step 2 / Step 4 ever opens a path under
+  // `<projectRoot>/app/`, so even an attacker-planted root symlink
+  // / leftover-temp sibling cannot redirect the downstream writes.
+  // The route handler does not run an equivalent gate, so the
+  // bundled-installer owns this check (the apps-routes equivalent
+  // `verifyAppRoot` in PR #57 protects the closed-world menu-order
+  // batch surface only).
+  const appId = sample.id
+  // Defence-in-depth: validate the appId format before we touch the
+  // filesystem. The bundled-registry enforces the format upstream,
+  // but a future refactor that loosens the registry-side check
+  // should not weaken the destructive-path boundary here.
+  assertSafeAppId(projectRoot, appId)
+  const rootProbe = probeAppRootAnomaly(fs, projectRoot, appId)
+  switch (rootProbe.state) {
+    case 'ok':
+      break
+    case 'project-root-unreadable':
+      recipeLogger.error(
+        { event: 'bundled-app-root-unreadable', recipeId, appId, projectRoot, errno: rootProbe.errno, detail: rootProbe.detail },
+        'Bundled enable rejected: project root unreadable',
+      )
+      throw new BundledInstallerError(
+        `Project root "${projectRoot}" is unreadable: ${rootProbe.detail}`,
+        503,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'project-root-unreadable',
+          errno: rootProbe.errno,
+          detail: rootProbe.detail,
+        },
+      )
+    case 'app-root-symlink':
+      recipeLogger.error(
+        { event: 'bundled-app-root-symlink-reject', recipeId, appId, appRootPath: join(projectRoot, 'app') },
+        'Bundled enable rejected: <projectRoot>/app is a symbolic link',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is a symbolic link; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-symlink',
+        },
+      )
+    case 'app-root-non-directory':
+      recipeLogger.error(
+        { event: 'bundled-app-root-anomaly', recipeId, appId, appRootPath: join(projectRoot, 'app'), anomalyType: 'app-root-non-directory' },
+        'Bundled enable rejected: <projectRoot>/app is not a directory',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is not a directory; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-non-directory',
+        },
+      )
+    case 'app-root-broken-symlink':
+      recipeLogger.error(
+        { event: 'bundled-app-root-anomaly', recipeId, appId, appRootPath: join(projectRoot, 'app'), anomalyType: 'app-root-broken-symlink' },
+        'Bundled enable rejected: <projectRoot>/app is a broken symlink',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is a broken symbolic link; fail-closed reject`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-broken-symlink',
+        },
+      )
+    case 'app-root-unreadable':
+      recipeLogger.error(
+        { event: 'bundled-app-root-unreadable', recipeId, appId, appRootPath: join(projectRoot, 'app'), errno: rootProbe.errno, detail: rootProbe.detail },
+        'Bundled enable rejected: <projectRoot>/app is unreadable',
+      )
+      throw new BundledInstallerError(
+        `<projectRoot>/app "${join(projectRoot, 'app')}" is unreadable: ${rootProbe.detail}`,
+        503,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-unreadable',
+          errno: rootProbe.errno,
+          detail: rootProbe.detail,
+        },
+      )
+    case 'app-root-leftover-temp':
+      recipeLogger.warn(
+        { event: 'bundled-leftover-temp-dir', recipeId, appId, leftoverPath: rootProbe.leftoverPath },
+        'Bundled enable rejected: leftover temp dir under <projectRoot>/app',
+      )
+      throw new BundledInstallerError(
+        `Leftover temp dir blocks enable for "${recipeId}" (appId="${appId}"): ${rootProbe.leftoverPath}`,
+        500,
+        'BundledRegistryAnomaly',
+        {
+          recipeId,
+          appId,
+          appRootPath: join(projectRoot, 'app'),
+          anomalyType: 'app-root-leftover-temp',
+          leftoverPath: rootProbe.leftoverPath,
+        },
+      )
+  }
+
+  // Step 2: idempotent gate (BS-L2 / BS-L2', strengthened in v1.12
+  // Round 2-5 to require AppManifest readability + schema-valid +
+  // three-way equality between RecipeManifest / history install
+  // record / AppManifest source. See {@link isEnabledAndManifestCoherent}.
   if (isEnabledAndManifestCoherent({ fs, manifestStore, recipeId, projectRoot })) {
     const manifest = findManifestByRecipeId(manifestStore, recipeId)
     if (manifest !== null) {
@@ -1262,23 +1791,20 @@ export function enableBundledRecipe(
     )
   }
 
-  // appId picks the bundled-registry id by default (BS-L9). The
-  // collision check is **source-scoped** (recipe-system v1.10
-  // §10.9.3 Step 3d (i)): a non-bundled / non-sample manifest at
-  // the target appId is a hard conflict regardless of whether its
-  // `recipeId` happens to match, because the bundled-installer
-  // must not overwrite an `'import'` / `'url'` install. Within the
+  // appId picks the bundled-registry id by default (BS-L9). Already
+  // validated above by `assertSafeAppId` in the Step 1.5 prologue —
+  // see that block for the rationale on why we validate before any
+  // filesystem touch.
+  //
+  // Source-scoped collision check (recipe-system v1.10 §10.9.3
+  // Step 3d (i)): a non-bundled / non-sample manifest at the target
+  // appId is a hard conflict regardless of whether its `recipeId`
+  // happens to match, because the bundled-installer must not
+  // overwrite an `'import'` / `'url'` install. Within the
   // bundled/sample source-scoped subset a `recipeId` mismatch is
   // still a conflict (two different bundled recipes claiming the
   // same appId); only a same-`recipeId` bundled/sample residue is
   // allowed to fall through to the Step 5 overwrite recovery.
-  const appId = sample.id
-  // Defence-in-depth: validate the appId format + resolution
-  // boundary before any subsequent path operation. The
-  // bundled-registry enforces the format upstream, but a future
-  // refactor that loosens the registry-side check should not be
-  // able to silently weaken the destructive-path boundary here.
-  assertSafeAppId(projectRoot, appId)
 
   // RecipeId-keyed residue check (recipe-system v1.10 §10.9.3
   // Step 3d (iii) SSOT). The Step 2 coherence gate short-circuits
@@ -1450,6 +1976,35 @@ export function enableBundledRecipe(
             resolvedTarget: probe.resolvedTarget,
           },
         )
+      case 'symlink-in-boundary-alias':
+        // Spec recipe-system v1.12 Round 2 High 11 (BL-2026-179
+        // cascade): live symlink whose realpath stays under
+        // `<projectRoot>/app/` (the (ii-f) gate passed) but points
+        // at a *different* sibling under the same boundary. Without
+        // this gate the Step 4 artifact copy would overwrite the
+        // aliased app's files, and the rollback rmSync would unlink
+        // the symlink without touching the foreign artifacts.
+        recipeLogger.error(
+          {
+            event: 'bundled-symlink-in-boundary-alias',
+            recipeId,
+            appId,
+            resolvedTarget: probe.resolvedTarget,
+          },
+          'Bundled enable rejected: live symlink target redirects to a different appId under <projectRoot>/app/',
+        )
+        throw new BundledInstallerError(
+          `appDir "${appDir}" is a live symlink whose target "${probe.resolvedTarget}" redirects to a different appId under <projectRoot>/app/`,
+          500,
+          'BundledAppIdConflictAnomaly',
+          {
+            recipeId,
+            appId,
+            anomalyType: 'symlink-in-boundary-alias',
+            resolvedTarget: probe.resolvedTarget,
+            requestedAppId: appId,
+          },
+        )
       case 'unreadable':
         throw new BundledInstallerError(
           `appDir "${appDir}" is unreadable: ${probe.detail}`,
@@ -1506,8 +2061,8 @@ export function enableBundledRecipe(
     )
   }
 
-  // Step 5: manifest write (`source: 'bundled'`,
-  // `trustLevel: 'code-trusted (bundled)'`).
+  // Step 5: RecipeManifest write (`recipes-installed/<appId>/manifest.json`,
+  // `source: 'bundled'`, `trustLevel: 'code-trusted (bundled)'`).
   const captureRequires = parsed.capture?.requires ?? []
   // The parser surfaces `api.scopes` as `string[]` because recipe.yaml
   // is user-authored; by this point validateApiSection() (called from
@@ -1552,6 +2107,357 @@ export function enableBundledRecipe(
     )
   }
 
+  // Step 5.5 (v1.12 NEW, BL-2026-179 cascade): write the AppManifest
+  // (`app/<appId>/manifest.json`). The judgment doc v2.9 §4.12.1
+  // SSOT pins this as a required visibility invariant — without it
+  // the closed-world batch `PUT /api/apps/menu-order` (PR #57) would
+  // never see bundled apps in its eligible set, and the menu order
+  // / label endpoints would silently route bundled apps to 404.
+  //
+  // Snapshot the existing AppManifest content first so a Step 5.6 /
+  // 6 / 7 failure can restore the recovery-path original state (spec
+  // v1.12 §10.9.5 BS-L1' rollback discipline — `existingAppManifestContent`
+  // snapshot semantics).
+  const appManifestPath = getAppManifestPath(projectRoot, appId)
+  let existingAppManifestContent: string | null = null
+  if (fs.existsSync(appManifestPath)) {
+    // Kind check (spec v1.12 Round 2 Medium 12): a non-regular file
+    // at the AppManifest path is a fail-closed reject — we cannot
+    // safely overwrite a symlink / FIFO / socket without leaking
+    // the bundled-trust badge into whatever the link points at.
+    let appManifestStat: { isFile: boolean }
+    try {
+      appManifestStat = fs.lstatSync(appManifestPath)
+    } catch (err) {
+      // RecipeManifest was just written above, so we own the
+      // rollback for the partial state. AppDir always created by
+      // Step 4, so `tryRm(appDir)` brings us back to a clean state.
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Failed to stat existing AppManifest for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'EnableAppManifestWriteFailed',
+        { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      )
+    }
+    if (!appManifestStat.isFile) {
+      recipeLogger.error(
+        { event: 'bundled-app-manifest-anomaly', recipeId, appId, appManifestPath },
+        'Bundled enable rejected: existing AppManifest is not a regular file',
+      )
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Existing AppManifest "${appManifestPath}" is not a regular file`,
+        500,
+        'BundledAppManifestAnomaly',
+        { recipeId, appId, anomalyType: 'non-regular-file' },
+      )
+    }
+    try {
+      existingAppManifestContent = fs.readFileSync(appManifestPath, 'utf-8')
+    } catch (err) {
+      // Treat a read failure on an existing regular file as a
+      // fail-closed write error — the rollback path needs the
+      // snapshot to restore the recovery-path original state, and
+      // we cannot guarantee it without the read.
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Failed to snapshot existing AppManifest for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'EnableAppManifestWriteFailed',
+        { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      )
+    }
+  }
+
+  // Compose the canonical displayName per spec v1.12 §10.9.3 Step
+  // 5.5: prefer the recipe.yaml `menu` entry's `label` (the entry
+  // whose id matches the bundled appId), fall back to the recipe
+  // name, then to the appId itself. The cast covers the `parseRecipe`
+  // return type which stores menu entries with `id` / `label`.
+  const matchedMenuEntry = (parsed.menu ?? []).find((entry) => entry.id === appId)
+  const displayName: string =
+    (matchedMenuEntry && typeof matchedMenuEntry.label === 'string' && matchedMenuEntry.label.length > 0
+      ? matchedMenuEntry.label
+      : null) ??
+    (typeof parsed.metadata.name === 'string' && parsed.metadata.name.length > 0
+      ? parsed.metadata.name
+      : null) ??
+    appId
+  const appManifest: AppManifest = {
+    appId,
+    displayName,
+    createdAt: manifest.installedAt,
+    kovitoboardVersion: resolveKovitoboardVersion(),
+    source: {
+      type: 'recipe',
+      recipeId,
+      recipeVersion: parsed.metadata.version,
+      recipeSource: 'bundled',
+    },
+    // menuOrder / userMenuLabel are intentionally omitted (spec
+    // v1.12 Round 2 Critical 2 / Round 3 C2-fix): the scanner assigns
+    // a provisional menuOrder, and `null` for userMenuLabel has
+    // explicit-reset semantics that we must not pre-write.
+  }
+  try {
+    writeAppManifest(fs, projectRoot, appManifest)
+  } catch (err) {
+    // Step 5.5 failure rollback (spec v1.12 §10.9.5 BS-L1' Step 5.5):
+    // restore the existing AppManifest content if we snapshotted
+    // one, else leave the manifest file gone. Then unwind the
+    // RecipeManifest + appDir state Step 4 + Step 5 created.
+    if (existingAppManifestContent !== null) {
+      try {
+        fs.writeFileAtomic(appManifestPath, existingAppManifestContent)
+      } catch (restoreErr) {
+        recipeLogger.warn(
+          { err: restoreErr, recipeId, appId },
+          '[bundled-installer] Step 5.5 rollback: failed to restore existing AppManifest snapshot',
+        )
+      }
+    } else if (fs.existsSync(appManifestPath)) {
+      // Partial write may have landed even though writeFileAtomic
+      // throws; best-effort cleanup of any leftover file.
+      try {
+        fs.rmSync(appManifestPath, { force: true })
+      } catch (cleanupErr) {
+        recipeLogger.warn(
+          { err: cleanupErr, recipeId, appId, appManifestPath },
+          '[bundled-installer] Step 5.5 rollback: failed to remove partial AppManifest',
+        )
+      }
+    }
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    recipeLogger.error(
+      { event: 'bundled-enable-app-manifest-write-failed', recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      'Bundled enable rolled back: AppManifest write failed',
+    )
+    throw new BundledInstallerError(
+      `Failed to write AppManifest for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+      500,
+      'EnableAppManifestWriteFailed',
+      { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+    )
+  }
+
+  // Step 5.6 (v1.12 NEW, BL-2026-179 cascade): append the menu entry
+  // to `app/menu.ts`. `GET /api/app/menu-entries` derives the UI menu
+  // exclusively from `menu-extractor.parseMenuTs(app/menu.ts)`; an
+  // AppManifest without a menu.ts entry means the bundled app is
+  // invisible in the UI even though the artifacts + manifests are
+  // on disk. The judgment doc v2.9 §4.12.1 SSOT pins this as a
+  // required visibility invariant.
+  //
+  // Caller responsibility: the route handler holds the global menu.ts
+  // lock + per-app lock for the whole transaction (spec v1.12 §10.9.3
+  // Step 5.6 lock acquisition order). The rollback path below relies
+  // on the same lock to safely restore the snapshot.
+
+  // Bundled recipe `menu[]` array constraint (spec v1.12 Round 4
+  // Critical): exactly one entry whose `id` matches `appId`.
+  // Multi-entry support is deferred to v0.3.0+ (multi-app aware
+  // enable / disable model). Violations are fail-closed because the
+  // single-appId lifecycle (one AppManifest, one app/data/<appId>/,
+  // one menu.ts entry per appId per disable transaction) cannot
+  // safely host extra entries that share the same appId lifecycle.
+  const recipeMenu = parsed.menu ?? []
+  if (recipeMenu.length === 0) {
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    recipeLogger.error(
+      { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-empty' },
+      'Bundled enable rejected: recipe.yaml menu array is empty or absent',
+    )
+    throw new BundledInstallerError(
+      `Bundled recipe "${recipeId}" has no menu entries`,
+      503,
+      'BundledRecipeMalformed',
+      { recipeId, appId, detail: 'menu array is empty or absent' },
+    )
+  }
+  if (recipeMenu.length > 1) {
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    recipeLogger.error(
+      { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'multi-entry-menu', entryCount: recipeMenu.length },
+      'Bundled enable rejected: recipe.yaml menu array must have exactly 1 entry',
+    )
+    throw new BundledInstallerError(
+      `Bundled recipe "${recipeId}" must declare exactly one menu entry, got ${recipeMenu.length}`,
+      503,
+      'BundledRecipeMalformed',
+      {
+        recipeId,
+        appId,
+        detail: 'menu array must have exactly 1 entry for bundled recipe',
+        entryCount: recipeMenu.length,
+      },
+    )
+  }
+  const recipeMenuEntry = recipeMenu[0]
+  if (recipeMenuEntry.id !== appId) {
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    recipeLogger.error(
+      { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'entry-id-mismatch', entryId: recipeMenuEntry.id },
+      'Bundled enable rejected: recipe.yaml menu entry id does not match appId',
+    )
+    throw new BundledInstallerError(
+      `Bundled recipe "${recipeId}" menu entry id "${recipeMenuEntry.id}" does not match appId "${appId}"`,
+      503,
+      'BundledRecipeMalformed',
+      { recipeId, appId, detail: 'menu entry id must match appId', entryId: recipeMenuEntry.id },
+    )
+  }
+
+  // Compose the canonical `<appId>/<sub-path>` page for the menu
+  // entry. The recipe-applicator template places recipe artifacts
+  // under `<appId>/`, and `isCanonicalAppIdPath` requires the menu
+  // entry's `page` to start with `<appId>/` so the renderer's
+  // dynamic-import URL stays inside the boundary. Compose the
+  // prefix here so the recipe author can keep recipe.yaml short
+  // (`page: pages/Index` instead of `page: <appId>/pages/Index`).
+  const composedPage = `${appId}/${recipeMenuEntry.page}`
+  if (!isCanonicalAppIdPath(composedPage, appId)) {
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    recipeLogger.error(
+      { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-entry-page-escape', composedPage },
+      'Bundled enable rejected: recipe menu entry page escapes <appId>/ subtree',
+    )
+    throw new BundledInstallerError(
+      `Bundled recipe "${recipeId}" menu entry page "${recipeMenuEntry.page}" escapes <appId>/ subtree (composed: "${composedPage}")`,
+      503,
+      'BundledRecipeMalformed',
+      {
+        recipeId,
+        appId,
+        detail: 'menu entry page escapes <appId>/ subtree',
+        composedPage,
+      },
+    )
+  }
+
+  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
+  let existingMenuTsContent: string | null = null
+  let menuTsCreatedInTransaction = false
+  if (fs.existsSync(menuTsPath)) {
+    // Kind check (spec v1.12 Round 2 Medium 12, shared with Step
+    // 4.5 disable cascade).
+    let menuTsStat: { isFile: boolean }
+    try {
+      menuTsStat = fs.lstatSync(menuTsPath)
+    } catch (err) {
+      rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Failed to stat existing menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'EnableMenuTsAppendFailed',
+        { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      )
+    }
+    if (!menuTsStat.isFile) {
+      recipeLogger.error(
+        { event: 'bundled-menu-ts-anomaly', recipeId, appId, menuTsPath },
+        'Bundled enable rejected: existing app/menu.ts is not a regular file',
+      )
+      rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Existing app/menu.ts "${menuTsPath}" is not a regular file`,
+        500,
+        'BundledMenuTsAnomaly',
+        { recipeId, appId, anomalyType: 'non-regular-file' },
+      )
+    }
+    try {
+      existingMenuTsContent = fs.readFileSync(menuTsPath, 'utf-8')
+    } catch (err) {
+      rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      throw new BundledInstallerError(
+        `Failed to snapshot existing menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'EnableMenuTsAppendFailed',
+        { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      )
+    }
+  }
+  const baseMenuTsContent = existingMenuTsContent ?? buildEmptyMenuTs()
+  if (existingMenuTsContent === null) {
+    menuTsCreatedInTransaction = true
+  }
+  // Append the entry. `appendMenuEntry` returns `'already-present'`
+  // when the appId entry already exists in menu.ts (grandfather
+  // sample / partial residue recovery / re-enable retry) — in that
+  // case the file stays untouched and the rollback path has nothing
+  // to do. Parse failures throw `MenuTsParseFailedError`, which we
+  // route to 500 `EnableMenuTsAppendFailed`.
+  const appendInput: AppendMenuEntryInput = {
+    id: appId,
+    label: recipeMenuEntry.label,
+    icon: typeof recipeMenuEntry.icon === 'string' && recipeMenuEntry.icon.length > 0 ? recipeMenuEntry.icon : 'box',
+    page: composedPage,
+  }
+  let appendResult
+  try {
+    appendResult = appendMenuEntry(baseMenuTsContent, appendInput)
+  } catch (err) {
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+    manifestStore.delete(appId)
+    tryRm(fs, appDir)
+    const reason = err instanceof MenuTsParseFailedError ? err.reason : err instanceof Error ? err.message : String(err)
+    recipeLogger.error(
+      { event: 'bundled-enable-menu-ts-append-failed', recipeId, appId, reason },
+      'Bundled enable rolled back: menu.ts parse failed',
+    )
+    throw new BundledInstallerError(
+      `Failed to append menu.ts entry for "${recipeId}" (appId="${appId}"): ${reason}`,
+      500,
+      'EnableMenuTsAppendFailed',
+      { recipeId, appId, detail: reason },
+    )
+  }
+  let menuTsTouched = false
+  if (appendResult.kind === 'appended') {
+    menuTsTouched = true
+    try {
+      fs.writeFileAtomic(menuTsPath, appendResult.content)
+    } catch (err) {
+      rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
+      rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      recipeLogger.error(
+        { event: 'bundled-enable-menu-ts-append-failed', recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+        'Bundled enable rolled back: menu.ts atomic write failed',
+      )
+      throw new BundledInstallerError(
+        `Failed to write menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'EnableMenuTsAppendFailed',
+        { recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+      )
+    }
+  }
+  // Track whether menu.ts ended up being touched so subsequent
+  // rollback decisions in Step 6 / 7 know whether to restore the
+  // snapshot / unlink the freshly-created file.
+  const menuTsRequiresRollback = menuTsTouched || menuTsCreatedInTransaction
+
   // Step 6: ensure `app/data/<appId>/` exists (re-enable preserves
   // existing user data per BS-L3-A).
   const dataDir = join(projectRoot, 'app', 'data', appId)
@@ -1560,6 +2466,10 @@ export function enableBundledRecipe(
       fs.mkdirSync(dataDir, { recursive: true })
     }
   } catch (err) {
+    if (menuTsRequiresRollback) {
+      rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
+    }
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
     manifestStore.delete(appId)
     tryRm(fs, appDir)
     throw new BundledInstallerError(
@@ -1588,9 +2498,14 @@ export function enableBundledRecipe(
   try {
     appendRecipeHistory(fs, historyEntry)
   } catch (err) {
-    // History append fails *after* manifest + artifacts are committed.
-    // Best-effort rollback: tear down both so the next call sees a
-    // clean slate. Data dir stays put (BS-L3-A).
+    // History append fails *after* manifest + artifacts + AppManifest
+    // + menu.ts are committed. Best-effort rollback: tear down every
+    // committed write so the next call sees a clean slate. Data dir
+    // stays put (BS-L3-A).
+    if (menuTsRequiresRollback) {
+      rollbackMenuTs(fs, menuTsPath, existingMenuTsContent, menuTsCreatedInTransaction, recipeId, appId)
+    }
+    rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
     manifestStore.delete(appId)
     tryRm(fs, appDir)
     throw new BundledInstallerError(
@@ -1602,6 +2517,90 @@ export function enableBundledRecipe(
   }
 
   return { status: 'enabled', source: 'bundled', appId }
+}
+
+/**
+ * Restore (or unlink) an `AppManifest` written under Step 5.5. Spec
+ * v1.12 §10.9.5 BS-L1' rollback discipline normative pin: snapshot
+ * restore for the recovery path (an existing AppManifest was
+ * overwritten), unlink for fresh enable. Best-effort — failures are
+ * warn-logged so the parent enable handler still surfaces the
+ * original error code to the caller.
+ */
+function rollbackAppManifest(
+  fs: FileAccessLayer,
+  appManifestPath: string,
+  existingContent: string | null,
+  recipeId: string,
+  appId: string,
+): void {
+  if (existingContent !== null) {
+    try {
+      fs.writeFileAtomic(appManifestPath, existingContent)
+    } catch (err) {
+      recipeLogger.warn(
+        { err, recipeId, appId, appManifestPath },
+        '[bundled-installer] rollback: failed to restore AppManifest snapshot',
+      )
+    }
+    return
+  }
+  if (fs.existsSync(appManifestPath)) {
+    try {
+      fs.rmSync(appManifestPath, { force: true })
+    } catch (err) {
+      recipeLogger.warn(
+        { err, recipeId, appId, appManifestPath },
+        '[bundled-installer] rollback: failed to remove AppManifest',
+      )
+    }
+  }
+}
+
+/**
+ * Restore (or unlink) `app/menu.ts` under Step 5.6 rollback. Spec
+ * v1.12 §10.9.5 BS-L1' rollback discipline normative pin:
+ *
+ *   - `menuTsCreatedInTransaction === true` → unlink the file we
+ *     just created (we own the new menu.ts; leaving a fresh empty
+ *     one behind would surface a confusing "menu.ts appeared after
+ *     a failed enable" artefact).
+ *   - `existingContent !== null` → snapshot-restore the original
+ *     content (we mutated a pre-existing menu.ts and must undo).
+ *   - both `null` / `false` (idempotent `'already-present'` branch
+ *     skipped the write) → no-op.
+ */
+function rollbackMenuTs(
+  fs: FileAccessLayer,
+  menuTsPath: string,
+  existingContent: string | null,
+  createdInTransaction: boolean,
+  recipeId: string,
+  appId: string,
+): void {
+  if (createdInTransaction) {
+    try {
+      if (fs.existsSync(menuTsPath)) {
+        fs.rmSync(menuTsPath, { force: true })
+      }
+    } catch (err) {
+      recipeLogger.warn(
+        { err, recipeId, appId, menuTsPath },
+        '[bundled-installer] rollback: failed to unlink freshly-created menu.ts',
+      )
+    }
+    return
+  }
+  if (existingContent !== null) {
+    try {
+      fs.writeFileAtomic(menuTsPath, existingContent)
+    } catch (err) {
+      recipeLogger.warn(
+        { err, recipeId, appId, menuTsPath },
+        '[bundled-installer] rollback: failed to restore menu.ts snapshot',
+      )
+    }
+  }
 }
 
 // =========================================
@@ -1813,6 +2812,99 @@ export function disableBundledRecipe(
         { recipeId, appId },
       )
     }
+  }
+
+  // Step 4.5 (v1.12 NEW, BL-2026-179 cascade): remove the menu.ts
+  // entry for the disabled appId. The artifact + RecipeManifest are
+  // already gone by Step 3 / Step 4, so leaving the menu.ts entry
+  // behind would surface a dead row in the UI (the renderer would
+  // attempt an `import('./<appId>/...')` that resolves to a missing
+  // file). Spec recipe-system v1.12 §10.9.4 Step 4.5 + judgment doc
+  // v2.9 §4.12.1 SSOT pin this as the disable-side counterpart of
+  // Step 5.6's append.
+  //
+  // Concurrency: the route handler holds the global menu.ts lock +
+  // per-app lock for the whole disable transaction (spec v1.12
+  // §10.9.4 Step 4.5 lock acquisition order — same as enable Step
+  // 5.6).
+  //
+  // The partial-residue branch reaches this step too (see the route
+  // handler's `manifestAlreadyAbsent` path): a manifest-already-
+  // absent disable still needs to scrub the stale menu.ts row that
+  // a prior Phase 1.5 enable left behind.
+  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
+  if (fs.existsSync(menuTsPath)) {
+    // Kind check (spec v1.12 Round 2 Medium 12, shared with enable
+    // Step 5.6).
+    let menuTsStat: { isFile: boolean }
+    try {
+      menuTsStat = fs.lstatSync(menuTsPath)
+    } catch (err) {
+      throw new BundledInstallerError(
+        `Failed to stat app/menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'DisableMenuTsRemovalFailed',
+        { recipeId, appId, detail: { reason: 'atomic-write', error: err instanceof Error ? err.message : String(err) } },
+      )
+    }
+    if (!menuTsStat.isFile) {
+      recipeLogger.error(
+        { event: 'bundled-menu-ts-anomaly', recipeId, appId, menuTsPath },
+        'Bundled disable rejected: existing app/menu.ts is not a regular file',
+      )
+      throw new BundledInstallerError(
+        `Existing app/menu.ts "${menuTsPath}" is not a regular file`,
+        500,
+        'BundledMenuTsAnomaly',
+        { recipeId, appId, anomalyType: 'non-regular-file' },
+      )
+    }
+    let menuTsContent: string
+    try {
+      menuTsContent = fs.readFileSync(menuTsPath, 'utf-8')
+    } catch (err) {
+      throw new BundledInstallerError(
+        `Failed to read app/menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+        500,
+        'DisableMenuTsRemovalFailed',
+        { recipeId, appId, detail: { reason: 'atomic-write', error: err instanceof Error ? err.message : String(err) } },
+      )
+    }
+    const removeResult = removeMenuEntry(menuTsContent, appId)
+    if (removeResult.kind === 'parse-failed') {
+      recipeLogger.error(
+        { event: 'bundled-disable-menu-ts-removal-failed', recipeId, appId, reason: removeResult.reason },
+        'Bundled disable failed: app/menu.ts parse-failed (user intervention required)',
+      )
+      throw new BundledInstallerError(
+        `Failed to parse app/menu.ts for "${recipeId}" (appId="${appId}"): ${removeResult.reason}`,
+        500,
+        'DisableMenuTsRemovalFailed',
+        { recipeId, appId, detail: { reason: 'parse-failed', error: removeResult.reason } },
+      )
+    }
+    if (removeResult.kind === 'removed') {
+      try {
+        fs.writeFileAtomic(menuTsPath, removeResult.content)
+      } catch (err) {
+        recipeLogger.error(
+          { event: 'bundled-disable-menu-ts-removal-failed', recipeId, appId, detail: err instanceof Error ? err.message : String(err) },
+          'Bundled disable failed: app/menu.ts atomic write failed',
+        )
+        throw new BundledInstallerError(
+          `Failed to write app/menu.ts for "${recipeId}" (appId="${appId}"): ${err instanceof Error ? err.message : String(err)}`,
+          500,
+          'DisableMenuTsRemovalFailed',
+          { recipeId, appId, detail: { reason: 'atomic-write', error: err instanceof Error ? err.message : String(err) } },
+        )
+      }
+    }
+    // `removeResult.kind === 'not-found'` is the idempotent path
+    // (entry was already removed by hand, or a previous disable
+    // retry committed Step 4.5 but failed before Step 5). Continue
+    // to Step 5 — the spec's `'not-found'` audit event is best-
+    // effort and emitted by the route handler's audit-logging layer,
+    // not here.
   }
 
   // Step 5: history append.
