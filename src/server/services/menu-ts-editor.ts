@@ -407,6 +407,22 @@ export class MenuTsParseFailedError extends Error {
  */
 const UNSAFE_MENU_LITERAL_RE = /['"`\\\u0000-\u001F\u007F\u2028\u2029]/
 
+/**
+ * Probe a string field for characters that break the simple
+ * `parseMenuTs` regex (single quote, double quote, backtick,
+ * backslash, ASCII control characters, U+2028 / U+2029). Bundled
+ * recipe asset validation surfaces these as 503
+ * `BundledRecipeMalformed` at the bundled-installer level (codex
+ * review #58 attempt 6 Medium): the value originates in the
+ * recipe.yaml content, not in the menu-ts-editor, so the failure
+ * class is "recipe content defect" rather than "internal menu
+ * append failure". Exported so the bundled-installer can run the
+ * same probe upstream without duplicating the regex.
+ */
+export function containsUnsafeMenuLiteralChar(value: string): boolean {
+  return UNSAFE_MENU_LITERAL_RE.test(value)
+}
+
 function assertSafeMenuLiteral(field: string, value: string): void {
   if (UNSAFE_MENU_LITERAL_RE.test(value)) {
     throw new MenuTsParseFailedError(

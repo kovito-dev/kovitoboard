@@ -62,6 +62,7 @@ import { isCanonicalAppIdPath, parseMenuTs } from './menu-extractor'
 import {
   appendMenuEntry,
   buildEmptyMenuTs,
+  containsUnsafeMenuLiteralChar,
   MenuTsParseFailedError,
   removeMenuEntry,
   type AppendMenuEntryInput,
@@ -2518,6 +2519,48 @@ export function enableBundledRecipe(
         composedPage,
       },
     )
+  }
+
+  // Recipe-content character grammar check (codex review #58
+  // attempt 6 Medium): `app/menu.ts` is currently written by
+  // interpolating these fields verbatim into single-quoted
+  // TypeScript literals that the simple `parseMenuTs` regex can
+  // read back. A bundled recipe that ships a label like `Doc's` or
+  // a path with a literal newline is therefore a *recipe content*
+  // defect (the bundled set is OSS-PR gated, and the renderer
+  // grammar is part of the contract recipe authors agree to). Run
+  // the same unsafe-character probe `appendMenuEntry` uses, but
+  // route the failure to 503 `BundledRecipeMalformed` so the
+  // operational signal matches the failure class — a recipe asset
+  // defect, not an internal menu-write failure. The defensive
+  // throw inside `appendMenuEntry` stays as a depth-of-defence
+  // guard for future callers that bypass this gate.
+  const recipeContentFieldChecks: ReadonlyArray<readonly [string, string]> = [
+    ['menu entry label', recipeMenuEntry.label],
+    ['menu entry icon', typeof recipeMenuEntry.icon === 'string' && recipeMenuEntry.icon.length > 0 ? recipeMenuEntry.icon : 'box'],
+    ['menu entry page (composed)', composedPage],
+  ]
+  for (const [field, value] of recipeContentFieldChecks) {
+    if (containsUnsafeMenuLiteralChar(value)) {
+      rollbackAppManifest(fs, appManifestPath, existingAppManifestContent, recipeId, appId)
+      manifestStore.delete(appId)
+      tryRm(fs, appDir)
+      recipeLogger.error(
+        { event: 'bundled-recipe-asset-malformed', recipeId, appId, reason: 'menu-entry-unsafe-character', field },
+        'Bundled enable rejected: recipe menu entry field contains a character the menu reader cannot parse',
+      )
+      throw new BundledInstallerError(
+        `Bundled recipe "${recipeId}" ${field} contains a quote, backslash, line terminator, or other control character that the menu reader cannot parse back`,
+        503,
+        'BundledRecipeMalformed',
+        {
+          recipeId,
+          appId,
+          detail: `${field} contains a character outside the menu reader grammar`,
+          field,
+        },
+      )
+    }
   }
 
   const menuTsPath = join(projectRoot, 'app', 'menu.ts')
