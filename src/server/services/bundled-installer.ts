@@ -761,9 +761,26 @@ function probeAppDirAnomaly(
   // Step 5: history match (bundled/sample install record most recent).
   // `findHistoryMatchForBundled` already enforces the sourceFilter
   // and the "uninstall cancels the lifecycle" rule.
+  //
+  // appId cross-check (PR #56 codex attempt 8 Finding "fail-closed
+  // misclassification"): the match-by-recipeId alone is not enough
+  // to authorize the destructive `rmSync(appDir)` recovery in the
+  // enable caller. A stale or corrupted history record claiming the
+  // same recipeId under a *different* appId would let the recovery
+  // path wipe a self-made directory that has no relation to this
+  // bundled recipe. Require the install record's resolved appId to
+  // match the target appId before classifying as `partial-residue`;
+  // otherwise downgrade to `self-made`, which the caller throws as
+  // 400 `BundledAppIdConflict` instead of wiping the directory.
   const installRecord = findHistoryMatchForBundled(history, recipeId)
   if (installRecord !== undefined) {
-    return { state: 'partial-residue' }
+    const recordAppId = installRecord.appId ?? installRecord.recipeId ?? recipeId
+    if (recordAppId === appId) {
+      return { state: 'partial-residue' }
+    }
+    // Same recipeId, different appId: do NOT trust this directory as
+    // residue of *this* enable. Fall through to self-made so the
+    // caller surfaces a conflict rather than running rmSync.
   }
   return { state: 'self-made' }
 }

@@ -1462,13 +1462,22 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
     handleBundledInstallerError(req, res, resolveErr, 'disable', recipeId)
     return
   }
-  if (resolved === undefined) {
-    // No residue at all — short-circuit with 200 `already-disabled`
-    // per spec recipe-system v1.10 §10.9.4 Step 1 'none' branch.
-    // Skip the lock acquisition because there is nothing to mutate.
-    res.json({ status: 'already-disabled', dataPreserved: true })
-    return
-  }
+  // Lock key resolution: prefer the residue-resolved appId (the
+  // current committed local state's appId) when we already saw
+  // residue at the pre-lock probe; otherwise (resolved === undefined
+  // and the recipeId is bundled-eligible) fall back to the bundled
+  // registry mapping, which for bundled samples is the recipeId
+  // itself per spec recipe-system v1.10 §10.9.1 BS-L9. Without this
+  // fallback, the disable route would skip the lock entirely on the
+  // "no committed residue" branch and race with an in-flight enable
+  // for the same appId — the enable could finish committing after
+  // this handler returns 200 `already-disabled`, leaving the app
+  // enabled even though the caller just requested disable (PR #56
+  // codex attempt 8 Finding "race condition / lock bypass"). For
+  // non-allowlisted recipeIds with no residue the residue gate at
+  // line 1430 already returned 404; reaching the `undefined` branch
+  // therefore implies bundled-eligible.
+  const appIdForLock = resolved?.appId ?? recipeId
   // Acquire the lock outside the result `try` so a wait-queue
   // timeout (503 `BundledAppLockTimeout`) returns immediately
   // without running the post-commit work that the success path
@@ -1476,11 +1485,11 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   // attempt 1 Finding 3 lock-scope narrowing).
   let release: (() => void)
   try {
-    release = await acquireAppLock(resolved.appId)
+    release = await acquireAppLock(appIdForLock)
   } catch (lockErr) {
     if (lockErr instanceof AppLockWaitTimeoutError) {
       apiLogger.warn(
-        { err: lockErr, action: 'disable', recipeId, appId: resolved.appId },
+        { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
         'Bundled disable rejected (app lock timeout)',
       )
       res.status(503).json({ error: 'BundledAppLockTimeout' })
@@ -1493,7 +1502,7 @@ app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
     // matching block in the enable handler for the full rationale
     // (PR #56 codex attempt 3 Finding "unhandled async route error").
     apiLogger.error(
-      { err: lockErr, action: 'disable', recipeId, appId: resolved.appId },
+      { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
       'Bundled disable failed (acquireAppLock unexpected)',
     )
     res.status(500).json({ error: 'BundledTransactionUnexpected' })
