@@ -201,6 +201,7 @@ describe('classifyLocalResidue', () => {
       }),
     ).toBe('corrupted')
   })
+
 })
 
 // =========================================
@@ -1393,6 +1394,59 @@ describe('enable edge cases (BL-2026-176)', () => {
     expect(manifest!.source).toBe('bundled')
   })
 
+  it('BundledLocalStateUnavailable: probeManifestOnDisk routes EACCES to present-io-failure instead of existsSync absent (PR #56 attempt 4)', () => {
+    // Codex attempt 4 Finding "fail-open filesystem probe":
+    // probeManifestOnDisk previously used existsSync(manifestPath)
+    // on the cache-miss branch, which silently maps EACCES / EPERM
+    // to false and routes a permission-denied manifest into the
+    // 'absent' path. That defeats the fail-closed posture (an
+    // unreadable manifest is then treated as "no manifest" and the
+    // enable transaction proceeds). The refactor uses statSync +
+    // errno-based classification: ENOENT stays 'absent', any other
+    // errno surfaces as 'present-io-failure' → 503
+    // BundledLocalStateUnavailable on the enable path.
+    //
+    // Plant a chmod-000 manifest on disk WITHOUT going through
+    // manifestStore.save (so the cache misses on the appId lookup).
+    // The Step 3d (iv) cache-miss disk probe inside
+    // enableBundledRecipe is the exact callsite that previously
+    // fell through to 'absent' under existsSync.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const manifestDir = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipes-installed',
+      SAMPLE_RECIPE_ID,
+    )
+    mkdirSync(manifestDir, { recursive: true })
+    const manifestPath = join(manifestDir, 'manifest.json')
+    writeFileSync(manifestPath, '{"valid":"json"}', 'utf-8')
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(manifestPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        enableBundledRecipe({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          projectRoot: h.projectRoot,
+          kovitoboardRoot: KB_INSTALL_ROOT,
+          recipeId: SAMPLE_RECIPE_ID,
+          sample,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(manifestPath, 0o644)
+    }
+  })
+
   it('BundledLocalStateUnavailable: unreadable recipe-history.jsonl surfaces 503 instead of fail-open self-made (PR #56 attempt 3)', () => {
     // Codex attempt 3 Finding "fail-open local state probe":
     // the enable transaction's appDir anomaly probe previously fed
@@ -1684,6 +1738,38 @@ describe('loadRecipeHistorySnapshot (PR #56 attempt 2)', () => {
   })
   afterEach(() => {
     cleanup(h)
+  })
+
+  it('performs exactly one readFileSync of recipe-history.jsonl (PR #56 attempt 4)', () => {
+    // Codex attempt 4 Finding "sync I/O amplification": the previous
+    // implementation called probeRecipeHistoryReadability for a full
+    // readFileSync and then readRecipeHistory did a second
+    // readFileSync, doubling the per-request IO. The refactored
+    // snapshot loader now performs exactly one readFileSync per
+    // call. Verify with the same readFileSync counter used in the
+    // attempt 2 threading tests.
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_single_read',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const counter = wrapFsWithReadCounter(h.fs)
+    const snapshot = loadRecipeHistorySnapshot(counter.fs)
+    expect(snapshot.entries.length).toBe(1)
+    expect(counter.countFor(historyPath)).toBe(1)
   })
 
   it('returns an empty snapshot when recipe-history.jsonl is absent', () => {
