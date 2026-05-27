@@ -93,15 +93,17 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     const rawSnapshot = body.snapshotVersion
 
     if (!Array.isArray(rawOrder)) {
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PUT',
-        path: '/api/apps/menu-order',
-        pathParams: {},
+      respondAndAudit(res, apiLogger, {
         status: 400,
-        audit: { action: 'menu-order-update' },
-        errorCode: 'InvalidMenuOrder',
+        body: { error: 'InvalidMenuOrder' },
+        audit: {
+          method: 'PUT',
+          path: '/api/apps/menu-order',
+          pathParams: {},
+          audit: { action: 'menu-order-update' },
+          errorCode: 'InvalidMenuOrder',
+        },
       })
-      res.status(400).json({ error: 'InvalidMenuOrder' })
       return
     }
 
@@ -215,15 +217,17 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
               { err: lockErr, appId },
               'PUT /api/apps/menu-order rejected (app lock timeout)',
             )
-            emitHttpRouteAudit(apiLogger, {
-              method: 'PUT',
-              path: '/api/apps/menu-order',
-              pathParams: {},
+            respondAndAudit(res, apiLogger, {
               status: 503,
-              audit: { action: 'menu-order-update' },
-              errorCode: 'AppLockTimeout',
+              body: { error: 'AppLockTimeout' },
+              audit: {
+                method: 'PUT',
+                path: '/api/apps/menu-order',
+                pathParams: {},
+                audit: { action: 'menu-order-update' },
+                errorCode: 'AppLockTimeout',
+              },
             })
-            res.status(503).json({ error: 'AppLockTimeout' })
             return
           }
           throw lockErr
@@ -242,15 +246,17 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           { err },
           'PUT /api/apps/menu-order: scanAppManifests threw',
         )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PUT',
-          path: '/api/apps/menu-order',
-          pathParams: {},
+        respondAndAudit(res, apiLogger, {
           status: 500,
-          audit: { action: 'menu-order-update' },
-          errorCode: 'MenuOrderAtomicWriteFailed',
+          body: { error: 'MenuOrderAtomicWriteFailed' },
+          audit: {
+            method: 'PUT',
+            path: '/api/apps/menu-order',
+            pathParams: {},
+            audit: { action: 'menu-order-update' },
+            errorCode: 'MenuOrderAtomicWriteFailed',
+          },
         })
-        res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
         return
       }
 
@@ -314,40 +320,37 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         requestedSnapshot !== undefined &&
         requestedSnapshot !== currentSnapshot
       ) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PUT',
-          path: '/api/apps/menu-order',
-          pathParams: {},
+        respondAndAudit(res, apiLogger, {
           status: 409,
+          body: { error: 'MenuOrderSnapshotDrift' },
           audit: {
+            
+            method: 'PUT',
+            path: '/api/apps/menu-order',
+            pathParams: {},
+            audit: {
             action: 'menu-order-update',
             snapshotProvided: true,
+            },
+            errorCode: 'MenuOrderSnapshotDrift',
+            
           },
-          errorCode: 'MenuOrderSnapshotDrift',
         })
-        res.status(409).json({ error: 'MenuOrderSnapshotDrift' })
         return
       }
 
       if (isNoOp) {
         // Skip write + broadcast (Finding 2 fix). The 200 audit
-        // still fires so the no-op submission is auditable. We
+        // still fires so the no-op submission is auditable —
+        // `updatedCount: 0` already distinguishes the no-op case
+        // from a real batch update without introducing extra
+        // schema fields (codex attempt 6 Finding 1, audit-logging
+        // v1.2 §6.6.3 endpoint-specific field set is closed). We
         // fall through to the `finally` block (locks are released
         // in the normal order) and the post-lock response code
-        // picks up `postCommit` to emit the 200 envelope without
-        // broadcasting.
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PUT',
-          path: '/api/apps/menu-order',
-          pathParams: {},
-          status: 200,
-          audit: {
-            action: 'menu-order-update',
-            updatedCount: 0,
-            snapshotProvided: requestedSnapshot !== undefined,
-            noOp: true,
-          },
-        })
+        // picks up `postCommit` to emit the 200 envelope and the
+        // matching audit record after the response is sent
+        // (codex attempt 6 Finding 2, audit-logging v1.2 §6.6.2).
         postCommit = {
           newSnapshot: currentSnapshot,
           updatedCount: 0,
@@ -407,15 +410,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           { err: writeErr },
           'PUT /api/apps/menu-order atomic batch failed; rolled back committed writes',
         )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PUT',
-          path: '/api/apps/menu-order',
-          pathParams: {},
+        respondAndAudit(res, apiLogger, {
           status: 500,
-          audit: { action: 'menu-order-update' },
-          errorCode: 'MenuOrderAtomicWriteFailed',
+          body: { error: 'MenuOrderAtomicWriteFailed' },
+          audit: {
+            
+            method: 'PUT',
+            path: '/api/apps/menu-order',
+            pathParams: {},
+            audit: { action: 'menu-order-update' },
+            errorCode: 'MenuOrderAtomicWriteFailed',
+            
+          },
         })
-        res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
         return
       }
 
@@ -428,17 +435,6 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         menuOrder: orderMap.get(m.appId),
       }))
       const newSnapshot = computeMenuOrderSnapshot(newManifests)
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PUT',
-        path: '/api/apps/menu-order',
-        pathParams: {},
-        status: 200,
-        audit: {
-          action: 'menu-order-update',
-          updatedCount: manifests.length,
-          snapshotProvided: requestedSnapshot !== undefined,
-        },
-      })
       postCommit = {
         newSnapshot,
         updatedCount: manifests.length,
@@ -474,15 +470,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         'PUT /api/apps/menu-order: unexpected exception',
       )
       if (!res.headersSent) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PUT',
-          path: '/api/apps/menu-order',
-          pathParams: {},
+        respondAndAudit(res, apiLogger, {
           status: 500,
-          audit: { action: 'menu-order-update' },
-          errorCode: 'MenuOrderAtomicWriteFailed',
+          body: { error: 'MenuOrderAtomicWriteFailed' },
+          audit: {
+            
+            method: 'PUT',
+            path: '/api/apps/menu-order',
+            pathParams: {},
+            audit: { action: 'menu-order-update' },
+            errorCode: 'MenuOrderAtomicWriteFailed',
+            
+          },
         })
-        res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
       }
       return
     }
@@ -512,6 +512,20 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       updated: postCommit.updatedCount,
       snapshotVersion: postCommit.newSnapshot,
     })
+    // Audit AFTER res.json so the timestamp reflects the spec's
+    // "immediately after the response is sent" requirement
+    // (audit-logging v1.2 §6.6.2).
+    emitHttpRouteAudit(apiLogger, {
+      method: 'PUT',
+      path: '/api/apps/menu-order',
+      pathParams: {},
+      status: 200,
+      audit: {
+        action: 'menu-order-update',
+        updatedCount: postCommit.updatedCount,
+        snapshotProvided: requestedSnapshot !== undefined,
+      },
+    })
   })
 
   // -----------------------------------------------------------------
@@ -520,15 +534,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
   router.patch('/:appId/menu-label', async (req, res) => {
     const appId = req.params.appId
     if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PATCH',
-        path: '/api/apps/:appId/menu-label',
-        pathParams: { appId: String(appId ?? '') },
+      respondAndAudit(res, apiLogger, {
         status: 400,
-        audit: { action: 'menu-label-update' },
-        errorCode: 'InvalidAppId',
+        body: { error: 'InvalidAppId' },
+        audit: {
+          
+          method: 'PATCH',
+          path: '/api/apps/:appId/menu-label',
+          pathParams: { appId: String(appId ?? '') },
+          audit: { action: 'menu-label-update' },
+          errorCode: 'InvalidAppId',
+          
+        },
       })
-      res.status(400).json({ error: 'InvalidAppId' })
       return
     }
 
@@ -540,48 +558,60 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       userMenuLabel = null
     } else if (typeof rawLabel === 'string') {
       if (rawLabel.length === 0) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 400,
+          body: { error: 'MenuLabelEmpty' },
           audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: {
             appId,
             action: 'menu-label-update',
             labelLength: 0,
+            },
+            errorCode: 'MenuLabelEmpty',
+            
           },
-          errorCode: 'MenuLabelEmpty',
         })
-        res.status(400).json({ error: 'MenuLabelEmpty' })
         return
       }
       if (rawLabel.length > MENU_LABEL_MAX_LENGTH) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 400,
+          body: { error: 'MenuLabelTooLong' },
           audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: {
             appId,
             action: 'menu-label-update',
             labelLength: rawLabel.length,
+            },
+            errorCode: 'MenuLabelTooLong',
+            
           },
-          errorCode: 'MenuLabelTooLong',
         })
-        res.status(400).json({ error: 'MenuLabelTooLong' })
         return
       }
       userMenuLabel = rawLabel
     } else {
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PATCH',
-        path: '/api/apps/:appId/menu-label',
-        pathParams: { appId },
+      respondAndAudit(res, apiLogger, {
         status: 400,
-        audit: { appId, action: 'menu-label-update' },
-        errorCode: 'InvalidMenuLabel',
+        body: { error: 'InvalidMenuLabel' },
+        audit: {
+          
+          method: 'PATCH',
+          path: '/api/apps/:appId/menu-label',
+          pathParams: { appId },
+          audit: { appId, action: 'menu-label-update' },
+          errorCode: 'InvalidMenuLabel',
+          
+        },
       })
-      res.status(400).json({ error: 'InvalidMenuLabel' })
       return
     }
 
@@ -597,30 +627,38 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           { err: lockErr, appId },
           'PATCH /api/apps/:appId/menu-label rejected (app lock timeout)',
         )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 503,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'AppLockTimeout',
+          body: { error: 'AppLockTimeout' },
+          audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'AppLockTimeout',
+            
+          },
         })
-        res.status(503).json({ error: 'AppLockTimeout' })
         return
       }
       apiLogger.error(
         { err: lockErr, appId },
         'PATCH /api/apps/:appId/menu-label: acquireAppLock unexpected',
       )
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PATCH',
-        path: '/api/apps/:appId/menu-label',
-        pathParams: { appId },
+      respondAndAudit(res, apiLogger, {
         status: 500,
-        audit: { appId, action: 'menu-label-update' },
-        errorCode: 'MenuLabelAtomicWriteFailed',
+        body: { error: 'MenuLabelAtomicWriteFailed' },
+        audit: {
+          
+          method: 'PATCH',
+          path: '/api/apps/:appId/menu-label',
+          pathParams: { appId },
+          audit: { appId, action: 'menu-label-update' },
+          errorCode: 'MenuLabelAtomicWriteFailed',
+          
+        },
       })
-      res.status(500).json({ error: 'MenuLabelAtomicWriteFailed' })
       return
     }
 
@@ -645,15 +683,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // legitimate "no such app" signal, while a present-but-broken
       // file is server-side state that the user must repair.
       if (!fs.existsSync(manifestPath)) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 404,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'AppNotFound',
+          body: { error: 'AppNotFound' },
+          audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'AppNotFound',
+            
+          },
         })
-        res.status(404).json({ error: 'AppNotFound' })
         return
       }
 
@@ -667,15 +709,19 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // AppManifestUnreadable surface here.
       const manifest = readAppManifest(fs, projectRoot, appId)
       if (manifest === null) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 500,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'AppManifestUnreadable',
+          body: { error: 'AppManifestUnreadable' },
+          audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'AppManifestUnreadable',
+            
+          },
         })
-        res.status(500).json({ error: 'AppManifestUnreadable' })
         return
       }
 
@@ -695,22 +741,11 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       const isNoOp = currentLabel === userMenuLabel
 
       if (isNoOp) {
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
-          status: 200,
-          audit: {
-            appId,
-            action: 'menu-label-update',
-            labelLength: userMenuLabel === null ? null : userMenuLabel.length,
-            noOp: true,
-          },
-        })
         postCommit = { userMenuLabel, broadcast: false }
         // Fall through to the `finally` block so the lock is
         // released; the post-lock response path then picks up
-        // `postCommit` and returns 200 without broadcasting.
+        // `postCommit`, returns 200, and emits the audit record
+        // AFTER res.json (audit-logging v1.2 §6.6.2).
       } else {
 
       const updated: AppManifest = { ...manifest, userMenuLabel }
@@ -724,34 +759,28 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           { err: writeErr, appId, path: manifestPath },
           'PATCH /api/apps/:appId/menu-label: atomic write failed',
         )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
+        respondAndAudit(res, apiLogger, {
           status: 500,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'MenuLabelAtomicWriteFailed',
+          body: { error: 'MenuLabelAtomicWriteFailed' },
+          audit: {
+            
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'MenuLabelAtomicWriteFailed',
+            
+          },
         })
-        res.status(500).json({ error: 'MenuLabelAtomicWriteFailed' })
         return
       }
 
-      // Still inside the lock-protected section. Emit the 200
-      // audit record and capture the post-commit payload before
-      // releasing the lock — the broadcast + response will run
-      // after `finally` so the lock hold time stays tight.
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PATCH',
-        path: '/api/apps/:appId/menu-label',
-        pathParams: { appId },
-        status: 200,
-        audit: {
-          appId,
-          action: 'menu-label-update',
-          // Log the length of the user input but never the value.
-          labelLength: userMenuLabel === null ? null : userMenuLabel.length,
-        },
-      })
+      // Still inside the lock-protected section. Capture the
+      // post-commit payload before releasing the lock — the
+      // broadcast + response + audit emission all happen after
+      // `finally` so the lock hold time stays tight AND the audit
+      // record reflects the spec's "after the response is sent"
+      // ordering (audit-logging v1.2 §6.6.2).
       postCommit = { userMenuLabel, broadcast: true }
       }
     } finally {
@@ -792,6 +821,23 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     }
 
     res.json({ appId, userMenuLabel: postCommit.userMenuLabel })
+    // Audit AFTER res.json (audit-logging v1.2 §6.6.2). The raw
+    // user-input label is never recorded — only its length, so
+    // the redaction pipeline stays unburdened by free-form input.
+    emitHttpRouteAudit(apiLogger, {
+      method: 'PATCH',
+      path: '/api/apps/:appId/menu-label',
+      pathParams: { appId },
+      status: 200,
+      audit: {
+        appId,
+        action: 'menu-label-update',
+        labelLength:
+          postCommit.userMenuLabel === null
+            ? null
+            : postCommit.userMenuLabel.length,
+      },
+    })
   })
 
   return router
@@ -810,15 +856,50 @@ function respondMenuOrderError(
     | 'MenuOrderCoverageMismatch'
     | 'MenuOrderNonContiguous',
 ): void {
-  emitHttpRouteAudit(apiLogger, {
-    method: 'PUT',
-    path: '/api/apps/menu-order',
-    pathParams: {},
+  respondAndAudit(res, apiLogger, {
     status: 400,
-    audit: { action: 'menu-order-update' },
-    errorCode,
+    body: { error: errorCode },
+    audit: {
+      method: 'PUT',
+      path: '/api/apps/menu-order',
+      pathParams: {},
+      audit: { action: 'menu-order-update' },
+      errorCode,
+    },
   })
-  res.status(400).json({ error: errorCode })
+}
+
+/**
+ * Send the HTTP response first, THEN emit the `HttpRouteAuditEntry`
+ * record. The order matters for `audit-logging.md` v1.2 §6.6.2,
+ * which pins audit emission at "immediately after the response is
+ * sent" so the audit log cannot record a status that never made it
+ * to the wire (e.g. if the response write itself fails). Express
+ * 5's `res.status().json()` synchronously queues the status code,
+ * headers, and body to the kernel socket buffer; reading the status
+ * back out of `res.statusCode` after that call is the closest we
+ * can get to "after sent" without wiring an `on-finished` hook for
+ * every route in the file.
+ *
+ * Codex attempt 6 Finding 2 (medium, audit integrity).
+ */
+function respondAndAudit(
+  res: import('express').Response,
+  apiLogger: Logger,
+  opts: {
+    status: number
+    body: Record<string, unknown>
+    audit: {
+      method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+      path: string
+      pathParams: Record<string, string>
+      audit: HttpRouteAuditPayload
+      errorCode?: string
+    }
+  },
+): void {
+  res.status(opts.status).json(opts.body)
+  emitHttpRouteAudit(apiLogger, { ...opts.audit, status: opts.status })
 }
 
 /**
@@ -856,14 +937,6 @@ interface HttpRouteAuditPayload {
   updatedCount?: number
   snapshotProvided?: boolean
   labelLength?: number | null
-  /**
-   * Set to `true` when the route detected the request was a
-   * no-op (the requested order or label already matches the
-   * persisted manifest) and skipped the write + broadcast. Helps
-   * separate "submitted but trivially equal" traffic from real
-   * updates in the audit stream.
-   */
-  noOp?: boolean
 }
 
 function emitHttpRouteAudit(
