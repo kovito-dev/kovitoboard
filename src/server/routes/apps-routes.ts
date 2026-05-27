@@ -52,7 +52,7 @@ import {
 /** Maximum length of a user-provided menu label string. */
 export const MENU_LABEL_MAX_LENGTH = 80
 
-// Codex attempt 8 Finding 2 fix: the previously-defined
+// Spec note (attempt 8): the previously-defined
 // MENU_ORDER_MAX_ENTRIES = 1000 cap is removed. The DoS surface
 // it guarded (lock amplification on a flood of fake appIds) is
 // already bounded by Express's default JSON body-size limit
@@ -151,7 +151,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       typeof rawSnapshot === 'string' ? rawSnapshot : undefined
 
     // ---------------------------------------------------------------
-    // Lock-then-read ordering (codex attempt 1 Finding 1 fix):
+    // Lock-then-read ordering (Spec note (attempt 1)):
     //
     // Earlier versions of this handler scanned the AppManifest set
     // and computed the drift snapshot *before* acquiring per-app
@@ -189,7 +189,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     let postCommit:
       | { newSnapshot: string; updatedCount: number; broadcast: boolean }
       | null = null
-    // Codex attempt 3 Finding 1 fix: wrap the lock-protected
+    // Spec note (attempt 3): wrap the lock-protected
     // section in an outer try/catch so an unexpected throw from
     // anywhere inside (notably a non-timeout rejection from
     // `acquireAppLock` whose contract only models the wait-timeout
@@ -231,17 +231,17 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // copy / rewrite. The eligible set we observe here is the
       // single source of truth for coverage and snapshot validation.
       //
-      // Codex attempt 8 Finding 1 fix: the scan itself routes every
+      // Spec note (attempt 8): the scan itself routes every
       // read through the boundary check (`resolveManifestPathInAppRoot`)
       // and reads from the canonical path, so a planted
       // `app/<appId>` symlink can no longer make the scan open a
-      // file outside <projectRoot>/app/. attempt 7's boundary check
+      // file outside <projectRoot>/app/. (attempt 7) boundary check
       // protected the write path only; this extends the gate to the
       // read path as well. Spec SSOT: recipe-system v1.11 §10.9.3
       // step 2.5 + security-threat-model.md path-boundary layer.
       const manifests: AppManifest[] = []
       const canonicalManifestPaths = new Map<string, string>()
-      // Codex attempt 12 Finding 1 + Finding 3 fix: verify the
+      // Spec note (attempt 12) + Finding 3 fix: verify the
       // `app/` root itself BEFORE any readdirSync. Without this
       // gate an `app -> /elsewhere` symlink would let the scan
       // enumerate the foreign directory before per-entry checks
@@ -309,7 +309,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
             continue
           }
           if (pathCheck.error === 'resolve-failed') {
-            // Codex attempt 10 Finding 2 fix: a transient
+            // Spec note (attempt 10): a transient
             // realpathSync failure (broken symlink chain, ELOOP,
             // missing intermediate component, etc.) on one
             // directory entry must NOT take down the entire
@@ -352,7 +352,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         // Read from the canonical path the boundary check approved.
         const manifest = readAppManifestAtPath(fs, pathCheck.canonical, entry)
         if (manifest === null) continue
-        // Codex attempt 9 Finding 1 fix: refuse manifests whose
+        // Spec note (attempt 9): refuse manifests whose
         // internal `appId` does not match the directory name.
         // Without this check, a corrupt manifest at
         // `app/alpha/manifest.json` carrying `appId: "beta"` would
@@ -421,7 +421,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // slip through.
       const currentSnapshot = computeMenuOrderSnapshot(manifests)
 
-      // Codex attempt 3 Finding 2 fix: no-op short-circuit. When
+      // Spec note (attempt 3): no-op short-circuit. When
       // the requested order already matches what is on disk for
       // every eligible app, skip the rewrite + broadcast pair so
       // an authenticated caller cannot turn repeated no-op
@@ -464,13 +464,13 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         // still fires so the no-op submission is auditable —
         // `updatedCount: 0` already distinguishes the no-op case
         // from a real batch update without introducing extra
-        // schema fields (codex attempt 6 Finding 1, audit-logging
+        // schema fields (Spec note (attempt 6), audit-logging
         // v1.2 §6.6.3 endpoint-specific field set is closed). We
         // fall through to the `finally` block (locks are released
         // in the normal order) and the post-lock response code
         // picks up `postCommit` to emit the 200 envelope and the
         // matching audit record after the response is sent
-        // (codex attempt 6 Finding 2, audit-logging v1.2 §6.6.2).
+        // (Spec note (attempt 6), audit-logging v1.2 §6.6.2).
         postCommit = {
           newSnapshot: currentSnapshot,
           updatedCount: 0,
@@ -495,7 +495,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // above so a TOCTOU swap of an original symlink between the
       // gate and the rewrite cannot redirect a write out of
       // <projectRoot>/app/ (mirror of PR #56 bundled-installer step
-      // 3.5 TOCTOU defence; codex attempt 7 Finding 1 fix).
+      // 3.5 TOCTOU defence; Spec note (attempt 7)).
       const previousBytes = new Map<string, string>()
       const writtenAppIds: string[] = []
       try {
@@ -593,7 +593,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       }
     }
     } catch (unexpectedErr) {
-      // Codex attempt 3 Finding 1 fix: anything that escapes the
+      // Spec note (attempt 3): anything that escapes the
       // inner try block lands here. Treat it as an unexpected
       // server error — emit the audit record, return the JSON
       // envelope the API contract promises, and avoid Express's
@@ -669,7 +669,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
   router.patch('/:appId/menu-label', async (req, res) => {
     const appId = req.params.appId
     if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
-      // Codex attempt 12 Finding 2 fix: do NOT record the raw
+      // Spec note (attempt 12): do NOT record the raw
       // rejected appId in audit. Express's route pattern accepts
       // an arbitrary path segment, so a caller could otherwise
       // submit very long / hostile bytes and force unbounded
@@ -819,7 +819,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // sends its own response and returns), so we use that as the
     // "response already sent above" sentinel after `finally` runs.
     // Mirrors the PUT /api/apps/menu-order structure introduced in
-    // codex attempt 1 Finding 1 fix — both endpoints now keep the
+    // Spec note (attempt 1) — both endpoints now keep the
     // app lock as short as possible by moving the post-commit
     // broadcast / response outside the locked region (codex attempt
     // 2 Finding 2: keeping the lock during broadcast can turn a
@@ -827,7 +827,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     let postCommit:
       | { userMenuLabel: string | null; broadcast: boolean }
       | null = null
-    // Codex attempt 9 Finding 2 fix: wrap the locked section in an
+    // Spec note (attempt 9): wrap the locked section in an
     // outer try / catch so an unexpected throw — anywhere between
     // boundary check, manifest read, atomic write, audit emit, or
     // the inner try / finally itself — lands on a structured 500
@@ -843,7 +843,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // file is server-side state that the user must repair.
       // The boundary check that follows the existsSync path also
       // rejects symlinks whose canonical target escapes
-      // <projectRoot>/app/ — codex attempt 7 Finding 1 fix,
+      // <projectRoot>/app/ — Spec note (attempt 7),
       // recipe-system v1.11 §10.9.3 step 2.5 path-boundary
       // verification SSOT replicated for apps-routes.
       const pathCheck = resolveManifestPathInAppRoot(fs, projectRoot, appId)
@@ -886,7 +886,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      // Codex attempt 1 Finding 2 fix + attempt 8 Finding 1 fix:
+      // Spec note (attempt 1) + attempt 8 Finding 1 fix:
       // route the read through `readAppManifestAtPath()` so this
       // endpoint agrees with `services/app-manifest.ts` on what
       // counts as a readable manifest AND opens the canonical path
@@ -914,7 +914,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      // Codex attempt 9 Finding 1 fix: refuse a manifest whose
+      // Spec note (attempt 9): refuse a manifest whose
       // internal `appId` field disagrees with the path parameter.
       // A corrupt manifest stored at `app/alpha/manifest.json`
       // carrying `appId: "beta"` would otherwise let this route
@@ -946,7 +946,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      // Codex attempt 4 Finding 1 fix: no-op short-circuit
+      // Spec note (attempt 4): no-op short-circuit
       // (symmetric with PUT /api/apps/menu-order's no-op path
       // added in attempt 3). When the persisted userMenuLabel
       // is already equal to the requested value — including
@@ -1020,7 +1020,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       }
     }
     } catch (unexpectedErr) {
-      // Codex attempt 9 Finding 2 fix: anything that escapes the
+      // Spec note (attempt 9): anything that escapes the
       // inner try / finally lands here. Treat it as an unexpected
       // server error — emit the audit record, return the JSON
       // envelope the API contract promises, and avoid Express's
@@ -1051,7 +1051,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // the try block returned without setting `postCommit`. We could
     // not run the broadcast + response inside the locked section
     // because broadcast latency would extend the time the per-app
-    // lock is held (codex attempt 2 Finding 2 — symmetric with
+    // lock is held (Spec note (attempt 2) — symmetric with
     // PUT /api/apps/menu-order).
     if (postCommit === null) return
 
@@ -1190,8 +1190,28 @@ function resolveManifestPathInAppRoot(
   appId: string,
 ): { canonical: string } | { error: 'not-found' | 'escaped' | 'resolve-failed' } {
   const manifestPath = getAppManifestPath(projectRoot, appId)
-  if (!fs.existsSync(manifestPath)) {
-    return { error: 'not-found' }
+  // Use `lstatSync` (not `existsSync`) so a dangling symlink is
+  // distinguishable from a genuinely missing file: `existsSync`
+  // follows the symlink and would return false for a broken
+  // target, collapsing both "no file" and "broken-on-disk state"
+  // into 404 AppNotFound. We want 404 only for the true-absence
+  // case so the corrupt path surfaces as 500 AppManifestUnreadable
+  // (Spec note (attempt 13)).
+  try {
+    fs.lstatSync(manifestPath)
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined
+    if (code === 'ENOENT') {
+      return { error: 'not-found' }
+    }
+    // Any other error (EACCES, EIO, ENAMETOOLONG, etc.) is a
+    // genuine resolution problem and must surface as such; a
+    // permission-denied lstat is server-side state the user
+    // needs to repair, not the API contract's "no such app".
+    return { error: 'resolve-failed' }
   }
   // Canonicalize `projectRoot` first so the "app must live under
   // the project root" assertion that follows is robust to the
@@ -1210,7 +1230,7 @@ function resolveManifestPathInAppRoot(
   }
   // The boundary is the literal `<canonicalProjectRoot>/app`
   // sub-path — NOT whatever an `app` symlink might resolve to.
-  // Codex attempt 11 Finding 1 fix: realpathSync on the app root
+  // Spec note (attempt 11): realpathSync on the app root
   // would let an `app -> /malicious-dir` symlink make the boundary
   // become `/malicious-dir`, so any manifest under that external
   // directory would still pass `isWithin`. Pinning the boundary to
@@ -1256,7 +1276,7 @@ function resolveManifestPathInAppRoot(
  * can get to "after sent" without wiring an `on-finished` hook for
  * every route in the file.
  *
- * Codex attempt 6 Finding 2 (medium, audit integrity).
+ * Spec note (attempt 6) (medium, audit integrity).
  */
 function respondAndAudit(
   res: import('express').Response,

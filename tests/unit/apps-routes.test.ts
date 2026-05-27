@@ -796,6 +796,33 @@ describe('PATCH /api/apps/:appId/menu-label', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('500 AppManifestUnreadable when manifest.json itself is a dangling symlink', async () => {
+    // app/dangling/manifest.json is a symlink whose target does
+    // not exist. existsSync(manifestPath) would return `false`
+    // here (symlinks are followed), so the previous helper would
+    // have classified this as 404 AppNotFound — masking the
+    // genuine on-disk corruption. lstatSync distinguishes the two
+    // cases: ENOENT only when the symlink itself is missing.
+    const dir = join(h.projectRoot, 'app', 'dangling')
+    mkdirSync(dir, { recursive: true })
+    symlinkSync(
+      '/nonexistent-target-' + Math.random().toString(36).slice(2),
+      join(dir, 'manifest.json'),
+      'file',
+    )
+
+    const reply = await sendJson(
+      h.app,
+      'PATCH',
+      '/api/apps/dangling/menu-label',
+      { userMenuLabel: 'Anything' },
+    )
+
+    expect(reply.status).toBe(500)
+    expect(reply.body?.error).toBe('AppManifestUnreadable')
+    expect(h.broadcasts).toHaveLength(0)
+  })
+
   it('500 AppManifestUnreadable when manifest.appId disagrees with the path parameter', async () => {
     // app/imposter/manifest.json carries {appId: "victim"}.
     const dir = join(h.projectRoot, 'app', 'imposter')
