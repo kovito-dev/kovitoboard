@@ -33,7 +33,7 @@
  *     - audit emits `kind: 'http-route'` records and never carries
  *       the raw user-input label string
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   mkdirSync,
   mkdtempSync,
@@ -51,7 +51,20 @@ import type { Express } from 'express'
 
 import { createAppsRouter } from '../../src/server/routes/apps-routes'
 import { DirectFsLayer } from '../../src/server/fs-layer'
-import { lazyChildLogger } from '../../src/server/logger'
+import { initLogger, lazyChildLogger } from '../../src/server/logger'
+
+// The PATCH /menu-label handler routes its read through
+// `readAppManifest()`, which emits a `recipeLogger.warn` line on
+// parse / schema failures. `recipeLogger` is a lazy proxy that
+// throws when `initLogger()` has not been called, so without this
+// one-shot initialization the parse-fail and schema-invalid paths
+// would surface as a 500 routed through Express's default HTML
+// error handler rather than the structured 500 the test expects.
+beforeAll(async () => {
+  const logRoot = mkdtempSync(join(tmpdir(), 'kb-apps-routes-logroot-'))
+  mkdirSync(join(logRoot, '.kovitoboard', 'logs'), { recursive: true })
+  await initLogger(logRoot, null)
+})
 import type { AppManifest } from '../../src/shared/app-manifest-types'
 import type { ServerToClientEvent } from '../../src/shared/ws-events'
 

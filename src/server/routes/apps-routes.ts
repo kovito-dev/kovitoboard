@@ -43,6 +43,7 @@ import type { AppManifest } from '../../shared/app-manifest-types'
 import type { ServerToClientEvent } from '../../shared/ws-events'
 import {
   getAppManifestPath,
+  readAppManifest,
   scanAppManifests,
 } from '../services/app-manifest'
 
@@ -130,102 +131,42 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       typeof rawSnapshot === 'string' ? rawSnapshot : undefined
 
     // ---------------------------------------------------------------
+    // Lock-then-read ordering (codex attempt 1 Finding 1 fix):
+    //
+    // Earlier versions of this handler scanned the AppManifest set
+    // and computed the drift snapshot *before* acquiring per-app
+    // locks. Between the unlocked read and the locked write, a
+    // concurrent `PATCH /menu-label`, bundled `enable` / `disable`,
+    // or handler dispatch could mutate one of the manifests — the
+    // batch handler would then write back a stale in-memory copy
+    // (clobbering the newer fields) and the drift detector would
+    // silently miss the change.
+    //
+    // The fix is to take every lock first (using only the appId set
+    // that the client supplied, in deterministic sorted order to
+    // avoid dead-locks against any other multi-lock path), and only
+    // then scan / validate / write. The scan and the drift snapshot
+    // both observe the locked filesystem snapshot, so neither the
+    // coverage check nor the snapshot drift detector can race with
+    // the per-app writers anymore. If a concurrent path created /
+    // removed a manifest between the request leaving the renderer
+    // and our lock acquisition, that surfaces as a 400
+    // `MenuOrderCoverageMismatch` from the post-lock validation —
+    // exactly the same contract the renderer already handles.
+    //
     // Disk-mutating section. Wrap in a try/catch so unexpected
     // failures land on a structured 500 instead of Express's default
     // HTML error handler.
     // ---------------------------------------------------------------
-    let manifests: AppManifest[]
-    try {
-      manifests = scanAppManifests(fs, projectRoot)
-    } catch (err) {
-      apiLogger.error(
-        { err },
-        'PUT /api/apps/menu-order: scanAppManifests threw',
-      )
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PUT',
-        path: '/api/apps/menu-order',
-        pathParams: {},
-        status: 500,
-        audit: { action: 'menu-order-update' },
-        errorCode: 'MenuOrderAtomicWriteFailed',
-      })
-      res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
-      return
-    }
-
-    // Eligible set R is the appIds with a readable AppManifest.
-    const eligibleAppIds = new Set(manifests.map((m) => m.appId))
-    if (eligibleAppIds.size !== requestedAppIds.size) {
-      respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
-      return
-    }
-    for (const appId of requestedAppIds) {
-      if (!eligibleAppIds.has(appId)) {
-        respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
-        return
-      }
-    }
-    for (const appId of eligibleAppIds) {
-      if (!requestedAppIds.has(appId)) {
-        respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
-        return
-      }
-    }
-
-    // Contiguous 0..N-1 check on menuOrder values.
-    const N = manifests.length
-    const seenValues = new Set<number>()
-    for (const value of orderMap.values()) {
-      if (value >= N) {
-        respondMenuOrderError(res, apiLogger, 'MenuOrderNonContiguous')
-        return
-      }
-      if (seenValues.has(value)) {
-        respondMenuOrderError(res, apiLogger, 'MenuOrderNonContiguous')
-        return
-      }
-      seenValues.add(value)
-    }
-    // The pair (size N, all values 0..N-1 unique) is equivalent to
-    // "exact coverage of 0..N-1 with no gaps".
-
-    // Optional snapshot drift detection.
-    const currentSnapshot = computeMenuOrderSnapshot(manifests)
-    if (
-      requestedSnapshot !== undefined &&
-      requestedSnapshot !== currentSnapshot
-    ) {
-      emitHttpRouteAudit(apiLogger, {
-        method: 'PUT',
-        path: '/api/apps/menu-order',
-        pathParams: {},
-        status: 409,
-        audit: {
-          action: 'menu-order-update',
-          snapshotProvided: true,
-        },
-        errorCode: 'MenuOrderSnapshotDrift',
-      })
-      res.status(409).json({ error: 'MenuOrderSnapshotDrift' })
-      return
-    }
-
-    // Atomic batch write. There is no POSIX primitive for "rename
-    // many files atomically", so we fall back to (a) snapshot the old
-    // bytes per file, (b) issue every write sequentially, (c) on the
-    // first failure rewrite the already-committed files back to their
-    // pre-snapshot bytes. The rollback path is best-effort because a
-    // disk that just failed mid-write may keep failing — when that
-    // happens we log loudly so the operator can investigate.
-    //
-    // The whole section runs under the app lock for every affected
-    // app so a concurrent bundled enable/disable / handler dispatch
-    // cannot observe a half-applied batch. We acquire locks in a
-    // deterministic appId-sorted order to prevent dead-locks against
-    // any other path that takes more than one lock.
     const sortedAppIds = [...requestedAppIds].sort()
     const releases: Array<() => void> = []
+    // Captured before the lock is released so the post-commit
+    // broadcast + response (which must not run while holding the
+    // app lock — broadcast latency would extend the locked region)
+    // can still report the new state. Stays `null` on every error
+    // path inside the try block; the post-lock code uses that as
+    // the "response was already sent above" sentinel.
+    let postCommit: { newSnapshot: string; updatedCount: number } | null = null
     try {
       for (const appId of sortedAppIds) {
         try {
@@ -251,6 +192,102 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         }
       }
 
+      // Scan happens UNDER the locks: a concurrent per-app writer
+      // can no longer mutate any of the manifests we are about to
+      // copy / rewrite. The eligible set we observe here is the
+      // single source of truth for coverage and snapshot validation.
+      let manifests: AppManifest[]
+      try {
+        manifests = scanAppManifests(fs, projectRoot)
+      } catch (err) {
+        apiLogger.error(
+          { err },
+          'PUT /api/apps/menu-order: scanAppManifests threw',
+        )
+        emitHttpRouteAudit(apiLogger, {
+          method: 'PUT',
+          path: '/api/apps/menu-order',
+          pathParams: {},
+          status: 500,
+          audit: { action: 'menu-order-update' },
+          errorCode: 'MenuOrderAtomicWriteFailed',
+        })
+        res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
+        return
+      }
+
+      // Eligible set R is the appIds with a readable AppManifest.
+      const eligibleAppIds = new Set(manifests.map((m) => m.appId))
+      if (eligibleAppIds.size !== requestedAppIds.size) {
+        respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
+        return
+      }
+      for (const appId of requestedAppIds) {
+        if (!eligibleAppIds.has(appId)) {
+          respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
+          return
+        }
+      }
+      for (const appId of eligibleAppIds) {
+        if (!requestedAppIds.has(appId)) {
+          respondMenuOrderError(res, apiLogger, 'MenuOrderCoverageMismatch')
+          return
+        }
+      }
+
+      // Contiguous 0..(N-1) check on menuOrder values.
+      const N = manifests.length
+      const seenValues = new Set<number>()
+      for (const value of orderMap.values()) {
+        if (value >= N) {
+          respondMenuOrderError(res, apiLogger, 'MenuOrderNonContiguous')
+          return
+        }
+        if (seenValues.has(value)) {
+          respondMenuOrderError(res, apiLogger, 'MenuOrderNonContiguous')
+          return
+        }
+        seenValues.add(value)
+      }
+      // The pair (size N, all values 0..(N-1) unique) is equivalent
+      // to "exact coverage of 0..(N-1) with no gaps".
+
+      // Optional snapshot drift detection. Now keyed on the locked
+      // snapshot so a stale view from before the lock can no longer
+      // slip through.
+      const currentSnapshot = computeMenuOrderSnapshot(manifests)
+      if (
+        requestedSnapshot !== undefined &&
+        requestedSnapshot !== currentSnapshot
+      ) {
+        emitHttpRouteAudit(apiLogger, {
+          method: 'PUT',
+          path: '/api/apps/menu-order',
+          pathParams: {},
+          status: 409,
+          audit: {
+            action: 'menu-order-update',
+            snapshotProvided: true,
+          },
+          errorCode: 'MenuOrderSnapshotDrift',
+        })
+        res.status(409).json({ error: 'MenuOrderSnapshotDrift' })
+        return
+      }
+
+      // Atomic batch write. There is no POSIX primitive for "rename
+      // many files atomically", so we fall back to (a) snapshot the
+      // old bytes per file, (b) issue every write sequentially, (c)
+      // on the first failure rewrite the already-committed files
+      // back to their pre-snapshot bytes. The rollback path is
+      // best-effort because a disk that just failed mid-write may
+      // keep failing — when that happens we log loudly so the
+      // operator can investigate.
+      //
+      // Every manifest write happens while the corresponding app's
+      // lock is still held (acquired above), so a concurrent
+      // bundled enable/disable / handler dispatch cannot observe a
+      // half-applied batch.
       const previousBytes = new Map<string, string>()
       const writtenAppIds: string[] = []
       try {
@@ -301,6 +338,28 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         res.status(500).json({ error: 'MenuOrderAtomicWriteFailed' })
         return
       }
+
+      // Still inside the lock-protected section. Build the post-write
+      // manifest set, compute the new snapshot, and emit the 200
+      // audit record before we release the locks. The broadcast +
+      // response will happen after `finally` runs.
+      const newManifests: AppManifest[] = manifests.map((m) => ({
+        ...m,
+        menuOrder: orderMap.get(m.appId),
+      }))
+      const newSnapshot = computeMenuOrderSnapshot(newManifests)
+      emitHttpRouteAudit(apiLogger, {
+        method: 'PUT',
+        path: '/api/apps/menu-order',
+        pathParams: {},
+        status: 200,
+        audit: {
+          action: 'menu-order-update',
+          updatedCount: manifests.length,
+          snapshotProvided: requestedSnapshot !== undefined,
+        },
+      })
+      postCommit = { newSnapshot, updatedCount: manifests.length }
     } finally {
       // Always release in reverse acquisition order. Failures here
       // can only happen if the lock has already been released; we
@@ -318,27 +377,13 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       }
     }
 
-    // Compute the new snapshot from the post-write manifest list.
-    const newManifests: AppManifest[] = manifests.map((m) => ({
-      ...m,
-      menuOrder: orderMap.get(m.appId),
-    }))
-    const newSnapshot = computeMenuOrderSnapshot(newManifests)
+    // Reachable only on the success path: every error path inside
+    // the try block returned without setting `postCommit`. We could
+    // not run the broadcast + response inside the locked section
+    // because broadcast latency would extend the time the per-app
+    // locks are held.
+    if (postCommit === null) return
 
-    emitHttpRouteAudit(apiLogger, {
-      method: 'PUT',
-      path: '/api/apps/menu-order',
-      pathParams: {},
-      status: 200,
-      audit: {
-        action: 'menu-order-update',
-        updatedCount: manifests.length,
-        snapshotProvided: requestedSnapshot !== undefined,
-      },
-    })
-
-    // Best-effort broadcast — already committed to disk, so a ws
-    // failure must not change the HTTP response.
     try {
       broadcast({
         type: 'app_menu_changed',
@@ -351,7 +396,10 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       )
     }
 
-    res.json({ updated: manifests.length, snapshotVersion: newSnapshot })
+    res.json({
+      updated: postCommit.updatedCount,
+      snapshotVersion: postCommit.newSnapshot,
+    })
   })
 
   // -----------------------------------------------------------------
@@ -466,6 +514,10 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
 
     try {
       const manifestPath = getAppManifestPath(projectRoot, appId)
+      // The existence check is what distinguishes 404 AppNotFound
+      // from 500 AppManifestUnreadable: a missing file is a
+      // legitimate "no such app" signal, while a present-but-broken
+      // file is server-side state that the user must repair.
       if (!fs.existsSync(manifestPath)) {
         emitHttpRouteAudit(apiLogger, {
           method: 'PATCH',
@@ -479,14 +531,16 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      let raw: string
-      try {
-        raw = fs.readFileSync(manifestPath, 'utf-8')
-      } catch (readErr) {
-        apiLogger.warn(
-          { err: readErr, appId, path: manifestPath },
-          'PATCH /api/apps/:appId/menu-label: manifest read failed',
-        )
+      // Codex attempt 1 Finding 2 fix: route the read through the
+      // canonical `readAppManifest()` so this endpoint agrees with
+      // `services/app-manifest.ts` and `scanAppManifests` on what
+      // counts as a readable manifest. `readAppManifest` returns
+      // null for read failure / JSON parse failure / schema
+      // mismatch alike and emits a structured warn line in each
+      // case, so all three are collapsed into one 500
+      // AppManifestUnreadable surface here.
+      const manifest = readAppManifest(fs, projectRoot, appId)
+      if (manifest === null) {
         emitHttpRouteAudit(apiLogger, {
           method: 'PATCH',
           path: '/api/apps/:appId/menu-label',
@@ -499,44 +553,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(raw)
-      } catch (parseErr) {
-        apiLogger.warn(
-          { err: parseErr, appId, path: manifestPath },
-          'PATCH /api/apps/:appId/menu-label: manifest JSON parse failed',
-        )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
-          status: 500,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'AppManifestUnreadable',
-        })
-        res.status(500).json({ error: 'AppManifestUnreadable' })
-        return
-      }
-
-      if (!isManifestShape(parsed)) {
-        apiLogger.warn(
-          { appId, path: manifestPath },
-          'PATCH /api/apps/:appId/menu-label: manifest schema invalid',
-        )
-        emitHttpRouteAudit(apiLogger, {
-          method: 'PATCH',
-          path: '/api/apps/:appId/menu-label',
-          pathParams: { appId },
-          status: 500,
-          audit: { appId, action: 'menu-label-update' },
-          errorCode: 'AppManifestUnreadable',
-        })
-        res.status(500).json({ error: 'AppManifestUnreadable' })
-        return
-      }
-
-      const updated: AppManifest = { ...parsed, userMenuLabel }
+      const updated: AppManifest = { ...manifest, userMenuLabel }
       try {
         fs.writeFileAtomic(
           manifestPath,
@@ -696,22 +713,6 @@ function emitHttpRouteAudit(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/**
- * Lightweight guard used by `PATCH /:appId/menu-label`. We accept any
- * extra fields that the canonical `readAppManifest` would tolerate;
- * the gate is just "looks like a manifest" so the in-memory record we
- * are about to write back preserves every existing field.
- */
-function isManifestShape(value: unknown): value is AppManifest {
-  if (!isPlainObject(value)) return false
-  if (typeof value.appId !== 'string' || value.appId.length === 0) return false
-  if (typeof value.displayName !== 'string') return false
-  if (typeof value.createdAt !== 'string') return false
-  if (typeof value.kovitoboardVersion !== 'string') return false
-  if (!isPlainObject(value.source)) return false
-  return true
 }
 
 // Re-export internal helpers for tests that want to exercise the
