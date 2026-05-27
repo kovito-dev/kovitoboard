@@ -36,6 +36,7 @@ import { createHash } from 'crypto'
 import type { FileAccessLayer } from '../fs-layer'
 import { recipeLogger } from '../logger'
 import { getKovitoboardDir } from '../paths'
+import { isWithin } from '../pathResolver'
 import {
   appendRecipeHistory,
   generateHistoryId,
@@ -336,32 +337,79 @@ function probeBundledRecipeAssetReadable(
 /**
  * Outcome of {@link probeAppDirAnomaly}.
  *
- * The four normative anomaly states from spec recipe-system v1.10
+ * The five normative anomaly states from spec recipe-system v1.11
  * §10.9.3 Step 3d (ii) plus the two "OK" branches the caller routes
  * to either recovery (partial-residue → Step 4-7) or rejection
  * (self-made → 400 `BundledAppIdConflict`).
+ *
+ * v1.11 added `symlink-out-of-app-root` (ii-f) for live symlinks
+ * whose target resolves outside `<projectRoot>/app/`. The probe
+ * verifies path containment via `realpathSync` + `isWithin` before
+ * the readdir follows the link, closing the path-escape attack
+ * vector PR #56 codex review attempt 1 surfaced.
  */
 type AppDirProbeOutcome =
   | { state: 'absent' }
   | { state: 'leftover-temp-dir'; leftoverPath: string }
   | { state: 'non-directory-entry' }
   | { state: 'broken-symlink' }
+  | { state: 'symlink-out-of-app-root'; resolvedTarget: string }
   | { state: 'unreadable'; errno?: string; detail: string }
   | { state: 'partial-residue' }
   | { state: 'self-made' }
 
 /**
+ * Errno → probe state routing for the symlink resolution stages
+ * (`statSync` step 3 and `realpathSync` step 3.5). Spec
+ * recipe-system v1.11 §10.9.3 Step 3d (ii-c)/(ii-d) normative pin:
+ *
+ *   - `ENOENT` / `ELOOP` / `ENOTDIR` (structural resolution
+ *     failures) → `broken-symlink` (500). Includes both broken
+ *     dangling links and symlink chains that bottom out without a
+ *     real target.
+ *   - `EACCES` / `EPERM` / `EIO` / `EBUSY` (permission / I/O
+ *     availability failures) → `unreadable` (503). Retry-after
+ *     friendly because the target may still resolve once the
+ *     transient condition clears.
+ *   - Any other / missing errno value falls to `unreadable` (503)
+ *     so an unfamiliar failure stays on the retry-friendly path
+ *     rather than being mis-classified as a structural anomaly.
+ */
+function classifySymlinkResolveError(err: unknown): AppDirProbeOutcome {
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code: unknown }).code)
+      : undefined
+  if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') {
+    return { state: 'broken-symlink' }
+  }
+  return {
+    state: 'unreadable',
+    errno: code,
+    detail: err instanceof Error ? err.message : String(err),
+  }
+}
+
+/**
  * Probe `<projectRoot>/app/<appId>/` and its sibling paths to decide
  * how the enable transaction Step 3d (ii) should route. The probe
- * order is normative per spec recipe-system v1.10 §10.9.3 Step 3d
- * (ii) round-15 fix:
+ * order is normative per spec recipe-system v1.11 §10.9.3 Step 3d
+ * (ii) (v1.11 added step 2.5 path-boundary verification for live
+ * symlinks):
  *
  *   1. Sibling-path leftover temp dir scan (`<appId>.tmp*` /
  *      `<appId>.staging*`) → `leftover-temp-dir` (500).
  *   2. `lstatSync` on the entry to discriminate non-directory and
  *      symbolic-link cases.
- *   3. `statSync` on the resolved target if (2) reported a symlink;
- *      `ENOENT` → `broken-symlink` (500).
+ *   3. `statSync` on the resolved target if (2) reported a symlink.
+ *      Errno routing (spec v1.11):
+ *        `ENOENT` / `ELOOP` / `ENOTDIR` → `broken-symlink` (500)
+ *        `EACCES` / `EPERM` / `EIO` / `EBUSY` → `unreadable` (503)
+ *   3.5. `realpathSync` + `isWithin(<projectRoot>/app)` containment
+ *      check on any live symlink (added in spec v1.11, BL-2026-176).
+ *      Same errno routing as step 3. Target outside `app/` →
+ *      `symlink-out-of-app-root` (500) — closes the live symlink
+ *      path-escape vector PR #56 codex attempt 1 Medium 1 surfaced.
  *   4. `readdirSync` on the resolved directory; failure → `unreadable`
  *      (503).
  *   5. recipe-history.jsonl bundled/sample install record match;
@@ -369,9 +417,10 @@ type AppDirProbeOutcome =
  *      (recovery), else → `self-made` (reject).
  *
  * @param fs — file access layer (`existsSync` / `lstatSync` /
- *   `statSync` / `readdirSync`).
+ *   `statSync` / `realpathSync` / `readdirSync`).
  * @param projectRoot — the absolute path of the user's project root.
- *   The probe never walks outside `<projectRoot>/app/`.
+ *   The probe never walks outside `<projectRoot>/app/`; live symlinks
+ *   whose target leaves that subtree are rejected by step 3.5.
  * @param appId — the safe-slug appId (already validated by
  *   {@link assertSafeAppId}).
  * @param recipeId — the bundled-eligible recipe id for the install
@@ -445,27 +494,45 @@ function probeAppDirAnomaly(
   }
 
   if (lstat.isSymbolicLink) {
-    // Step 3: symlink target resolution.
+    // Step 3: symlink target resolution. Spec recipe-system v1.11
+    // §10.9.3 Step 3d (ii-c)/(ii-d) errno routing: structural
+    // resolution failures (ENOENT/ELOOP/ENOTDIR) fall to (ii-c)
+    // broken-symlink (500); permission / I/O availability failures
+    // (EACCES/EPERM/EIO/EBUSY) fall to (ii-d) unreadable (503).
+    // Other errno values default to (ii-d) so unfamiliar failures
+    // stay on the retry-friendly 503 path instead of being
+    // mis-classified as a structural anomaly.
     try {
       const target = fs.statSync(appDir)
       if (!target.isDirectory) {
         return { state: 'non-directory-entry' }
       }
-      // Fallthrough to step 4 (readdirSync via the symlink).
+      // Fallthrough to step 3.5 (realpath + path-boundary check).
     } catch (err) {
-      const code =
-        err && typeof err === 'object' && 'code' in err
-          ? String((err as { code: unknown }).code)
-          : undefined
-      if (code === 'ENOENT') {
-        return { state: 'broken-symlink' }
-      }
-      return {
-        state: 'unreadable',
-        errno: code,
-        detail: err instanceof Error ? err.message : String(err),
-      }
+      return classifySymlinkResolveError(err)
     }
+    // Step 3.5 (spec v1.11 BL-2026-176): live symlink path-boundary
+    // verification. `realpathSync` resolves the symlink (and any
+    // intermediate components) to an absolute canonical path; the
+    // `isWithin` containment check rejects targets outside
+    // `<projectRoot>/app/` before step 4's `readdirSync` follows the
+    // link. Without this gate a crafted `app/<appId>` symlink would
+    // let the probe list (and step 5 act on) an external directory,
+    // defeating the spec §10.9.3 fail-closed posture. PR #56 codex
+    // review attempt 1 Medium 1 surfaced this; spec v1.11 §10.9.3
+    // (ii-f) pins the new state. Same errno routing as step 3.
+    const appBoundary = join(projectRoot, 'app')
+    let resolvedTarget: string
+    try {
+      resolvedTarget = fs.realpathSync(appDir)
+    } catch (err) {
+      return classifySymlinkResolveError(err)
+    }
+    if (!isWithin(resolvedTarget, appBoundary)) {
+      return { state: 'symlink-out-of-app-root', resolvedTarget }
+    }
+    // Live symlink whose target stays under <projectRoot>/app/ →
+    // fallthrough to step 4 (readdirSync via the symlink).
   } else if (!lstat.isDirectory) {
     return { state: 'non-directory-entry' }
   }
@@ -1036,6 +1103,35 @@ export function enableBundledRecipe(
           500,
           'BundledAppIdConflictAnomaly',
           { recipeId, appId, anomalyType: 'broken-symlink' },
+        )
+      case 'symlink-out-of-app-root':
+        // Spec recipe-system v1.11 §10.9.3 Step 3d (ii-f): live
+        // symlink whose realpath leaves `<projectRoot>/app/`. The
+        // throw keeps step 3 `readdirSync` from ever running on the
+        // external target. The structured `resolvedTarget` field is
+        // returned to the client (and the audit log) so ops can
+        // pinpoint the offending link without a separate fs probe.
+        // The audit event name is normative
+        // (`bundled-symlink-out-of-app-root`, spec v1.11 §10.9.3).
+        recipeLogger.error(
+          {
+            event: 'bundled-symlink-out-of-app-root',
+            recipeId,
+            appId,
+            resolvedTarget: probe.resolvedTarget,
+          },
+          'Bundled enable rejected: live symlink target is outside <projectRoot>/app/',
+        )
+        throw new BundledInstallerError(
+          `appDir "${appDir}" is a live symlink whose target "${probe.resolvedTarget}" is outside <projectRoot>/app/`,
+          500,
+          'BundledAppIdConflictAnomaly',
+          {
+            recipeId,
+            appId,
+            anomalyType: 'symlink-out-of-app-root',
+            resolvedTarget: probe.resolvedTarget,
+          },
         )
       case 'unreadable':
         throw new BundledInstallerError(

@@ -1235,6 +1235,87 @@ describe('enable edge cases (BL-2026-176)', () => {
     expect(err.detail?.anomalyType).toBe('broken-symlink')
   })
 
+  it('BundledAppIdConflictAnomaly: a live symlink whose target leaves <projectRoot>/app/ fails closed', () => {
+    // Spec recipe-system v1.11 §10.9.3 Step 3d (ii-f). PR #56 codex
+    // attempt 1 Medium 1: a crafted `app/<appId>` symlink that
+    // resolves outside `<projectRoot>/app/` would let step 3
+    // `readdirSync` list (and step 5 act on) an external directory.
+    // The step 2.5 path-boundary verification must reject this
+    // before the readdir runs.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    // Plant a real directory outside `<projectRoot>/app/` and
+    // symlink the appDir to it. The target exists, so the probe
+    // cannot fall through to the broken-symlink (ii-c) branch.
+    const externalDir = join(h.projectRoot, 'external-target')
+    mkdirSync(externalDir, { recursive: true })
+    writeFileSync(join(externalDir, 'secret.txt'), 'do-not-read', 'utf-8')
+    symlinkSync(externalDir, join(appBase, SAMPLE_RECIPE_ID))
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflictAnomaly')
+    expect(err.httpStatus).toBe(500)
+    expect(err.detail?.anomalyType).toBe('symlink-out-of-app-root')
+    // The resolvedTarget must canonicalise to the planted external
+    // dir. On macOS the project root sits under `/private/var/...`
+    // so we substring-match on the leaf rather than the full path.
+    expect(typeof err.detail?.resolvedTarget).toBe('string')
+    expect(err.detail?.resolvedTarget as string).toContain('external-target')
+  })
+
+  it('a live symlink whose target stays under <projectRoot>/app/ falls through to the readable-directory branch', () => {
+    // Spec recipe-system v1.11 §10.9.3 Step 3d (ii) step 2.5
+    // path-boundary verification only rejects targets outside
+    // `<projectRoot>/app/`. A symlink pointing to a sibling app
+    // directory (in-boundary) must keep the legacy probe outcome:
+    // readdir succeeds, then the history-match decides between
+    // `partial-residue` (recovery) and `self-made` (400). With no
+    // bundled/sample install record the result is the latter.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    const appBase = join(h.projectRoot, 'app')
+    mkdirSync(appBase, { recursive: true })
+    const internalDir = join(appBase, 'other-real-app')
+    mkdirSync(internalDir, { recursive: true })
+    writeFileSync(join(internalDir, 'placeholder.txt'), 'x', 'utf-8')
+    symlinkSync(internalDir, join(appBase, SAMPLE_RECIPE_ID))
+
+    let thrown: unknown = null
+    try {
+      enableBundledRecipe({
+        fs: h.fs,
+        manifestStore: h.manifestStore,
+        projectRoot: h.projectRoot,
+        kovitoboardRoot: KB_INSTALL_ROOT,
+        recipeId: SAMPLE_RECIPE_ID,
+        sample,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(BundledInstallerError)
+    const err = thrown as BundledInstallerError
+    expect(err.errorCode).toBe('BundledAppIdConflict')
+    expect(err.httpStatus).toBe(400)
+    expect(err.detail?.conflictSource).toBe('self-made')
+  })
+
   it('BundledAppIdConflictAnomaly: a sibling leftover temp dir fails closed', () => {
     const samples = scanSamples(h)
     const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
