@@ -94,6 +94,8 @@ import {
   disableBundledRecipe,
   enableBundledRecipe,
   isBundledEligibleRecipeId,
+  loadRecipeHistorySnapshot,
+  resolveBundledAppIdForDisable,
 } from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
@@ -125,7 +127,11 @@ import type {
   ClientLogPayload,
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
-import { dispatch as dispatchHandler } from './handlerDispatcher'
+import {
+  acquireAppLock,
+  AppLockWaitTimeoutError,
+  dispatch as dispatchHandler,
+} from './handlerDispatcher'
 import type {
   KbCallRequest,
   KbCallResponse,
@@ -1234,7 +1240,7 @@ app.get('/api/recipes/sample', (_req, res) => {
 // http-api-contract v1.7.1 §6.3.8.B). The handlers below stay thin
 // — the transaction lives in services/bundled-installer.ts.
 
-app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
+app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
   const recipeId = req.params.recipeId
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
@@ -1270,51 +1276,146 @@ app.post('/api/recipes/sample/:recipeId/enable', (req, res) => {
     res.status(404).json({ error: 'BundledNotFound' })
     return
   }
+  // BL-2026-176 (a) acquireAppLock integration. The bundled-enable
+  // transaction copies artifacts into `<projectRoot>/app/<appId>/`
+  // and writes the manifest. A concurrent handler dispatch for the
+  // same appId could see a half-written appDir or stale manifest
+  // snapshot — `acquireAppLock(appId)` is the same gate
+  // `handlerDispatcher.dispatch` already takes, so by sharing the
+  // key we make the two paths mutually exclusive for the duration
+  // of the destructive write.
+  //
+  // The bundled-registry id (`sample.id`) is also the target appId
+  // (BS-L9 default), so the lock key is known before any disk read
+  // and we acquire it here, before `enableBundledRecipe` opens its
+  // first file.
+  const appIdForLock = sample.id
+  // Acquire the lock outside the result `try` so a wait-queue
+  // timeout (503 `BundledAppLockTimeout`) returns immediately
+  // without running the post-commit work that the success path
+  // owns.
+  let release: (() => void)
   try {
-    const result = enableBundledRecipe({
-      fs,
-      manifestStore,
-      projectRoot,
-      kovitoboardRoot: resolveKovitoboardInstallRoot(),
-      recipeId,
-      sample,
-    })
-    // Post-commit work is best-effort. The artifacts copy +
-    // manifest write + history append have already landed; if the
-    // sample-cache refresh or ws-event broadcast throws we still
-    // need to acknowledge the state change. Throwing would turn
-    // a successful enable into a 500 and let clients retry — only
-    // to get `already-enabled`, which is the worst of both worlds.
-    try {
-      refreshInstallStatus(fs, manifestStore)
-    } catch (refreshErr) {
+    release = await acquireAppLock(appIdForLock)
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
       apiLogger.warn(
-        { err: refreshErr, action: 'enable', recipeId },
-        'refreshInstallStatus failed (non-fatal post-commit)',
+        { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+        'Bundled enable rejected (app lock timeout)',
       )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
     }
-    // ws-event broadcast: recipe_apps_changed (L11 cascade). Only
-    // emit on an actual state change — `already-enabled` is an
-    // idempotent retry that downstream consumers would otherwise
-    // re-handle as a fresh enable (refetching menus, replaying
-    // audit work, etc.).
-    if (result.status === 'enabled') {
+    // The app-lock contract only models the wait-timeout failure
+    // mode (`AppLockWaitTimeoutError`), but the async signature does
+    // not statically prevent an unrelated rejection (e.g. a future
+    // implementation bug, a `setTimeout` failure under host stress).
+    // Letting such a rejection escape from this async route handler
+    // would hand control to Express's default error handler, which
+    // serves an HTML body / hangs the response — a JSON API contract
+    // violation. Local-catch + structured 500 keeps the surface
+    // consistent with `handleBundledInstallerError` and lets clients
+    // recover deterministically (PR #56 codex attempt 3 Finding
+    // "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+      'Bundled enable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Hold the lock only for the destructive disk transaction
+  // (artifacts copy + manifest write + history append). The
+  // post-commit work (sample-cache refresh + ws-event broadcast +
+  // response serialisation) is best-effort and does not need
+  // serialisation with `handlerDispatcher.dispatch` — keeping it
+  // inside the locked section makes `BundledAppLockTimeout` easier
+  // to hit under slow rescans, which is an avoidable availability
+  // regression (PR #56 codex attempt 1 Finding 3).
+  let result: ReturnType<typeof enableBundledRecipe>
+  try {
+    try {
+      result = enableBundledRecipe({
+        fs,
+        manifestStore,
+        projectRoot,
+        kovitoboardRoot: resolveKovitoboardInstallRoot(),
+        recipeId,
+        sample,
+      })
+    } finally {
+      release()
+    }
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'enable', recipeId)
+    return
+  }
+  // Post-commit work runs after the lock release. Best-effort:
+  // the artifacts copy + manifest write + history append have
+  // already landed; if the sample-cache refresh or ws-event
+  // broadcast throws we still need to acknowledge the state
+  // change. Throwing would turn a successful enable into a 500
+  // and let clients retry — only to get `already-enabled`, which
+  // is the worst of both worlds.
+  try {
+    refreshInstallStatus(fs, manifestStore)
+  } catch (refreshErr) {
+    apiLogger.warn(
+      { err: refreshErr, action: 'enable', recipeId },
+      'refreshInstallStatus failed (non-fatal post-commit)',
+    )
+  }
+  // ws-event broadcast: recipe_apps_changed (L11 cascade). Only
+  // emit on an actual state change — `already-enabled` is an
+  // idempotent retry that downstream consumers would otherwise
+  // re-handle as a fresh enable (refetching menus, replaying
+  // audit work, etc.).
+  //
+  // Best-effort wrap: symmetric with the refreshInstallStatus
+  // block above. `broadcastRecipeAppsChanged` already swallows
+  // and logs broadcast failures internally (see the helper
+  // below), but the callsite wrap removes any visual asymmetry
+  // and guards against future helper refactors that might
+  // accidentally let an exception escape after the destructive
+  // disk transaction already committed (PR #56 codex attempt 2
+  // Finding "post-commit error handling").
+  if (result.status === 'enabled') {
+    try {
       broadcastRecipeAppsChanged({
         trigger: 'enable',
         appId: result.appId,
         source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
       })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'enable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
     }
-    res.json(result)
-  } catch (err) {
-    handleBundledInstallerError(req, res, err, 'enable', recipeId)
   }
+  res.json(result)
 })
 
-app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
+app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
   const recipeId = req.params.recipeId
   if (typeof recipeId !== 'string' || recipeId.length === 0) {
     res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  // Load `recipe-history.jsonl` once per request path. The same
+  // snapshot is threaded into both `classifyLocalResidue` (the
+  // allowlist short-circuit gate, when applicable) and
+  // `resolveBundledAppIdForDisable` to avoid redundant O(n) sync
+  // reads of the append-only history file as it grows (PR #56
+  // codex attempt 2 Finding "resource exhaustion"). Probe failures
+  // (`EACCES` / `EPERM` / `EIO` / `EBUSY` etc.) surface as 503
+  // `BundledLocalStateUnavailable`, identical to the embedded
+  // probe path before the dedup.
+  let historySnapshot
+  try {
+    historySnapshot = loadRecipeHistorySnapshot(fs)
+  } catch (snapshotErr) {
+    handleBundledInstallerError(req, res, snapshotErr, 'disable', recipeId)
     return
   }
   // Authorization gate: disable accepts a recipeId iff either
@@ -1328,7 +1429,12 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
   // primitive.
   if (!isBundledEligibleRecipeId(recipeId)) {
     try {
-      const residue = classifyLocalResidue({ fs, manifestStore, recipeId })
+      const residue = classifyLocalResidue({
+        fs,
+        manifestStore,
+        recipeId,
+        historySnapshot,
+      })
       if (residue === 'none') {
         res.status(404).json({ error: 'BundledNotFound' })
         return
@@ -1338,38 +1444,145 @@ app.post('/api/recipes/sample/:recipeId/disable', (req, res) => {
       return
     }
   }
+  // BL-2026-176 (a) acquireAppLock integration. Resolve the appId *before*
+  // we take the lock so handler-dispatch and bundled-disable share
+  // the same mutual-exclusion key (spec recipe-system v1.10 §10.9.4
+  // Step 1 + handlerDispatcher.ts SSOT). The resolve helper does
+  // the minimum read necessary; any IO failure surfaces as a
+  // `BundledInstallerError` with the spec-normative error code.
+  let resolved
   try {
-    const result = disableBundledRecipe({ fs, manifestStore, projectRoot, recipeId })
-    try {
-      refreshInstallStatus(fs, manifestStore)
-    } catch (refreshErr) {
+    resolved = resolveBundledAppIdForDisable({
+      fs,
+      manifestStore,
+      recipeId,
+      historySnapshot,
+    })
+  } catch (resolveErr) {
+    handleBundledInstallerError(req, res, resolveErr, 'disable', recipeId)
+    return
+  }
+  // Lock key resolution: prefer the residue-resolved appId (the
+  // current committed local state's appId) when we already saw
+  // residue at the pre-lock probe; otherwise (resolved === undefined
+  // and the recipeId is bundled-eligible) fall back to the bundled
+  // registry mapping, which for bundled samples is the recipeId
+  // itself per spec recipe-system v1.10 §10.9.1 BS-L9. Without this
+  // fallback, the disable route would skip the lock entirely on the
+  // "no committed residue" branch and race with an in-flight enable
+  // for the same appId — the enable could finish committing after
+  // this handler returns 200 `already-disabled`, leaving the app
+  // enabled even though the caller just requested disable (PR #56
+  // codex attempt 8 Finding "race condition / lock bypass"). For
+  // non-allowlisted recipeIds with no residue the residue gate at
+  // line 1430 already returned 404; reaching the `undefined` branch
+  // therefore implies bundled-eligible.
+  const appIdForLock = resolved?.appId ?? recipeId
+  // Acquire the lock outside the result `try` so a wait-queue
+  // timeout (503 `BundledAppLockTimeout`) returns immediately
+  // without running the post-commit work that the success path
+  // owns. Mirrors the enable handler structure (PR #56 codex
+  // attempt 1 Finding 3 lock-scope narrowing).
+  let release: (() => void)
+  try {
+    release = await acquireAppLock(appIdForLock)
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
       apiLogger.warn(
-        { err: refreshErr, action: 'disable', recipeId },
-        'refreshInstallStatus failed (non-fatal post-commit)',
+        { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+        'Bundled disable rejected (app lock timeout)',
       )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
     }
-    if (
-      result.status === 'disabled' &&
-      result.appId !== undefined &&
-      result.source !== undefined
-    ) {
-      // Round-trip the persisted source (`'bundled'` for bundled-
-      // enable lineage, `'sample'` for grandfather-sample lineage).
-      // Hard-coding `'bundled'` here would break BS-L3-B and
-      // mis-signal grandfather-sample disables to UI consumers
-      // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
-      // Skip the broadcast on `already-disabled` no-ops — see the
-      // matching guard on the enable handler.
+    // Mirror the enable handler local-catch: an unexpected lock
+    // rejection must not escape an async route handler (no
+    // centralized JSON error middleware exists, so Express's default
+    // handler would serve HTML and break the API contract). See the
+    // matching block in the enable handler for the full rationale
+    // (PR #56 codex attempt 3 Finding "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+      'Bundled disable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Hold the lock only for the destructive disk transaction
+  // (`disableBundledRecipe`: rmSync appDir + manifest unlink +
+  // history append). The post-commit work (sample-cache refresh +
+  // ws-event broadcast + response serialisation) is best-effort
+  // and does not need serialisation with `handlerDispatcher.dispatch`.
+  let result: ReturnType<typeof disableBundledRecipe>
+  try {
+    try {
+      result = disableBundledRecipe({
+        fs,
+        manifestStore,
+        projectRoot,
+        recipeId,
+        // Deliberately do NOT thread the pre-lock historySnapshot
+        // into the locked transaction. The pre-lock snapshot is
+        // taken BEFORE acquireAppLock; if a concurrent enable /
+        // disable for the same appId commits while this waiter is
+        // queued, the snapshot becomes stale and the locked
+        // classifyLocalResidue would mis-decide (returning
+        // already-disabled even though enable just finished, or
+        // appending a second uninstall record after the first
+        // disable already completed). disableBundledRecipe falls
+        // back to its own internal loadRecipeHistorySnapshot under
+        // the lock, which sees the post-wait state (PR #56 codex
+        // attempt 7 Finding "stale state across lock boundary").
+        // The pre-lock snapshot is still consumed by the upstream
+        // residue / appId-resolution probes that derive the
+        // tentative lock key — those run *before* the lock and
+        // tolerate the stale-state race because their decisions
+        // are re-validated under the lock anyway.
+      })
+    } finally {
+      release()
+    }
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'disable', recipeId)
+    return
+  }
+  try {
+    refreshInstallStatus(fs, manifestStore)
+  } catch (refreshErr) {
+    apiLogger.warn(
+      { err: refreshErr, action: 'disable', recipeId },
+      'refreshInstallStatus failed (non-fatal post-commit)',
+    )
+  }
+  if (
+    result.status === 'disabled' &&
+    result.appId !== undefined &&
+    result.source !== undefined
+  ) {
+    // Round-trip the persisted source (`'bundled'` for bundled-
+    // enable lineage, `'sample'` for grandfather-sample lineage).
+    // Hard-coding `'bundled'` here would break BS-L3-B and
+    // mis-signal grandfather-sample disables to UI consumers
+    // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
+    // Skip the broadcast on `already-disabled` no-ops — see the
+    // matching guard on the enable handler.
+    //
+    // Best-effort wrap mirrors the enable handler (PR #56 codex
+    // attempt 2 Finding "post-commit error handling").
+    try {
       broadcastRecipeAppsChanged({
         trigger: 'disable',
         appId: result.appId,
         source: result.source,
       })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'disable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
     }
-    res.json(result)
-  } catch (err) {
-    handleBundledInstallerError(req, res, err, 'disable', recipeId)
   }
+  res.json(result)
 })
 
 function handleBundledInstallerError(
@@ -1397,6 +1610,17 @@ function handleBundledInstallerError(
   res.status(500).json({ error: 'BundledTransactionUnexpected' })
 }
 
+/**
+ * Best-effort post-commit notifier for the bundled enable / disable
+ * lifecycle (recipe-system v1.11 §10.9 + http-api-contract v1.7.3
+ * §6.3.8.B BS-L3-B). Broadcast failures are **swallowed and logged
+ * internally** — this function is contractually non-throwing so the
+ * destructive disk transaction (already committed by the caller)
+ * cannot be retroactively reported as a 500 to the HTTP client. The
+ * callsites add a defensive try/catch wrap on top of this internal
+ * guard for symmetry with `refreshInstallStatus` and to insulate
+ * against future refactors.
+ */
 function broadcastRecipeAppsChanged(payload: {
   trigger: 'enable' | 'disable'
   appId: string
