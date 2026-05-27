@@ -370,6 +370,43 @@ describe('PUT /api/apps/menu-order', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('400 MenuOrderCoverageMismatch when a manifest.appId disagrees with its directory name', async () => {
+    // app/alpha/manifest.json carries {appId: "alpha"} (legitimate).
+    writeManifest(h.projectRoot, buildManifest('alpha'))
+    // app/wrongdir/manifest.json carries {appId: "actual-name"}
+    // — the scan must drop it from the eligible set rather than
+    // trust the on-disk appId as a lock key.
+    const wrongDir = join(h.projectRoot, 'app', 'wrongdir')
+    mkdirSync(wrongDir, { recursive: true })
+    writeFileSync(
+      join(wrongDir, 'manifest.json'),
+      JSON.stringify(buildManifest('actual-name'), null, 2) + '\n',
+      'utf-8',
+    )
+
+    // Sending the order body that includes only 'alpha' should
+    // succeed because 'wrongdir' is treated as ineligible (matches
+    // the previous scanAppManifests "skip corrupt" behaviour).
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [{ appId: 'alpha', menuOrder: 0 }],
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body?.updated).toBe(1)
+
+    // Sending an order that includes 'wrongdir' OR 'actual-name'
+    // should be rejected with MenuOrderCoverageMismatch — neither
+    // name is in the eligible set.
+    h.broadcasts.length = 0
+    const wrongdirReply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [
+        { appId: 'alpha', menuOrder: 0 },
+        { appId: 'wrongdir', menuOrder: 1 },
+      ],
+    })
+    expect(wrongdirReply.status).toBe(400)
+    expect(wrongdirReply.body?.error).toBe('MenuOrderCoverageMismatch')
+  })
+
   it('500 MenuOrderAtomicWriteFailed when an app directory is a symlink that escapes the app root', async () => {
     // Create a legitimate app under `app/alpha/`.
     writeManifest(h.projectRoot, buildManifest('alpha', 0))
@@ -679,6 +716,35 @@ describe('PATCH /api/apps/:appId/menu-label', () => {
         'utf-8',
       ),
     ).toBe(before)
+
+    expect(h.broadcasts).toHaveLength(0)
+  })
+
+  it('500 AppManifestUnreadable when manifest.appId disagrees with the path parameter', async () => {
+    // app/imposter/manifest.json carries {appId: "victim"}.
+    const dir = join(h.projectRoot, 'app', 'imposter')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'manifest.json'),
+      JSON.stringify(buildManifest('victim'), null, 2) + '\n',
+      'utf-8',
+    )
+
+    const reply = await sendJson(
+      h.app,
+      'PATCH',
+      '/api/apps/imposter/menu-label',
+      { userMenuLabel: 'Hijacked' },
+    )
+
+    expect(reply.status).toBe(500)
+    expect(reply.body?.error).toBe('AppManifestUnreadable')
+
+    // Manifest content is byte-for-byte unchanged.
+    const after = JSON.parse(
+      readFileSync(join(dir, 'manifest.json'), 'utf-8'),
+    ) as Record<string, unknown>
+    expect(after.userMenuLabel).toBeUndefined()
 
     expect(h.broadcasts).toHaveLength(0)
   })

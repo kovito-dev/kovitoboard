@@ -301,6 +301,30 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         // Read from the canonical path the boundary check approved.
         const manifest = readAppManifestAtPath(fs, pathCheck.canonical, entry)
         if (manifest === null) continue
+        // Codex attempt 9 Finding 1 fix: refuse manifests whose
+        // internal `appId` does not match the directory name.
+        // Without this check, a corrupt manifest at
+        // `app/alpha/manifest.json` carrying `appId: "beta"` would
+        // make the batch acquire the `beta` lock while writing
+        // through the canonical path that resolves under `alpha`,
+        // reintroducing the cross-app race the per-app locks are
+        // supposed to prevent. Skipping it (rather than returning
+        // 500) matches the existing scan-skip semantics for
+        // missing / parse-fail manifests: the entry simply does
+        // not appear in the eligible set, which makes the request
+        // either fail closed with `MenuOrderCoverageMismatch` or
+        // succeed against only the well-formed manifests.
+        if (manifest.appId !== entry) {
+          apiLogger.warn(
+            {
+              directory: entry,
+              manifestAppId: manifest.appId,
+              path: pathCheck.canonical,
+            },
+            'PUT /api/apps/menu-order: manifest.appId does not match directory name; treating as ineligible',
+          )
+          continue
+        }
         manifests.push(manifest)
         canonicalManifestPaths.set(manifest.appId, pathCheck.canonical)
       }
@@ -736,6 +760,15 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     let postCommit:
       | { userMenuLabel: string | null; broadcast: boolean }
       | null = null
+    // Codex attempt 9 Finding 2 fix: wrap the locked section in an
+    // outer try / catch so an unexpected throw — anywhere between
+    // boundary check, manifest read, atomic write, audit emit, or
+    // the inner try / finally itself — lands on a structured 500
+    // JSON envelope instead of Express's default HTML error handler.
+    // This mirrors the same guard PUT /api/apps/menu-order gained
+    // in attempt 3. The inner try / finally still releases the lock
+    // along every path.
+    try {
     try {
       // The existence check is what distinguishes 404 AppNotFound
       // from 500 AppManifestUnreadable: a missing file is a
@@ -804,13 +837,43 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           status: 500,
           body: { error: 'AppManifestUnreadable' },
           audit: {
-            
             method: 'PATCH',
             path: '/api/apps/:appId/menu-label',
             pathParams: { appId },
             audit: { appId, action: 'menu-label-update' },
             errorCode: 'AppManifestUnreadable',
-            
+          },
+        })
+        return
+      }
+
+      // Codex attempt 9 Finding 1 fix: refuse a manifest whose
+      // internal `appId` field disagrees with the path parameter.
+      // A corrupt manifest stored at `app/alpha/manifest.json`
+      // carrying `appId: "beta"` would otherwise let this route
+      // update the wrong app under the alpha-path lock, breaking
+      // the cross-app exclusion the per-app lock is meant to
+      // provide. Treat the mismatch as an unreadable manifest
+      // (500 AppManifestUnreadable) so the wire surface stays
+      // identical to every other corrupt-manifest path.
+      if (manifest.appId !== appId) {
+        apiLogger.warn(
+          {
+            requestedAppId: appId,
+            manifestAppId: manifest.appId,
+            path: pathCheck.canonical,
+          },
+          'PATCH /api/apps/:appId/menu-label: manifest.appId does not match path parameter',
+        )
+        respondAndAudit(res, apiLogger, {
+          status: 500,
+          body: { error: 'AppManifestUnreadable' },
+          audit: {
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'AppManifestUnreadable',
           },
         })
         return
@@ -888,6 +951,33 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           'PATCH /api/apps/:appId/menu-label: release lock failed',
         )
       }
+    }
+    } catch (unexpectedErr) {
+      // Codex attempt 9 Finding 2 fix: anything that escapes the
+      // inner try / finally lands here. Treat it as an unexpected
+      // server error — emit the audit record, return the JSON
+      // envelope the API contract promises, and avoid Express's
+      // default HTML error handler. `res.headersSent` is the gate
+      // for callers that already responded inside the inner block;
+      // we never send a second response.
+      apiLogger.error(
+        { err: unexpectedErr, appId },
+        'PATCH /api/apps/:appId/menu-label: unexpected exception',
+      )
+      if (!res.headersSent) {
+        respondAndAudit(res, apiLogger, {
+          status: 500,
+          body: { error: 'MenuLabelAtomicWriteFailed' },
+          audit: {
+            method: 'PATCH',
+            path: '/api/apps/:appId/menu-label',
+            pathParams: { appId },
+            audit: { appId, action: 'menu-label-update' },
+            errorCode: 'MenuLabelAtomicWriteFailed',
+          },
+        })
+      }
+      return
     }
 
     // Reachable only on the success path: every error path inside
