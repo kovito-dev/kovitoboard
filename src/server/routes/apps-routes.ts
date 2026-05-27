@@ -241,7 +241,37 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
       // step 2.5 + security-threat-model.md path-boundary layer.
       const manifests: AppManifest[] = []
       const canonicalManifestPaths = new Map<string, string>()
-      const appRootDir = resolvePath(projectRoot, 'app')
+      // Codex attempt 12 Finding 1 + Finding 3 fix: verify the
+      // `app/` root itself BEFORE any readdirSync. Without this
+      // gate an `app -> /elsewhere` symlink would let the scan
+      // enumerate the foreign directory before per-entry checks
+      // got a chance to run; the per-entry check would still
+      // reject each manifest, but the readdirSync I/O against the
+      // foreign location is itself a violation of the
+      // `<projectRoot>/app/**` boundary. The helper also returns a
+      // distinct error class for root-level failures so they
+      // surface as 500 rather than being downgraded to a per-entry
+      // skip (Finding 3).
+      const rootCheck = verifyAppRoot(fs, projectRoot)
+      if ('error' in rootCheck) {
+        apiLogger.warn(
+          { kind: rootCheck.error },
+          'PUT /api/apps/menu-order: app root failed boundary check',
+        )
+        respondAndAudit(res, apiLogger, {
+          status: 500,
+          body: { error: 'MenuOrderAtomicWriteFailed' },
+          audit: {
+            method: 'PUT',
+            path: '/api/apps/menu-order',
+            pathParams: {},
+            audit: { action: 'menu-order-update' },
+            errorCode: 'MenuOrderAtomicWriteFailed',
+          },
+        })
+        return
+      }
+      const appRootDir = rootCheck.appBoundary
       let appDirEntries: string[]
       try {
         appDirEntries = fs.existsSync(appRootDir)
@@ -639,17 +669,33 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
   router.patch('/:appId/menu-label', async (req, res) => {
     const appId = req.params.appId
     if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
+      // Codex attempt 12 Finding 2 fix: do NOT record the raw
+      // rejected appId in audit. Express's route pattern accepts
+      // an arbitrary path segment, so a caller could otherwise
+      // submit very long / hostile bytes and force unbounded
+      // audit-log amplification per request. We record only the
+      // rejection itself plus the byte length of the offending
+      // segment (capped) so operators can still observe an
+      // abusive scan pattern without storing the payload.
+      const rawAppIdLength =
+        typeof appId === 'string' ? Math.min(appId.length, 1024) : 0
       respondAndAudit(res, apiLogger, {
         status: 400,
         body: { error: 'InvalidAppId' },
         audit: {
-          
           method: 'PATCH',
           path: '/api/apps/:appId/menu-label',
-          pathParams: { appId: String(appId ?? '') },
-          audit: { action: 'menu-label-update' },
+          // appId is intentionally absent from pathParams here —
+          // the value failed the regex and would be a bad audit
+          // payload. The `audit.labelLength` field doubles as the
+          // "offending segment size" signal for this branch
+          // (cheap, bounded, no raw content).
+          pathParams: {},
+          audit: {
+            action: 'menu-label-update',
+            labelLength: rawAppIdLength,
+          },
           errorCode: 'InvalidAppId',
-          
         },
       })
       return
@@ -1102,6 +1148,42 @@ function respondMenuOrderError(
  * `500 AppManifestUnreadable` (when the resolved target escaped the
  * boundary) decision the route already makes for unreadable files.
  */
+/**
+ * Verify that `<projectRoot>/app` is the literal sub-path of the
+ * canonical project root, with no symlink redirection. Returns the
+ * canonical app boundary on success, or a structured error so the
+ * caller can distinguish root-level failures (which should surface
+ * as 500) from per-entry failures (which can be skipped). Codex
+ * attempt 12 Finding 1 + Finding 3 fix: PUT /api/apps/menu-order
+ * must run this check ONCE before `readdirSync`, so an `app/`
+ * symlink to an external directory cannot make the scan enumerate
+ * a foreign location.
+ */
+function verifyAppRoot(
+  fs: FileAccessLayer,
+  projectRoot: string,
+):
+  | { appBoundary: string }
+  | { error: 'project-root-resolve-failed' | 'app-root-resolve-failed' | 'app-root-escaped' } {
+  let canonicalProjectRoot: string
+  try {
+    canonicalProjectRoot = fs.realpathSync(projectRoot)
+  } catch {
+    return { error: 'project-root-resolve-failed' }
+  }
+  const appBoundary = resolvePath(canonicalProjectRoot, 'app')
+  let appBoundaryResolved: string
+  try {
+    appBoundaryResolved = fs.realpathSync(appBoundary)
+  } catch {
+    return { error: 'app-root-resolve-failed' }
+  }
+  if (appBoundaryResolved !== appBoundary) {
+    return { error: 'app-root-escaped' }
+  }
+  return { appBoundary }
+}
+
 function resolveManifestPathInAppRoot(
   fs: FileAccessLayer,
   projectRoot: string,
