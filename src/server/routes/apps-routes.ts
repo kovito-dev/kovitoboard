@@ -319,6 +319,7 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
             action: 'menu-order-update',
             updatedCount: 0,
             snapshotProvided: requestedSnapshot !== undefined,
+            noOp: true,
           },
         })
         postCommit = {
@@ -608,7 +609,9 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // broadcast / response outside the locked region (codex attempt
     // 2 Finding 2: keeping the lock during broadcast can turn a
     // slow ws fan-out into AppLockTimeout for the same app).
-    let postCommit: { userMenuLabel: string | null } | null = null
+    let postCommit:
+      | { userMenuLabel: string | null; broadcast: boolean }
+      | null = null
     try {
       const manifestPath = getAppManifestPath(projectRoot, appId)
       // The existence check is what distinguishes 404 AppNotFound
@@ -650,6 +653,40 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
         return
       }
 
+      // Codex attempt 4 Finding 1 fix: no-op short-circuit
+      // (symmetric with PUT /api/apps/menu-order's no-op path
+      // added in attempt 3). When the persisted userMenuLabel
+      // is already equal to the requested value — including
+      // the explicit `null` reset case applied to a manifest
+      // whose userMenuLabel is already missing or null — skip
+      // the writeFileAtomic call and the broadcast. The 200
+      // audit still fires with the no-op marker so the
+      // submission is auditable, and the response payload is
+      // identical to what a real write would have produced.
+      // This makes repeated identical PATCHes O(1) on disk +
+      // ws fan-out, closing the DoS amplification surface.
+      const currentLabel: string | null = manifest.userMenuLabel ?? null
+      const isNoOp = currentLabel === userMenuLabel
+
+      if (isNoOp) {
+        emitHttpRouteAudit(apiLogger, {
+          method: 'PATCH',
+          path: '/api/apps/:appId/menu-label',
+          pathParams: { appId },
+          status: 200,
+          audit: {
+            appId,
+            action: 'menu-label-update',
+            labelLength: userMenuLabel === null ? null : userMenuLabel.length,
+            noOp: true,
+          },
+        })
+        postCommit = { userMenuLabel, broadcast: false }
+        // Fall through to the `finally` block so the lock is
+        // released; the post-lock response path then picks up
+        // `postCommit` and returns 200 without broadcasting.
+      } else {
+
       const updated: AppManifest = { ...manifest, userMenuLabel }
       try {
         fs.writeFileAtomic(
@@ -689,7 +726,8 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
           labelLength: userMenuLabel === null ? null : userMenuLabel.length,
         },
       })
-      postCommit = { userMenuLabel }
+      postCommit = { userMenuLabel, broadcast: true }
+      }
     } finally {
       try {
         release()
@@ -709,20 +747,22 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     // PUT /api/apps/menu-order).
     if (postCommit === null) return
 
-    try {
-      broadcast({
-        type: 'app_menu_changed',
-        payload: {
-          event: 'menu-label-update',
-          appId,
-          ts: Date.now(),
-        },
-      })
-    } catch (broadcastErr) {
-      apiLogger.warn(
-        { err: broadcastErr, appId },
-        'app_menu_changed broadcast failed (non-fatal post-commit)',
-      )
+    if (postCommit.broadcast) {
+      try {
+        broadcast({
+          type: 'app_menu_changed',
+          payload: {
+            event: 'menu-label-update',
+            appId,
+            ts: Date.now(),
+          },
+        })
+      } catch (broadcastErr) {
+        apiLogger.warn(
+          { err: broadcastErr, appId },
+          'app_menu_changed broadcast failed (non-fatal post-commit)',
+        )
+      }
     }
 
     res.json({ appId, userMenuLabel: postCommit.userMenuLabel })
@@ -790,6 +830,14 @@ interface HttpRouteAuditPayload {
   updatedCount?: number
   snapshotProvided?: boolean
   labelLength?: number | null
+  /**
+   * Set to `true` when the route detected the request was a
+   * no-op (the requested order or label already matches the
+   * persisted manifest) and skipped the write + broadcast. Helps
+   * separate "submitted but trivially equal" traffic from real
+   * updates in the audit stream.
+   */
+  noOp?: boolean
 }
 
 function emitHttpRouteAudit(

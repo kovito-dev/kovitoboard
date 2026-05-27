@@ -571,6 +571,69 @@ describe('PATCH /api/apps/:appId/menu-label', () => {
     expect(h.broadcasts).toHaveLength(0)
   })
 
+  it('200 no-op short-circuit: skips write + broadcast when userMenuLabel already matches', async () => {
+    writeManifest(h.projectRoot, {
+      ...buildManifest('alpha'),
+      userMenuLabel: 'Existing Label',
+    })
+
+    const before = readFileSync(
+      join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+      'utf-8',
+    )
+
+    const reply = await sendJson(
+      h.app,
+      'PATCH',
+      '/api/apps/alpha/menu-label',
+      { userMenuLabel: 'Existing Label' },
+    )
+
+    expect(reply.status).toBe(200)
+    expect(reply.body?.userMenuLabel).toBe('Existing Label')
+
+    // Manifest file is byte-for-byte unchanged.
+    expect(
+      readFileSync(
+        join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+        'utf-8',
+      ),
+    ).toBe(before)
+
+    // No broadcast.
+    expect(h.broadcasts).toHaveLength(0)
+  })
+
+  it('200 no-op short-circuit: explicit null reset against missing field is a no-op', async () => {
+    // Manifest has no userMenuLabel field; PATCH with null should
+    // be treated as a no-op (current state already matches null).
+    writeManifest(h.projectRoot, buildManifest('alpha'))
+
+    const before = readFileSync(
+      join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+      'utf-8',
+    )
+
+    const reply = await sendJson(
+      h.app,
+      'PATCH',
+      '/api/apps/alpha/menu-label',
+      { userMenuLabel: null },
+    )
+
+    expect(reply.status).toBe(200)
+    expect(reply.body?.userMenuLabel).toBeNull()
+
+    expect(
+      readFileSync(
+        join(h.projectRoot, 'app', 'alpha', 'manifest.json'),
+        'utf-8',
+      ),
+    ).toBe(before)
+
+    expect(h.broadcasts).toHaveLength(0)
+  })
+
   it('preserves unrelated AppManifest fields when writing back', async () => {
     const base: AppManifest = {
       ...buildManifest('alpha'),
