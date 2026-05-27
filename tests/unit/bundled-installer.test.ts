@@ -1392,6 +1392,64 @@ describe('enable edge cases (BL-2026-176)', () => {
     expect(manifest).not.toBeNull()
     expect(manifest!.source).toBe('bundled')
   })
+
+  it('BundledLocalStateUnavailable: unreadable recipe-history.jsonl surfaces 503 instead of fail-open self-made (PR #56 attempt 3)', () => {
+    // Codex attempt 3 Finding "fail-open local state probe":
+    // the enable transaction's appDir anomaly probe previously fed
+    // its history input from `readRecipeHistory(fs)` directly,
+    // which silently returns `[]` on IO failure. A history file
+    // that the process cannot read should *not* be downgraded to
+    // "no history" — it must surface as 503 so the operator can
+    // recover the disk state, and the partial-residue branch never
+    // mis-routes to `self-made`.
+    const samples = scanSamples(h)
+    const sample = samples.find((s) => s.metadata.recipeId === SAMPLE_RECIPE_ID)!
+    // Seed a history entry so the file exists, then chmod 000 to
+    // force EACCES on read. Without the snapshot loader fix, the
+    // enable path would swallow the failure and probe as "no
+    // history".
+    appendRecipeHistory(h.fs, {
+      id: 'r_20260527_enable_io_fail',
+      action: 'install',
+      name: 'Document Viewer',
+      version: '1.0.0',
+      source: 'bundled',
+      hash: 'fakehash',
+      appliedAt: '2026-05-27T00:00:00.000Z',
+      artifacts: [],
+      menu: [],
+      recipeId: SAMPLE_RECIPE_ID,
+      appId: SAMPLE_RECIPE_ID,
+    })
+    const historyPath = join(
+      h.projectRoot,
+      '.kovitoboard',
+      'recipe-history.jsonl',
+    )
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    chmodSync(historyPath, 0o000)
+    try {
+      let thrown: unknown = null
+      try {
+        enableBundledRecipe({
+          fs: h.fs,
+          manifestStore: h.manifestStore,
+          projectRoot: h.projectRoot,
+          kovitoboardRoot: KB_INSTALL_ROOT,
+          recipeId: SAMPLE_RECIPE_ID,
+          sample,
+        })
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(BundledInstallerError)
+      const err = thrown as BundledInstallerError
+      expect(err.errorCode).toBe('BundledLocalStateUnavailable')
+      expect(err.httpStatus).toBe(503)
+    } finally {
+      chmodSync(historyPath, 0o644)
+    }
+  })
 })
 
 describe('disable edge cases (BL-2026-176)', () => {

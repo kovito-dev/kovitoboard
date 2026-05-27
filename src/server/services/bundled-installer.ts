@@ -463,7 +463,7 @@ function probeAppDirAnomaly(
   projectRoot: string,
   appId: string,
   recipeId: string,
-  history: RecipeHistoryEntry[],
+  history: readonly RecipeHistoryEntry[],
 ): AppDirProbeOutcome {
   const appBase = join(projectRoot, 'app')
   const appDir = join(appBase, appId)
@@ -1137,7 +1137,20 @@ export function enableBundledRecipe(
     // Reuse the history read inside the anomaly probe so we don't
     // pay the file read cost twice when partial-residue recovery
     // falls through to Step 4-7.
-    const historyForProbe = readRecipeHistory(fs)
+    //
+    // Use the throwing snapshot loader rather than `readRecipeHistory`
+    // directly: the latter swallows IO failures and returns `[]` by
+    // contract (best-effort scanner semantics), which would silently
+    // downgrade an unreadable `recipe-history.jsonl` into a "no
+    // history" reading. The partial-residue probe relies on knowing
+    // whether the history is genuinely empty vs unreadable to decide
+    // between `self-made` and `partial-residue` recovery; the silent
+    // downgrade would block legitimate recovery and hide local-state
+    // read failures from the operator. Surfacing the IO failure as
+    // 503 `BundledLocalStateUnavailable` keeps the enable path's
+    // fail-closed posture symmetric with the disable path (PR #56
+    // codex attempt 3 Finding "fail-open local state probe").
+    const historyForProbe = loadRecipeHistorySnapshot(fs).entries
     const probe = probeAppDirAnomaly(fs, projectRoot, appId, recipeId, historyForProbe)
     switch (probe.state) {
       case 'absent':
