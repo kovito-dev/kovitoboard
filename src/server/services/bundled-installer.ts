@@ -822,11 +822,40 @@ function probeAppRootAnomaly(
   }
   for (const name of siblings) {
     for (const prefix of LEFTOVER_TEMP_DIR_PREFIXES) {
-      if (name.startsWith(appId + prefix)) {
+      if (!name.startsWith(appId + prefix)) continue
+      // Codex review #58 attempt 4 Low: the leftover-temp guard is
+      // specifically about a directory left behind by the atomic-
+      // rename layer; an unrelated regular file that happens to
+      // share the prefix is not a real residue and should not block
+      // enable indefinitely. `lstatSync` lets us check the kind of
+      // the matched entry without following a symlink target, which
+      // matches the spec's "previous transaction's atomic-rename
+      // failure" rationale.
+      const candidatePath = join(appRoot, name)
+      let candidateStat: { isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean }
+      try {
+        candidateStat = fs.lstatSync(candidatePath)
+      } catch {
+        // Unable to determine the kind — fall back to fail-closed
+        // reject. A previous transaction's rename may have left a
+        // half-created entry that lstat itself trips over, and
+        // letting enable proceed would risk the same race the guard
+        // exists to catch.
         return {
           state: 'app-root-leftover-temp',
-          leftoverPath: join(appRoot, name),
+          leftoverPath: candidatePath,
         }
+      }
+      if (!candidateStat.isDirectory) {
+        // Regular file / symlink / fifo with the temp prefix — not a
+        // leftover atomic-rename artifact. Skip and keep scanning so
+        // a real leftover directory elsewhere in the iteration still
+        // triggers the reject.
+        continue
+      }
+      return {
+        state: 'app-root-leftover-temp',
+        leftoverPath: candidatePath,
       }
     }
   }
@@ -1614,13 +1643,23 @@ export function isEnabledAndManifestCoherent(
   if (matchingEntry === undefined) {
     return false
   }
-  // Path-boundary invariant: the entry's import path must stay under
-  // `<appId>/` (matches the enable Step 5.6 normative check). A
-  // hand-edited entry whose page escapes the subtree is non-coherent
-  // and routes the next enable through the full repair path.
-  if (!isCanonicalAppIdPath(matchingEntry.page, manifest.appId)) {
-    return false
-  }
+  // Spec recipe-system v1.12 §10.9.3 Step 5.6 explicitly scopes
+  // existing-entry shape verification (page / label / icon
+  // canonicality) as **out of band for the v0.2.x cycle** ("既存
+  // entry の component path / label / icon の整合性 verify は本 spec
+  // section 範囲外、v0.2.x 期間中は 「既 enable 経路として通過、UI
+  // 表示の正確性は user 観察で補完」 posture"). Codex review #58
+  // attempt 4 HIGH surfaced that adding a `isCanonicalAppIdPath`
+  // gate here would cascade with the Step 5.6 idempotent
+  // `'already-present'` short-circuit and produce a converge loop
+  // (coherence says "broken, repair", append says "already there,
+  // skip"). Drop the extra gate so the coherence check stays at the
+  // "entry exists with matching id" level the spec normatively
+  // pins. Path-escape attacks are still defeated end-to-end:
+  // `appendMenuEntry` rejects unsafe characters at write time, and
+  // the renderer's own `isCanonicalAppIdPath` filter
+  // (`menu-extractor.ts`) refuses to surface a non-canonical entry
+  // to the UI.
   return true
 }
 
