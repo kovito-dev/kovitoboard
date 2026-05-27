@@ -1042,8 +1042,18 @@ interface ResolveBundledAppIdArgs {
  * handler can `try/finally`-release the lock cleanly.
  *
  * Returns `undefined` when neither a manifest nor a bundled/sample
- * install record exists — the handler then short-circuits with
- * `already-disabled` 200 without taking the lock.
+ * install record exists. The handler **does NOT** short-circuit on
+ * `undefined` — it falls back to `recipeId` as the lock key (the
+ * bundled-registry default appId per BS-L9 for bundled samples,
+ * matching the key the concurrent enable handler would use) and
+ * still acquires `acquireAppLock(...)` before delegating to
+ * `disableBundledRecipe`, which re-classifies under the lock. This
+ * closes the race a pre-lock `already-disabled` short-circuit would
+ * otherwise open against an in-flight enable for the same appId
+ * (PR #56 codex attempt 8 Finding "race condition / lock bypass" —
+ * before that fix the handler returned 200 here without a lock and
+ * could race a concurrent enable that committed afterward, leaving
+ * the app enabled even though the caller just requested disable).
  *
  * @throws BundledInstallerError (`BundledLocalStateUnavailable` 503,
  *   `BundledManifestUnreadable` 500, or
