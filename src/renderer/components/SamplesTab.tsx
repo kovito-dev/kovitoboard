@@ -127,6 +127,17 @@ export function SamplesTab({
   // (`isEnabledAndManifestCoherent`) make a stuck button safe to
   // re-click after a manual reload.
   const [enablingIds, setEnablingIds] = useState<Set<string>>(new Set())
+  // Synchronous mirror of `enablingIds` for the single-flight
+  // backpressure check. React's state update is asynchronous --
+  // disabling the peer buttons via `setEnablingIds` only takes
+  // effect on the next render, so two rapid clicks on different
+  // cards could both enter `handleEnable` and issue parallel
+  // `POST /api/recipes/sample/:recipeId/enable` requests before
+  // the `disabled` attribute lands. A ref-tracked mutex lets us
+  // bail synchronously inside `handleEnable` -- before the
+  // request is sent -- which closes that race regardless of
+  // render timing.
+  const enableMutexRef = useRef(false)
   // Per-recipe enable error map, keyed by recipe id (parallel to
   // `enablingIds`). A single global error slot would let a later
   // failure overwrite an earlier one and let a single dismiss clear
@@ -175,6 +186,15 @@ export function SamplesTab({
 
   const handleEnable = useCallback(
     async (recipeId: string) => {
+      // Synchronous mutex check: if another enable is already in
+      // flight, drop this click on the floor. The peer button is
+      // also rendered disabled via `enablingIds`, but two rapid
+      // clicks on different cards can both enter this function
+      // before React commits the re-render -- without the ref
+      // guard those clicks would each issue a parallel
+      // disk-heavy POST despite the visual disabled state.
+      if (enableMutexRef.current) return
+      enableMutexRef.current = true
       // Clear only this card's stale error before retrying — peers
       // keep theirs visible until their owners dismiss them.
       setEnableErrors((prev) => {
@@ -229,6 +249,9 @@ export function SamplesTab({
           next.delete(recipeId)
           return next
         })
+        // Release the synchronous mutex so the next enable click
+        // (peer card or retry of the same card) can proceed.
+        enableMutexRef.current = false
       }
     },
     [fetchRecipes, onForceRefetchMenuEntries],
