@@ -70,6 +70,68 @@ export const PII_PATTERNS = [
   { label: '/home/user', regex: /\/home\/irikura/i },
 ]
 
+// Narrowly scoped PII allowlist for external-facing governance files.
+//
+// Each entry is keyed by repo-relative path and lists `{ literal,
+// lineMustMatch }` pairs:
+//
+//   * `literal` — the regex describing the published handle / email that
+//     is intentional in the file (the maintainer's CODEOWNERS handle, the
+//     Code of Conduct enforcement contact, the security reporting
+//     fallback).
+//   * `lineMustMatch` — an anchor on the full line that confirms the
+//     literal is being used in its expected context. If a future edit
+//     pastes the same literal into an unrelated line (e.g. a log
+//     excerpt, a quoted incident report), the line will not match the
+//     anchor, the literal will not be stripped, and the PII scan will
+//     fire as normal.
+//
+// Test coverage for this map lives in
+// `tests/unit/check-release-hygiene.test.ts`. The PII test file itself is
+// not on this allowlist: its fixture strings are reconstructed at runtime
+// from neutral fragments so the hygiene checker does not flag the test
+// file as containing PII.
+export const PII_EXPECTED_LITERALS = new Map([
+  [
+    'CODEOWNERS',
+    [
+      {
+        literal: /@kousuke-irikura\b/g,
+        // Two contexts: the leading comment line that names the
+        // maintainer, and the global ownership rule `* @kousuke-irikura`.
+        // `\b` is intentionally only at the trailing side — the position
+        // before `@` is non-word / non-word and not a word boundary.
+        lineMustMatch:
+          /^#.*@kousuke-irikura\b|^\* @kousuke-irikura\s*$/,
+      },
+    ],
+  ],
+  [
+    'CODE_OF_CONDUCT.md',
+    [
+      {
+        literal: /REDACTED@gmail\.com/g,
+        // The Contributor Covenant v2.1 Enforcement paragraph reads:
+        //   "... may be reported to the community leaders responsible
+        //    for enforcement at <email>. All complaints will be ..."
+        lineMustMatch:
+          /reported to the community leaders responsible for enforcement at REDACTED@gmail\.com\./,
+      },
+    ],
+  ],
+  [
+    'SECURITY.md',
+    [
+      {
+        literal: /REDACTED@gmail\.com/g,
+        // The email appears once as bold text in the "Secondary channel
+        // — Email" subsection.
+        lineMustMatch: /^\*\*REDACTED@gmail\.com\*\*\s*$/,
+      },
+    ],
+  ],
+])
+
 // Japanese character ranges (Hiragana + Katakana + CJK Unified Ideographs)
 export const JAPANESE_RE = /[぀-ゟ゠-ヿ一-鿿]/
 
@@ -644,24 +706,53 @@ function runJapaneseCheck(warn) {
   }
 }
 
-function runPiiCheck(error) {
-  console.log('\n\x1b[1m[2/7] Personal information detection\x1b[0m')
-
-  const allTextFiles = getAllTrackedTextFiles()
+/**
+ * Run the PII scan over an explicit set of repo-relative file paths.
+ * Exported so unit tests can drive the real scanner end-to-end against the
+ * current repository state — exercising the filename lookup in
+ * `PII_EXPECTED_LITERALS` plus the per-line scrub-and-retest logic, not
+ * just a local mirror of the strip helper.
+ *
+ * @param {string[]} files - repo-relative paths (resolved against ROOT)
+ * @param {(msg: string) => void} error - error callback (one per finding)
+ * @returns {boolean} true if any finding was emitted
+ */
+export function runPiiCheckForFiles(files, error) {
   let piiFound = false
-
   for (const { label, regex } of PII_PATTERNS) {
-    for (const file of allTextFiles) {
+    for (const file of files) {
       if (file === 'tools/check-release-hygiene.mjs') continue
       const hits = scanFile(join(ROOT, file), regex)
-      if (hits.length > 0) {
-        piiFound = true
-        for (const hit of hits) {
-          error(`PII "${label}" found: ${file}:${hit.line}`)
+      if (hits.length === 0) continue
+
+      const expected = PII_EXPECTED_LITERALS.get(file)
+      for (const hit of hits) {
+        // For allowlisted files, only strip the literal if the full line
+        // also matches the per-entry contextual anchor. A literal pasted
+        // into an unrelated line (log excerpt, incident note, etc.) will
+        // not satisfy the anchor, so its strip pass is skipped and the
+        // PII scan still fires.
+        if (expected) {
+          let stripped = hit.text
+          for (const entry of expected) {
+            if (entry.lineMustMatch.test(hit.text)) {
+              stripped = stripped.replace(entry.literal, '')
+            }
+          }
+          if (!regex.test(stripped)) continue
         }
+        piiFound = true
+        error(`PII "${label}" found: ${file}:${hit.line}`)
       }
     }
   }
+  return piiFound
+}
+
+function runPiiCheck(error) {
+  console.log('\n\x1b[1m[2/7] Personal information detection\x1b[0m')
+
+  const piiFound = runPiiCheckForFiles(getAllTrackedTextFiles(), error)
 
   if (!piiFound) {
     console.log('  \x1b[32mOK\x1b[0m    No personal information patterns found')
