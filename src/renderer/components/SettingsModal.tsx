@@ -10,6 +10,7 @@ import { useSidebarSettings } from '../hooks/useSidebarSettings'
 import type { AgentInfo } from '../types'
 import { AgentAvatar } from './AgentAvatar'
 import { UserAvatarUpload } from './UserAvatarUpload'
+import { SettingsWorkRoots } from './SettingsWorkRoots'
 import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('SettingsModal')
@@ -56,12 +57,24 @@ interface RuleInfo {
   content: string
 }
 
-type TabId = 'basic' | 'skills' | 'automations' | 'integrations' | 'rules' | 'ambientSidebar'
+type TabId =
+  | 'basic'
+  | 'workRoots'
+  | 'skills'
+  | 'automations'
+  | 'integrations'
+  | 'rules'
+  | 'ambientSidebar'
 
 // Built at module evaluation. The locale is restored from
 // localStorage by `i18n/readPersistedLocale()` (OSS fallback: en).
+// v0.2.1 BL-2026-167: `workRoots` is additively inserted right after
+// `basic` (judgement doc v1.1 §2.1 case A / §2.2 case B-1) so the
+// allow-list management surface lives alongside the other top-level
+// configuration tabs instead of as a standalone side-nav item.
 const TABS: { id: TabId; label: string }[] = [
   { id: 'basic', label: t('setting.tab.basic') },
+  { id: 'workRoots', label: t('setting.tab.workRoots') },
   { id: 'skills', label: t('setting.tab.skills') },
   { id: 'automations', label: t('setting.tab.automations') },
   { id: 'integrations', label: t('setting.tab.integrations') },
@@ -133,6 +146,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-3 md:p-6">
           {activeTab === 'basic' && <SettingsBasic />}
+          {activeTab === 'workRoots' && <SettingsWorkRoots />}
           {activeTab === 'skills' && <SettingsSkills />}
           {activeTab === 'automations' && <SettingsAutomations />}
           {activeTab === 'integrations' && <SettingsIntegrations />}

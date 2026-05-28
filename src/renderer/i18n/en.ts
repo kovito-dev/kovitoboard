@@ -282,7 +282,9 @@ const en: Record<MessageKey, string> = {
   // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT: 'App recipes' → 'Apps'.
   // Key retained so existing nav references stay valid.
   'nav.menu.recipes': 'Apps',
-  'nav.menu.workRoots': 'Work roots',
+  // v0.2.1 BL-2026-167: `nav.menu.workRoots` was removed alongside
+  // the side-nav entry; the Settings modal uses `setting.tab.workRoots`
+  // instead.
 
   // Work roots settings page (spec cwd-allowlist.md v1.0 §7.4). The
   // page lists / adds / removes the cwd allow-list entries that sit
@@ -650,6 +652,10 @@ const en: Record<MessageKey, string> = {
   // Settings
   'setting.title': 'Settings',
   'setting.tab.basic': 'Basic',
+  // v0.2.1 BL-2026-167: added when the standalone Work Roots side-nav
+  // item was folded into the Settings modal (judgement doc v1.1
+  // §2.5). Same wording as the previous `nav.menu.workRoots`.
+  'setting.tab.workRoots': 'Work roots',
   'setting.tab.skills': 'Skills',
   'setting.tab.automations': 'Automations',
   'setting.tab.integrations': 'Integrations',
