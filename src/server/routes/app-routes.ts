@@ -104,40 +104,41 @@ export function createAppRouter(
   }
 
   // v0.2.1 Apps screen needs each menu row's `AppManifest`-sourced
-  // UI fields (source badge / displayName / menuOrder / userMenuLabel).
-  // We attach them on read so the renderer can render the Apps tab
-  // without a second round-trip. `null` is returned for rows without
-  // a matching manifest (legacy hand-edited `app/menu.ts`); the
-  // renderer falls back to the bare `menu.ts` label in that case.
+  // UI fields (source badge / displayName / menuOrder /
+  // userMenuLabel). The lookup returns a quad-state result so
+  // the wire can carry the explicit `manifestState`
+  // discriminator end-to-end and the renderer can split the
+  // four meanings -- `present` (normal), `unreadable`
+  // (partial-residue recovery), `missing` (legacy hand-edited),
+  // and `anomalous` (canonical directory failed the realpath
+  // boundary check). Earlier wirings conflated several of those
+  // states on `source === null` and produced destructive-
+  // routing risks; the structured result closes that surface.
   const manifestLookup: AppManifestLookup = (appId) => {
-    if (!withinAppBoundary(appId)) return null
-    return readAppManifest(fs, resolveProjectRoot(fs), appId)
+    if (!withinAppBoundary(appId)) return { state: 'anomalous' }
+    const projectRoot = resolveProjectRoot(fs)
+    const manifestPath = getAppManifestPath(projectRoot, appId)
+    if (!fs.existsSync(manifestPath)) return { state: 'missing' }
+    const manifest = readAppManifest(fs, projectRoot, appId)
+    if (manifest === null) return { state: 'unreadable' }
+    return { state: 'present', manifest }
   }
 
   // Partial-residue fallback for the source badge + recipe
-  // lineage. When the `AppManifest` file is present on disk but
-  // unreadable (parse / schema-incoherent), the extractor
-  // surfaces the persisted `RecipeManifest.source` +
-  // `RecipeManifest.recipeId` so the Apps screen still shows the
-  // badge AND the Disable action stays wired through
-  // `POST /api/recipes/sample/:recipeId/disable`.
+  // lineage. Returns the persisted `RecipeManifest` only when
+  // the AppManifest reads as `'unreadable'` -- the contract
+  // mirrors that of the lookup above, and the boundary check
+  // is re-applied here so a crafted symlink cannot bypass the
+  // first lookup's anomaly classification.
   //
   // The lookup deliberately does NOT fire when the AppManifest
   // file is entirely absent. Without that gate, a hand-edited
   // `app/menu.ts` row whose `appId` happens to collide with a
-  // stale `recipes-installed/<appId>/manifest.json` would inherit
-  // recipe lineage that does not belong to it -- and because
-  // this PR now wires the Apps tab's Action menu to disable that
-  // recipe scope, a collision would let the user disable the
-  // wrong recipe. Honest "bundled-but-AppManifest-gone" rows are
-  // therefore left without a Disable wiring in this iteration;
-  // the next legitimate enable cycle re-creates the AppManifest
-  // and the badge / Disable come back automatically. A
-  // recipe-history.jsonl evidence join that distinguishes
-  // "ever-installed-here" from "stale-residue collision" would
-  // let us reopen the recovery path safely -- that is the
-  // deferred scanner-pipeline follow-up tracked in the PR's
-  // Out-of-Scope list (BL deferred to v0.2.2).
+  // stale `recipes-installed/<appId>/manifest.json` would
+  // inherit recipe lineage that does not belong to it. A
+  // recipe-history evidence join that distinguishes
+  // "ever-installed-here" from "stale-residue collision" is the
+  // deferred follow-up tracked in the PR's Out-of-Scope list.
   const recipeManifestLookup: RecipeManifestLookup = (appId) => {
     if (!withinAppBoundary(appId)) return null
     const manifestPath = getAppManifestPath(resolveProjectRoot(fs), appId)
@@ -154,45 +155,40 @@ export function createAppRouter(
       manifestLookup,
       recipeManifestLookup,
     )
-    // Fail-closed: drop any entry whose canonical app directory
-    // could not be verified inside `<projectRoot>/app`. The
-    // boundary check inside `manifestLookup` / `recipeManifestLookup`
-    // already returns `null` for those rows, but the row was
-    // still flowing onto the wire as `manifestState === 'missing'`
-    // -- and the Apps tab routes `'missing'` into the legacy
-    // Remove path, which would let a user delete an anomalous /
-    // symlinked subtree they should never have been offered as a
-    // legacy row. Re-running the boundary check here and skipping
-    // the failing rows keeps anomalies out of the wire entirely;
-    // the renderer never sees them and cannot surface any action.
-    const safeEntries = entries.filter((entry) =>
-      withinAppBoundary(entry.id),
-    )
-    // Surface the current menu-order snapshot in a response header
-    // so the renderer can seed `snapshotVersionRef` before the user's
-    // very first reorder lands. The spec pins the wire body to
-    // `MenuEntryWithPage[]` (`http-api-contract.md` v1.7.1 §6.3.8.A
-    // table), so we route the snapshot through a custom header
-    // instead of reshaping the JSON payload (which would be a
-    // wire-level break for any pre-v0.2.1 consumer of the endpoint).
-    // The PUT side recomputes the snapshot from the live manifests
-    // at write time (`apps-routes.ts computeMenuOrderSnapshot`).
-    // Compute the snapshot from the persisted-only `menuOrder`
-    // values BEFORE applying the provisional scanner assignment
-    // -- otherwise the GET snapshot would contain synthetic
-    // indices while the PUT snapshot still sees `null` on the
-    // unassigned manifests, producing a spurious 409
-    // `MenuOrderSnapshotDrift` on the first reorder.
+    // The wire ships every entry the parser produced; anomalies
+    // are NOT filtered out -- they ride with `manifestState ===
+    // 'anomalous'` and the renderer suppresses every destructive
+    // action for that state via `AppActionsPopover`. Filtering
+    // anomalies here turned out to be too strict: a perfectly
+    // valid non-canonical menu.ts entry (id "foo" pointing at
+    // `app/pages/Foo.tsx` while `app/foo/` does not exist) would
+    // disappear from both the sidebar and the new Apps screen,
+    // breaking unrelated `menu.ts` shapes that the legacy
+    // extractor already tolerated. Carrying the state on the
+    // wire instead lets the renderer keep the row visible while
+    // refusing to act on it.
+    //
+    // Surface the current menu-order snapshot in a response
+    // header so the renderer can seed `snapshotVersionRef`
+    // before the user's very first reorder lands. The spec pins
+    // the wire body to `MenuEntryWithPage[]`, so we route the
+    // snapshot through a custom header instead of reshaping the
+    // JSON payload. The PUT side recomputes the snapshot from
+    // the live manifests at write time; the value the renderer
+    // seeds with comes from the persisted-only `menuOrder`
+    // values BEFORE provisional indices are injected, so the
+    // two snapshots agree on the first reorder.
     res.setHeader(
       'X-Apps-Menu-Snapshot',
-      computeMenuOrderSnapshotFromEntries(safeEntries),
+      computeMenuOrderSnapshotFromEntries(entries),
     )
     // Apply the spec's transient provisional `menuOrder`
     // assignment AFTER snapshot computation so the wire payload
-    // still has a stable sort key for the renderer's first paint
-    // even when the persisted manifests carry `menuOrder: null`.
-    assignProvisionalMenuOrder(safeEntries)
-    res.json(safeEntries)
+    // still has a stable sort key for the renderer's first
+    // paint even when the persisted manifests carry
+    // `menuOrder: null`.
+    assignProvisionalMenuOrder(entries)
+    res.json(entries)
   })
 
   return router

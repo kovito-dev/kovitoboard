@@ -158,7 +158,7 @@ export interface AppMenuEntry extends AuthoredAppMenuEntry {
    *
    * @stable v0.2.1
    */
-  manifestState: 'present' | 'unreadable' | 'missing'
+  manifestState: 'present' | 'unreadable' | 'missing' | 'anomalous'
 }
 
 /**

@@ -143,7 +143,7 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    *
    * @stable v0.2.1
    */
-  manifestState?: 'present' | 'unreadable' | 'missing'
+  manifestState?: 'present' | 'unreadable' | 'missing' | 'anomalous'
 }
 
 /**
@@ -306,10 +306,15 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
   // pre-v0.2.1 path that reached this code was a row with no
   // AppManifest lookup at all, which matches the documented
   // semantics of the `'missing'` value.
-  const manifestState: 'present' | 'unreadable' | 'missing' =
+  const manifestState:
+    | 'present'
+    | 'unreadable'
+    | 'missing'
+    | 'anomalous' =
     meta.manifestState === 'present' ||
     meta.manifestState === 'unreadable' ||
-    meta.manifestState === 'missing'
+    meta.manifestState === 'missing' ||
+    meta.manifestState === 'anomalous'
       ? meta.manifestState
       : 'missing'
   return {

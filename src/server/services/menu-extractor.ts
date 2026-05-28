@@ -119,27 +119,34 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    */
   menuOrder: number | null
   /**
-   * Tri-state discriminator for the AppManifest read attempt.
+   * Quad-state discriminator for the AppManifest read attempt.
    *
-   *   - `'present'`  : `app/<appId>/manifest.json` exists and
-   *                    parsed successfully.
+   *   - `'present'`   : `app/<appId>/manifest.json` exists and
+   *                     parsed successfully.
    *   - `'unreadable'`: the file exists on disk but the parse /
-   *                    schema validation failed -- the partial-
-   *                    residue recovery window the spec wants
-   *                    routed through bundled disable.
-   *   - `'missing'`  : the file is entirely absent -- a legitimate
-   *                    legacy / hand-edited row that never had an
-   *                    AppManifest.
+   *                     schema validation failed -- the partial-
+   *                     residue recovery window the spec wants
+   *                     routed through bundled disable.
+   *   - `'missing'`   : the file is entirely absent -- a
+   *                     legitimate legacy / hand-edited row that
+   *                     never had an AppManifest.
+   *   - `'anomalous'` : the canonical `app/<appId>/` directory
+   *                     fails the realpath boundary check
+   *                     (symlink escape, missing canonical
+   *                     directory, etc.). Every destructive
+   *                     wire action must be suppressed for this
+   *                     state because nothing about the row can
+   *                     be trusted.
    *
    * The Apps screen reads this to keep `Remove app` available for
    * legacy hand-edited rows while suppressing destructive actions
-   * for the unreadable recovery state, without ever conflating
-   * the two on the `source === null` axis (which carries both
-   * states on its own).
+   * for the unreadable recovery state and the anomalous state,
+   * without ever conflating the two on the `source === null`
+   * axis (which carries multiple states on its own).
    *
    * @stable v0.2.1
    */
-  manifestState: 'present' | 'unreadable' | 'missing'
+  manifestState: 'present' | 'unreadable' | 'missing' | 'anomalous'
   /**
    * Recipe identifier (`recipe.yaml`'s `recipeId`) for apps whose
    * `AppManifest.source.type === 'recipe'`. The Apps tab uses this
@@ -259,18 +266,51 @@ export function parseMenuTsForApp(content: string, appId: string): MenuEntryWith
 export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
 
 /**
- * Optional lookup used by `readUserMenuEntries` to attach the
- * `AppManifest`-sourced UI fields (`source` / `displayName` /
- * `menuOrder` / `userMenuLabel`) to each entry. `null` indicates
- * "no manifest for this appId"; the renderer falls back to the
- * `menu.ts`-derived `label` in that case.
+ * Tri-plus-anomaly result returned by an {@link AppManifestLookup}.
  *
- * Wired by `app-routes.ts`'s `createAppRouter`, which already has
- * `fs` + `projectRoot` available for `readAppManifest`.
+ *   - `'present'`   : the manifest read succeeded.
+ *   - `'unreadable'`: the manifest file is on disk but parse /
+ *                     schema validation failed (partial-residue
+ *                     recovery state).
+ *   - `'missing'`   : the manifest file is entirely absent
+ *                     (legacy / hand-edited row).
+ *   - `'anomalous'` : the canonical `app/<appId>/` directory
+ *                     fails the realpath boundary check
+ *                     (symlink escape or similar) -- the wire
+ *                     row should suppress every destructive
+ *                     action because nothing about the row can
+ *                     be trusted.
+ *
+ * The result is structurally discriminated so the renderer can
+ * tell "no manifest at all" (Remove app safe) from
+ * "manifest unreadable" (recovery state, Remove unsafe) without
+ * conflating both on `source === null`.
  *
  * @stable v0.2.1
  */
-export type AppManifestLookup = (appId: string) => AppManifest | null
+export type AppManifestLookupResult =
+  | { state: 'present'; manifest: AppManifest }
+  | { state: 'unreadable' }
+  | { state: 'missing' }
+  | { state: 'anomalous' }
+
+/**
+ * Lookup used by `readUserMenuEntries` to attach the
+ * `AppManifest`-sourced UI fields (`source` / `displayName` /
+ * `menuOrder` / `userMenuLabel`) to each entry. Returns the
+ * tri-plus-anomaly {@link AppManifestLookupResult} so callers
+ * can drive the wire `manifestState` discriminator without a
+ * second filesystem probe.
+ *
+ * Wired by `app-routes.ts`'s `createAppRouter`, which has
+ * `fs` + `projectRoot` available for `readAppManifest` and the
+ * realpath boundary helper.
+ *
+ * @stable v0.2.1
+ */
+export type AppManifestLookup = (
+  appId: string,
+) => AppManifestLookupResult
 
 /**
  * Optional lookup used by `readUserMenuEntries` to recover the
@@ -572,9 +612,10 @@ export function readUserMenuEntries(
       // off-canonical case, so the renderer falls back to the bare
       // `menu.ts` label and renders no source badge.
       if (isCanonicalAppIdPath(entry.page, entry.id)) {
-        const manifest = manifestLookup(entry.id)
-        if (manifest) {
-          entry.manifestState = 'present'
+        const lookup = manifestLookup(entry.id)
+        entry.manifestState = lookup.state
+        if (lookup.state === 'present') {
+          const manifest = lookup.manifest
           entry.source = deriveSourceBadge(manifest)
           entry.displayName = manifest.displayName
           entry.menuOrder = manifest.menuOrder ?? null
@@ -588,7 +629,10 @@ export function readUserMenuEntries(
           if (manifest.source.type === 'recipe') {
             entry.recipeId = manifest.source.recipeId
           }
-        } else if (recipeManifestLookup) {
+        } else if (
+          lookup.state === 'unreadable' &&
+          recipeManifestLookup
+        ) {
           // Partial-residue fallback: the AppManifest read failed
           // (missing / parse error) but the bundled-enable
           // `RecipeManifest` is still on disk. Recover the 4-value
@@ -600,29 +644,17 @@ export function readUserMenuEntries(
           // `displayName !== null` to gate reorder / rename
           // (`app-directory-extension.md` v1.6 §6.8.1 / §6.8.3
           // eligible-set definition).
+          // `manifestState` is already `'unreadable'` from the
+          // lookup result -- this branch only enriches the wire
+          // with the recovered source classification + recipe
+          // lineage so the Apps tab can keep Disable wired
+          // through the non-destructive endpoint during the
+          // partial-residue recovery window.
           const recipeManifest = recipeManifestLookup(entry.id)
           if (recipeManifest !== null) {
-            // `recipeManifestLookup` is contractually allowed to
-            // fire only for the AppManifest-file-present-but-
-            // unreadable case (see `app-routes.ts` createAppRouter
-            // for the existsSync gate). Reaching this branch
-            // therefore proves the partial-residue recovery state
-            // is in play, so flip the explicit `manifestState`
-            // discriminator so the Apps screen can keep the
-            // destructive Remove path suppressed for this
-            // specific state -- without conflating it with
-            // legacy / hand-edited rows that simply have no
-            // manifest (`manifestState === 'missing'`, which
-            // remains the parser default).
-            entry.manifestState = 'unreadable'
             if (recipeManifest.source) {
               entry.source = recipeManifest.source
             }
-            // Recipe lineage is still available even when the
-            // AppManifest read failed (the `recipes-installed/<
-            // appId>/manifest.json` carries it explicitly), so the
-            // Apps tab can still route Disable through the correct
-            // endpoint during the partial-residue recovery window.
             entry.recipeId = recipeManifest.recipeId
           }
         }

@@ -71,7 +71,7 @@ interface AppActionsPopoverProps {
    * `'missing'` (the conservative "Remove allowed" branch for
    * source-less rows).
    */
-  manifestState?: 'present' | 'unreadable' | 'missing'
+  manifestState?: 'present' | 'unreadable' | 'missing' | 'anomalous'
 }
 
 export function AppActionsPopover({
@@ -253,18 +253,30 @@ export function AppActionsPopover({
           </svg>
           {t('app.actions.disable')}
         </button>
-      ) : source === null && manifestState === 'unreadable' ? (
-        // Partial-residue recovery state: the AppManifest file
-        // exists on disk but the parse / schema validation
-        // failed, and the scanner could not recover the recipe
-        // lineage either. Suppress destructive Remove (a
-        // manifest collision could let it delete the wrong
-        // subtree) AND Disable (no recipeId to call). Export
-        // remains available because it reads the on-disk
-        // artifact tree directly. The scanner-pipeline
-        // follow-up (recipe-history.jsonl evidence join) closes
-        // the rest of the recovery flow; tracked in the PR's
-        // Out-of-Scope list.
+      ) : source === null &&
+        (manifestState === 'unreadable' ||
+          manifestState === 'anomalous') ? (
+        // Recovery / anomaly state: destructive Remove and
+        // Disable are both suppressed because nothing about
+        // this row can be trusted to route the action at the
+        // right scope.
+        //
+        //   - `'unreadable'`: AppManifest file is on disk but
+        //                     parse / schema failed. A stale
+        //                     manifest collision could let
+        //                     Remove delete the wrong subtree.
+        //   - `'anomalous'` : the canonical `app/<appId>/`
+        //                     directory failed the realpath
+        //                     boundary check (symlink escape,
+        //                     etc.). The on-disk target may
+        //                     not even live under `app/`.
+        //
+        // Export remains available because it reads the on-
+        // disk artifact tree directly via the canonical app
+        // directory the server already validated. The
+        // scanner-pipeline follow-up (recipe-history.jsonl
+        // evidence join) closes the rest of the recovery flow;
+        // tracked in the PR's Out-of-Scope list.
         null
       ) : (
         <button
