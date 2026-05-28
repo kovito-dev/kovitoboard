@@ -286,6 +286,21 @@ export function AppsTab({
           const data = (await res.json().catch(() => ({}))) as {
             error?: string
           }
+          // HTTP 409 `MenuOrderSnapshotDrift` means a peer client
+          // (or a server-side renumber) has changed the manifest
+          // order since we read it. The spec contract is "client
+          // refetches and retries"; without that recovery the
+          // stale `snapshotVersionRef` would make every subsequent
+          // drop fail with the same 409 until an unrelated wire
+          // event finally bumped the loader. Trigger an immediate
+          // refetch through the parent so both the visible
+          // ordering and the snapshot ref are replaced with the
+          // server's current state; the rollback below leaves the
+          // user looking at the pre-drag order until the refetch
+          // lands.
+          if (res.status === 409) {
+            onForceRefetchMenuEntries()
+          }
           throw new Error(data.error ?? `Reorder failed: ${res.status}`)
         }
         const ok = (await res.json()) as {
@@ -312,7 +327,7 @@ export function AppsTab({
         })
       }
     },
-    [orderedIds],
+    [orderedIds, onForceRefetchMenuEntries],
   )
 
   return (
