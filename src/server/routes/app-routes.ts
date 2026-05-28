@@ -29,7 +29,7 @@ import {
   type RecipeManifestLookup,
   type TrustLevelLookup,
 } from '../services/menu-extractor'
-import { getAppManifestPath, readAppManifest } from '../services/app-manifest'
+import { readAppManifest } from '../services/app-manifest'
 import { resolveProjectRoot } from '../config'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { serverLogger } from '../logger'
@@ -80,33 +80,34 @@ export function createAppRouter(
   const manifestLookup: AppManifestLookup = (appId) =>
     readAppManifest(fs, resolveProjectRoot(fs), appId)
 
-  // Partial-residue fallback for the source badge. When the
-  // `AppManifest` is unreadable but a bundled-enable
-  // `RecipeManifest` is still on disk (`recipes-installed/<appId>/
-  // manifest.json`), the extractor surfaces the persisted
-  // `RecipeManifest.source` so the Apps screen keeps showing the
-  // badge during the recovery window. See `RecipeManifestLookup`
-  // JSDoc for the spec basis (`app-directory-extension.md` v1.6
-  // §6.7 note 4).
+  // Partial-residue fallback for the source badge + recipe
+  // lineage. When the `AppManifest` cannot be read for any
+  // reason (file missing entirely or file present but parse /
+  // schema-incoherent), the extractor surfaces the persisted
+  // `RecipeManifest.source` + `RecipeManifest.recipeId` so the
+  // Apps screen keeps showing the badge during the recovery
+  // window AND the Disable action remains wired to the
+  // non-destructive `POST /api/recipes/sample/:recipeId/disable`
+  // endpoint. Without that wiring, a "Bundled (partial residue)"
+  // state (`app-directory-extension.md` v1.6 §8.7) would lose
+  // its disable routing and fall back to the destructive
+  // Remove-app flow that deletes `app/data/<appId>/` -- a
+  // grandfather data-preservation invariant violation.
   //
-  // The lookup distinguishes "AppManifest file missing entirely"
-  // (a legitimate hand-edited `app/menu.ts` with no install
-  // lineage) from "AppManifest file present but unreadable" (the
-  // partial-residue / parse-failure case the spec wants
-  // recovered). Only the latter qualifies for the
-  // `RecipeManifest`-derived badge — without this gate, a hand-
-  // edited row whose `appId` happens to collide with a stale
-  // `recipes-installed/<appId>/manifest.json` would silently
-  // inherit a recipe-derived badge it never owned. `existsSync` on
-  // the canonical AppManifest path discriminates the two states
-  // without re-opening the file.
-  const recipeManifestLookup: RecipeManifestLookup = (appId) => {
-    const manifestPath = getAppManifestPath(resolveProjectRoot(fs), appId)
-    if (!fs.existsSync(manifestPath)) {
-      return null
-    }
-    return manifestStore.get(appId)
-  }
+  // Trade-off: a legitimate hand-edited `app/menu.ts` row whose
+  // `appId` happens to collide with a stale
+  // `recipes-installed/<appId>/manifest.json` will inherit a
+  // recipe-derived badge / lineage it does not own. That is a
+  // cosmetic outcome (badge + Disable wiring) compared with the
+  // data-loss risk of severing the recovery path; the spec
+  // (§6.7 note 4) places source classification on the scanner
+  // (RecipeManifest evidence) for exactly this reason. A
+  // recipe-history.jsonl evidence join that distinguishes
+  // "ever-installed-here" from "stale-residue" is the deferred
+  // scanner-pipeline follow-up tracked in the PR's
+  // Out-of-Scope list.
+  const recipeManifestLookup: RecipeManifestLookup = (appId) =>
+    manifestStore.get(appId)
 
   router.get('/menu-entries', (_req, res) => {
     const entries: MenuEntryWithPage[] = readUserMenuEntries(
