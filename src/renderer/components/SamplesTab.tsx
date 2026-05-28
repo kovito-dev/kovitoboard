@@ -88,6 +88,18 @@ interface SamplesTabProps {
    * gracefully degrades to a static hint in that case.
    */
   onSwitchToAppsTab?: () => void
+  /**
+   * Imperatively re-runs the parent's `loadUserMenuEntries()` so
+   * the Apps tab list reflects a newly-enabled bundled sample
+   * immediately on POST 2xx, instead of waiting for the
+   * asynchronous `recipe_apps_changed` ws broadcast. Without this
+   * eager refetch a disconnected / delayed ws would let "Manage
+   * in Apps tab" land on a list that does not yet contain the
+   * card the user just enabled. Mirrors the eager-refetch path
+   * `RenameForm.onCommitted` already uses on PATCH success.
+   * Optional so standalone renders still mount.
+   */
+  onForceRefetchMenuEntries?: () => void
 }
 
 type LoadState = 'loading' | 'loaded' | 'error'
@@ -95,6 +107,7 @@ type LoadState = 'loading' | 'loaded' | 'error'
 export function SamplesTab({
   sampleRecipeVersion,
   onSwitchToAppsTab,
+  onForceRefetchMenuEntries,
 }: SamplesTabProps) {
   const [recipes, setRecipes] = useState<SampleRecipeInfo[]>([])
   const [state, setState] = useState<LoadState>('loading')
@@ -196,6 +209,12 @@ export function SamplesTab({
         // safe because `fetchRecipes` overwrites the full list
         // (`setRecipes(data)`) rather than merging incrementally.
         await fetchRecipes()
+        // Eager menu-entries refetch so the Apps tab list also
+        // reflects the newly-enabled app immediately. Without this,
+        // a delayed / disconnected `recipe_apps_changed` ws would
+        // let the "Manage in Apps tab" link land on a list that
+        // does not yet contain the card the user just enabled.
+        onForceRefetchMenuEntries?.()
       } catch (err) {
         const message =
           err instanceof Error ? err.message : 'Enable failed'
@@ -212,7 +231,7 @@ export function SamplesTab({
         })
       }
     },
-    [fetchRecipes],
+    [fetchRecipes, onForceRefetchMenuEntries],
   )
 
   // v0.2.x announcement banner — recipe install is on hold until
@@ -287,18 +306,35 @@ export function SamplesTab({
         className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
         data-testid="samples-tab-grid"
       >
-        {recipes.map((recipe) => (
-          <SampleCard
-            key={recipe.id}
-            recipe={recipe}
-            enabled={isEnabled(recipe)}
-            isEnabling={enablingIds.has(recipe.id)}
-            error={enableErrors.get(recipe.id) ?? null}
-            onEnable={() => handleEnable(recipe.id)}
-            onDismissError={() => dismissEnableError(recipe.id)}
-            onSwitchToAppsTab={onSwitchToAppsTab}
-          />
-        ))}
+        {recipes.map((recipe) => {
+          const selfEnabling = enablingIds.has(recipe.id)
+          // Client-side backpressure: only one bundled enable is
+          // allowed in flight at a time. Each enable copies recipe
+          // artifacts into `app/<appId>/`, writes the
+          // `recipes-installed/<appId>/manifest.json` + the
+          // recipe-history record, and broadcasts ws state — all
+          // disk-heavy operations. Without this cap, a user
+          // clicking through every card at once could pile up
+          // overlapping copies and induce local DoS-style
+          // contention. Peers stay disabled while *any* enable is
+          // running; the active card itself still shows its own
+          // loading label.
+          const peerEnableInflight =
+            enablingIds.size > 0 && !selfEnabling
+          return (
+            <SampleCard
+              key={recipe.id}
+              recipe={recipe}
+              enabled={isEnabled(recipe)}
+              isEnabling={selfEnabling}
+              peerEnableInflight={peerEnableInflight}
+              error={enableErrors.get(recipe.id) ?? null}
+              onEnable={() => handleEnable(recipe.id)}
+              onDismissError={() => dismissEnableError(recipe.id)}
+              onSwitchToAppsTab={onSwitchToAppsTab}
+            />
+          )
+        })}
       </div>
     </div>
   )
@@ -308,6 +344,14 @@ interface SampleCardProps {
   recipe: SampleRecipeInfo
   enabled: boolean
   isEnabling: boolean
+  /**
+   * True when a *different* sample card has an enable POST in
+   * flight. Driven by the parent's client-side single-flight
+   * backpressure (one bundled enable in flight globally). The
+   * enable button is disabled while this is true so the user
+   * cannot pile up disk-heavy parallel enables.
+   */
+  peerEnableInflight: boolean
   error: string | null
   onEnable: () => void
   onDismissError: () => void
@@ -319,6 +363,7 @@ function SampleCard({
   recipe,
   enabled,
   isEnabling,
+  peerEnableInflight,
   error,
   onEnable,
   onDismissError,
@@ -418,7 +463,7 @@ function SampleCard({
             type="button"
             data-testid={`samples-tab-card-${recipe.id}-enable-button`}
             onClick={onEnable}
-            disabled={isEnabling}
+            disabled={isEnabling || peerEnableInflight}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--accent-bg)] text-[var(--accent-text)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isEnabling

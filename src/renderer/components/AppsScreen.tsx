@@ -272,6 +272,7 @@ export function AppsScreen({
           <SamplesTab
             sampleRecipeVersion={sampleRecipeVersion}
             onSwitchToAppsTab={handleSwitchToAppsTab}
+            onForceRefetchMenuEntries={onForceRefetchMenuEntries}
           />
         )}
         {activeTab === 'recipes' && <RecipesTab />}
