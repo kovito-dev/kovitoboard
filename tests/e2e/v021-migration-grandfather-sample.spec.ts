@@ -33,7 +33,13 @@
  * (BS-T4) for the upstream gap on the coherence short-circuit.
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import {
   rewriteMenuTsForEnable,
@@ -67,6 +73,20 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, DOC_ID)
     cleanupAppDir(kbFixture.projectRoot, TODO_ID)
+    // `app/data/<appId>/` lives OUTSIDE the .kovitoboard snapshot
+    // (per the spec comment near `seedTodoOwnData`), so the
+    // template-cache restore in `globalTeardown` does not roll it
+    // back. Without this explicit removal, the `task-sentinel.json`
+    // seeded by §3.2 #5 would persist into later `todo`-based tests
+    // and make them order-dependent.
+    rmSync(join(kbFixture.projectRoot, 'app', 'data', DOC_ID), {
+      recursive: true,
+      force: true,
+    })
+    rmSync(join(kbFixture.projectRoot, 'app', 'data', TODO_ID), {
+      recursive: true,
+      force: true,
+    })
     if (originalMenuTs !== null) {
       restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
       originalMenuTs = null

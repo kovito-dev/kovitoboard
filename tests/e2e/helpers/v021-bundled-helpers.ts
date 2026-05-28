@@ -13,10 +13,15 @@
  * full rationale.
  */
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readdirSync,
   readFileSync,
+  readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -151,6 +156,41 @@ function assertSafePathSegment(value: string, label: string): void {
   }
 }
 
+/**
+ * Reject relative paths that would escape the app directory once
+ * joined to it. Allows nested directories like `pages/DocumentViewer`
+ * but forbids absolute roots, leading slashes, NUL bytes, and any
+ * `..` segment. Used for `seedGrandfatherManifest`'s `componentPath`
+ * so the on-disk write and the generated `menu.ts` import string
+ * both stay inside `app/<appId>/`.
+ */
+function assertSafeRelativePath(value: string, label: string): void {
+  if (value === '' || value === '.' || value === '..') {
+    throw new Error(
+      `[v021-bundled-helpers] empty or relative ${label}: "${value}"`,
+    )
+  }
+  if (
+    value.includes('\0') ||
+    value.includes('\\') ||
+    value.startsWith('/') ||
+    value.startsWith('./') ||
+    value.endsWith('/')
+  ) {
+    throw new Error(
+      `[v021-bundled-helpers] unsafe ${label} (absolute / relative-prefix / trailing-slash): "${value}"`,
+    )
+  }
+  const segments = value.split('/')
+  for (const segment of segments) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      throw new Error(
+        `[v021-bundled-helpers] unsafe ${label} (path traversal segment): "${value}"`,
+      )
+    }
+  }
+}
+
 export function cleanupAppDir(projectRoot: string, appId: string): void {
   assertSafePathSegment(appId, 'appId')
   rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
@@ -184,16 +224,11 @@ export function readServerLogLines(
   const tailLines = opts.tailLines ?? 500
   const logsDir = join(projectRoot, '.kovitoboard', 'logs')
   if (!existsSync(logsDir)) return []
-  // Lazy import keeps the cold-path code out of the spec's typecheck
-  // graph when the function is not used.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fsMod = require('node:fs') as typeof import('node:fs')
-  const files = fsMod
-    .readdirSync(logsDir)
+  const files = readdirSync(logsDir)
     .filter((n) => n.endsWith('.log'))
     .map((n) => ({
       n,
-      mtime: fsMod.statSync(join(logsDir, n)).mtimeMs,
+      mtime: statSync(join(logsDir, n)).mtimeMs,
     }))
     .sort((a, b) => b.mtime - a.mtime)
   if (files.length === 0) return []
@@ -205,18 +240,18 @@ export function readServerLogLines(
   // entries with headroom; the partial-line at the front is dropped
   // below so we never hand a half-truncated record to `JSON.parse`.
   const TAIL_BUDGET = Math.max(96 * 1024, tailLines * 256)
-  const size = fsMod.statSync(newestPath).size
+  const size = statSync(newestPath).size
   let raw: string
   if (size <= TAIL_BUDGET) {
     raw = readFileSync(newestPath, 'utf-8')
   } else {
-    const fd = fsMod.openSync(newestPath, 'r')
+    const fd = openSync(newestPath, 'r')
     try {
       const buf = Buffer.alloc(TAIL_BUDGET)
-      fsMod.readSync(fd, buf, 0, TAIL_BUDGET, size - TAIL_BUDGET)
+      readSync(fd, buf, 0, TAIL_BUDGET, size - TAIL_BUDGET)
       raw = buf.toString('utf-8')
     } finally {
-      fsMod.closeSync(fd)
+      closeSync(fd)
     }
   }
   const allLines = raw.split('\n').filter((line) => line.length > 0)
@@ -301,6 +336,12 @@ export function seedGrandfatherManifest(
   assertSafePathSegment(seed.appId, 'appId')
   const displayName = seed.displayName ?? 'Document Viewer'
   const componentPath = seed.componentPath ?? 'pages/DocumentViewer'
+  // `componentPath` is joined into `app/<appId>/<componentPath>.tsx`
+  // and into the generated `menu.ts` import string, so a future
+  // caller passing `..` or an absolute path could write outside the
+  // app directory and undercut the path-safety boundary already
+  // enforced for `recipeId` / `appId` above.
+  assertSafeRelativePath(componentPath, 'componentPath')
 
   const recipesInstalledDir = join(
     projectRoot,
