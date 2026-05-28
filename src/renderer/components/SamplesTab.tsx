@@ -159,10 +159,16 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
           }
           throw new Error(data.error ?? `Enable failed: ${res.status}`)
         }
-        // The ws `recipe_apps_changed` broadcast will bump
-        // `sampleRecipeVersion` from useIPC, which triggers the
-        // refetch effect above. We do not refetch here to avoid the
-        // double-fetch race when the WS arrives mid-flight.
+        // Refetch immediately on 2xx so the card moves out of the
+        // pre-enable state without waiting for the asynchronous
+        // `recipe_apps_changed` ws broadcast. The broadcast is kept
+        // as the secondary reconciliation path: a disconnected /
+        // delayed / dropped socket would otherwise leave the card
+        // stale and tempt the user to retry an already-successful
+        // enable. Concurrent fetches with the ws-driven refetch are
+        // safe because `fetchRecipes` overwrites the full list
+        // (`setRecipes(data)`) rather than merging incrementally.
+        await fetchRecipes()
       } catch (err) {
         const message =
           err instanceof Error ? err.message : 'Enable failed'
@@ -179,7 +185,7 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
         })
       }
     },
-    [],
+    [fetchRecipes],
   )
 
   // v0.2.x announcement banner — recipe install is on hold until

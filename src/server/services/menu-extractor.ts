@@ -227,9 +227,21 @@ export type AppManifestLookup = (appId: string) => AppManifest | null
 /**
  * Optional lookup used by `readUserMenuEntries` to recover the
  * persisted source badge for **partial-residue** rows — apps whose
- * `AppManifest` is unreadable (missing / parse-failed) but whose
+ * `AppManifest` is unreadable (file exists on disk but parse /
+ * schema validation failed) while their
  * `recipes-installed/<appId>/manifest.json` (`RecipeManifest`) is
- * still on disk. Returns the matching `RecipeManifest` or `null`.
+ * still intact. Returns the matching `RecipeManifest` or `null`.
+ *
+ * The caller is responsible for **only** returning a non-null
+ * value when the AppManifest file is physically present but
+ * unreadable — passing a `RecipeManifest` for a row whose
+ * AppManifest is genuinely absent would let a hand-edited
+ * `app/menu.ts` row inherit a recipe-derived badge from a stale
+ * manifest that has no real ownership claim (the
+ * "missing vs unreadable conflation" guard). The reference
+ * implementation in `app-routes.ts createAppRouter` uses
+ * `fs.existsSync(getAppManifestPath(...))` to discriminate the two
+ * states.
  *
  * Scoped to the bundled-enable lifecycle today: the persisted
  * `RecipeManifest.source` is a 4-value enum

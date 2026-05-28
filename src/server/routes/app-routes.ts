@@ -29,7 +29,7 @@ import {
   type RecipeManifestLookup,
   type TrustLevelLookup,
 } from '../services/menu-extractor'
-import { readAppManifest } from '../services/app-manifest'
+import { getAppManifestPath, readAppManifest } from '../services/app-manifest'
 import { resolveProjectRoot } from '../config'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { serverLogger } from '../logger'
@@ -88,8 +88,25 @@ export function createAppRouter(
   // badge during the recovery window. See `RecipeManifestLookup`
   // JSDoc for the spec basis (`app-directory-extension.md` v1.6
   // §6.7 note 4).
-  const recipeManifestLookup: RecipeManifestLookup = (appId) =>
-    manifestStore.get(appId)
+  //
+  // The lookup distinguishes "AppManifest file missing entirely"
+  // (a legitimate hand-edited `app/menu.ts` with no install
+  // lineage) from "AppManifest file present but unreadable" (the
+  // partial-residue / parse-failure case the spec wants
+  // recovered). Only the latter qualifies for the
+  // `RecipeManifest`-derived badge — without this gate, a hand-
+  // edited row whose `appId` happens to collide with a stale
+  // `recipes-installed/<appId>/manifest.json` would silently
+  // inherit a recipe-derived badge it never owned. `existsSync` on
+  // the canonical AppManifest path discriminates the two states
+  // without re-opening the file.
+  const recipeManifestLookup: RecipeManifestLookup = (appId) => {
+    const manifestPath = getAppManifestPath(resolveProjectRoot(fs), appId)
+    if (!fs.existsSync(manifestPath)) {
+      return null
+    }
+    return manifestStore.get(appId)
+  }
 
   router.get('/menu-entries', (_req, res) => {
     const entries: MenuEntryWithPage[] = readUserMenuEntries(
