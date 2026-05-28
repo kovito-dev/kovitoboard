@@ -10,7 +10,7 @@
  * These functions are the sole entry points for FE extensions.
  *
  * Public interface:
- *   - loadUserMenuEntries(): Promise<AppMenuEntry[]>
+ *   - loadUserMenuEntries(): Promise<UserMenuEntriesResult>
  *   - loadUserStyles(): Promise<void>
  *
  * Implementation note (v0.1.0):
@@ -43,6 +43,20 @@ import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('app-loader')
 
+/**
+ * UI source badge value (v0.2.1). Derived server-side from
+ * `AppManifest.source` so the renderer never has to parse the
+ * persisted discriminator.
+ *
+ * @see src/server/services/menu-extractor.ts `MenuEntrySourceBadge`
+ */
+type MenuEntrySourceBadge =
+  | 'self-made'
+  | 'bundled'
+  | 'sample'
+  | 'import'
+  | 'url'
+
 /** Server-side shape returned by `GET /api/app/menu-entries`. */
 interface MenuEntryWire extends AppMenuEntryMeta {
   /** Page path relative to `app/` (no extension), e.g. `pages/Foo`. */
@@ -65,6 +79,92 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * before forwarding to {@link AppMenuEntry.trustLevel}.
    */
   trustLevel?: string | null
+  /**
+   * UI source badge derived server-side from the matching
+   * `AppManifest.source`. `null` when no manifest exists (legacy
+   * hand-edited `app/menu.ts`). Five values: `'self-made'` (scanner
+   * derived) + `'bundled' | 'sample' | 'import' | 'url'` (persisted).
+   *
+   * Optional on the wire so pre-v0.2.1 server builds (which omit
+   * the field) still parse; `toAppMenuEntry` coerces `undefined` to
+   * `null` before forwarding.
+   *
+   * @stable v0.2.1
+   */
+  source?: MenuEntrySourceBadge | null
+  /**
+   * Display name from `AppManifest.displayName`. `null` when no
+   * manifest exists. Drives the row title on the Apps screen.
+   *
+   * Renderer fallback chain (`AppsTab.tsx`):
+   *   `userMenuLabel ?? label ?? displayName ?? appId`
+   * `label` (menu.ts-derived, refreshed on every scan) precedes
+   * `displayName` (AppManifest install snapshot). See the
+   * renderer-side `AppMenuEntry.displayName` JSDoc in
+   * `types/app-types.ts` for the spec rationale
+   * (`app-directory-extension.md` v1.6 §6.8.2 file SSOT).
+   *
+   * @stable v0.2.1
+   */
+  displayName?: string | null
+  /**
+   * Persisted menu order from `AppManifest.menuOrder`. Drives the
+   * default sort on the Apps screen. `null` when no manifest exists
+   * or the field is absent (pre-v0.2.1 manifest).
+   *
+   * @stable v0.2.1
+   */
+  menuOrder?: number | null
+  /**
+   * User override label from `AppManifest.userMenuLabel`. `null`
+   * when not set (default to `displayName` / `label` / `appId`).
+   *
+   * @stable v0.2.1
+   */
+  userMenuLabel?: string | null
+  /**
+   * Recipe identifier (`recipe.yaml`'s `recipeId`) for apps that
+   * came from a recipe install. `null` for self-made apps and for
+   * legacy hand-edited entries with no manifest lineage. The Apps
+   * tab uses this to route Disable for bundled / sample apps
+   * through `POST /api/recipes/sample/:recipeId/disable` instead
+   * of the destructive remove-app flow.
+   *
+   * @stable v0.2.1
+   */
+  recipeId?: string | null
+  /**
+   * Tri-state AppManifest discriminator -- see the renderer-side
+   * `AppMenuEntry.manifestState` JSDoc for the recovery /
+   * legacy split. Optional on the wire so legacy pre-v0.2.1
+   * server builds (which omit the field) keep parsing; the
+   * guard in `toAppMenuEntry` normalizes the missing case to
+   * `'missing'`.
+   *
+   * @stable v0.2.1
+   */
+  manifestState?: 'present' | 'unreadable' | 'missing' | 'anomalous'
+}
+
+/**
+ * Result shape returned by {@link loadUserMenuEntries}.
+ *
+ * - `entries` — the menu entries themselves (wire-validated).
+ * - `menuOrderSnapshot` — the server's current menu-order snapshot
+ *   hash, surfaced through the `X-Apps-Menu-Snapshot` response
+ *   header. The Apps tab seeds `snapshotVersionRef` with this value
+ *   on mount so the **first** `PUT /api/apps/menu-order` request
+ *   already carries a `snapshotVersion`; without that seed the
+ *   `MenuOrderSnapshotDrift` (HTTP 409) gate is silently skipped
+ *   on the first reorder. `null` when the header is absent (the
+ *   legacy `import.meta.glob` fallback path) or the server omitted
+ *   it.
+ *
+ * @stable v0.2.1
+ */
+export interface UserMenuEntriesResult {
+  entries: AppMenuEntry[]
+  menuOrderSnapshot: string | null
 }
 
 /**
@@ -74,15 +174,23 @@ interface MenuEntryWire extends AppMenuEntryMeta {
  * legacy in-tree `app/menu.{ts,tsx}` shape so existing tests (which
  * may stub the file directly without bringing up the API) keep
  * working.
+ *
+ * Returns a `{ entries, menuOrderSnapshot }` pair — the snapshot
+ * comes from the `X-Apps-Menu-Snapshot` response header and is
+ * `null` on the fallback path (no header to surface).
  */
-export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
+export async function loadUserMenuEntries(): Promise<UserMenuEntriesResult> {
   // 1) Preferred path: API.
   try {
     const res = await kbFetch('/api/app/menu-entries')
     if (res.ok) {
+      const snapshot = res.headers.get('X-Apps-Menu-Snapshot')
       const wire = (await res.json()) as MenuEntryWire[]
       if (Array.isArray(wire)) {
-        return wire.map(toAppMenuEntry)
+        return {
+          entries: wire.map(toAppMenuEntry),
+          menuOrderSnapshot: snapshot,
+        }
       }
     } else if (res.status !== 404) {
       log.warn(
@@ -98,7 +206,9 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
   //    with tests that stub `app/menu.ts` without standing up the API).
   const modules = import.meta.glob<AppMenuModule>('../../app/menu.{ts,tsx}')
   const paths = Object.keys(modules)
-  if (paths.length === 0) return []
+  if (paths.length === 0) {
+    return { entries: [], menuOrderSnapshot: null }
+  }
 
   try {
     const mod = await modules[paths[0]]()
@@ -113,13 +223,31 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
     // `trustLevel` to `null` here so a hostile fallback module cannot
     // forge a trusted badge — the trust marker silently hides itself
     // in that case rather than rendering a misleading claim.
-    return raw.map((entry) => ({
+    const entries: AppMenuEntry[] = raw.map((entry) => ({
       ...entry,
       trustLevel: null,
+      // The legacy direct-glob fallback predates the v0.2.1 wire
+      // additions; we cannot synthesise AppManifest-sourced fields
+      // from `app/menu.ts` alone. Force them to `null` so the Apps
+      // screen falls back to the bare `menu.ts` label and shows no
+      // source badge. Production browsers always reach the API path,
+      // which DOES populate these fields — the fallback only exists
+      // for test doubles that stub `app/menu.ts` directly.
+      source: null,
+      displayName: null,
+      menuOrder: null,
+      userMenuLabel: null,
+      recipeId: null,
+      // The fallback path has no manifest at all -- treat every
+      // entry as the parser-default `'missing'` state. Production
+      // browsers reach the API path which carries the real
+      // discriminator.
+      manifestState: 'missing' as const,
     }))
+    return { entries, menuOrderSnapshot: null }
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')
-    return []
+    return { entries: [], menuOrderSnapshot: null }
   }
 }
 
@@ -153,11 +281,53 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
         'investigate the manifest source if this fires.',
     )
   }
+  // Coerce optional wire fields to `null` so renderer call sites
+  // can use the strict `T | null` discriminator without a separate
+  // `undefined` branch. Pre-v0.2.1 servers omit these fields; the
+  // renderer treats both states ("not sent" / "no manifest") the
+  // same — fall back to the bare `menu.ts` label, render no badge.
+  const source: MenuEntrySourceBadge | null = isMenuEntrySourceBadge(meta.source)
+    ? meta.source
+    : null
+  const displayName: string | null =
+    typeof meta.displayName === 'string' ? meta.displayName : null
+  const menuOrder: number | null =
+    typeof meta.menuOrder === 'number' && Number.isInteger(meta.menuOrder)
+      ? meta.menuOrder
+      : null
+  const userMenuLabel: string | null =
+    typeof meta.userMenuLabel === 'string' ? meta.userMenuLabel : null
+  const recipeId: string | null =
+    typeof meta.recipeId === 'string' && meta.recipeId.length > 0
+      ? meta.recipeId
+      : null
+  // The wire payload may omit `manifestState` (legacy server /
+  // test doubles). Fall back to `'missing'` because the only
+  // pre-v0.2.1 path that reached this code was a row with no
+  // AppManifest lookup at all, which matches the documented
+  // semantics of the `'missing'` value.
+  const manifestState:
+    | 'present'
+    | 'unreadable'
+    | 'missing'
+    | 'anomalous' =
+    meta.manifestState === 'present' ||
+    meta.manifestState === 'unreadable' ||
+    meta.manifestState === 'missing' ||
+    meta.manifestState === 'anomalous'
+      ? meta.manifestState
+      : 'missing'
   return {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
     trustLevel,
+    source,
+    displayName,
+    menuOrder,
+    userMenuLabel,
+    recipeId,
+    manifestState,
     component: () => {
       if (!absPath) {
         const err = new Error(
@@ -177,6 +347,25 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
       }>
     },
   }
+}
+
+/**
+ * Type guard for the v0.2.1 source badge wire field. Defends the
+ * renderer against unexpected literals (older server build that
+ * emits a fifth recipeSource value, or a forged response). Unknown
+ * values are coerced to `null` so the badge silently hides instead
+ * of rendering a misleading state.
+ */
+function isMenuEntrySourceBadge(
+  value: unknown,
+): value is MenuEntrySourceBadge {
+  return (
+    value === 'self-made' ||
+    value === 'bundled' ||
+    value === 'sample' ||
+    value === 'import' ||
+    value === 'url'
+  )
 }
 
 /**
