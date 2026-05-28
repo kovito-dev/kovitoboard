@@ -699,7 +699,18 @@ function AppRow({
           <div className="relative shrink-0">
             <button
               type="button"
+              // Both ids are wired: the `apps-tab-row-...-actions`
+              // testid lets the L1 E2E selectors keep tracking this
+              // specific row, while the generic
+              // `app-actions-menu-button` testid is the one the
+              // shared `AppActionsPopover` looks for in its
+              // outside-click suppression list. Without the
+              // generic id, opening the popover and then clicking
+              // the same trigger would fire `mousedown` ->
+              // onClose() and `click` -> toggle, reopening the
+              // popover instead of dismissing it.
               data-testid={`apps-tab-row-${entry.id}-actions`}
+              data-app-actions-menu-button
               aria-label={t('app.actions.menu')}
               aria-haspopup="menu"
               aria-expanded={isPopoverOpen}

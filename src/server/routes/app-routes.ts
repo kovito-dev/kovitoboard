@@ -20,6 +20,7 @@
  * @stable v0.1.0
  */
 import { Router } from 'express'
+import { join } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import {
   computeMenuOrderSnapshotFromEntries,
@@ -31,6 +32,7 @@ import {
 } from '../services/menu-extractor'
 import { getAppManifestPath, readAppManifest } from '../services/app-manifest'
 import { resolveProjectRoot } from '../config'
+import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
@@ -71,14 +73,45 @@ export function createAppRouter(
     return null
   }
 
+  // Defence-in-depth: resolve the per-row `app/<appId>` directory
+  // through `realpath` and verify it stays inside
+  // `<canonicalProjectRoot>/app` before reading any manifest
+  // file. Without this gate, a crafted `app/<appId>` symlink
+  // could redirect the manifest reads (`readAppManifest` +
+  // `existsSync(getAppManifestPath(...))`) at a file outside the
+  // project tree -- exposing arbitrary `manifest.json`-shaped
+  // payloads as wire badge / displayName / recipe-lineage fields.
+  // The write routes (`apps-routes.ts`) already run this boundary
+  // check before mutating; the GET path now matches the same
+  // contract.
+  function withinAppBoundary(appId: string): boolean {
+    const projectRoot = resolveProjectRoot(fs)
+    try {
+      const realProjectRoot = fs.realpathSync(projectRoot)
+      const realAppDir = fs.realpathSync(join(projectRoot, 'app', appId))
+      const appBoundary = join(realProjectRoot, 'app')
+      return isWithin(realAppDir, appBoundary)
+    } catch {
+      // `realpathSync` failure (ENOENT for the per-app dir, broken
+      // symlink, ELOOP, etc.) is treated as "not safe to read"
+      // -- fail closed. Legitimate partial-residue states where
+      // the on-disk `app/<appId>` exists still resolve cleanly;
+      // truly absent rows just return `null` to the renderer
+      // (which already handles that as "no manifest attached").
+      return false
+    }
+  }
+
   // v0.2.1 Apps screen needs each menu row's `AppManifest`-sourced
   // UI fields (source badge / displayName / menuOrder / userMenuLabel).
   // We attach them on read so the renderer can render the Apps tab
   // without a second round-trip. `null` is returned for rows without
   // a matching manifest (legacy hand-edited `app/menu.ts`); the
   // renderer falls back to the bare `menu.ts` label in that case.
-  const manifestLookup: AppManifestLookup = (appId) =>
-    readAppManifest(fs, resolveProjectRoot(fs), appId)
+  const manifestLookup: AppManifestLookup = (appId) => {
+    if (!withinAppBoundary(appId)) return null
+    return readAppManifest(fs, resolveProjectRoot(fs), appId)
+  }
 
   // Partial-residue fallback for the source badge + recipe
   // lineage. When the `AppManifest` file is present on disk but
@@ -105,6 +138,7 @@ export function createAppRouter(
   // deferred scanner-pipeline follow-up tracked in the PR's
   // Out-of-Scope list (BL deferred to v0.2.2).
   const recipeManifestLookup: RecipeManifestLookup = (appId) => {
+    if (!withinAppBoundary(appId)) return null
     const manifestPath = getAppManifestPath(resolveProjectRoot(fs), appId)
     if (!fs.existsSync(manifestPath)) {
       return null

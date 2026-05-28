@@ -104,10 +104,17 @@ export function AppActionsPopover({
       if (menuRef.current.contains(target)) return
       // Also ignore clicks on the trigger button itself — the parent
       // already toggles via its own onClick. We detect this by walking
-      // up from `target` looking for the data attribute the button
-      // carries; if found, the parent handles state and we stay open
-      // until React re-renders us with `isOpen=false`.
-      const triggerBtn = (target as Element).closest?.('[data-testid="app-actions-menu-button"]')
+      // up from `target` looking for either the legacy AmbientSidebar
+      // testid (`app-actions-menu-button`) OR the generic
+      // `data-app-actions-menu-button` attribute that the Apps-tab
+      // trigger carries (it owns its own `apps-tab-row-${id}-actions`
+      // testid for E2E selection, so we need a second discriminator
+      // that does not collide with that per-row id). If either match,
+      // the parent's onClick is the one that should toggle state and
+      // we stay open until React re-renders us with `isOpen=false`.
+      const triggerBtn = (target as Element).closest?.(
+        '[data-testid="app-actions-menu-button"], [data-app-actions-menu-button]',
+      )
       if (triggerBtn) return
       onClose()
     }
