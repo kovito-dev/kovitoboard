@@ -28,13 +28,18 @@
  * v0.2.1 BL-2026-167: extracted from `WorkRootsPage.tsx` so the
  * same surface can mount inside the Settings modal's `workRoots`
  * tab (judgement doc v1.1 §2.1 case A / §2.2 case B-1). The
- * legacy `/work-roots` route stays alive via a thin wrapper in
- * `pages/WorkRootsPage.tsx` to preserve deep-link / e2e
- * compatibility (§2.4 #4). ProjectRootBanner is embedded at the
- * top of this surface (§2.3 case C-1) — the nav-rail mount in
- * `App.tsx` is intentionally left in place; the duplicate is
- * accepted so the project-root context stays visible regardless
- * of how the user reached the settings tab.
+ * legacy `/work-roots` route stays alive via a wrapper in
+ * `pages/WorkRootsPage.tsx` that provides the page-level chrome
+ * (height / scroll container / padding). Keeping the chrome out of
+ * this component keeps it embeddable inside the Settings modal's
+ * tab content (which already owns its own scroll container and
+ * padding) without creating a nested-scroll region.
+ *
+ * ProjectRootBanner is embedded at the top of this surface
+ * (§2.3 case C-1) — the nav-rail mount in `App.tsx` is
+ * intentionally left in place; the duplicate is accepted so the
+ * project-root context stays visible regardless of how the user
+ * reached the settings tab.
  */
 import { useEffect, useState } from 'react'
 import { ConfirmModal } from './ConfirmModal'
@@ -169,19 +174,19 @@ export function SettingsWorkRoots() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto bg-[var(--bg-primary)]">
+    <>
       {/* ProjectRootBanner ships with `mt-auto` so it pins to the
           bottom of the nav rail in its canonical mount. Wrapping it
-          in a non-flex container localises the `mt-auto` so it has no
-          effect here, letting the banner render at the very top of
-          the settings surface (judgement doc v1.1 §2.3 case C-1).
+          in a non-flex container localises the `mt-auto` so it has
+          no effect here, letting the banner render at the very top
+          of the settings surface (judgement doc v1.1 §2.3 case C-1).
           The banner component itself is intentionally left unchanged
           (touch list #3 in the implementation request). */}
       <div className="shrink-0">
         <ProjectRootBanner compact={false} />
       </div>
 
-      <div className="max-w-3xl w-full mx-auto px-6 py-8">
+      <div className="max-w-3xl w-full mx-auto">
         <h1 className="text-2xl font-semibold mb-2 text-[var(--text-primary)]">
           {t('workRoots.title')}
         </h1>
@@ -314,6 +319,6 @@ export function SettingsWorkRoots() {
           setDeleteError(null)
         }}
       />
-    </div>
+    </>
   )
 }

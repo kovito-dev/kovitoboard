@@ -253,15 +253,22 @@ export function App() {
   }, [userMenuEntries])
 
   // Active menu determined by URL path.
-  // v0.2.1 BL-2026-167: the `/work-roots` branch was intentionally
-  // dropped along with the side-nav entry (judgement doc v1.1 §2.4
-  // #2). The route still renders but has no active menu — visiting
-  // it from a deep-link will leave the side rail in its default
-  // ("agents") active state, which mirrors how every other route
-  // outside the four canonical side-nav items behaves.
-  const activeMenuId = useMemo(() => {
+  // v0.2.1 BL-2026-167: the side-nav `work-roots` entry was folded
+  // into a Settings modal tab (judgement doc v1.1 §2.4 #1-2). The
+  // `/work-roots` route is preserved as a deep-link target but no
+  // longer maps to a menu entry, so we return `null` for that path
+  // instead of falling through to the Agents default — collapsing it
+  // into Agents would mis-highlight the nav rail, hide the ambient
+  // sidebar (the gating in `rightSidebar` treats `agents` as an
+  // ambient-suppressed route), and mis-highlight the mobile bottom
+  // nav. `null` lets every downstream consumer treat the route as
+  // "no canonical menu", which mirrors the previous behaviour where
+  // `work-roots` was a distinct value never matched by the side-nav
+  // gating.
+  const activeMenuId = useMemo<string | null>(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
     if (location.pathname.startsWith('/recipes')) return 'recipes'
+    if (location.pathname.startsWith('/work-roots')) return null
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
@@ -519,7 +526,7 @@ export function App() {
                   // route observation. `null` when the route is not an
                   // `/ext/<appId>` page; the sidebar hides the per-app
                   // popover in that case (DEC-024 #5 / spec §F3).
-                  const activeAppId = activeMenuId.startsWith('ext/')
+                  const activeAppId = activeMenuId?.startsWith('ext/')
                     ? activeMenuId.slice('ext/'.length)
                     : null
                   const activeAppEntry = activeAppId
