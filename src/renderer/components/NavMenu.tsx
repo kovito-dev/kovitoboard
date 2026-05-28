@@ -149,7 +149,15 @@ export function getIcon(key: string): ReactNode {
 
 interface NavMenuProps {
   entries: MenuEntry[]
-  activeId: string
+  /**
+   * Currently active menu entry id, or `null` when the visible route
+   * has no corresponding menu entry (e.g. the `/work-roots` deep-link
+   * after the entry was folded into the Settings modal). `null` makes
+   * the highlight collapse cleanly — the `entry.id === activeId`
+   * comparison below evaluates to false for every entry, which is
+   * exactly the desired UX for a route with no menu equivalent.
+   */
+  activeId: string | null
   onSelect: (id: string) => void
   /**
    * Compact (icon-only) mode. Controlled by the parent so the rail
