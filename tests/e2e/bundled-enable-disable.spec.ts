@@ -76,7 +76,35 @@ interface GrandfatherSeed {
   source: 'sample'
 }
 
+/**
+ * Reject ids that could escape the intended app/recipe directory via
+ * path-separator or `..` segments. Mirrors `assertSafePathSegment` in
+ * `tests/e2e/helpers/v021-bundled-helpers.ts` so the Phase 1 inline
+ * filesystem helpers below get the same path-safety guarantee as the
+ * shared Phase 2/3 helpers, without folding the Phase 1 spec into the
+ * shared helper module (the consolidation lives in a follow-up PR).
+ */
+function assertSafePathSegment(value: string, label: string): void {
+  if (value === '' || value === '.' || value === '..') {
+    throw new Error(
+      `[bundled-enable-disable] empty or relative ${label}: "${value}"`,
+    )
+  }
+  if (
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    value.split(/[/\\]/).includes('..')
+  ) {
+    throw new Error(
+      `[bundled-enable-disable] unsafe ${label} (path traversal): "${value}"`,
+    )
+  }
+}
+
 function seedGrandfatherManifest(projectRoot: string, seed: GrandfatherSeed) {
+  assertSafePathSegment(seed.recipeId, 'recipeId')
+  assertSafePathSegment(seed.appId, 'appId')
   // RecipeManifest schema: source is the flat 4-value enum
   // ('sample' | 'bundled' | 'import' | 'url') — see
   // src/server/recipe/apiTypes.ts:290.
@@ -188,6 +216,7 @@ function readHistoryLines(projectRoot: string): unknown[] {
 }
 
 function cleanupAppDir(projectRoot: string, appId: string) {
+  assertSafePathSegment(appId, 'appId')
   rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
 }
 

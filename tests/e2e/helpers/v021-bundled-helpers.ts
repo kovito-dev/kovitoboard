@@ -198,9 +198,34 @@ export function readServerLogLines(
     .sort((a, b) => b.mtime - a.mtime)
   if (files.length === 0) return []
   const newest = files[0].n
-  const raw = readFileSync(join(logsDir, newest), 'utf-8')
+  const newestPath = join(logsDir, newest)
+  // Read only the tail of the file so memory cost stays bounded by
+  // `tailLines` rather than scaling with the whole log on a long /
+  // noisy run. The 96 KB tail budget covers ~500 JSON-Lines pino
+  // entries with headroom; the partial-line at the front is dropped
+  // below so we never hand a half-truncated record to `JSON.parse`.
+  const TAIL_BUDGET = Math.max(96 * 1024, tailLines * 256)
+  const size = fsMod.statSync(newestPath).size
+  let raw: string
+  if (size <= TAIL_BUDGET) {
+    raw = readFileSync(newestPath, 'utf-8')
+  } else {
+    const fd = fsMod.openSync(newestPath, 'r')
+    try {
+      const buf = Buffer.alloc(TAIL_BUDGET)
+      fsMod.readSync(fd, buf, 0, TAIL_BUDGET, size - TAIL_BUDGET)
+      raw = buf.toString('utf-8')
+    } finally {
+      fsMod.closeSync(fd)
+    }
+  }
   const allLines = raw.split('\n').filter((line) => line.length > 0)
-  const tail = allLines.slice(-tailLines)
+  // When the read window started mid-line, the first surviving line
+  // is a partial record; drop it so the parser only sees complete
+  // JSON objects.
+  const completeLines =
+    size > TAIL_BUDGET && allLines.length > 0 ? allLines.slice(1) : allLines
+  const tail = completeLines.slice(-tailLines)
   const parsed: Record<string, unknown>[] = []
   for (const line of tail) {
     try {

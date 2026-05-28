@@ -161,13 +161,35 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
       page.getByTestId('apps-tab-reorder-saving'),
     ).toHaveCount(0, { timeout: 5_000 })
 
+    // Capture the DOM order immediately after drop, BEFORE reload, so
+    // we can pin the post-reload DOM and the persisted manifests to
+    // the same observed permutation. The pointer trajectory itself is
+    // dnd-kit's collision detector's call, so we treat the immediate
+    // post-drop DOM as the source of truth for "what the user saw"
+    // and require the persistence path to honour it.
+    const docBoxAfterDrop = await page
+      .getByTestId(`apps-tab-row-${APP_DOC}`)
+      .boundingBox()
+    const todoBoxAfterDrop = await page
+      .getByTestId(`apps-tab-row-${APP_TODO}`)
+      .boundingBox()
+    if (!docBoxAfterDrop || !todoBoxAfterDrop) {
+      throw new Error(
+        '[BS-T9-a] could not resolve row bounding boxes immediately after drop',
+      )
+    }
+    const observedOrderAfterDrop =
+      docBoxAfterDrop.y < todoBoxAfterDrop.y
+        ? [APP_DOC, APP_TODO]
+        : [APP_TODO, APP_DOC]
+
     // AppManifest holds the persisted menuOrder. The drop moved todo
-    // (originally enable-order 0) into the document-viewer slot, so
-    // the new contiguous order is document-viewer first or
-    // todo first depending on which direction the optimistic reorder
-    // settled in — we accept either non-trivial order, the
-    // important invariant is that both rows now carry the new field
-    // and it is a contiguous [0, 1] permutation.
+    // (originally enable-order 0) into the document-viewer slot. The
+    // exact final order is what the DOM shows immediately after drop
+    // (captured above); both rows must carry a numeric menuOrder and
+    // it must be a contiguous `[0, 1]` permutation, and the lower
+    // menuOrder must belong to whichever row appeared first in the
+    // post-drop DOM.
     const docManifest = readAppManifest(kbFixture.projectRoot, APP_DOC)
     const todoManifest = readAppManifest(kbFixture.projectRoot, APP_TODO)
     expect(docManifest).not.toBeNull()
@@ -201,16 +223,11 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
     expect(docAfterReload?.menuOrder).toBe(docOrder)
     expect(todoAfterReload?.menuOrder).toBe(todoOrder)
 
-    // The DOM order on the Apps tab matches the persisted menuOrder —
-    // a renderer regression that ignores `menuOrder` on render would
-    // still keep both rows visible above, so the previous assertions
-    // alone cannot catch it. Read the two row containers by explicit
-    // testid (avoids matching nested `-drag-handle`/`-open`/`-rename`
-    // child elements that share the `apps-tab-row-` prefix).
-    const expectedOrder =
-      (docAfterReload?.menuOrder ?? 0) < (todoAfterReload?.menuOrder ?? 0)
-        ? [APP_DOC, APP_TODO]
-        : [APP_TODO, APP_DOC]
+    // The DOM order after reload matches BOTH the immediate
+    // post-drop DOM and the persisted menuOrder. Reading the two
+    // row containers by explicit testid avoids matching nested
+    // `-drag-handle`/`-open`/`-rename` child elements that share
+    // the `apps-tab-row-` prefix.
     const docBox = await page
       .getByTestId(`apps-tab-row-${APP_DOC}`)
       .boundingBox()
@@ -222,8 +239,16 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
         '[BS-T9-a] could not resolve row bounding boxes after reload',
       )
     }
-    const renderedOrder =
+    const renderedOrderAfterReload =
       docBox.y < todoBox.y ? [APP_DOC, APP_TODO] : [APP_TODO, APP_DOC]
-    expect(renderedOrder).toEqual(expectedOrder)
+    const persistedOrder =
+      (docAfterReload?.menuOrder ?? 0) < (todoAfterReload?.menuOrder ?? 0)
+        ? [APP_DOC, APP_TODO]
+        : [APP_TODO, APP_DOC]
+    // The user-observed order at drop time and the persisted-then-
+    // re-rendered order must agree — an inverted drop-resolution bug
+    // would diverge here.
+    expect(renderedOrderAfterReload).toEqual(observedOrderAfterDrop)
+    expect(persistedOrder).toEqual(observedOrderAfterDrop)
   })
 })
