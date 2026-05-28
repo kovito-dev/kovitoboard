@@ -15,6 +15,7 @@
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -191,8 +192,30 @@ function assertSafeRelativePath(value: string, label: string): void {
   }
 }
 
+/**
+ * Verify the `<projectRoot>/app` root is a real directory (not a
+ * symlink). The destructive helpers below recurse into `app/<appId>/`
+ * with `rmSync({ recursive: true })`, so if a prior test or the SUT
+ * has replaced the root with a symlink to somewhere outside the
+ * fixture, the cleanup would follow the link and remove files outside
+ * the per-test boundary. Mirrors the server-side app-root anomaly
+ * check (`src/server/services/bundled-installer.ts` boundary
+ * verification).
+ */
+function assertAppRootIsDirectory(projectRoot: string): void {
+  const appRoot = join(projectRoot, 'app')
+  if (!existsSync(appRoot)) return
+  const st = lstatSync(appRoot)
+  if (!st.isDirectory() || st.isSymbolicLink()) {
+    throw new Error(
+      `[v021-bundled-helpers] refusing to mutate non-directory app root: "${appRoot}"`,
+    )
+  }
+}
+
 export function cleanupAppDir(projectRoot: string, appId: string): void {
   assertSafePathSegment(appId, 'appId')
+  assertAppRootIsDirectory(projectRoot)
   rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
 }
 
@@ -411,10 +434,19 @@ export function seedGrandfatherManifest(
 
   const menuTsPath = join(projectRoot, 'app', 'menu.ts')
   const current = readFileSync(menuTsPath, 'utf-8')
+  // `seed.appId` / `componentPath` are validated to simple-slug shape
+  // (`assertSafePathSegment` / `assertSafeRelativePath` above) so
+  // template-interpolating them into a single-quoted literal is
+  // safe. `displayName` is caller-controlled free-form text, so pass
+  // it through `JSON.stringify` to produce a properly escaped
+  // double-quoted TypeScript string — embedded quotes, backslashes,
+  // newlines, or NUL bytes cannot break the file's syntax or inject
+  // code/imports.
+  const safeLabel = JSON.stringify(displayName)
   const grandfatherEntry =
     `  {\n` +
     `    id: '${seed.appId}',\n` +
-    `    label: '${displayName}',\n` +
+    `    label: ${safeLabel},\n` +
     `    icon: 'content',\n` +
     `    component: () => import('./${seed.appId}/${componentPath}'),\n` +
     `  },\n`

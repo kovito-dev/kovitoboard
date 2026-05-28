@@ -193,10 +193,20 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     },
   )
 
-  test('§3.2 #5: own-data continuity — `app/data/<appId>/` survives the upgrade and remains readable after the v0.2.1 enable transaction lands', async ({
-    request,
-    kbFixture,
-  }) => {
+  // F-3 / BS-T4 escalate: the bundled-installer manifest-store cache
+  // is computed at boot and currently does not pick up the on-disk
+  // grandfather seed an L1 spec writes after boot, so a v0.2.1 enable
+  // call against the seeded state takes the fresh-install path
+  // instead of the `'already-enabled'` short-circuit. The
+  // migration-specific outcome (`status: 'already-enabled'`,
+  // `source: 'sample'`) is therefore unprovable from L1 today and
+  // this test is marked `fixme` until the cache/test seam exists.
+  // See the tester findings handoff
+  // (`docs/design/handoffs/v021-tester-l1-findings-handoff-2026-05-28.md`
+  // F-3) for the upstream patch direction.
+  test.fixme(
+    '§3.2 #5: own-data continuity — `app/data/<appId>/` survives the upgrade and remains readable after the v0.2.1 enable transaction lands',
+    async ({ request, kbFixture }) => {
     // The committee request §3 framing is "v0.1.x → v0.2.1
     // upgrade", so this spec must exercise the actual migration
     // path: a pre-existing v0.1.x grandfather install for `todo`
@@ -219,19 +229,33 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     // Walk through the v0.2.1 enable flow — this is the exact path
     // a v0.1.x user takes the first time they hit the new Samples
     // tab against an already-installed sample. The own-data
-    // directory must not be touched.
+    // directory must not be touched, and the response must reflect
+    // the grandfather idempotent short-circuit (committee request
+    // §3.2 #2 SSOT + judgement v2.5 §9.4 BS-L2): a fresh-install
+    // path would return a different status, so asserting
+    // `status: 'already-enabled'` + `source: 'sample'` pins the
+    // test to the migration-specific outcome.
     const enableRes = await request.post(
       `${API_BASE}/api/recipes/sample/${TODO_ID}/enable`,
     )
     expect(enableRes.status()).toBe(200)
+    const body = (await enableRes.json()) as {
+      status?: string
+      source?: string
+      appId?: string
+    }
+    expect(body.status).toBe('already-enabled')
+    expect(body.source).toBe('sample')
+    expect(body.appId).toBe(TODO_ID)
 
     expect(existsSync(sentinelPath)).toBe(true)
     const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf-8'))
-    expect(sentinel).toMatchObject({
-      id: 'sentinel',
-      title: 'survives v0.2.1 upgrade',
-    })
-  })
+      expect(sentinel).toMatchObject({
+        id: 'sentinel',
+        title: 'survives v0.2.1 upgrade',
+      })
+    },
+  )
 
   test('§3.2 #6: disable record carries the persisted `source` (not a hard-coded `bundled`) — BS-L3-B normative pin', async ({
     request,
