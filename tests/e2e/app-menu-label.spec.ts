@@ -73,7 +73,9 @@ test.describe('App menu-label PATCH (BS-T11) — userMenuLabel override + reset 
     kbFixture,
   }) => {
     const customLabel = 'My Documents'
-    const wsFramePromise = waitForWsFrame('app_menu_changed', 5_000)
+    const wsFramePromise = waitForWsFrame('app_menu_changed', {
+      timeoutMs: 5_000,
+    })
 
     const res = await request.patch(
       `${API_BASE}/api/apps/${APP_ID}/menu-label`,

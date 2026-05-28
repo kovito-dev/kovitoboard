@@ -105,7 +105,9 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
     // Listen for the broadcast before the PUT fires; the server emits
     // it after lock release via setImmediate, so a late subscription
     // would race the close.
-    const wsFramePromise = waitForWsFrame('app_menu_changed', 5_000)
+    const wsFramePromise = waitForWsFrame('app_menu_changed', {
+      timeoutMs: 5_000,
+    })
     const putResponsePromise = page.waitForResponse(
       (resp) =>
         resp.url().endsWith('/api/apps/menu-order') &&
@@ -179,5 +181,30 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
     const todoAfterReload = readAppManifest(kbFixture.projectRoot, APP_TODO)
     expect(docAfterReload?.menuOrder).toBe(docOrder)
     expect(todoAfterReload?.menuOrder).toBe(todoOrder)
+
+    // The DOM order on the Apps tab matches the persisted menuOrder —
+    // a renderer regression that ignores `menuOrder` on render would
+    // still keep both rows visible above, so the previous assertions
+    // alone cannot catch it. Read the two row containers by explicit
+    // testid (avoids matching nested `-drag-handle`/`-open`/`-rename`
+    // child elements that share the `apps-tab-row-` prefix).
+    const expectedOrder =
+      (docAfterReload?.menuOrder ?? 0) < (todoAfterReload?.menuOrder ?? 0)
+        ? [APP_DOC, APP_TODO]
+        : [APP_TODO, APP_DOC]
+    const docBox = await page
+      .getByTestId(`apps-tab-row-${APP_DOC}`)
+      .boundingBox()
+    const todoBox = await page
+      .getByTestId(`apps-tab-row-${APP_TODO}`)
+      .boundingBox()
+    if (!docBox || !todoBox) {
+      throw new Error(
+        '[BS-T9-a] could not resolve row bounding boxes after reload',
+      )
+    }
+    const renderedOrder =
+      docBox.y < todoBox.y ? [APP_DOC, APP_TODO] : [APP_TODO, APP_DOC]
+    expect(renderedOrder).toEqual(expectedOrder)
   })
 })

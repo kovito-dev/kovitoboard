@@ -82,7 +82,9 @@ test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () 
   }) => {
     // Listen for the broadcast before firing the PUT so the
     // post-commit `setImmediate` cannot fire before we subscribe.
-    const wsFramePromise = waitForWsFrame('app_menu_changed', 5_000)
+    const wsFramePromise = waitForWsFrame('app_menu_changed', {
+      timeoutMs: 5_000,
+    })
 
     const res = await request.put(`${API_BASE}/api/apps/menu-order`, {
       data: {
