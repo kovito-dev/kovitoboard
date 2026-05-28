@@ -27,7 +27,7 @@ Closes #
 
 ## Checklist
 
-- [ ] CI checks pass locally (`npm run typecheck && npm run build && npm test`)
+- [ ] CI checks pass locally (`npm run typecheck && npm run build && npm test && npm run check:hygiene`)
 - [ ] No internal IDs (DEC-* / BL-* / agent tags) in commit messages or PR body
 - [ ] All new text in English (code comments, log messages, PR description)
 - [ ] Code of Conduct read and accepted ([CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md))

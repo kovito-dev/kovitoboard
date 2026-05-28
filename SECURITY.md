@@ -43,6 +43,10 @@ Please include:
 
 ## Out of Scope
 
-- Vulnerabilities in dependencies (please report upstream)
+- Vulnerabilities purely in upstream dependencies that do not affect
+  KovitoBoard — please report those to the upstream project first.
+  If KovitoBoard is affected, ships a vulnerable version, or needs a
+  coordinated mitigation or release, please still report through the
+  channels above so the maintainer can plan a patched release.
 - Issues that require physical access to the user's machine
 - Social engineering attacks against maintainers
