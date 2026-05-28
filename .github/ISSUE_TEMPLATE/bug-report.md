@@ -32,4 +32,14 @@ labels: bug
 
 ## Logs / Screenshots
 
-<!-- Attach relevant logs from `~/.kovitoboard/logs/` or screenshots. -->
+<!--
+Attach relevant logs from `~/.kovitoboard/logs/` or screenshots.
+
+Before posting, redact any secrets, API tokens, absolute filesystem
+paths, or other personal identifiers — issues filed here are
+world-readable.
+
+If this report involves a security vulnerability, do not file it as a
+public issue. Use the private disclosure channel described in
+[SECURITY.md](../../SECURITY.md) instead.
+-->

@@ -197,15 +197,25 @@ external-facing artifacts**:
 
 - ❌ Not allowed: commit messages, PR titles, PR bodies, issue threads,
   code comments
-- ✅ External contributors will naturally avoid these — a server-side
-  commit-msg hook (`.git/hooks/commit-msg`) blocks commits containing
-  these patterns
+- ✅ Enforcement: the
+  [`pr-language-check`](.github/workflows/pr-language-check.yml) CI
+  workflow scans every PR title and body for these patterns (and for
+  Japanese characters) and fails the PR if any are detected. The
+  maintainer additionally runs a local `.git/hooks/commit-msg` hook on
+  internal pushes for an early signal, but that hook is not
+  distributed with forks, so external contributors are expected to
+  follow this guidance manually
 
 ### CI Behavior on Fork PRs
 
 - **No secrets are required** for any CI job — all checks (hygiene,
   typecheck, build, hygiene-post-build, test, pr-language-check) run
-  identically on fork PRs and internal PRs
+  on fork PRs and internal PRs alike. The `pr-language-check` workflow
+  uses the default `GITHUB_TOKEN`, which is read-only on fork PRs; the
+  language scan itself runs the same way, and only the auxiliary
+  follow-up actions (automatic labelling, in-PR warning comments) are
+  degraded to log-only messages for forks. The pass / fail signal
+  for the required status check is unaffected.
 - **L1 E2E** runs on `push` to `staging` / `main` (post-merge
   integration check), not on PRs — this keeps the PR feedback loop fast
 - **First-time contributor approval**: For your first PR from a fork,

@@ -70,15 +70,21 @@ export const PII_PATTERNS = [
   { label: '/home/irikura', regex: /\/home\/irikura/i },
 ]
 
-// Files exempt from PII check. These are external-facing governance
-// files where the maintainer's contact handle and email are intentionally
-// published (Code of Conduct enforcement contact, security reporting
-// secondary channel, CODEOWNERS ownership declaration). The maintainer
-// has accepted this exposure as part of going public.
-export const PII_EXEMPT_PATHS = new Set([
-  'CODEOWNERS',
-  'CODE_OF_CONDUCT.md',
-  'SECURITY.md',
+// Narrowly scoped PII allowlist for external-facing governance files.
+// The maintainer's published handle / email is intentional in these files
+// (CODEOWNERS ownership declaration, Code of Conduct enforcement contact,
+// security reporting secondary channel). Listing the expected literals here
+// — instead of exempting the whole file — keeps the PII scan active for
+// every other pattern, so future edits that accidentally introduce a
+// different email, handle, or absolute path are still caught.
+//
+// Semantics: when scanning a governance file, every line is first scrubbed
+// of these expected literals; if a PII pattern still matches the stripped
+// line, it is flagged as an error.
+export const PII_EXPECTED_LITERALS = new Map([
+  ['CODEOWNERS', [/@kousuke-irikura\b/g]],
+  ['CODE_OF_CONDUCT.md', [/orolira@gmail\.com/g]],
+  ['SECURITY.md', [/orolira@gmail\.com/g]],
 ])
 
 // Japanese character ranges (Hiragana + Katakana + CJK Unified Ideographs)
@@ -664,13 +670,23 @@ function runPiiCheck(error) {
   for (const { label, regex } of PII_PATTERNS) {
     for (const file of allTextFiles) {
       if (file === 'tools/check-release-hygiene.mjs') continue
-      if (PII_EXEMPT_PATHS.has(file)) continue
       const hits = scanFile(join(ROOT, file), regex)
-      if (hits.length > 0) {
-        piiFound = true
-        for (const hit of hits) {
-          error(`PII "${label}" found: ${file}:${hit.line}`)
+      if (hits.length === 0) continue
+
+      const expected = PII_EXPECTED_LITERALS.get(file)
+      for (const hit of hits) {
+        // For governance files, scrub the expected literal occurrences and
+        // re-test; only flag if a real match survives the strip. Every other
+        // file is reported as-is.
+        if (expected) {
+          let stripped = hit.text
+          for (const literal of expected) {
+            stripped = stripped.replace(literal, '')
+          }
+          if (!regex.test(stripped)) continue
         }
+        piiFound = true
+        error(`PII "${label}" found: ${file}:${hit.line}`)
       }
     }
   }
