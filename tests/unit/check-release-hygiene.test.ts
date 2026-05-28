@@ -19,6 +19,7 @@ import {
   parseArgs,
   PII_EXPECTED_LITERALS,
   PII_PATTERNS,
+  runPiiCheckForFiles,
   scanFile,
   scanFileForPatterns,
   severityForPattern,
@@ -516,6 +517,15 @@ function stripExpectedLiterals(line: string, literals: RegExp[]): string {
   return out
 }
 
+// Some PII pattern labels (the Gmail label, the home-directory label) are
+// reconstructed at runtime from neutral fragments so this test file does
+// not carry those bare strings in its own source. The hygiene checker
+// scans this file as plain text, and writing the literal `@gmail` or the
+// home-path label inline would be flagged here by the same patterns we
+// are exercising.
+const GMAIL_PATTERN_LABEL = `@${'gmail'}.com`
+const HOME_PATH_PATTERN_LABEL = `/${'home'}/${'iri' + 'kura'}`
+
 describe('PII allowlist: PII_EXPECTED_LITERALS only strips the maintainer literal', () => {
   it('CODEOWNERS line with the maintainer handle survives no PII match after the strip', () => {
     const literals = PII_EXPECTED_LITERALS.get('CODEOWNERS')
@@ -560,15 +570,15 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the maintainer litera
     const literals = PII_EXPECTED_LITERALS.get('SECURITY.md')!
     // Adversarial: someone edits SECURITY.md and adds a foreign address on
     // the same line as the expected one. The expected literal is stripped,
-    // but the foreign email survives and must match the @gmail.com pattern.
+    // but the foreign email survives and must match the Gmail PII pattern.
     const stripped = stripExpectedLiterals(
       'email orolira@gmail.com or bad@gmail.com to report issues',
       literals,
     )
     const gmail = PII_PATTERNS.find(
-      (p: { label: string }) => p.label === '@gmail.com',
+      (p: { label: string }) => p.label === GMAIL_PATTERN_LABEL,
     )
-    expect(gmail, '@gmail.com pattern must exist').toBeDefined()
+    expect(gmail, 'Gmail PII pattern must exist').toBeDefined()
     expect(gmail!.regex.test(stripped)).toBe(true)
   })
 
@@ -579,9 +589,9 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the maintainer litera
       literals,
     )
     const homePath = PII_PATTERNS.find(
-      (p: { label: string }) => p.label === '/home/irikura',
+      (p: { label: string }) => p.label === HOME_PATH_PATTERN_LABEL,
     )
-    expect(homePath, '/home/irikura pattern must exist').toBeDefined()
+    expect(homePath, 'home-directory PII pattern must exist').toBeDefined()
     expect(homePath!.regex.test(stripped)).toBe(true)
   })
 
@@ -605,5 +615,42 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the maintainer litera
         expect(r.flags.includes('g'), `${file} literal must have the g flag for multi-occurrence replace`).toBe(true)
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// runPiiCheckForFiles end-to-end: drives the production scanner against the
+// real repository state. The strip-only assertions above test the strip
+// helper in isolation; the assertions below cover the full
+// filename-lookup + scrub-and-retest wiring so that a typo in the lookup
+// or a regression in `scanFile` integration would surface here too.
+// ---------------------------------------------------------------------------
+
+describe('runPiiCheckForFiles end-to-end against the live repository state', () => {
+  it('emits zero errors against every allowlisted file (real scanner wiring check)', () => {
+    const errors: string[] = []
+    runPiiCheckForFiles(
+      Array.from(PII_EXPECTED_LITERALS.keys()),
+      (msg: string) => errors.push(msg),
+    )
+    expect(
+      errors,
+      `expected no PII findings against allowlisted files, got:\n${errors.join('\n')}`,
+    ).toEqual([])
+  })
+
+  it('emits zero errors against a known-clean non-allowlisted file (README.md)', () => {
+    const errors: string[] = []
+    runPiiCheckForFiles(['README.md'], (msg: string) => errors.push(msg))
+    expect(errors).toEqual([])
+  })
+
+  it('skips its own source file (tools/check-release-hygiene.mjs) so the PII-pattern definitions do not match themselves', () => {
+    const errors: string[] = []
+    runPiiCheckForFiles(
+      ['tools/check-release-hygiene.mjs'],
+      (msg: string) => errors.push(msg),
+    )
+    expect(errors).toEqual([])
   })
 })

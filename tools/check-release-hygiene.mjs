@@ -98,15 +98,13 @@ export const PII_EXPECTED_LITERALS = new Map([
   [
     'tests/unit/check-release-hygiene.test.ts',
     [
+      // Each entry is a literal that the PII-allowlist test must contain
+      // because it is exercising the production strip against the real
+      // maintainer values (see the rationale comment above).
       /@kousuke-irikura\b/g,
       /orolira@gmail\.com/g,
       /bad@gmail\.com/g,
-      /\/home\/irikura\b/g,
-      // Generic `@gmail.com` covers pattern-label literals (e.g.
-      // `p.label === '@gmail.com'`) and comment references inside this
-      // test file. The specific bad@/orolira@ entries above are listed
-      // separately for clarity.
-      /@gmail\.com/g,
+      /\/home\/irikura\/scratch\/notes\.md/g,
     ],
   ],
 ])
@@ -685,21 +683,28 @@ function runJapaneseCheck(warn) {
   }
 }
 
-function runPiiCheck(error) {
-  console.log('\n\x1b[1m[2/7] Personal information detection\x1b[0m')
-
-  const allTextFiles = getAllTrackedTextFiles()
+/**
+ * Run the PII scan over an explicit set of repo-relative file paths.
+ * Exported so unit tests can drive the real scanner end-to-end against the
+ * current repository state — exercising the filename lookup in
+ * `PII_EXPECTED_LITERALS` plus the per-line scrub-and-retest logic, not
+ * just a local mirror of the strip helper.
+ *
+ * @param {string[]} files - repo-relative paths (resolved against ROOT)
+ * @param {(msg: string) => void} error - error callback (one per finding)
+ * @returns {boolean} true if any finding was emitted
+ */
+export function runPiiCheckForFiles(files, error) {
   let piiFound = false
-
   for (const { label, regex } of PII_PATTERNS) {
-    for (const file of allTextFiles) {
+    for (const file of files) {
       if (file === 'tools/check-release-hygiene.mjs') continue
       const hits = scanFile(join(ROOT, file), regex)
       if (hits.length === 0) continue
 
       const expected = PII_EXPECTED_LITERALS.get(file)
       for (const hit of hits) {
-        // For governance files, scrub the expected literal occurrences and
+        // For allowlisted files, scrub the expected literal occurrences and
         // re-test; only flag if a real match survives the strip. Every other
         // file is reported as-is.
         if (expected) {
@@ -714,6 +719,13 @@ function runPiiCheck(error) {
       }
     }
   }
+  return piiFound
+}
+
+function runPiiCheck(error) {
+  console.log('\n\x1b[1m[2/7] Personal information detection\x1b[0m')
+
+  const piiFound = runPiiCheckForFiles(getAllTrackedTextFiles(), error)
 
   if (!piiFound) {
     console.log('  \x1b[32mOK\x1b[0m    No personal information patterns found')
