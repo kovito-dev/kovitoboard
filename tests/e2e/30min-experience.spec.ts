@@ -437,9 +437,13 @@ test.describe('S7: Recipe install temporary disable', () => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    await expect(page.getByTestId('recipe-install-disabled-notice')).toBeVisible({
-      timeout: 10_000,
-    })
+    // v0.2.1 (judgement doc 4'.4): the disable notice moved to the
+    // Sample apps tab. The Apps tab is the default landing tab, so
+    // switch to Sample apps first to surface the banner.
+    await page.getByTestId('apps-screen-tab-samples').click()
+    await expect(
+      page.getByTestId('samples-tab-coming-soon-banner'),
+    ).toBeVisible({ timeout: 10_000 })
     await expect(page.locator('[data-testid^="recipe-install-button-"]')).toHaveCount(0)
     await expect(page.locator('[data-testid^="recipe-reinstall-button-"]')).toHaveCount(0)
   })

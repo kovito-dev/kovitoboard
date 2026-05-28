@@ -94,11 +94,18 @@ test.describe('Recipe install disable (v0.2.x)', () => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // The Coming-in-v0.3.0 notice is rendered above the sample list.
-    await expect(page.getByTestId('recipe-install-disabled-notice')).toBeVisible()
+    // The disable notice now lives on the v0.2.1 Sample apps tab
+    // (judgement doc 4'.4). The Apps tab is the default, so we
+    // switch to Sample apps first to surface the banner.
+    await page.getByTestId('apps-screen-tab-samples').click()
+    await expect(
+      page.getByTestId('samples-tab-coming-soon-banner'),
+    ).toBeVisible()
 
     // No card surfaces an install or reinstall button — the buttons
     // were removed in v0.2.x alongside the install endpoint disable.
+    // (The v0.2.1 Sample apps tab renders an Enable button instead,
+    // which goes through bundled-enable, not the install path.)
     await expect(page.locator('[data-testid^="recipe-install-button-"]')).toHaveCount(0)
     await expect(page.locator('[data-testid^="recipe-reinstall-button-"]')).toHaveCount(0)
   })
@@ -108,9 +115,15 @@ test.describe('Recipe install disable (v0.2.x)', () => {
     await page.waitForLoadState('networkidle')
 
     // The Import tab was retired alongside the apply endpoint
-    // removal; only Sample and History remain visible.
-    await expect(page.getByRole('button', { name: /^Sample recipes$/ })).toBeVisible()
-    await expect(page.getByRole('button', { name: /^History$/ })).toBeVisible()
+    // removal; the v0.2.1 3-tab restructure exposes Apps / Sample
+    // apps / Recipes only.
+    await expect(page.getByTestId('apps-screen-tab-apps')).toBeVisible()
+    await expect(
+      page.getByTestId('apps-screen-tab-samples'),
+    ).toBeVisible()
+    await expect(
+      page.getByTestId('apps-screen-tab-recipes'),
+    ).toBeVisible()
     await expect(page.getByRole('button', { name: /^Import$/ })).toHaveCount(0)
   })
 
@@ -130,7 +143,7 @@ test.describe('Recipe install disable (v0.2.x)', () => {
             endpoint: '/api/recipes/install',
             kbVersion: '0.2.x',
             plannedReenable: 'v0.3.0',
-            grandfatherDocs: 'docs/specs/recipe-system.md §10.6',
+            grandfatherDocs: 'docs/specs/recipe-system.md 10.6',
           },
         }),
       })
@@ -138,11 +151,19 @@ test.describe('Recipe install disable (v0.2.x)', () => {
 
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
-    await expect(page.getByTestId('recipe-install-disabled-notice')).toBeVisible()
+
+    // The disable notice lives on the Sample apps tab in v0.2.1;
+    // switch from the default Apps tab to surface it.
+    await page.getByTestId('apps-screen-tab-samples').click()
+    await expect(
+      page.getByTestId('samples-tab-coming-soon-banner'),
+    ).toBeVisible()
 
     // The renderer has no surface that can issue POST
     // /api/recipes/install anymore — confirm by asserting no install
-    // request happens after the page settles.
+    // request happens after the page settles. (The Sample apps tab
+    // Enable button hits /api/recipes/sample/:recipeId/enable, not
+    // the install endpoint.)
     await page.waitForTimeout(200)
     expect(installCalled).toBe(false)
   })
