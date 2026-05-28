@@ -15,39 +15,45 @@ import { test, expect } from './helpers/l1-per-test-setup'
 const API_BASE = 'http://127.0.0.1:3001'
 
 test.describe('Recipe page', () => {
-  test('レシピページに 2 つのタブが表示される', async ({ page }) => {
+  test('レシピページに 3 つのタブが表示される', async ({ page }) => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // The Export tab was retired earlier (recipe export now happens
-    // from the AmbientSidebar's per-app actions popover). The Import
-    // tab was retired in v0.2.x alongside the recipe install
-    // temporary disable (recipe-system.md §10.6). Only Sample /
-    // History remain. The L1 fixture is locale=en.
-    const sampleTab = page.getByRole('button', { name: 'Sample recipes' })
-    const historyTab = page.getByRole('button', { name: 'History' })
+    // v0.2.1 (judgement doc 4'.2): the legacy 2-tab Sample / History
+    // container was replaced by the 3-tab Apps / Sample apps /
+    // Recipes restructure. Import / Export / History tabs are no
+    // longer present. The L1 fixture is locale=en.
+    const appsTab = page.getByTestId('apps-screen-tab-apps')
+    const samplesTab = page.getByTestId('apps-screen-tab-samples')
+    const recipesTab = page.getByTestId('apps-screen-tab-recipes')
     const importTab = page.getByRole('button', { name: 'Import' })
+    const historyTab = page.getByRole('button', { name: /^History$/ })
 
-    await expect(sampleTab).toBeVisible()
-    await expect(historyTab).toBeVisible()
+    await expect(appsTab).toBeVisible()
+    await expect(samplesTab).toBeVisible()
+    await expect(recipesTab).toBeVisible()
     await expect(importTab).toHaveCount(0)
+    await expect(historyTab).toHaveCount(0)
   })
 
   test('タブをクリックしてコンテンツが切り替わる', async ({ page }) => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // The default tab is "Sample recipes". Switch to the History tab
-    // and confirm the content area updates (a smoke check that the
-    // remaining tabs still wire up correctly).
-    const contentArea = page.locator('.overflow-y-auto').last()
-    const initialContent = await contentArea.textContent()
+    // The default tab is "Apps". Switch to the Sample apps tab and
+    // confirm the content area updates (a smoke check that the
+    // 3-tab wiring works end-to-end).
+    await expect(
+      page.getByTestId('apps-screen-panel-apps'),
+    ).toBeVisible()
 
-    await page.getByRole('button', { name: 'History' }).click()
-    await page.waitForTimeout(300)
-    const historyContent = await contentArea.textContent()
-
-    expect(initialContent).not.toBe(historyContent)
+    await page.getByTestId('apps-screen-tab-samples').click()
+    await expect(
+      page.getByTestId('apps-screen-panel-samples'),
+    ).toBeVisible()
+    await expect(
+      page.getByTestId('samples-tab-coming-soon-banner'),
+    ).toBeVisible()
   })
 
   test('recipes/parse API が空のリクエストを拒否する', async ({ request }) => {
