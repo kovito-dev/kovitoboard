@@ -630,35 +630,50 @@ export function readUserMenuEntries(
     }
   }
 
-  // `app-directory-extension.md` v1.6 §6.8.1 step 2: for every
-  // eligible app whose `AppManifest.menuOrder` is unset, the
-  // scanner assigns a provisional order — the `app/menu.ts` array
-  // position for entries that appear there, then `appId`
-  // lexicographic for any straggler. `readUserMenuEntries` is the
-  // scanner surface, so the provisional order is applied here
-  // before the entries leave the server. Spec step 3 makes the
-  // assignment transient: the manifest on disk is NOT rewritten,
-  // only the wire response carries the provisional value, so a
-  // user's first `PUT /api/apps/menu-order` is the only path that
-  // persists a chosen order.
-  //
-  // Eligibility mirrors §6.8.1: `displayName !== null` (the
-  // AppManifest is readable). Partial-residue rows recovered via
-  // `RecipeManifestLookup` keep `displayName === null` and stay
-  // outside the closed-world batch — their `menuOrder` is not
-  // populated here either.
-  //
-  // The wire ordering of `entries` already reflects `app/menu.ts`
-  // appearance (the parser preserves source order), so we walk
-  // `entries` in declaration order and hand out indices to
-  // eligible rows that are still missing a persisted `menuOrder`.
-  // Rows that already carry a persisted value are left untouched
-  // — they may end up sharing the same index as a provisional
-  // assignment in a mixed-state project (some manifests upgraded,
-  // some pre-v0.2.1), which is a known minor inconsistency that
-  // the deferred "completely-spec-faithful 0..N-1 renumber"
-  // follow-up will close (see PR "Out of Scope" entry on
-  // scanner-derived classification).
+  // Provisional `menuOrder` assignment is NOT performed here so
+  // the persisted-only `menuOrder` values can be hashed into the
+  // wire snapshot (`X-Apps-Menu-Snapshot`) before any synthetic
+  // values are injected. Without that ordering, the GET-side
+  // snapshot would contain provisional indices while the PUT-side
+  // `apps-routes.ts computeMenuOrderSnapshot` recomputes from the
+  // persisted manifests (which still carry `menuOrder === null`
+  // for unassigned rows) -- the first reorder would then fail
+  // with HTTP 409 `MenuOrderSnapshotDrift` even when no
+  // concurrent writer existed. The provisional injection has
+  // been moved to {@link assignProvisionalMenuOrder} which the
+  // caller runs *after* snapshot computation; see
+  // `app-routes.ts` for the call site.
+  return entries
+}
+
+/**
+ * Apply the spec's provisional `menuOrder` assignment to wire
+ * entries in-place, per `app-directory-extension.md` v1.6 §6.8.1
+ * step 2. The scanner assigns a provisional order to every
+ * eligible app whose `AppManifest.menuOrder` is unset -- the
+ * `app/menu.ts` array position for entries that appear there.
+ * Spec step 3 keeps the assignment transient (the on-disk
+ * manifest is not rewritten); only the wire response carries
+ * the value, and a user's first `PUT /api/apps/menu-order`
+ * persists the chosen order.
+ *
+ * Splitting this from `readUserMenuEntries` lets callers
+ * compute the wire snapshot from the persisted-only state
+ * before the synthetic indices land -- without that ordering,
+ * GET snapshot and PUT snapshot drift in mixed v0.2.0 /
+ * v0.2.1 projects.
+ *
+ * Eligibility mirrors §6.8.1: `displayName !== null` (the
+ * AppManifest is readable). Partial-residue rows recovered via
+ * `RecipeManifestLookup` keep `displayName === null` and stay
+ * outside the closed-world batch -- their `menuOrder` is not
+ * populated here either.
+ *
+ * @stable v0.2.1
+ */
+export function assignProvisionalMenuOrder(
+  entries: MenuEntryWithPage[],
+): void {
   let nextProvisionalIndex = 0
   for (const entry of entries) {
     if (entry.displayName === null) continue
@@ -675,8 +690,6 @@ export function readUserMenuEntries(
     entry.menuOrder = nextProvisionalIndex
     nextProvisionalIndex += 1
   }
-
-  return entries
 }
 
 /**

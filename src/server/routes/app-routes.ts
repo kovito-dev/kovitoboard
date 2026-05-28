@@ -23,6 +23,7 @@ import { Router } from 'express'
 import { join } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import {
+  assignProvisionalMenuOrder,
   computeMenuOrderSnapshotFromEntries,
   readUserMenuEntries,
   type AppManifestLookup,
@@ -153,6 +154,20 @@ export function createAppRouter(
       manifestLookup,
       recipeManifestLookup,
     )
+    // Fail-closed: drop any entry whose canonical app directory
+    // could not be verified inside `<projectRoot>/app`. The
+    // boundary check inside `manifestLookup` / `recipeManifestLookup`
+    // already returns `null` for those rows, but the row was
+    // still flowing onto the wire as `manifestState === 'missing'`
+    // -- and the Apps tab routes `'missing'` into the legacy
+    // Remove path, which would let a user delete an anomalous /
+    // symlinked subtree they should never have been offered as a
+    // legacy row. Re-running the boundary check here and skipping
+    // the failing rows keeps anomalies out of the wire entirely;
+    // the renderer never sees them and cannot surface any action.
+    const safeEntries = entries.filter((entry) =>
+      withinAppBoundary(entry.id),
+    )
     // Surface the current menu-order snapshot in a response header
     // so the renderer can seed `snapshotVersionRef` before the user's
     // very first reorder lands. The spec pins the wire body to
@@ -161,14 +176,23 @@ export function createAppRouter(
     // instead of reshaping the JSON payload (which would be a
     // wire-level break for any pre-v0.2.1 consumer of the endpoint).
     // The PUT side recomputes the snapshot from the live manifests
-    // at write time (`apps-routes.ts computeMenuOrderSnapshot`); the
-    // algorithms are pinned by `computeMenuOrderSnapshotFromEntries`
-    // here so the renderer's seed matches the PUT-side comparison.
+    // at write time (`apps-routes.ts computeMenuOrderSnapshot`).
+    // Compute the snapshot from the persisted-only `menuOrder`
+    // values BEFORE applying the provisional scanner assignment
+    // -- otherwise the GET snapshot would contain synthetic
+    // indices while the PUT snapshot still sees `null` on the
+    // unassigned manifests, producing a spurious 409
+    // `MenuOrderSnapshotDrift` on the first reorder.
     res.setHeader(
       'X-Apps-Menu-Snapshot',
-      computeMenuOrderSnapshotFromEntries(entries),
+      computeMenuOrderSnapshotFromEntries(safeEntries),
     )
-    res.json(entries)
+    // Apply the spec's transient provisional `menuOrder`
+    // assignment AFTER snapshot computation so the wire payload
+    // still has a stable sort key for the renderer's first paint
+    // even when the persisted manifests carry `menuOrder: null`.
+    assignProvisionalMenuOrder(safeEntries)
+    res.json(safeEntries)
   })
 
   return router
