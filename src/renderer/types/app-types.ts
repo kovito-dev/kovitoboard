@@ -18,12 +18,41 @@ import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipePageTrustLevel } from '../../shared/recipe-types'
 
 /**
- * A single user-defined menu entry from app/menu.ts.
- * Extends AppMenuEntryMeta with the React component loader.
+ * Authored shape — what a recipe author writes in `app/menu.ts`.
+ *
+ * Carries only the file-owned fields: identifier metadata + the
+ * dynamic component import. The AppManifest-derived enrichment
+ * (`trustLevel` / `source` / `displayName` / `menuOrder` /
+ * `userMenuLabel`) is **not** present here because those values
+ * are produced server-side after a manifest lookup and an author
+ * cannot legitimately write them in their `menu.ts`.
+ *
+ * Use this type when typing the shape of `app/menu.ts` (see
+ * {@link AppMenuModule}) and for code paths that only have the
+ * raw author entries on hand (the `app-loader` glob fallback,
+ * recipe-exporter fixtures, etc.). The enriched
+ * {@link AppMenuEntry} is the renderer / wire shape and adds the
+ * manifest-derived fields on top.
+ *
+ * @stable v0.2.1
  */
-export interface AppMenuEntry extends AppMenuEntryMeta {
+export interface AuthoredAppMenuEntry extends AppMenuEntryMeta {
   /** Dynamic import function returning the page component (must use export default) */
   component: () => Promise<{ default: React.ComponentType }>
+}
+
+/**
+ * A single user-defined menu entry, enriched with AppManifest-
+ * sourced fields (`trustLevel`, `source`, `displayName`,
+ * `menuOrder`, `userMenuLabel`). This is the **renderer / wire
+ * shape** the Apps screen consumes; it extends
+ * {@link AuthoredAppMenuEntry} and is produced from the wire
+ * response by `app-loader.toAppMenuEntry`. Authors writing
+ * `app/menu.ts` should not refer to this type — they should use
+ * {@link AuthoredAppMenuEntry} (the {@link AppMenuModule}
+ * surface).
+ */
+export interface AppMenuEntry extends AuthoredAppMenuEntry {
   /**
    * Trust-axis value sourced from the active recipe manifest
    * (`RecipeManifest.trustLevel`) at menu-entry load time. Narrowed
@@ -92,9 +121,21 @@ export interface AppMenuEntry extends AppMenuEntryMeta {
   userMenuLabel: string | null
 }
 
-/** The shape exported by app/menu.ts */
+/**
+ * The shape exported by `app/menu.ts`.
+ *
+ * Recipe authors export this object literally — the `menuEntries`
+ * array carries the authored shape ({@link AuthoredAppMenuEntry})
+ * only. The enriched fields on {@link AppMenuEntry} are added
+ * after the wire layer at `app-loader.toAppMenuEntry`, so requiring
+ * them in `app/menu.ts` would force authors to write values that
+ * are only known after a manifest lookup — a compile-time
+ * regression. The split keeps the wire / runtime enrichment out
+ * of the authored surface while letting the renderer keep the
+ * field as required on the wire shape.
+ */
 export interface AppMenuModule {
-  menuEntries: AppMenuEntry[]
+  menuEntries: AuthoredAppMenuEntry[]
 }
 
 /**

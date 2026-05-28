@@ -180,22 +180,28 @@ export function AppsTab({
   }, [sortedFromProps])
 
   // Resolve each id to the actual entry so the render loop can
-  // iterate stable refs from the prop. If an id is in `orderedIds`
-  // but not in the prop (concurrent removal mid-drag), skip it; the
-  // refetch will rebuild the list.
-  const entryById = useMemo(() => {
+  // iterate stable refs from the prop. The lookup is keyed on
+  // *eligible* entries only so a refetch that flips a row from
+  // eligible to ineligible cannot momentarily produce a stale
+  // SortableAppRow + a duplicate ineligible AppRow for the same
+  // id during the window between props update and the
+  // `setOrderedIds` sync effect. Ids that resolve to nothing
+  // (concurrent removal, eligibility flip) are filtered out
+  // entirely; the optimistic snapshot reconciles on the next
+  // wire refetch.
+  const eligibleEntryById = useMemo(() => {
     const map = new Map<string, AppMenuEntry>()
-    for (const entry of userMenuEntries) {
+    for (const entry of eligibleEntries) {
       map.set(entry.id, entry)
     }
     return map
-  }, [userMenuEntries])
+  }, [eligibleEntries])
   const orderedEntries = useMemo(
     () =>
       orderedIds
-        .map((id) => entryById.get(id))
+        .map((id) => eligibleEntryById.get(id))
         .filter((entry): entry is AppMenuEntry => entry !== undefined),
-    [orderedIds, entryById],
+    [orderedIds, eligibleEntryById],
   )
   // Total rendered count drives the empty-state branch — both
   // eligible (sortable) and ineligible (read-only) rows count.
