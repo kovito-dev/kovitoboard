@@ -474,14 +474,21 @@ function AppRow({
   const [isPopoverOpen, setIsPopoverOpen] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
 
-  // Display label fallback chain (judgement doc §11.2 / app-directory-
-  // extension v1.6 §6.8.2):
-  //   userMenuLabel ?? displayName ?? label ?? appId
-  // The `userMenuLabel` is the only field a user can write; the
-  // others are derived from the manifest / menu.ts and survive a
-  // user reset (`userMenuLabel = null`).
+  // Display label fallback chain. The wire-side
+  // `app-directory-extension.md` v1.6 §6.8.2 pins the base label
+  // SSOT to a **file** (`recipe.yaml.menu.label` for recipe-install
+  // apps, `app/menu.ts` for self-made apps) rather than to the
+  // AppManifest's install-time `displayName` snapshot. The renderer
+  // approximates that precedence by preferring `entry.label`
+  // (menu.ts-derived, refreshed on every scan) over
+  // `entry.displayName` (AppManifest install snapshot, stale after
+  // recipe upgrades). A server-side resolver that reads
+  // `recipe.yaml` directly is deferred — see the PR description's
+  // "Out of Scope" entry on `resolvedBaseLabel`. `userMenuLabel`
+  // stays at the top of the chain (user override; survives a reset
+  // via `userMenuLabel = null`); `appId` is the final fallback.
   const displayLabel =
-    entry.userMenuLabel ?? entry.displayName ?? entry.label ?? entry.id
+    entry.userMenuLabel ?? entry.label ?? entry.displayName ?? entry.id
 
   return (
     <li

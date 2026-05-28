@@ -25,6 +25,7 @@ import {
   readUserMenuEntries,
   type AppManifestLookup,
   type MenuEntryWithPage,
+  type RecipeManifestLookup,
   type TrustLevelLookup,
 } from '../services/menu-extractor'
 import { readAppManifest } from '../services/app-manifest'
@@ -78,11 +79,23 @@ export function createAppRouter(
   const manifestLookup: AppManifestLookup = (appId) =>
     readAppManifest(fs, resolveProjectRoot(fs), appId)
 
+  // Partial-residue fallback for the source badge. When the
+  // `AppManifest` is unreadable but a bundled-enable
+  // `RecipeManifest` is still on disk (`recipes-installed/<appId>/
+  // manifest.json`), the extractor surfaces the persisted
+  // `RecipeManifest.source` so the Apps screen keeps showing the
+  // badge during the recovery window. See `RecipeManifestLookup`
+  // JSDoc for the spec basis (`app-directory-extension.md` v1.6
+  // §6.7 note 4).
+  const recipeManifestLookup: RecipeManifestLookup = (appId) =>
+    manifestStore.get(appId)
+
   router.get('/menu-entries', (_req, res) => {
     const entries: MenuEntryWithPage[] = readUserMenuEntries(
       fs,
       trustLookup,
       manifestLookup,
+      recipeManifestLookup,
     )
     res.json(entries)
   })

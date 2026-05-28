@@ -21,7 +21,7 @@ import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
-import type { RecipePageTrustLevel } from '../recipe/apiTypes'
+import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
 import type { AppManifest } from '../../shared/app-manifest-types'
 
 /**
@@ -217,6 +217,35 @@ export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
 export type AppManifestLookup = (appId: string) => AppManifest | null
 
 /**
+ * Optional lookup used by `readUserMenuEntries` to recover the
+ * persisted source badge for **partial-residue** rows — apps whose
+ * `AppManifest` is unreadable (missing / parse-failed) but whose
+ * `recipes-installed/<appId>/manifest.json` (`RecipeManifest`) is
+ * still on disk. Returns the matching `RecipeManifest` or `null`.
+ *
+ * Scoped to the bundled-enable lifecycle today: the persisted
+ * `RecipeManifest.source` is a 4-value enum
+ * (`'sample' | 'bundled' | 'import' | 'url'`), so the renderer can
+ * still surface a meaningful badge during a recovery state even
+ * when the AppManifest read fails (in which case
+ * `deriveSourceBadge` would otherwise return `null` and the
+ * badge would silently disappear from the Apps screen).
+ *
+ * `app-directory-extension.md` v1.6 §6.7 note 4 names the scanner
+ * (`RecipeManifest` evidence) as the source-classification SSOT;
+ * the full scanner pipeline that also derives `import` / `url`
+ * without consulting `AppManifest.source` is deferred to a
+ * follow-up. `'self-made'` requires the AppManifest because the
+ * scanner evidence for `user-creation` lives there exclusively
+ * and there is no `RecipeManifest` to fall back to.
+ *
+ * @stable v0.2.1
+ */
+export type RecipeManifestLookup = (
+  appId: string,
+) => RecipeManifest | null
+
+/**
  * Convert an `AppManifest.source` discriminator into the UI badge
  * value used by the v0.2.1 Apps screen. Five-way derivation: four
  * persisted `recipeSource` values + the scanner-derived `'self-made'`
@@ -252,11 +281,20 @@ export function deriveSourceBadge(
  * populated from the matching `AppManifest`. Entries without a
  * matching manifest keep the fields at `null`; the renderer treats
  * `null` as "fall back to menu.ts label / no badge".
+ *
+ * When `recipeManifestLookup` is also supplied (v0.2.1 partial-
+ * residue fallback for the source badge), an entry whose
+ * `AppManifest` is unreadable falls through to the
+ * `RecipeManifest.source` (`'sample' | 'bundled' | 'import' | 'url'`)
+ * so the Apps screen surfaces the recovery state instead of hiding
+ * the badge. See {@link RecipeManifestLookup} JSDoc for the spec
+ * basis (`app-directory-extension.md` v1.6 §6.7 note 4).
  */
 export function readUserMenuEntries(
   fs: FileAccessLayer,
   trustLookup?: TrustLevelLookup,
   manifestLookup?: AppManifestLookup,
+  recipeManifestLookup?: RecipeManifestLookup,
 ): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
@@ -438,6 +476,22 @@ export function readUserMenuEntries(
           entry.displayName = manifest.displayName
           entry.menuOrder = manifest.menuOrder ?? null
           entry.userMenuLabel = manifest.userMenuLabel ?? null
+        } else if (recipeManifestLookup) {
+          // Partial-residue fallback: the AppManifest read failed
+          // (missing / parse error) but the bundled-enable
+          // `RecipeManifest` is still on disk. Recover the 4-value
+          // persisted `source` so the Apps screen keeps showing the
+          // badge during the recovery window — the menu-metadata
+          // fields (`displayName` / `menuOrder` / `userMenuLabel`)
+          // intentionally stay `null` because the renderer's
+          // `isMenuMetadataEligible` predicate keys off
+          // `displayName !== null` to gate reorder / rename
+          // (`app-directory-extension.md` v1.6 §6.8.1 / §6.8.3
+          // eligible-set definition).
+          const recipeManifest = recipeManifestLookup(entry.id)
+          if (recipeManifest?.source) {
+            entry.source = recipeManifest.source
+          }
         }
       }
     }
