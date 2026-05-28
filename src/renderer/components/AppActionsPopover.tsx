@@ -180,18 +180,38 @@ export function AppActionsPopover({
       </button>
 
       {source === 'bundled' || source === 'sample' ? (
+        // Disable item -- non-destructive path for bundled /
+        // grandfather sample apps. Rendered disabled (not omitted)
+        // when the parent could not supply the recipe lineage
+        // needed for `POST /api/recipes/sample/:recipeId/disable`,
+        // so the action is visibly unavailable instead of silently
+        // closing the popover with no effect. The destructive
+        // "Remove app" item is intentionally never rendered for
+        // these sources -- the parent should surface the
+        // recipe-lineage recovery path elsewhere if disable cannot
+        // be reached.
         <button
           type="button"
           role="menuitem"
           data-testid="popover-action-disable-app"
-          onClick={() => {
-            onClose()
-            onSelectDisable?.()
-          }}
+          onClick={
+            onSelectDisable
+              ? () => {
+                  onClose()
+                  onSelectDisable()
+                }
+              : undefined
+          }
+          disabled={!onSelectDisable}
+          aria-disabled={!onSelectDisable}
+          title={
+            onSelectDisable ? undefined : t('appsTab.actions.disableError')
+          }
           className="
             w-full flex items-center gap-2 px-3 py-2 text-sm text-left
             text-[var(--text-secondary)]
             hover:bg-[var(--bg-hover)] focus:bg-[var(--bg-hover)] outline-none
+            disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent
           "
         >
           <svg
