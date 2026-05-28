@@ -537,6 +537,44 @@ export function App() {
                   setAppRemovalError(null)
                   setAppRemovalState({ appId, displayName })
                 }}
+                onRequestSampleDisable={({ appId, recipeId, displayName }) => {
+                  // Non-destructive disable path for bundled /
+                  // grandfather sample apps. The remove-app flow is
+                  // intentionally bypassed so `app/data/<appId>/`
+                  // survives -- the spec preserves user data across
+                  // bundled disable / re-enable cycles. The server
+                  // broadcasts `recipe_apps_changed` after the
+                  // transaction, which bumps `sampleRecipeVersion`
+                  // upstream and triggers a `loadUserMenuEntries`
+                  // refetch in this component.
+                  void (async () => {
+                    try {
+                      const res = await kbFetch(
+                        `/api/recipes/sample/${encodeURIComponent(recipeId)}/disable`,
+                        { method: 'POST' },
+                      )
+                      if (!res.ok) {
+                        const data = (await res.json().catch(() => ({}))) as {
+                          error?: string
+                        }
+                        log.warn(
+                          { appId, recipeId, status: res.status, error: data.error },
+                          'POST /api/recipes/sample/:recipeId/disable failed',
+                        )
+                        return
+                      }
+                      // Eager refetch so the row disappears from
+                      // the Apps tab immediately on 2xx without
+                      // waiting for the ws broadcast.
+                      forceRefetchMenuEntries()
+                    } catch (err) {
+                      log.warn(
+                        { err, appId, recipeId, displayName },
+                        'Failed to disable bundled sample app',
+                      )
+                    }
+                  })()
+                }}
                 onRequestRecipeExport={({ appId, displayName }) => {
                   setRecipeExportState({ appId, displayName })
                 }}

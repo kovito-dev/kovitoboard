@@ -378,6 +378,8 @@ const ja = {
   'nav.action.appActions': 'アプリ操作',
   'app.actions.exportRecipe': 'レシピ書き出し',
   'app.actions.removeApp': 'アプリ削除',
+  'app.actions.disable': '無効化',
+  'appsTab.actions.disableError': '無効化に失敗しました',
   'appRemoval.modal.title': 'アプリ「{name}」を削除',
   'appRemoval.modal.body': '「{name}」を削除します。',
   'appRemoval.modal.bullet.menu': 'サイドバーからアプリが消えます',

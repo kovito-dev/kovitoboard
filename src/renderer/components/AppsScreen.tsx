@@ -85,12 +85,31 @@ interface AppsScreenProps {
    * transaction completes (ws-event-contract v1.4 §7.6.3).
    */
   sampleRecipeVersion?: number
-  /** App removal entry point (DEC-024 #3 / §F4). */
+  /**
+   * App removal entry point. Wired only for self-made / import /
+   * url apps -- bundled and grandfather sample apps go through
+   * {@link onRequestSampleDisable} so the destructive removal
+   * path stays reserved for sources that own their entire
+   * `app/<appId>/` subtree.
+   */
   onRequestAppRemoval: (request: {
     appId: string
     displayName: string
   }) => void
-  /** Recipe export entry point (DEC-024 #5 / §F5). */
+  /**
+   * Bundled / grandfather sample disable entry point. The Apps
+   * tab routes a bundled or sample card's Actions menu through
+   * this callback (instead of the destructive remove-app flow)
+   * so `app/data/<appId>/` is preserved. The parent calls
+   * `POST /api/recipes/sample/:recipeId/disable` and the wire
+   * `recipe_apps_changed` broadcast reconciles the renderer.
+   */
+  onRequestSampleDisable: (request: {
+    appId: string
+    recipeId: string
+    displayName: string
+  }) => void
+  /** Recipe export entry point. */
   onRequestRecipeExport: (request: {
     appId: string
     displayName: string
@@ -110,6 +129,7 @@ export function AppsScreen({
   theme = 'dark',
   sampleRecipeVersion,
   onRequestAppRemoval,
+  onRequestSampleDisable,
   onRequestRecipeExport,
 }: AppsScreenProps) {
   const navigate = useNavigate()
@@ -265,6 +285,7 @@ export function AppsScreen({
             onJumpToSamples={handleJumpToSamples}
             onCreateSelfMade={handleOpenCreateApp}
             onRequestAppRemoval={onRequestAppRemoval}
+            onRequestSampleDisable={onRequestSampleDisable}
             onRequestRecipeExport={onRequestRecipeExport}
           />
         )}

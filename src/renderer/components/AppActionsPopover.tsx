@@ -32,8 +32,32 @@ interface AppActionsPopoverProps {
   onClose: () => void
   /** Callback for the "Export recipe" menu item. */
   onSelectExport: () => void
-  /** Callback for the "Remove app" menu item. */
+  /**
+   * Callback for the "Remove app" menu item. Only rendered for
+   * self-made / import / url apps — bundled and grandfather
+   * sample apps are routed through {@link onSelectDisable}
+   * instead so the spec's data-preservation invariant for
+   * grandfather installs is honoured (`app/data/<appId>/`
+   * survives a disable, but a remove deletes everything in the
+   * app subtree).
+   */
   onSelectRemoval: () => void
+  /**
+   * Callback for the "Disable" menu item rendered when {@link
+   * source} is `'bundled'` or `'sample'`. The Apps tab wires
+   * this to `POST /api/recipes/sample/:recipeId/disable` so the
+   * non-destructive disable path is taken instead of the
+   * destructive remove path.
+   */
+  onSelectDisable?: () => void
+  /**
+   * Drives whether the popover renders the destructive "Remove
+   * app" item or the non-destructive "Disable" item. Bundled /
+   * grandfather sample apps render "Disable"; everything else
+   * (self-made / import / url / `null` legacy) renders the
+   * existing "Remove app".
+   */
+  source?: 'self-made' | 'bundled' | 'sample' | 'import' | 'url' | null
 }
 
 export function AppActionsPopover({
@@ -41,6 +65,8 @@ export function AppActionsPopover({
   onClose,
   onSelectExport,
   onSelectRemoval,
+  onSelectDisable,
+  source,
 }: AppActionsPopoverProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const exportItemRef = useRef<HTMLButtonElement>(null)
@@ -153,40 +179,74 @@ export function AppActionsPopover({
         {t('app.actions.exportRecipe')}
       </button>
 
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="popover-action-remove-app"
-        onClick={() => {
-          onClose()
-          onSelectRemoval()
-        }}
-        className="
-          w-full flex items-center gap-2 px-3 py-2 text-sm text-left
-          text-red-400
-          hover:bg-red-500/10 hover:text-red-300
-          focus:bg-red-500/10 focus:text-red-300 outline-none
-        "
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
+      {source === 'bundled' || source === 'sample' ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="popover-action-disable-app"
+          onClick={() => {
+            onClose()
+            onSelectDisable?.()
+          }}
+          className="
+            w-full flex items-center gap-2 px-3 py-2 text-sm text-left
+            text-[var(--text-secondary)]
+            hover:bg-[var(--bg-hover)] focus:bg-[var(--bg-hover)] outline-none
+          "
         >
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
-          <path d="M10 11v6" />
-          <path d="M14 11v6" />
-          <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
-        </svg>
-        {t('app.actions.removeApp')}
-      </button>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {/* Power-off / disable icon */}
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+            <line x1="12" y1="2" x2="12" y2="12" />
+          </svg>
+          {t('app.actions.disable')}
+        </button>
+      ) : (
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="popover-action-remove-app"
+          onClick={() => {
+            onClose()
+            onSelectRemoval()
+          }}
+          className="
+            w-full flex items-center gap-2 px-3 py-2 text-sm text-left
+            text-red-400
+            hover:bg-red-500/10 hover:text-red-300
+            focus:bg-red-500/10 focus:text-red-300 outline-none
+          "
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+            <path d="M10 11v6" />
+            <path d="M14 11v6" />
+            <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+          </svg>
+          {t('app.actions.removeApp')}
+        </button>
+      )}
     </div>
   )
 }

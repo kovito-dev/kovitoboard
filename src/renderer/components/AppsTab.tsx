@@ -103,9 +103,30 @@ interface AppsTabProps {
   onJumpToSamples: () => void
   /** "+ Create self-made app" handler — opens the AppCreateModal. */
   onCreateSelfMade: () => void
-  /** Forwarded to the Actions menu's "Remove app" item. */
+  /**
+   * Forwarded to the Actions menu's "Remove app" item. Only fires
+   * for self-made / import / url apps -- bundled and grandfather
+   * sample apps are routed through {@link onRequestSampleDisable}
+   * instead so the destructive removal path cannot delete
+   * `app/data/<appId>/` of a recipe that was meant to be disabled
+   * non-destructively.
+   */
   onRequestAppRemoval: (request: {
     appId: string
+    displayName: string
+  }) => void
+  /**
+   * Forwarded to the Actions menu's "Disable" item for bundled /
+   * grandfather sample apps. The Apps tab keys this on
+   * `entry.source` so the destructive remove-app flow stays
+   * reserved for sources that own their `app/<appId>/` subtree
+   * outright. `recipeId` is the recipe lineage identifier from the
+   * AppManifest source block; the parent uses it to call
+   * `POST /api/recipes/sample/:recipeId/disable`.
+   */
+  onRequestSampleDisable: (request: {
+    appId: string
+    recipeId: string
     displayName: string
   }) => void
   /** Forwarded to the Actions menu's "Export recipe" item. */
@@ -122,6 +143,7 @@ export function AppsTab({
   onJumpToSamples,
   onCreateSelfMade,
   onRequestAppRemoval,
+  onRequestSampleDisable,
   onRequestRecipeExport,
 }: AppsTabProps) {
   // Split menu-metadata eligible rows (AppManifest readable) from
@@ -420,6 +442,7 @@ export function AppsTab({
                   reorderInflight={reorderState.inflight}
                   onForceRefetchMenuEntries={onForceRefetchMenuEntries}
                   onRequestAppRemoval={onRequestAppRemoval}
+                  onRequestSampleDisable={onRequestSampleDisable}
                   onRequestRecipeExport={onRequestRecipeExport}
                 />
               ))}
@@ -430,6 +453,7 @@ export function AppsTab({
                   eligible={false}
                   onForceRefetchMenuEntries={onForceRefetchMenuEntries}
                   onRequestAppRemoval={onRequestAppRemoval}
+                  onRequestSampleDisable={onRequestSampleDisable}
                   onRequestRecipeExport={onRequestRecipeExport}
                   reorderInflight={reorderState.inflight}
                   sortable={null}
@@ -448,6 +472,7 @@ interface SortableAppRowProps {
   reorderInflight: boolean
   onForceRefetchMenuEntries: AppsTabProps['onForceRefetchMenuEntries']
   onRequestAppRemoval: AppsTabProps['onRequestAppRemoval']
+  onRequestSampleDisable: AppsTabProps['onRequestSampleDisable']
   onRequestRecipeExport: AppsTabProps['onRequestRecipeExport']
 }
 
@@ -461,6 +486,7 @@ function SortableAppRow({
   reorderInflight,
   onForceRefetchMenuEntries,
   onRequestAppRemoval,
+  onRequestSampleDisable,
   onRequestRecipeExport,
 }: SortableAppRowProps) {
   const {
@@ -483,6 +509,7 @@ function SortableAppRow({
       eligible
       onForceRefetchMenuEntries={onForceRefetchMenuEntries}
       onRequestAppRemoval={onRequestAppRemoval}
+      onRequestSampleDisable={onRequestSampleDisable}
       onRequestRecipeExport={onRequestRecipeExport}
       reorderInflight={reorderInflight}
       sortable={{
@@ -518,6 +545,7 @@ interface AppRowProps {
   eligible: boolean
   onForceRefetchMenuEntries: AppsTabProps['onForceRefetchMenuEntries']
   onRequestAppRemoval: AppsTabProps['onRequestAppRemoval']
+  onRequestSampleDisable: AppsTabProps['onRequestSampleDisable']
   onRequestRecipeExport: AppsTabProps['onRequestRecipeExport']
   reorderInflight: boolean
   /**
@@ -533,6 +561,7 @@ function AppRow({
   eligible,
   onForceRefetchMenuEntries,
   onRequestAppRemoval,
+  onRequestSampleDisable,
   onRequestRecipeExport,
   reorderInflight,
   sortable,
@@ -692,6 +721,7 @@ function AppRow({
             <AppActionsPopover
               isOpen={isPopoverOpen}
               onClose={() => setIsPopoverOpen(false)}
+              source={entry.source}
               onSelectExport={() =>
                 onRequestRecipeExport({
                   appId: entry.id,
@@ -703,6 +733,25 @@ function AppRow({
                   appId: entry.id,
                   displayName: displayLabel,
                 })
+              }
+              onSelectDisable={
+                // Only wire the Disable callback when the row
+                // actually has the recipe lineage we need for
+                // `POST /api/recipes/sample/:recipeId/disable`.
+                // Bundled / sample rows that lost their recipeId
+                // (legacy / unrecoverable residue) fall through
+                // to the AppActionsPopover's source-based gating,
+                // which hides the Disable item when no callback
+                // is provided.
+                entry.recipeId !== null &&
+                (entry.source === 'bundled' || entry.source === 'sample')
+                  ? () =>
+                      onRequestSampleDisable({
+                        appId: entry.id,
+                        recipeId: entry.recipeId as string,
+                        displayName: displayLabel,
+                      })
+                  : undefined
               }
             />
           </div>

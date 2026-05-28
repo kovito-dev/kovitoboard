@@ -122,6 +122,17 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * @stable v0.2.1
    */
   userMenuLabel?: string | null
+  /**
+   * Recipe identifier (`recipe.yaml`'s `recipeId`) for apps that
+   * came from a recipe install. `null` for self-made apps and for
+   * legacy hand-edited entries with no manifest lineage. The Apps
+   * tab uses this to route Disable for bundled / sample apps
+   * through `POST /api/recipes/sample/:recipeId/disable` instead
+   * of the destructive remove-app flow.
+   *
+   * @stable v0.2.1
+   */
+  recipeId?: string | null
 }
 
 /**
@@ -215,6 +226,7 @@ export async function loadUserMenuEntries(): Promise<UserMenuEntriesResult> {
       displayName: null,
       menuOrder: null,
       userMenuLabel: null,
+      recipeId: null,
     }))
     return { entries, menuOrderSnapshot: null }
   } catch (err) {
@@ -269,6 +281,10 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
       : null
   const userMenuLabel: string | null =
     typeof meta.userMenuLabel === 'string' ? meta.userMenuLabel : null
+  const recipeId: string | null =
+    typeof meta.recipeId === 'string' && meta.recipeId.length > 0
+      ? meta.recipeId
+      : null
   return {
     id: meta.id,
     label: meta.label,
@@ -278,6 +294,7 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
     displayName,
     menuOrder,
     userMenuLabel,
+    recipeId,
     component: () => {
       if (!absPath) {
         const err = new Error(

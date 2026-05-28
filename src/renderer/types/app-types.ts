@@ -119,6 +119,19 @@ export interface AppMenuEntry extends AuthoredAppMenuEntry {
    * @stable v0.2.1
    */
   userMenuLabel: string | null
+  /**
+   * Recipe lineage identifier (`recipe.yaml`'s `recipeId`) for
+   * apps installed from a recipe. `null` for self-made apps and
+   * for legacy hand-edited entries with no manifest. The Apps
+   * tab uses this to route Disable for bundled / sample apps
+   * through `POST /api/recipes/sample/:recipeId/disable` so the
+   * `app/data/<appId>/` directory is preserved (the destructive
+   * remove-app flow would otherwise delete user data — spec
+   * grandfather data-preservation invariant).
+   *
+   * @stable v0.2.1
+   */
+  recipeId: string | null
 }
 
 /**

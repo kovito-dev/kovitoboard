@@ -383,6 +383,8 @@ const en: Record<MessageKey, string> = {
   'nav.action.appActions': 'App actions',
   'app.actions.exportRecipe': 'Export recipe',
   'app.actions.removeApp': 'Remove app',
+  'app.actions.disable': 'Disable',
+  'appsTab.actions.disableError': 'Disable failed',
   'appRemoval.modal.title': 'Remove app "{name}"',
   'appRemoval.modal.body': 'About to remove "{name}".',
   'appRemoval.modal.bullet.menu': 'The app disappears from the sidebar',

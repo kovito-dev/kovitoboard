@@ -119,6 +119,23 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    */
   menuOrder: number | null
   /**
+   * Recipe identifier (`recipe.yaml`'s `recipeId`) for apps whose
+   * `AppManifest.source.type === 'recipe'`. The Apps tab uses this
+   * to route disable / sample-specific operations through the
+   * `POST /api/recipes/sample/:recipeId/disable` endpoint so the
+   * `app/data/<appId>/` directory survives — taking a bundled /
+   * sample app down the destructive remove-app path would delete
+   * user data and violate the spec's grandfather data-preservation
+   * invariant.
+   *
+   * `null` when no AppManifest exists or when the app is
+   * `user-creation` (self-made).
+   *
+   * @see docs/specs/recipe-system.md v1.10 §10.9 (bundled disable)
+   * @stable v0.2.1
+   */
+  recipeId: string | null
+  /**
    * User override label from the active `AppManifest.userMenuLabel`.
    * `null` when not set (renderer falls back through the chain
    * below); empty string is invalid (rejected on PATCH).
@@ -179,6 +196,7 @@ export function parseMenuTs(content: string): MenuEntryWithPage[] {
       displayName: null,
       menuOrder: null,
       userMenuLabel: null,
+      recipeId: null,
     })
   }
 
@@ -530,6 +548,15 @@ export function readUserMenuEntries(
           entry.displayName = manifest.displayName
           entry.menuOrder = manifest.menuOrder ?? null
           entry.userMenuLabel = manifest.userMenuLabel ?? null
+          // Recipe-derived apps carry the recipe lineage id in
+          // `source.recipeId`; self-made apps (`user-creation`)
+          // have no recipe lineage and stay at `null`. The Apps
+          // tab uses this to route bundled / sample apps through
+          // the non-destructive disable endpoint instead of the
+          // remove-app flow.
+          if (manifest.source.type === 'recipe') {
+            entry.recipeId = manifest.source.recipeId
+          }
         } else if (recipeManifestLookup) {
           // Partial-residue fallback: the AppManifest read failed
           // (missing / parse error) but the bundled-enable
@@ -545,6 +572,12 @@ export function readUserMenuEntries(
           const recipeManifest = recipeManifestLookup(entry.id)
           if (recipeManifest?.source) {
             entry.source = recipeManifest.source
+            // Recipe lineage is still available even when the
+            // AppManifest read failed (the `recipes-installed/<
+            // appId>/manifest.json` carries it explicitly), so the
+            // Apps tab can still route Disable through the correct
+            // endpoint during the partial-residue recovery window.
+            entry.recipeId = recipeManifest.recipeId
           }
         }
       }
