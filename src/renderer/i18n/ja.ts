@@ -803,10 +803,12 @@ const ja = {
 
   // App source identifier badges (§4.9 / §6.3 i18n SSOT). 4 persisted
   // values + the scanner-derived 'self-made' category. The grandfather
-  // sample row (source: 'sample') reuses the bundled badge per
-  // judgment doc §4.9 (no UX distinction required).
+  // `'sample'` badge gets its own label so the Apps tab can
+  // distinguish a pre-v0.2.1 install lineage from a fresh v0.2.1
+  // bundled enable at a glance.
   'app.source.selfMade': '自作',
   'app.source.bundled': '同梱',
+  'app.source.sample': 'サンプル',
   'app.source.import': 'インポート',
   'app.source.url': 'URL',
 
@@ -821,6 +823,14 @@ const ja = {
   'appsScreen.label.dragHandle': 'ドラッグで並び替え',
   'appsScreen.label.renamePlaceholder': 'アプリメニュー名を入力',
   'appsScreen.error.menuLabelTooLong': 'メニュー名が長すぎます (最大 80 文字)。',
+
+  // Apps tab empty-state hints (§6.4).
+  'appsTab.empty': 'まだアプリがインストールされていません。',
+  'appsTab.emptyHint':
+    '「+ アプリ追加」でサンプルアプリを有効化するか、「+ 自作アプリ作成」で新しいアプリを作成してください。',
+
+  // Per-row Actions menu trigger (§4'.6).
+  'app.actions.menu': 'アプリ操作',
 
   // Sample apps tab (§6.5). Top notice explains the v0.3.0 KovitoHub
   // arrival. Enable / Enabled buttons drive the bundled enable

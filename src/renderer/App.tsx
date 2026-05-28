@@ -26,7 +26,7 @@ import { AgentEditPage } from './pages/AgentEditPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
-import { RecipesPage } from './pages/RecipesPage'
+import { AppsScreen } from './components/AppsScreen'
 import WorkRootsPage from './pages/WorkRootsPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import { RecipePageHost } from './app-host/RecipePageHost'
@@ -469,12 +469,26 @@ export function App() {
                 theme={theme}
               />
             } />
+            {/* v0.2.1: legacy `RecipesPage` (2-tab Sample / History)
+                replaced with `AppsScreen` (3-tab Apps / Sample apps /
+                Recipes) per judgement doc §4'.2. Route key
+                preserved at `/recipes` for backward compatibility
+                (the side-nav rebrand was a label-only change in
+                commit `e70a4f9`). */}
             <Route path="/recipes" element={
-              <RecipesPage
+              <AppsScreen
+                userMenuEntries={userMenuEntries}
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}
                 sampleRecipeVersion={sampleRecipeVersion}
+                onRequestAppRemoval={({ appId, displayName }) => {
+                  setAppRemovalError(null)
+                  setAppRemovalState({ appId, displayName })
+                }}
+                onRequestRecipeExport={({ appId, displayName }) => {
+                  setRecipeExportState({ appId, displayName })
+                }}
               />
             } />
             <Route path="/sessions" element={<SessionsPage defaultSessionId={selectedId} />} />

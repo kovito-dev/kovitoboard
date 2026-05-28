@@ -23,9 +23,12 @@ import { Router } from 'express'
 import type { FileAccessLayer } from '../fs-layer'
 import {
   readUserMenuEntries,
+  type AppManifestLookup,
   type MenuEntryWithPage,
   type TrustLevelLookup,
 } from '../services/menu-extractor'
+import { readAppManifest } from '../services/app-manifest'
+import { resolveProjectRoot } from '../config'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
@@ -66,8 +69,21 @@ export function createAppRouter(
     return null
   }
 
+  // v0.2.1 Apps screen needs each menu row's `AppManifest`-sourced
+  // UI fields (source badge / displayName / menuOrder / userMenuLabel).
+  // We attach them on read so the renderer can render the Apps tab
+  // without a second round-trip. `null` is returned for rows without
+  // a matching manifest (legacy hand-edited `app/menu.ts`); the
+  // renderer falls back to the bare `menu.ts` label in that case.
+  const manifestLookup: AppManifestLookup = (appId) =>
+    readAppManifest(fs, resolveProjectRoot(fs), appId)
+
   router.get('/menu-entries', (_req, res) => {
-    const entries: MenuEntryWithPage[] = readUserMenuEntries(fs, trustLookup)
+    const entries: MenuEntryWithPage[] = readUserMenuEntries(
+      fs,
+      trustLookup,
+      manifestLookup,
+    )
     res.json(entries)
   })
 

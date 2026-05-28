@@ -803,10 +803,13 @@ const en: Record<MessageKey, string> = {
   'appsScreen.tab.recipes': 'Recipes',
 
   // App source identifier badges (§4.9 / §6.3). 4 persisted values +
-  // the scanner-derived 'self-made' category. Grandfather sample
-  // (source: 'sample') reuses the bundled badge in v0.2.x.
+  // the scanner-derived 'self-made' category. The grandfather
+  // `'sample'` badge gets its own value so the Apps tab can
+  // distinguish a pre-v0.2.1 install lineage from a fresh v0.2.1
+  // bundled enable at a glance.
   'app.source.selfMade': 'Self-made',
   'app.source.bundled': 'Bundled',
+  'app.source.sample': 'Sample',
   'app.source.import': 'Imported',
   'app.source.url': 'URL',
 
@@ -817,6 +820,14 @@ const en: Record<MessageKey, string> = {
   'appsScreen.label.dragHandle': 'Drag to reorder',
   'appsScreen.label.renamePlaceholder': 'Enter app menu label',
   'appsScreen.error.menuLabelTooLong': 'Menu label is too long (max 80 characters).',
+
+  // Apps tab empty-state hints (§6.4).
+  'appsTab.empty': 'No apps installed yet.',
+  'appsTab.emptyHint':
+    'Use "+ Add app" to enable a sample app, or "+ Create self-made app" to start a new one.',
+
+  // Per-row Actions menu trigger (§4'.6).
+  'app.actions.menu': 'App actions',
 
   // Sample apps tab (§6.5).
   'samplesTab.info.comingSoon':

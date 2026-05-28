@@ -22,6 +22,31 @@ import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipePageTrustLevel } from '../recipe/apiTypes'
+import type { AppManifest } from '../../shared/app-manifest-types'
+
+/**
+ * UI-facing source classification derived from `AppManifest.source`.
+ *
+ * Five values:
+ *   - `'self-made'`   — scanner-derived (`source.type === 'user-creation'`).
+ *                       Not part of the persisted enum; computed on read.
+ *   - `'bundled'`     — `source.type === 'recipe'` + `recipeSource === 'bundled'`.
+ *   - `'sample'`      — `source.type === 'recipe'` + `recipeSource === 'sample'`.
+ *   - `'import'`      — `source.type === 'recipe'` + `recipeSource === 'import'`.
+ *   - `'url'`         — `source.type === 'recipe'` + `recipeSource === 'url'`.
+ *
+ * v0.2.1 Apps screen renders each row's badge from this discriminator.
+ *
+ * @see docs/specs/app-directory-extension.md v1.6 §6.7
+ * @see docs/specs/data-persistence.md v1.4 §6.8 (persisted enum 4-value SSOT)
+ * @stable v0.2.1
+ */
+export type MenuEntrySourceBadge =
+  | 'self-made'
+  | 'bundled'
+  | 'sample'
+  | 'import'
+  | 'url'
 
 /** Menu entry shape returned by the extractor (meta + page path). */
 export interface MenuEntryWithPage extends AppMenuEntryMeta {
@@ -57,6 +82,54 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    * @stable v0.2.0
    */
   trustLevel: RecipePageTrustLevel | null
+  /**
+   * UI source badge derived from the active `AppManifest` for this
+   * menu row's `appId`. `null` when no matching `AppManifest` exists
+   * (legacy hand-edited `app/menu.ts` with no install lineage). The
+   * v0.2.1 Apps screen renders this verbatim; older renderers ignore
+   * the field for backward compatibility.
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.7
+   * @stable v0.2.1
+   */
+  source: MenuEntrySourceBadge | null
+  /**
+   * Display name from the active `AppManifest.displayName`. Used by
+   * the Apps screen so the row matches the manifest-recorded name
+   * instead of the bare `label` from `app/menu.ts`. `null` when no
+   * matching `AppManifest` exists.
+   *
+   * Distinct from `userMenuLabel` (below): `displayName` is the
+   * default name persisted at install / create time, while
+   * `userMenuLabel` is the user's override (when set).
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2
+   * @stable v0.2.1
+   */
+  displayName: string | null
+  /**
+   * Persisted menu-order index from the active `AppManifest.menuOrder`.
+   * Drives the default sort on the Apps screen. `null` when no
+   * matching `AppManifest` exists or the field is absent (pre-v0.2.1
+   * manifest).
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2
+   * @stable v0.2.1
+   */
+  menuOrder: number | null
+  /**
+   * User override label from the active `AppManifest.userMenuLabel`.
+   * `null` when not set (default to `displayName` / `label` /
+   * `appId`); empty string is invalid (rejected on PATCH).
+   *
+   * Display label resolution priority is:
+   *   `userMenuLabel ?? recipe.menu.label ?? menu.ts entry.label ?? appId`
+   * (see judgement doc §11.2 + app-directory-extension v1.6 §6.8.2).
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2
+   * @stable v0.2.1
+   */
+  userMenuLabel: string | null
 }
 
 /**
@@ -89,10 +162,15 @@ export function parseMenuTs(content: string): MenuEntryWithPage[] {
       // Absolute path is filled in by readUserMenuEntries; the bare
       // parser cannot probe the filesystem.
       pageAbsolutePath: null,
-      // Trust level is filled in by `readUserMenuEntries` after the
-      // manifest lookup. Parser stays oblivious so the legacy
-      // `parseMenuTs` test surface keeps the same call shape.
+      // Trust level + AppManifest-derived fields are filled in by
+      // `readUserMenuEntries` after the manifest lookup. Parser
+      // stays oblivious so the legacy `parseMenuTs` test surface
+      // keeps the same call shape.
       trustLevel: null,
+      source: null,
+      displayName: null,
+      menuOrder: null,
+      userMenuLabel: null,
     })
   }
 
@@ -125,6 +203,38 @@ export function parseMenuTsForApp(content: string, appId: string): MenuEntryWith
 export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
 
 /**
+ * Optional lookup used by `readUserMenuEntries` to attach the
+ * `AppManifest`-sourced UI fields (`source` / `displayName` /
+ * `menuOrder` / `userMenuLabel`) to each entry. `null` indicates
+ * "no manifest for this appId"; the renderer falls back to the
+ * `menu.ts`-derived `label` in that case.
+ *
+ * Wired by `app-routes.ts`'s `createAppRouter`, which already has
+ * `fs` + `projectRoot` available for `readAppManifest`.
+ *
+ * @stable v0.2.1
+ */
+export type AppManifestLookup = (appId: string) => AppManifest | null
+
+/**
+ * Convert an `AppManifest.source` discriminator into the UI badge
+ * value used by the v0.2.1 Apps screen. Five-way derivation: four
+ * persisted `recipeSource` values + the scanner-derived `'self-made'`
+ * literal for `user-creation` apps (not part of the persisted enum).
+ *
+ * @see docs/specs/app-directory-extension.md v1.6 §6.7
+ * @stable v0.2.1
+ */
+export function deriveSourceBadge(
+  manifest: AppManifest,
+): MenuEntrySourceBadge {
+  if (manifest.source.type === 'user-creation') {
+    return 'self-made'
+  }
+  return manifest.source.recipeSource
+}
+
+/**
  * Read `app/menu.ts` from disk and return parsed entries.
  *
  * - Returns `[]` if the file does not exist (newly initialized projects).
@@ -136,10 +246,17 @@ export type TrustLevelLookup = (appId: string) => RecipePageTrustLevel | null
  * entry's `trustLevel` is populated from the active manifest store
  * so the renderer can render the recipe-page trust marker without
  * an extra round-trip.
+ *
+ * When `manifestLookup` is supplied (v0.2.1 API path), each entry's
+ * `source` / `displayName` / `menuOrder` / `userMenuLabel` fields are
+ * populated from the matching `AppManifest`. Entries without a
+ * matching manifest keep the fields at `null`; the renderer treats
+ * `null` as "fall back to menu.ts label / no badge".
  */
 export function readUserMenuEntries(
   fs: FileAccessLayer,
   trustLookup?: TrustLevelLookup,
+  manifestLookup?: AppManifestLookup,
 ): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
@@ -305,6 +422,23 @@ export function readUserMenuEntries(
         entry.trustLevel = trustLookup(entry.id)
       } else {
         entry.trustLevel = null
+      }
+    }
+    if (manifestLookup) {
+      // Same canonical-app-id gate as the trust attachment above:
+      // a hand-edited row that points at a sibling app's directory
+      // must not inherit that sibling's badge / displayName. We
+      // leave the AppManifest-derived fields at `null` for the
+      // off-canonical case, so the renderer falls back to the bare
+      // `menu.ts` label and renders no source badge.
+      if (isCanonicalAppIdPath(entry.page, entry.id)) {
+        const manifest = manifestLookup(entry.id)
+        if (manifest) {
+          entry.source = deriveSourceBadge(manifest)
+          entry.displayName = manifest.displayName
+          entry.menuOrder = manifest.menuOrder ?? null
+          entry.userMenuLabel = manifest.userMenuLabel ?? null
+        }
       }
     }
   }

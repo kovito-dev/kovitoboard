@@ -43,6 +43,20 @@ import { kbFetch } from './lib/kbFetch'
 
 const log = createLogger('app-loader')
 
+/**
+ * UI source badge value (v0.2.1). Derived server-side from
+ * `AppManifest.source` so the renderer never has to parse the
+ * persisted discriminator.
+ *
+ * @see src/server/services/menu-extractor.ts `MenuEntrySourceBadge`
+ */
+type MenuEntrySourceBadge =
+  | 'self-made'
+  | 'bundled'
+  | 'sample'
+  | 'import'
+  | 'url'
+
 /** Server-side shape returned by `GET /api/app/menu-entries`. */
 interface MenuEntryWire extends AppMenuEntryMeta {
   /** Page path relative to `app/` (no extension), e.g. `pages/Foo`. */
@@ -65,6 +79,42 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * before forwarding to {@link AppMenuEntry.trustLevel}.
    */
   trustLevel?: string | null
+  /**
+   * UI source badge derived server-side from the matching
+   * `AppManifest.source`. `null` when no manifest exists (legacy
+   * hand-edited `app/menu.ts`). Five values: `'self-made'` (scanner
+   * derived) + `'bundled' | 'sample' | 'import' | 'url'` (persisted).
+   *
+   * Optional on the wire so pre-v0.2.1 server builds (which omit
+   * the field) still parse; `toAppMenuEntry` coerces `undefined` to
+   * `null` before forwarding.
+   *
+   * @stable v0.2.1
+   */
+  source?: MenuEntrySourceBadge | null
+  /**
+   * Display name from `AppManifest.displayName`. `null` when no
+   * manifest exists. Drives the row title on the Apps screen;
+   * fallback chain is `userMenuLabel ?? displayName ?? label ?? appId`.
+   *
+   * @stable v0.2.1
+   */
+  displayName?: string | null
+  /**
+   * Persisted menu order from `AppManifest.menuOrder`. Drives the
+   * default sort on the Apps screen. `null` when no manifest exists
+   * or the field is absent (pre-v0.2.1 manifest).
+   *
+   * @stable v0.2.1
+   */
+  menuOrder?: number | null
+  /**
+   * User override label from `AppManifest.userMenuLabel`. `null`
+   * when not set (default to `displayName` / `label` / `appId`).
+   *
+   * @stable v0.2.1
+   */
+  userMenuLabel?: string | null
 }
 
 /**
@@ -116,6 +166,17 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
     return raw.map((entry) => ({
       ...entry,
       trustLevel: null,
+      // The legacy direct-glob fallback predates the v0.2.1 wire
+      // additions; we cannot synthesise AppManifest-sourced fields
+      // from `app/menu.ts` alone. Force them to `null` so the Apps
+      // screen falls back to the bare `menu.ts` label and shows no
+      // source badge. Production browsers always reach the API path,
+      // which DOES populate these fields — the fallback only exists
+      // for test doubles that stub `app/menu.ts` directly.
+      source: null,
+      displayName: null,
+      menuOrder: null,
+      userMenuLabel: null,
     }))
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')
@@ -153,11 +214,31 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
         'investigate the manifest source if this fires.',
     )
   }
+  // Coerce optional wire fields to `null` so renderer call sites
+  // can use the strict `T | null` discriminator without a separate
+  // `undefined` branch. Pre-v0.2.1 servers omit these fields; the
+  // renderer treats both states ("not sent" / "no manifest") the
+  // same — fall back to the bare `menu.ts` label, render no badge.
+  const source: MenuEntrySourceBadge | null = isMenuEntrySourceBadge(meta.source)
+    ? meta.source
+    : null
+  const displayName: string | null =
+    typeof meta.displayName === 'string' ? meta.displayName : null
+  const menuOrder: number | null =
+    typeof meta.menuOrder === 'number' && Number.isInteger(meta.menuOrder)
+      ? meta.menuOrder
+      : null
+  const userMenuLabel: string | null =
+    typeof meta.userMenuLabel === 'string' ? meta.userMenuLabel : null
   return {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
     trustLevel,
+    source,
+    displayName,
+    menuOrder,
+    userMenuLabel,
     component: () => {
       if (!absPath) {
         const err = new Error(
@@ -177,6 +258,25 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
       }>
     },
   }
+}
+
+/**
+ * Type guard for the v0.2.1 source badge wire field. Defends the
+ * renderer against unexpected literals (older server build that
+ * emits a fifth recipeSource value, or a forged response). Unknown
+ * values are coerced to `null` so the badge silently hides instead
+ * of rendering a misleading state.
+ */
+function isMenuEntrySourceBadge(
+  value: unknown,
+): value is MenuEntrySourceBadge {
+  return (
+    value === 'self-made' ||
+    value === 'bundled' ||
+    value === 'sample' ||
+    value === 'import' ||
+    value === 'url'
+  )
 }
 
 /**

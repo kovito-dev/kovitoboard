@@ -39,6 +39,47 @@ export interface AppMenuEntry extends AppMenuEntryMeta {
    * @stable v0.2.0
    */
   trustLevel: RecipePageTrustLevel | null
+  /**
+   * UI source badge derived server-side from the matching
+   * `AppManifest.source`. `null` when no manifest exists (legacy
+   * hand-edited `app/menu.ts`). Five values: `'self-made'` (scanner
+   * derived) + `'bundled' | 'sample' | 'import' | 'url'` (persisted).
+   *
+   * Drives the Apps screen row badge. `null` hides the badge.
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.7
+   * @stable v0.2.1
+   */
+  source:
+    | 'self-made'
+    | 'bundled'
+    | 'sample'
+    | 'import'
+    | 'url'
+    | null
+  /**
+   * Display name from `AppManifest.displayName`. `null` when no
+   * manifest exists. Drives the row title on the Apps screen;
+   * fallback chain is `userMenuLabel ?? displayName ?? label ?? appId`.
+   *
+   * @stable v0.2.1
+   */
+  displayName: string | null
+  /**
+   * Persisted menu order from `AppManifest.menuOrder`. Drives the
+   * default sort on the Apps screen. `null` when no manifest exists.
+   *
+   * @stable v0.2.1
+   */
+  menuOrder: number | null
+  /**
+   * User override label from `AppManifest.userMenuLabel`. `null`
+   * when not set; empty string is invalid on PATCH (400
+   * `MenuLabelEmpty`).
+   *
+   * @stable v0.2.1
+   */
+  userMenuLabel: string | null
 }
 
 /** The shape exported by app/menu.ts */
