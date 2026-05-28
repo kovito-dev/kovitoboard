@@ -92,6 +92,13 @@ interface AppsTabProps {
    * without dropping the optimistic UI.
    */
   menuOrderSnapshot: string | null
+  /**
+   * Imperatively re-runs `loadUserMenuEntries()` in the parent.
+   * Invoked on successful `PATCH /api/apps/:appId/menu-label` so
+   * the row label reflects the new value immediately, without
+   * waiting for the asynchronous `app_menu_changed` ws broadcast.
+   */
+  onForceRefetchMenuEntries: () => void
   /** "+ Add app" handler — switches to the Sample apps tab. */
   onJumpToSamples: () => void
   /** "+ Create self-made app" handler — opens the AppCreateModal. */
@@ -111,6 +118,7 @@ interface AppsTabProps {
 export function AppsTab({
   userMenuEntries,
   menuOrderSnapshot,
+  onForceRefetchMenuEntries,
   onJumpToSamples,
   onCreateSelfMade,
   onRequestAppRemoval,
@@ -389,6 +397,7 @@ export function AppsTab({
                   key={entry.id}
                   entry={entry}
                   reorderInflight={reorderState.inflight}
+                  onForceRefetchMenuEntries={onForceRefetchMenuEntries}
                   onRequestAppRemoval={onRequestAppRemoval}
                   onRequestRecipeExport={onRequestRecipeExport}
                 />
@@ -398,6 +407,7 @@ export function AppsTab({
                   key={entry.id}
                   entry={entry}
                   eligible={false}
+                  onForceRefetchMenuEntries={onForceRefetchMenuEntries}
                   onRequestAppRemoval={onRequestAppRemoval}
                   onRequestRecipeExport={onRequestRecipeExport}
                   reorderInflight={reorderState.inflight}
@@ -415,6 +425,7 @@ export function AppsTab({
 interface SortableAppRowProps {
   entry: AppMenuEntry
   reorderInflight: boolean
+  onForceRefetchMenuEntries: AppsTabProps['onForceRefetchMenuEntries']
   onRequestAppRemoval: AppsTabProps['onRequestAppRemoval']
   onRequestRecipeExport: AppsTabProps['onRequestRecipeExport']
 }
@@ -427,6 +438,7 @@ interface SortableAppRowProps {
 function SortableAppRow({
   entry,
   reorderInflight,
+  onForceRefetchMenuEntries,
   onRequestAppRemoval,
   onRequestRecipeExport,
 }: SortableAppRowProps) {
@@ -448,6 +460,7 @@ function SortableAppRow({
     <AppRow
       entry={entry}
       eligible
+      onForceRefetchMenuEntries={onForceRefetchMenuEntries}
       onRequestAppRemoval={onRequestAppRemoval}
       onRequestRecipeExport={onRequestRecipeExport}
       reorderInflight={reorderInflight}
@@ -482,6 +495,7 @@ interface AppRowProps {
    * partial-residue state through the source-based routing path.
    */
   eligible: boolean
+  onForceRefetchMenuEntries: AppsTabProps['onForceRefetchMenuEntries']
   onRequestAppRemoval: AppsTabProps['onRequestAppRemoval']
   onRequestRecipeExport: AppsTabProps['onRequestRecipeExport']
   reorderInflight: boolean
@@ -496,6 +510,7 @@ interface AppRowProps {
 function AppRow({
   entry,
   eligible,
+  onForceRefetchMenuEntries,
   onRequestAppRemoval,
   onRequestRecipeExport,
   reorderInflight,
@@ -568,7 +583,17 @@ function AppRow({
           entry={entry}
           currentLabel={displayLabel}
           onCancel={() => setIsRenaming(false)}
-          onCommitted={() => setIsRenaming(false)}
+          onCommitted={() => {
+            setIsRenaming(false)
+            // Eager-refetch the menu entries so the row label
+            // reflects the committed value immediately. The
+            // `app_menu_changed` ws broadcast remains the secondary
+            // reconciliation path; the eager refetch protects
+            // against a delayed / disconnected ws leaving the row
+            // showing the previous label even though the PATCH
+            // already succeeded.
+            onForceRefetchMenuEntries()
+          }}
         />
       ) : (
         <>

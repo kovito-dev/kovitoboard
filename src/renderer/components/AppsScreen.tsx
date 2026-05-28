@@ -62,6 +62,15 @@ interface AppsScreenProps {
    * `null` when the server omitted the header (legacy fallback path).
    */
   menuOrderSnapshot: string | null
+  /**
+   * Imperatively re-runs `loadUserMenuEntries()` upstream. Used by
+   * inline-rename (`PATCH /api/apps/:appId/menu-label`) so the row
+   * label reflects the committed value immediately, without
+   * waiting for the asynchronous `app_menu_changed` ws broadcast
+   * (a delayed / disconnected ws would otherwise leave the label
+   * stale on success).
+   */
+  onForceRefetchMenuEntries: () => void
   agents: AgentInfo[]
   startNewSession: (
     message: string,
@@ -95,6 +104,7 @@ interface AppsScreenProps {
 export function AppsScreen({
   userMenuEntries,
   menuOrderSnapshot,
+  onForceRefetchMenuEntries,
   agents,
   startNewSession,
   theme = 'dark',
@@ -244,6 +254,7 @@ export function AppsScreen({
           <AppsTab
             userMenuEntries={userMenuEntries}
             menuOrderSnapshot={menuOrderSnapshot}
+            onForceRefetchMenuEntries={onForceRefetchMenuEntries}
             onJumpToSamples={handleJumpToSamples}
             onCreateSelfMade={handleOpenCreateApp}
             onRequestAppRemoval={onRequestAppRemoval}

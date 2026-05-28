@@ -122,6 +122,18 @@ export function App() {
   // a peer's reorder lands on the wire as 409 instead of silently
   // overwriting the local snapshot.
   const [menuOrderSnapshot, setMenuOrderSnapshot] = useState<string | null>(null)
+  // Manual-refresh sequence bumped by children that have already
+  // committed a write through the wire and need the local snapshot
+  // refetched without waiting for the asynchronous `app_menu_changed`
+  // broadcast (inline rename's `PATCH /api/apps/:appId/menu-label`
+  // success path is the v0.2.1 motivating case — a delayed /
+  // disconnected ws would otherwise leave the row showing the old
+  // label). Mirrors the eager-refetch pattern SamplesTab uses for
+  // bundled enable.
+  const [manualRefreshSeq, setManualRefreshSeq] = useState(0)
+  const forceRefetchMenuEntries = useCallback(() => {
+    setManualRefreshSeq((seq) => seq + 1)
+  }, [])
 
   useEffect(() => {
     // `appMenuVersion` bumps whenever the server detects a change to
@@ -146,7 +158,7 @@ export function App() {
       setMenuOrderSnapshot(menuOrderSnapshot)
     })
     loadUserStyles()
-  }, [appMenuVersion, sampleRecipeVersion])
+  }, [appMenuVersion, sampleRecipeVersion, manualRefreshSeq])
 
   // Merge builtin + user menu entries for NavMenu
   const allMenuEntries: MenuEntry[] = useMemo(() => {
@@ -504,6 +516,7 @@ export function App() {
               <AppsScreen
                 userMenuEntries={userMenuEntries}
                 menuOrderSnapshot={menuOrderSnapshot}
+                onForceRefetchMenuEntries={forceRefetchMenuEntries}
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}

@@ -551,6 +551,52 @@ export function readUserMenuEntries(
     }
   }
 
+  // `app-directory-extension.md` v1.6 §6.8.1 step 2: for every
+  // eligible app whose `AppManifest.menuOrder` is unset, the
+  // scanner assigns a provisional order — the `app/menu.ts` array
+  // position for entries that appear there, then `appId`
+  // lexicographic for any straggler. `readUserMenuEntries` is the
+  // scanner surface, so the provisional order is applied here
+  // before the entries leave the server. Spec step 3 makes the
+  // assignment transient: the manifest on disk is NOT rewritten,
+  // only the wire response carries the provisional value, so a
+  // user's first `PUT /api/apps/menu-order` is the only path that
+  // persists a chosen order.
+  //
+  // Eligibility mirrors §6.8.1: `displayName !== null` (the
+  // AppManifest is readable). Partial-residue rows recovered via
+  // `RecipeManifestLookup` keep `displayName === null` and stay
+  // outside the closed-world batch — their `menuOrder` is not
+  // populated here either.
+  //
+  // The wire ordering of `entries` already reflects `app/menu.ts`
+  // appearance (the parser preserves source order), so we walk
+  // `entries` in declaration order and hand out indices to
+  // eligible rows that are still missing a persisted `menuOrder`.
+  // Rows that already carry a persisted value are left untouched
+  // — they may end up sharing the same index as a provisional
+  // assignment in a mixed-state project (some manifests upgraded,
+  // some pre-v0.2.1), which is a known minor inconsistency that
+  // the deferred "completely-spec-faithful 0..N-1 renumber"
+  // follow-up will close (see PR "Out of Scope" entry on
+  // scanner-derived classification).
+  let nextProvisionalIndex = 0
+  for (const entry of entries) {
+    if (entry.displayName === null) continue
+    if (entry.menuOrder !== null) {
+      // Already persisted — keep the on-disk value and step over
+      // it so two provisional assignments do not later occupy the
+      // same numeric slot.
+      nextProvisionalIndex = Math.max(
+        nextProvisionalIndex,
+        entry.menuOrder + 1,
+      )
+      continue
+    }
+    entry.menuOrder = nextProvisionalIndex
+    nextProvisionalIndex += 1
+  }
+
   return entries
 }
 
