@@ -119,14 +119,21 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
   menuOrder: number | null
   /**
    * User override label from the active `AppManifest.userMenuLabel`.
-   * `null` when not set (default to `displayName` / `label` /
-   * `appId`); empty string is invalid (rejected on PATCH).
+   * `null` when not set (renderer falls back through the chain
+   * below); empty string is invalid (rejected on PATCH).
    *
-   * Display label resolution priority is:
-   *   `userMenuLabel ?? recipe.menu.label ?? menu.ts entry.label ?? appId`
-   * (see judgement doc §11.2 + app-directory-extension v1.6 §6.8.2).
+   * Spec base label SSOT (`app-directory-extension.md` v1.6 §6.8.2):
+   *   `userMenuLabel ?? recipe.yaml.menu.label ?? menu.ts entry.label ?? appId`
    *
-   * @see docs/specs/app-directory-extension.md v1.6 §6.2
+   * Wire-level approximation (renderer `AppsTab.tsx`, deferring the
+   * server-side `recipe.yaml`-resolver follow-up):
+   *   `userMenuLabel ?? label ?? displayName ?? appId`
+   * `label` (file-derived from `app/menu.ts`, refreshed on every
+   * scan) is preferred over the AppManifest install snapshot
+   * `displayName` so recipe upgrades that mutate `menu.ts` propagate
+   * without rewriting the manifest.
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2 / §6.8.2
    * @stable v0.2.1
    */
   userMenuLabel: string | null

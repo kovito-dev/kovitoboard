@@ -92,10 +92,15 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
   // (`isEnabledAndManifestCoherent`) make a stuck button safe to
   // re-click after a manual reload.
   const [enablingIds, setEnablingIds] = useState<Set<string>>(new Set())
-  const [enableError, setEnableError] = useState<{
-    recipeId: string
-    message: string
-  } | null>(null)
+  // Per-recipe enable error map, keyed by recipe id (parallel to
+  // `enablingIds`). A single global error slot would let a later
+  // failure overwrite an earlier one and let a single dismiss clear
+  // every card's error — both of which contradict the per-recipe
+  // state model. The Map shape gives each card its own slot and
+  // makes dismiss / retry affect only the targeted recipe.
+  const [enableErrors, setEnableErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  )
 
   const fetchRecipes = useCallback(async () => {
     try {
@@ -119,9 +124,25 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
   const isEnabled = (r: SampleRecipeInfo): boolean =>
     r.enabled ?? r.installed
 
+  const dismissEnableError = useCallback((recipeId: string) => {
+    setEnableErrors((prev) => {
+      if (!prev.has(recipeId)) return prev
+      const next = new Map(prev)
+      next.delete(recipeId)
+      return next
+    })
+  }, [])
+
   const handleEnable = useCallback(
     async (recipeId: string) => {
-      setEnableError(null)
+      // Clear only this card's stale error before retrying — peers
+      // keep theirs visible until their owners dismiss them.
+      setEnableErrors((prev) => {
+        if (!prev.has(recipeId)) return prev
+        const next = new Map(prev)
+        next.delete(recipeId)
+        return next
+      })
       setEnablingIds((prev) => {
         const next = new Set(prev)
         next.add(recipeId)
@@ -143,9 +164,12 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
         // refetch effect above. We do not refetch here to avoid the
         // double-fetch race when the WS arrives mid-flight.
       } catch (err) {
-        setEnableError({
-          recipeId,
-          message: err instanceof Error ? err.message : 'Enable failed',
+        const message =
+          err instanceof Error ? err.message : 'Enable failed'
+        setEnableErrors((prev) => {
+          const next = new Map(prev)
+          next.set(recipeId, message)
+          return next
         })
       } finally {
         setEnablingIds((prev) => {
@@ -236,13 +260,9 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
             recipe={recipe}
             enabled={isEnabled(recipe)}
             isEnabling={enablingIds.has(recipe.id)}
-            error={
-              enableError?.recipeId === recipe.id
-                ? enableError.message
-                : null
-            }
+            error={enableErrors.get(recipe.id) ?? null}
             onEnable={() => handleEnable(recipe.id)}
-            onDismissError={() => setEnableError(null)}
+            onDismissError={() => dismissEnableError(recipe.id)}
           />
         ))}
       </div>
