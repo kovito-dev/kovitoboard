@@ -53,11 +53,25 @@ interface AppActionsPopoverProps {
   /**
    * Drives whether the popover renders the destructive "Remove
    * app" item or the non-destructive "Disable" item. Bundled /
-   * grandfather sample apps render "Disable"; everything else
-   * (self-made / import / url / `null` legacy) renders the
-   * existing "Remove app".
+   * grandfather sample apps render "Disable"; self-made /
+   * import / url render "Remove app"; legacy hand-edited rows
+   * with `source === null` ALSO render "Remove app" but only
+   * when {@link manifestState} is `'missing'`. The
+   * `'unreadable'` recovery state suppresses both actions
+   * because the lineage is in flux.
    */
   source?: 'self-made' | 'bundled' | 'sample' | 'import' | 'url' | null
+  /**
+   * AppManifest read state. See `AppMenuEntry.manifestState` for
+   * the tri-state semantics. The popover keys destructive Remove
+   * gating on this so `source === null` does not conflate
+   * "legacy hand-edited (Remove safe)" with "partial-residue
+   * recovery (Remove unsafe)". Optional for backward compat with
+   * pre-v0.2.1 wires; missing / unknown values default to
+   * `'missing'` (the conservative "Remove allowed" branch for
+   * source-less rows).
+   */
+  manifestState?: 'present' | 'unreadable' | 'missing'
 }
 
 export function AppActionsPopover({
@@ -67,6 +81,7 @@ export function AppActionsPopover({
   onSelectRemoval,
   onSelectDisable,
   source,
+  manifestState,
 }: AppActionsPopoverProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const exportItemRef = useRef<HTMLButtonElement>(null)
@@ -231,19 +246,18 @@ export function AppActionsPopover({
           </svg>
           {t('app.actions.disable')}
         </button>
-      ) : source === null ? (
-        // Recovery state: the AppManifest cannot be read and the
-        // scanner could not recover the recipe lineage either, so
-        // neither Disable nor Remove can be routed safely. The
-        // destructive Remove path is intentionally omitted here
-        // because a manifest-absent row whose appId collides with
-        // a stale recipes-installed manifest must NOT be sent
-        // through delete (data-preservation invariant). Export
-        // remains available because it reads the on-disk artifact
-        // tree directly. The bundled-partial-residue recovery
-        // path is tracked as a deferred scanner-pipeline
-        // follow-up (recipe-history.jsonl evidence join) in the
-        // PR's Out-of-Scope list.
+      ) : source === null && manifestState === 'unreadable' ? (
+        // Partial-residue recovery state: the AppManifest file
+        // exists on disk but the parse / schema validation
+        // failed, and the scanner could not recover the recipe
+        // lineage either. Suppress destructive Remove (a
+        // manifest collision could let it delete the wrong
+        // subtree) AND Disable (no recipeId to call). Export
+        // remains available because it reads the on-disk
+        // artifact tree directly. The scanner-pipeline
+        // follow-up (recipe-history.jsonl evidence join) closes
+        // the rest of the recovery flow; tracked in the PR's
+        // Out-of-Scope list.
         null
       ) : (
         <button

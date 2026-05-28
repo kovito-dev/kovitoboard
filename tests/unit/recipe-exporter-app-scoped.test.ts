@@ -252,6 +252,11 @@ describe('parseMenuTsForApp', () => {
         menuOrder: null,
         userMenuLabel: null,
         recipeId: null,
+        // Parser-default `manifestState` is `'missing'` because
+        // `parseMenuTsForApp` runs without a manifest lookup --
+        // matching the row contract for a `menu.ts` entry with
+        // no manifest attached.
+        manifestState: 'missing',
       },
     ])
   })

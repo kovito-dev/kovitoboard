@@ -119,6 +119,28 @@ export interface MenuEntryWithPage extends AppMenuEntryMeta {
    */
   menuOrder: number | null
   /**
+   * Tri-state discriminator for the AppManifest read attempt.
+   *
+   *   - `'present'`  : `app/<appId>/manifest.json` exists and
+   *                    parsed successfully.
+   *   - `'unreadable'`: the file exists on disk but the parse /
+   *                    schema validation failed -- the partial-
+   *                    residue recovery window the spec wants
+   *                    routed through bundled disable.
+   *   - `'missing'`  : the file is entirely absent -- a legitimate
+   *                    legacy / hand-edited row that never had an
+   *                    AppManifest.
+   *
+   * The Apps screen reads this to keep `Remove app` available for
+   * legacy hand-edited rows while suppressing destructive actions
+   * for the unreadable recovery state, without ever conflating
+   * the two on the `source === null` axis (which carries both
+   * states on its own).
+   *
+   * @stable v0.2.1
+   */
+  manifestState: 'present' | 'unreadable' | 'missing'
+  /**
    * Recipe identifier (`recipe.yaml`'s `recipeId`) for apps whose
    * `AppManifest.source.type === 'recipe'`. The Apps tab uses this
    * to route disable / sample-specific operations through the
@@ -197,6 +219,14 @@ export function parseMenuTs(content: string): MenuEntryWithPage[] {
       menuOrder: null,
       userMenuLabel: null,
       recipeId: null,
+      // Parser-default state. `readUserMenuEntries` flips this to
+      // `'present'` or `'unreadable'` once the AppManifest lookup
+      // has fired; bare callers (the recipe-exporter unit tests
+      // that drive `parseMenuTsForApp` without a manifest store)
+      // observe the `'missing'` default, matching the contract
+      // that a row with no manifest attached has no manifest at
+      // all.
+      manifestState: 'missing',
     })
   }
 
@@ -544,6 +574,7 @@ export function readUserMenuEntries(
       if (isCanonicalAppIdPath(entry.page, entry.id)) {
         const manifest = manifestLookup(entry.id)
         if (manifest) {
+          entry.manifestState = 'present'
           entry.source = deriveSourceBadge(manifest)
           entry.displayName = manifest.displayName
           entry.menuOrder = manifest.menuOrder ?? null
@@ -570,8 +601,23 @@ export function readUserMenuEntries(
           // (`app-directory-extension.md` v1.6 §6.8.1 / §6.8.3
           // eligible-set definition).
           const recipeManifest = recipeManifestLookup(entry.id)
-          if (recipeManifest?.source) {
-            entry.source = recipeManifest.source
+          if (recipeManifest !== null) {
+            // `recipeManifestLookup` is contractually allowed to
+            // fire only for the AppManifest-file-present-but-
+            // unreadable case (see `app-routes.ts` createAppRouter
+            // for the existsSync gate). Reaching this branch
+            // therefore proves the partial-residue recovery state
+            // is in play, so flip the explicit `manifestState`
+            // discriminator so the Apps screen can keep the
+            // destructive Remove path suppressed for this
+            // specific state -- without conflating it with
+            // legacy / hand-edited rows that simply have no
+            // manifest (`manifestState === 'missing'`, which
+            // remains the parser default).
+            entry.manifestState = 'unreadable'
+            if (recipeManifest.source) {
+              entry.source = recipeManifest.source
+            }
             // Recipe lineage is still available even when the
             // AppManifest read failed (the `recipes-installed/<
             // appId>/manifest.json` carries it explicitly), so the

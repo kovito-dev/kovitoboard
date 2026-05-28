@@ -133,6 +133,17 @@ interface MenuEntryWire extends AppMenuEntryMeta {
    * @stable v0.2.1
    */
   recipeId?: string | null
+  /**
+   * Tri-state AppManifest discriminator -- see the renderer-side
+   * `AppMenuEntry.manifestState` JSDoc for the recovery /
+   * legacy split. Optional on the wire so legacy pre-v0.2.1
+   * server builds (which omit the field) keep parsing; the
+   * guard in `toAppMenuEntry` normalizes the missing case to
+   * `'missing'`.
+   *
+   * @stable v0.2.1
+   */
+  manifestState?: 'present' | 'unreadable' | 'missing'
 }
 
 /**
@@ -227,6 +238,11 @@ export async function loadUserMenuEntries(): Promise<UserMenuEntriesResult> {
       menuOrder: null,
       userMenuLabel: null,
       recipeId: null,
+      // The fallback path has no manifest at all -- treat every
+      // entry as the parser-default `'missing'` state. Production
+      // browsers reach the API path which carries the real
+      // discriminator.
+      manifestState: 'missing' as const,
     }))
     return { entries, menuOrderSnapshot: null }
   } catch (err) {
@@ -285,6 +301,17 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
     typeof meta.recipeId === 'string' && meta.recipeId.length > 0
       ? meta.recipeId
       : null
+  // The wire payload may omit `manifestState` (legacy server /
+  // test doubles). Fall back to `'missing'` because the only
+  // pre-v0.2.1 path that reached this code was a row with no
+  // AppManifest lookup at all, which matches the documented
+  // semantics of the `'missing'` value.
+  const manifestState: 'present' | 'unreadable' | 'missing' =
+    meta.manifestState === 'present' ||
+    meta.manifestState === 'unreadable' ||
+    meta.manifestState === 'missing'
+      ? meta.manifestState
+      : 'missing'
   return {
     id: meta.id,
     label: meta.label,
@@ -295,6 +322,7 @@ function toAppMenuEntry(meta: MenuEntryWire): AppMenuEntry {
     menuOrder,
     userMenuLabel,
     recipeId,
+    manifestState,
     component: () => {
       if (!absPath) {
         const err = new Error(

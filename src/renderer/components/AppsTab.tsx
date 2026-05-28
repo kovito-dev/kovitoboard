@@ -722,6 +722,7 @@ function AppRow({
               isOpen={isPopoverOpen}
               onClose={() => setIsPopoverOpen(false)}
               source={entry.source}
+              manifestState={entry.manifestState}
               onSelectExport={() =>
                 onRequestRecipeExport({
                   appId: entry.id,

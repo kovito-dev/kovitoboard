@@ -132,6 +132,33 @@ export interface AppMenuEntry extends AuthoredAppMenuEntry {
    * @stable v0.2.1
    */
   recipeId: string | null
+  /**
+   * Tri-state AppManifest discriminator. Splits the two
+   * meanings the `source === null` axis would otherwise
+   * conflate:
+   *
+   *   - `'present'`   : `app/<appId>/manifest.json` exists and
+   *                     parsed successfully.
+   *   - `'unreadable'`: the manifest file exists on disk but
+   *                     parse / schema validation failed --
+   *                     the partial-residue recovery state.
+   *                     `source` and `recipeId` are recovered
+   *                     from the matching `RecipeManifest`.
+   *   - `'missing'`   : the manifest file is entirely absent.
+   *                     A legacy hand-edited row that never had
+   *                     a manifest -- `source` and `recipeId`
+   *                     stay `null`.
+   *
+   * Drives the Apps tab Actions menu split between Disable
+   * (recovery state for bundled / sample sources) and Remove
+   * app (legacy hand-edited + present self-made / import / url).
+   * Conflating the two on `source === null` was the root cause
+   * of the destructive-routing risks surfaced in earlier
+   * review passes.
+   *
+   * @stable v0.2.1
+   */
+  manifestState: 'present' | 'unreadable' | 'missing'
 }
 
 /**
