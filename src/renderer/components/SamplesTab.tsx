@@ -33,7 +33,7 @@
  *   - recipe-system.md v1.12 §10.9
  *   - ws-event-contract.md v1.4 §7.6.3 (`recipe_apps_changed`)
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getRecipeDescription, getRecipeName } from '../utils/recipe-display'
 import { t } from '../i18n'
 import { kbFetch } from '../lib/kbFetch'
@@ -78,14 +78,36 @@ interface SamplesTabProps {
    * transaction completes).
    */
   sampleRecipeVersion?: number
+  /**
+   * Switches the parent AppsScreen to the Apps tab. Used by the
+   * "Manage in Apps tab" link on enabled sample cards so the user
+   * has a direct path from the Samples surface to the management
+   * surface the disable trigger lives on (judgement doc Section 4
+   * prime .4). Optional so a standalone render of `SamplesTab`
+   * (smoke tests, storybook stubs) still mounts; the link
+   * gracefully degrades to a static hint in that case.
+   */
+  onSwitchToAppsTab?: () => void
 }
 
 type LoadState = 'loading' | 'loaded' | 'error'
 
-export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
+export function SamplesTab({
+  sampleRecipeVersion,
+  onSwitchToAppsTab,
+}: SamplesTabProps) {
   const [recipes, setRecipes] = useState<SampleRecipeInfo[]>([])
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
+  // Monotonically-incrementing token guarding `fetchRecipes`
+  // against out-of-order overlap. The function can be invoked from
+  // the initial mount, the `sampleRecipeVersion` ws-driven effect,
+  // and the eager refetch inside `handleEnable`; without the token
+  // a slower older response can overwrite a fresher newer one and
+  // briefly resurface an already-enabled card in its pre-enable
+  // state. Each call captures the next token and bails on state
+  // updates if the ref has since moved on.
+  const fetchSeqRef = useRef(0)
   // Per-recipe Enable button state. Keyed by recipe id so multiple
   // clicks in flight (or one stuck behind a slow disk) do not block
   // each other. The server's idempotent retry semantics
@@ -103,15 +125,20 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
   )
 
   const fetchRecipes = useCallback(async () => {
+    const token = ++fetchSeqRef.current
     try {
       const res = await kbFetch('/api/recipes/sample')
       if (!res.ok) {
         throw new Error(`Failed to fetch sample recipes: ${res.status}`)
       }
       const data = (await res.json()) as SampleRecipeInfo[]
+      // Stale response — a newer call has already started or
+      // committed, drop this result on the floor.
+      if (fetchSeqRef.current !== token) return
       setRecipes(data)
       setState('loaded')
     } catch (err) {
+      if (fetchSeqRef.current !== token) return
       setError(err instanceof Error ? err.message : 'Failed to load')
       setState('error')
     }
@@ -269,6 +296,7 @@ export function SamplesTab({ sampleRecipeVersion }: SamplesTabProps) {
             error={enableErrors.get(recipe.id) ?? null}
             onEnable={() => handleEnable(recipe.id)}
             onDismissError={() => dismissEnableError(recipe.id)}
+            onSwitchToAppsTab={onSwitchToAppsTab}
           />
         ))}
       </div>
@@ -283,6 +311,8 @@ interface SampleCardProps {
   error: string | null
   onEnable: () => void
   onDismissError: () => void
+  /** Forwarded to the "Manage in Apps tab" link on enabled cards. */
+  onSwitchToAppsTab?: () => void
 }
 
 function SampleCard({
@@ -292,6 +322,7 @@ function SampleCard({
   error,
   onEnable,
   onDismissError,
+  onSwitchToAppsTab,
 }: SampleCardProps) {
   return (
     <div
@@ -358,15 +389,30 @@ function SampleCard({
 
       <div className="flex items-center justify-between gap-2">
         {enabled ? (
-          // v2.0 UX rule (§4'.4): disable trigger lives on the Apps
-          // tab Actions menu. Here we render an informational hint
-          // so users discover the move without spec-reading.
-          <span
-            data-testid={`samples-tab-card-${recipe.id}-manage-hint`}
-            className="text-[11px] text-[var(--text-dim)]"
-          >
-            {t('samplesTab.label.openInAppsTab')}
-          </span>
+          // v2.0 UX rule (judgement doc Section 4 prime .4):
+          // disable trigger lives on the Apps tab Actions menu.
+          // Render a real button when the parent supplies a
+          // tab-switch callback so users can jump straight to the
+          // management surface; fall back to a static hint when
+          // no callback is wired (standalone render / smoke
+          // tests).
+          onSwitchToAppsTab ? (
+            <button
+              type="button"
+              data-testid={`samples-tab-card-${recipe.id}-manage-hint`}
+              onClick={onSwitchToAppsTab}
+              className="text-[11px] text-[var(--accent-text)] hover:underline"
+            >
+              {t('samplesTab.label.openInAppsTab')}
+            </button>
+          ) : (
+            <span
+              data-testid={`samples-tab-card-${recipe.id}-manage-hint`}
+              className="text-[11px] text-[var(--text-dim)]"
+            >
+              {t('samplesTab.label.openInAppsTab')}
+            </span>
+          )
         ) : (
           <button
             type="button"

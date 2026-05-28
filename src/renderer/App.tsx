@@ -153,11 +153,23 @@ export function App() {
     // event the server emitted (chokidar `app_menu_changed` for raw
     // menu.ts edits, manifest-store-driven `recipe_apps_changed`
     // for enable / disable).
+    // Guard against out-of-order overlapping fetches. The effect
+    // can be re-fired by three independent triggers, and the
+    // network round-trip is not necessarily ordered with respect
+    // to React's effect cleanup, so a slower older request must
+    // not be allowed to overwrite a newer response. The `cancelled`
+    // flag from the previous run flips to `true` on cleanup and
+    // the late `.then` becomes a no-op.
+    let cancelled = false
     loadUserMenuEntries().then(({ entries, menuOrderSnapshot }) => {
+      if (cancelled) return
       setUserMenuEntries(entries)
       setMenuOrderSnapshot(menuOrderSnapshot)
     })
     loadUserStyles()
+    return () => {
+      cancelled = true
+    }
   }, [appMenuVersion, sampleRecipeVersion, manualRefreshSeq])
 
   // Merge builtin + user menu entries for NavMenu

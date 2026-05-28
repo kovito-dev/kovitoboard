@@ -125,6 +125,13 @@ export function AppsScreen({
     setActiveTab('samples')
   }, [])
 
+  // Reverse direction: an enabled sample card's "Manage in Apps
+  // tab" link calls this so the user lands on the Apps tab where
+  // the disable trigger lives.
+  const handleSwitchToAppsTab = useCallback(() => {
+    setActiveTab('apps')
+  }, [])
+
   const handleOpenCreateApp = useCallback(() => {
     if (agents.length === 0) {
       // Spec §4.4 / §6.3: agents-empty case shows an inline error
@@ -262,7 +269,10 @@ export function AppsScreen({
           />
         )}
         {activeTab === 'samples' && (
-          <SamplesTab sampleRecipeVersion={sampleRecipeVersion} />
+          <SamplesTab
+            sampleRecipeVersion={sampleRecipeVersion}
+            onSwitchToAppsTab={handleSwitchToAppsTab}
+          />
         )}
         {activeTab === 'recipes' && <RecipesTab />}
       </div>
