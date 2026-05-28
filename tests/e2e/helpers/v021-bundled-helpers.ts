@@ -155,6 +155,17 @@ function assertSafePathSegment(value: string, label: string): void {
       `[v021-bundled-helpers] unsafe ${label} (path traversal): "${value}"`,
     )
   }
+  // Slug-shape: alphanumeric + hyphen + underscore + dot.  This is
+  // stricter than the path-traversal checks above and additionally
+  // rejects quotes, control characters, whitespace, etc., so that
+  // values interpolated into generated TypeScript source (e.g. the
+  // single-quoted `id: '<appId>'` field in `menu.ts`) cannot break
+  // the file's syntax or inject code/imports.
+  if (!/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      `[v021-bundled-helpers] non-slug ${label} (chars outside [A-Za-z0-9._-]): "${value}"`,
+    )
+  }
 }
 
 /**
@@ -184,11 +195,11 @@ function assertSafeRelativePath(value: string, label: string): void {
   }
   const segments = value.split('/')
   for (const segment of segments) {
-    if (segment === '' || segment === '.' || segment === '..') {
-      throw new Error(
-        `[v021-bundled-helpers] unsafe ${label} (path traversal segment): "${value}"`,
-      )
-    }
+    // Each segment must itself be a safe slug — this rejects
+    // quotes, control characters, whitespace, etc., so the value
+    // can also be safely interpolated into generated TypeScript
+    // (the `menu.ts` `import('./<componentPath>')` literal).
+    assertSafePathSegment(segment, `${label} segment`)
   }
 }
 
@@ -249,10 +260,17 @@ export function readServerLogLines(
   if (!existsSync(logsDir)) return []
   const files = readdirSync(logsDir)
     .filter((n) => n.endsWith('.log'))
-    .map((n) => ({
-      n,
-      mtime: statSync(join(logsDir, n)).mtimeMs,
-    }))
+    .map((n) => {
+      // Reject symlinks and non-regular files BEFORE calling `statSync`
+      // — `statSync` follows symlinks and would let a planted `*.log`
+      // symlink read an arbitrary file outside `logsDir`, which would
+      // both break the per-project test boundary and silently leak
+      // unrelated file content into audit-log assertions.
+      const lst = lstatSync(join(logsDir, n))
+      return { n, lst }
+    })
+    .filter(({ lst }) => lst.isFile() && !lst.isSymbolicLink())
+    .map(({ n, lst }) => ({ n, mtime: lst.mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime)
   if (files.length === 0) return []
   const newest = files[0].n
