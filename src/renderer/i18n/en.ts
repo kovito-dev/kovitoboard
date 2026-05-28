@@ -817,14 +817,24 @@ const en: Record<MessageKey, string> = {
   'appsScreen.button.addApp': '+ Add app',
   'appsScreen.button.createSelfMade': '+ Create self-made app',
   'appsScreen.button.rename': 'Rename',
+  'appsScreen.button.renameSave': 'Save',
+  'appsScreen.button.renameCancel': 'Cancel',
+  'appsScreen.button.renameReset': 'Reset',
+  'appsScreen.button.renameResetTooltip':
+    'Reset to the default app name.',
   'appsScreen.label.dragHandle': 'Drag to reorder',
   'appsScreen.label.renamePlaceholder': 'Enter app menu label',
   'appsScreen.error.menuLabelTooLong': 'Menu label is too long (max 80 characters).',
+  'appsScreen.error.menuLabelEmpty':
+    'Menu label cannot be empty. Use Reset to restore the default.',
 
   // Apps tab empty-state hints (§6.4).
   'appsTab.empty': 'No apps installed yet.',
   'appsTab.emptyHint':
     'Use "+ Add app" to enable a sample app, or "+ Create self-made app" to start a new one.',
+
+  // Apps tab D&D reorder feedback (BS-L6).
+  'appsTab.reorder.saving': 'Saving the new order…',
 
   // Per-row Actions menu trigger (§4'.6).
   'app.actions.menu': 'App actions',

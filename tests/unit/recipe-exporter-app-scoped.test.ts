@@ -240,6 +240,16 @@ describe('parseMenuTsForApp', () => {
         // `null` so the trust marker hides itself for entries written
         // outside the install flow.
         trustLevel: null,
+        // v0.2.1 AppManifest-derived fields (source / displayName /
+        // menuOrder / userMenuLabel) are filled in by `readUserMenuEntries`
+        // when an `AppManifestLookup` is provided. The bare parser
+        // leaves them `null` so a hand-edited `menu.ts` row inherits
+        // no badge / label / order, matching the same defence-in-depth
+        // pattern as the trust attachment above.
+        source: null,
+        displayName: null,
+        menuOrder: null,
+        userMenuLabel: null,
       },
     ])
   })

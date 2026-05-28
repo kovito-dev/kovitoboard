@@ -820,14 +820,24 @@ const ja = {
   'appsScreen.button.addApp': '+ アプリ追加',
   'appsScreen.button.createSelfMade': '+ 自作アプリ作成',
   'appsScreen.button.rename': '名前変更',
+  'appsScreen.button.renameSave': '保存',
+  'appsScreen.button.renameCancel': 'キャンセル',
+  'appsScreen.button.renameReset': 'リセット',
+  'appsScreen.button.renameResetTooltip':
+    'デフォルトのアプリ名に戻します。',
   'appsScreen.label.dragHandle': 'ドラッグで並び替え',
   'appsScreen.label.renamePlaceholder': 'アプリメニュー名を入力',
   'appsScreen.error.menuLabelTooLong': 'メニュー名が長すぎます (最大 80 文字)。',
+  'appsScreen.error.menuLabelEmpty':
+    'メニュー名を空にはできません。リセットでデフォルト名に戻します。',
 
   // Apps tab empty-state hints (§6.4).
   'appsTab.empty': 'まだアプリがインストールされていません。',
   'appsTab.emptyHint':
     '「+ アプリ追加」でサンプルアプリを有効化するか、「+ 自作アプリ作成」で新しいアプリを作成してください。',
+
+  // Apps tab D&D reorder feedback (BS-L6).
+  'appsTab.reorder.saving': '並び順を保存中…',
 
   // Per-row Actions menu trigger (§4'.6).
   'app.actions.menu': 'アプリ操作',
