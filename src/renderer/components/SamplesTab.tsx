@@ -79,6 +79,15 @@ interface SamplesTabProps {
    */
   sampleRecipeVersion?: number
   /**
+   * Local manual-refresh counter, parallel to
+   * `sampleRecipeVersion`. Bumped by the parent on a 2xx
+   * bundled-sample disable / enable so the Samples list refreshes
+   * synchronously without depending on the asynchronous
+   * `recipe_apps_changed` ws broadcast. The ws-driven version
+   * remains the secondary reconciliation route.
+   */
+  manualSampleRefreshSeq?: number
+  /**
    * Switches the parent AppsScreen to the Apps tab. Used by the
    * "Manage in Apps tab" link on enabled sample cards so the user
    * has a direct path from the Samples surface to the management
@@ -106,6 +115,7 @@ type LoadState = 'loading' | 'loaded' | 'error'
 
 export function SamplesTab({
   sampleRecipeVersion,
+  manualSampleRefreshSeq,
   onSwitchToAppsTab,
   onForceRefetchMenuEntries,
 }: SamplesTabProps) {
@@ -170,7 +180,7 @@ export function SamplesTab({
 
   useEffect(() => {
     fetchRecipes()
-  }, [fetchRecipes, sampleRecipeVersion])
+  }, [fetchRecipes, sampleRecipeVersion, manualSampleRefreshSeq])
 
   const isEnabled = (r: SampleRecipeInfo): boolean =>
     r.enabled ?? r.installed

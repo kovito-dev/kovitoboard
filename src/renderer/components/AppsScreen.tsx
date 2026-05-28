@@ -86,6 +86,14 @@ interface AppsScreenProps {
    */
   sampleRecipeVersion?: number
   /**
+   * Local manual-refresh counter for SamplesTab, parallel to
+   * sampleRecipeVersion. Bumped by App.tsx on bundled-sample
+   * disable success so the Samples list refreshes immediately
+   * without waiting for the asynchronous ws broadcast. The ws
+   * path stays as the secondary reconciliation route.
+   */
+  manualSampleRefreshSeq?: number
+  /**
    * App removal entry point. Wired only for self-made / import /
    * url apps -- bundled and grandfather sample apps go through
    * {@link onRequestSampleDisable} so the destructive removal
@@ -128,6 +136,7 @@ export function AppsScreen({
   startNewSession,
   theme = 'dark',
   sampleRecipeVersion,
+  manualSampleRefreshSeq,
   onRequestAppRemoval,
   onRequestSampleDisable,
   onRequestRecipeExport,
@@ -292,6 +301,7 @@ export function AppsScreen({
         {activeTab === 'samples' && (
           <SamplesTab
             sampleRecipeVersion={sampleRecipeVersion}
+            manualSampleRefreshSeq={manualSampleRefreshSeq}
             onSwitchToAppsTab={handleSwitchToAppsTab}
             onForceRefetchMenuEntries={onForceRefetchMenuEntries}
           />

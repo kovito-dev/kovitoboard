@@ -134,6 +134,19 @@ export function App() {
   const forceRefetchMenuEntries = useCallback(() => {
     setManualRefreshSeq((seq) => seq + 1)
   }, [])
+  // Parallel manual-refresh trigger for the Samples tab. The
+  // bundled-sample disable success path needs to refresh BOTH
+  // the Apps list (already covered by `forceRefetchMenuEntries`)
+  // and the Samples list, otherwise a delayed / disconnected
+  // `recipe_apps_changed` ws broadcast would leave a successfully-
+  // disabled sample card stuck in its "Enabled" state. Bumping
+  // this seq is the synchronous equivalent of the ws-driven
+  // `sampleRecipeVersion` channel that already fans into
+  // SamplesTab's effect.
+  const [manualSampleRefreshSeq, setManualSampleRefreshSeq] = useState(0)
+  const forceRefetchSamples = useCallback(() => {
+    setManualSampleRefreshSeq((seq) => seq + 1)
+  }, [])
 
   useEffect(() => {
     // `appMenuVersion` bumps whenever the server detects a change to
@@ -529,6 +542,7 @@ export function App() {
                 userMenuEntries={userMenuEntries}
                 menuOrderSnapshot={menuOrderSnapshot}
                 onForceRefetchMenuEntries={forceRefetchMenuEntries}
+                manualSampleRefreshSeq={manualSampleRefreshSeq}
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}
@@ -564,9 +578,12 @@ export function App() {
                         return
                       }
                       // Eager refetch so the row disappears from
-                      // the Apps tab immediately on 2xx without
-                      // waiting for the ws broadcast.
+                      // the Apps tab AND the Samples tab
+                      // immediately on 2xx without waiting for
+                      // the ws broadcast. The ws path stays as
+                      // the secondary reconciliation route.
                       forceRefetchMenuEntries()
+                      forceRefetchSamples()
                     } catch (err) {
                       log.warn(
                         { err, appId, recipeId, displayName },

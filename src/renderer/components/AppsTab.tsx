@@ -861,9 +861,22 @@ function RenameForm({
         setError(t('appsScreen.error.menuLabelTooLong'))
         return
       }
+      // Treat a no-op save as a no-op: the input was seeded with
+      // the current effective label and the user did not change
+      // anything. Persisting that value as an explicit override
+      // would freeze a label that was previously inherited from
+      // `menu.ts` / `displayName`, so later upstream label
+      // changes (recipe upgrade, manifest rewrite) would stop
+      // propagating with no user-visible reason. If the row had
+      // no override before, just close the form; otherwise the
+      // existing override stays in place untouched.
+      if (trimmed === currentLabel) {
+        onCommitted()
+        return
+      }
       commit(trimmed)
     },
-    [draft, commit],
+    [draft, currentLabel, commit, onCommitted],
   )
 
   const handleReset = useCallback(() => {
