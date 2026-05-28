@@ -142,3 +142,95 @@ hygiene gate design.
 
 By contributing you agree that your contributions are licensed under the
 same AGPL-3.0 license as the project.
+
+## For External Contributors
+
+Thanks for considering a contribution to KovitoBoard! This section
+covers everything you need to know to submit a successful pull request
+from a fork.
+
+### Code of Conduct
+
+By participating, you agree to abide by our
+[Code of Conduct](CODE_OF_CONDUCT.md) (Contributor Covenant v2.1).
+
+### Pull Request Workflow
+
+1. **Fork** this repository to your GitHub account
+2. **Clone** your fork locally
+3. **Create a feature branch** from `staging`:
+   - Naming: `feature/<short-description>`, `fix/<short-description>`,
+     `chore/<short-description>`, `docs/<short-description>`
+4. **Make your changes** and verify quality gates locally:
+   ```bash
+   npm run typecheck
+   npm run build
+   npm test
+   npm run check:hygiene
+   ```
+5. **Commit** with a clear English message describing the *why* of the
+   change
+6. **Push** to your fork and **open a PR** against the upstream `staging`
+   branch (not `main`)
+7. **Wait for CI** to complete (typecheck / build / test / hygiene /
+   language check) — all must pass
+8. **Address review feedback** if requested
+9. After approval, the maintainer will squash-merge to `staging`;
+   release-time `staging → main` happens via a coordinated merge commit
+
+### Language Policy
+
+- **All text in the repository must be in English** — code, comments,
+  log messages, UI strings, documentation, commit messages, PR titles,
+  PR bodies, and issue threads
+- A dedicated CI check
+  ([`.github/workflows/pr-language-check.yml`](.github/workflows/pr-language-check.yml))
+  detects Japanese characters in PR title / body and fails the PR
+- Exception: `src/renderer/i18n/ja.ts` (Japanese translation dictionary)
+
+### Internal IDs
+
+KovitoBoard's internal coordination uses identifiers like `DEC-*`,
+`BL-*`, agent tags (`(agent: ...)`), and internal question IDs. These
+are **for internal coordination only** and **must not appear in
+external-facing artifacts**:
+
+- ❌ Not allowed: commit messages, PR titles, PR bodies, issue threads,
+  code comments
+- ✅ External contributors will naturally avoid these — a server-side
+  commit-msg hook (`.git/hooks/commit-msg`) blocks commits containing
+  these patterns
+
+### CI Behavior on Fork PRs
+
+- **No secrets are required** for any CI job — all checks (hygiene,
+  typecheck, build, hygiene-post-build, test, pr-language-check) run
+  identically on fork PRs and internal PRs
+- **L1 E2E** runs on `push` to `staging` / `main` (post-merge
+  integration check), not on PRs — this keeps the PR feedback loop fast
+- **First-time contributor approval**: For your first PR from a fork,
+  GitHub may pause workflow execution pending maintainer approval. This
+  is a one-time gate; subsequent PRs run automatically.
+
+### What We Look For in a Good PR
+
+- **Focused scope** — one logical change per PR
+- **Test coverage** — new code paths covered by unit tests or L1 E2E
+- **Spec alignment** — if your change touches a documented behavior in
+  `docs/specs/`, reference the affected spec in the PR description
+- **Backward compatibility** — breaking changes call out the migration
+  path explicitly in the PR template's `Breaking Change` section
+- **Atomic commits** — squashable history, no merge commits inside the
+  PR branch
+
+### Reporting Security Issues
+
+**Do not file security vulnerabilities as public issues.** See
+[SECURITY.md](SECURITY.md) for the responsible disclosure process.
+
+### Questions
+
+For general questions about usage, architecture, or design intent, open
+a `[Question]` issue with the
+[Question template](.github/ISSUE_TEMPLATE/question.md). The maintainer
+will respond as time allows.

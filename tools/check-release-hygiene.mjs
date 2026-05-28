@@ -70,6 +70,17 @@ export const PII_PATTERNS = [
   { label: '/home/irikura', regex: /\/home\/irikura/i },
 ]
 
+// Files exempt from PII check. These are external-facing governance
+// files where the maintainer's contact handle and email are intentionally
+// published (Code of Conduct enforcement contact, security reporting
+// secondary channel, CODEOWNERS ownership declaration). The maintainer
+// has accepted this exposure as part of going public.
+export const PII_EXEMPT_PATHS = new Set([
+  'CODEOWNERS',
+  'CODE_OF_CONDUCT.md',
+  'SECURITY.md',
+])
+
 // Japanese character ranges (Hiragana + Katakana + CJK Unified Ideographs)
 export const JAPANESE_RE = /[぀-ゟ゠-ヿ一-鿿]/
 
@@ -653,6 +664,7 @@ function runPiiCheck(error) {
   for (const { label, regex } of PII_PATTERNS) {
     for (const file of allTextFiles) {
       if (file === 'tools/check-release-hygiene.mjs') continue
+      if (PII_EXEMPT_PATHS.has(file)) continue
       const hits = scanFile(join(ROOT, file), regex)
       if (hits.length > 0) {
         piiFound = true
