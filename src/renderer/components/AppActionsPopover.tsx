@@ -231,6 +231,20 @@ export function AppActionsPopover({
           </svg>
           {t('app.actions.disable')}
         </button>
+      ) : source === null ? (
+        // Recovery state: the AppManifest cannot be read and the
+        // scanner could not recover the recipe lineage either, so
+        // neither Disable nor Remove can be routed safely. The
+        // destructive Remove path is intentionally omitted here
+        // because a manifest-absent row whose appId collides with
+        // a stale recipes-installed manifest must NOT be sent
+        // through delete (data-preservation invariant). Export
+        // remains available because it reads the on-disk artifact
+        // tree directly. The bundled-partial-residue recovery
+        // path is tracked as a deferred scanner-pipeline
+        // follow-up (recipe-history.jsonl evidence join) in the
+        // PR's Out-of-Scope list.
+        null
       ) : (
         <button
           type="button"
