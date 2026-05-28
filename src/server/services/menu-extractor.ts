@@ -17,6 +17,7 @@
  * logged as warnings without throwing.
  */
 import { serverLogger } from '../logger'
+import { createHash } from 'crypto'
 import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
@@ -268,6 +269,40 @@ export function deriveSourceBadge(
     return 'self-made'
   }
   return manifest.source.recipeSource
+}
+
+/**
+ * Compute the menu-order snapshot string for an array of wire
+ * entries. Mirrors `apps-routes.ts computeMenuOrderSnapshot`'s
+ * algorithm (`sha256(sorted "<appId>:<menuOrder>" tuples).slice(0, 16)`)
+ * so the value the renderer seeds onto `snapshotVersionRef` matches
+ * the snapshot the `PUT /api/apps/menu-order` handler recomputes at
+ * write time — without that match the very first reorder of a fresh
+ * page load skips the `MenuOrderSnapshotDrift` (HTTP 409) gate, and
+ * two clients can silently overwrite each other's reorders
+ * (`app-directory-extension.md` v1.6 §6.8.3 / `http-api-contract.md`
+ * v1.7.1 §6.3.9.A BS-L6).
+ *
+ * Eligible-only: only rows with a readable AppManifest
+ * (`displayName !== null` on the wire) participate in the
+ * closed-world batch (§6.8.1 eligible-set definition), so the
+ * snapshot is restricted to those rows. Partial-residue rows whose
+ * `source` was recovered via `RecipeManifestLookup` are still
+ * ineligible for reorder and are excluded here.
+ *
+ * @stable v0.2.1
+ */
+export function computeMenuOrderSnapshotFromEntries(
+  entries: MenuEntryWithPage[],
+): string {
+  const sorted = entries
+    .filter((entry) => entry.displayName !== null)
+    .map((entry) => `${entry.id}:${entry.menuOrder ?? ''}`)
+    .sort()
+  return createHash('sha256')
+    .update(sorted.join('\n'))
+    .digest('hex')
+    .slice(0, 16)
 }
 
 /**

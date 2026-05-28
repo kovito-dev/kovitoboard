@@ -112,6 +112,16 @@ export function App() {
 
   // User extension menu entries from app/menu.ts
   const [userMenuEntries, setUserMenuEntries] = useState<AppMenuEntry[]>([])
+  // Server-supplied menu-order snapshot from the
+  // `X-Apps-Menu-Snapshot` response header. Forwarded into AppsTab
+  // so the very first reorder after page load already carries a
+  // `snapshotVersion` and engages the `MenuOrderSnapshotDrift`
+  // protection (`http-api-contract.md` v1.7.1 §6.3.9.A BS-L6).
+  // Refreshed on every `loadUserMenuEntries()` call (which itself
+  // re-fires on `appMenuVersion` / `sampleRecipeVersion` bumps), so
+  // a peer's reorder lands on the wire as 409 instead of silently
+  // overwriting the local snapshot.
+  const [menuOrderSnapshot, setMenuOrderSnapshot] = useState<string | null>(null)
 
   useEffect(() => {
     // `appMenuVersion` bumps whenever the server detects a change to
@@ -119,9 +129,24 @@ export function App() {
     // the loader picks up newly installed recipes without a page
     // reload — see `app-loader.ts` for why the legacy
     // `import.meta.glob` path could not see those files.
-    loadUserMenuEntries().then(setUserMenuEntries)
+    //
+    // `sampleRecipeVersion` mirrors `appMenuVersion` for the
+    // bundled-enable / disable transaction (ws `recipe_apps_changed`,
+    // recipe-system.md v1.10 §10.9.5 + ws-event-contract.md v1.4
+    // §6.1 / §7.6). Enabling a bundled sample registers the new app
+    // in `recipes-installed/<appId>/manifest.json` + writes `app/<
+    // appId>/manifest.json`, which the Apps tab needs to reflect
+    // immediately without a full reload. Re-running the loader on
+    // both bumps keeps the Apps tab in sync regardless of which
+    // event the server emitted (chokidar `app_menu_changed` for raw
+    // menu.ts edits, manifest-store-driven `recipe_apps_changed`
+    // for enable / disable).
+    loadUserMenuEntries().then(({ entries, menuOrderSnapshot }) => {
+      setUserMenuEntries(entries)
+      setMenuOrderSnapshot(menuOrderSnapshot)
+    })
     loadUserStyles()
-  }, [appMenuVersion])
+  }, [appMenuVersion, sampleRecipeVersion])
 
   // Merge builtin + user menu entries for NavMenu
   const allMenuEntries: MenuEntry[] = useMemo(() => {
@@ -478,6 +503,7 @@ export function App() {
             <Route path="/recipes" element={
               <AppsScreen
                 userMenuEntries={userMenuEntries}
+                menuOrderSnapshot={menuOrderSnapshot}
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}

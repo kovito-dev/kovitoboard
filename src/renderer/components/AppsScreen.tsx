@@ -53,6 +53,15 @@ interface AppsScreenProps {
    * directly; SamplesTab refetches `/api/recipes/sample` independently.
    */
   userMenuEntries: AppMenuEntry[]
+  /**
+   * Server-supplied menu-order snapshot (from the
+   * `X-Apps-Menu-Snapshot` response header of
+   * `GET /api/app/menu-entries`). Forwarded into AppsTab so the very
+   * first reorder seeds `snapshotVersionRef` and engages the
+   * `MenuOrderSnapshotDrift` (HTTP 409) protection on first write.
+   * `null` when the server omitted the header (legacy fallback path).
+   */
+  menuOrderSnapshot: string | null
   agents: AgentInfo[]
   startNewSession: (
     message: string,
@@ -85,6 +94,7 @@ interface AppsScreenProps {
  */
 export function AppsScreen({
   userMenuEntries,
+  menuOrderSnapshot,
   agents,
   startNewSession,
   theme = 'dark',
@@ -233,6 +243,7 @@ export function AppsScreen({
         {activeTab === 'apps' && (
           <AppsTab
             userMenuEntries={userMenuEntries}
+            menuOrderSnapshot={menuOrderSnapshot}
             onJumpToSamples={handleJumpToSamples}
             onCreateSelfMade={handleOpenCreateApp}
             onRequestAppRemoval={onRequestAppRemoval}

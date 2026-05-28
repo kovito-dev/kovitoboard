@@ -10,7 +10,7 @@
  * These functions are the sole entry points for FE extensions.
  *
  * Public interface:
- *   - loadUserMenuEntries(): Promise<AppMenuEntry[]>
+ *   - loadUserMenuEntries(): Promise<UserMenuEntriesResult>
  *   - loadUserStyles(): Promise<void>
  *
  * Implementation note (v0.1.0):
@@ -125,21 +125,50 @@ interface MenuEntryWire extends AppMenuEntryMeta {
 }
 
 /**
+ * Result shape returned by {@link loadUserMenuEntries}.
+ *
+ * - `entries` — the menu entries themselves (wire-validated).
+ * - `menuOrderSnapshot` — the server's current menu-order snapshot
+ *   hash, surfaced through the `X-Apps-Menu-Snapshot` response
+ *   header. The Apps tab seeds `snapshotVersionRef` with this value
+ *   on mount so the **first** `PUT /api/apps/menu-order` request
+ *   already carries a `snapshotVersion`; without that seed the
+ *   `MenuOrderSnapshotDrift` (HTTP 409) gate is silently skipped
+ *   on the first reorder. `null` when the header is absent (the
+ *   legacy `import.meta.glob` fallback path) or the server omitted
+ *   it.
+ *
+ * @stable v0.2.1
+ */
+export interface UserMenuEntriesResult {
+  entries: AppMenuEntry[]
+  menuOrderSnapshot: string | null
+}
+
+/**
  * Discover and load user menu entries.
  *
  * Tries the API first; falls back to `import.meta.glob` for the
  * legacy in-tree `app/menu.{ts,tsx}` shape so existing tests (which
  * may stub the file directly without bringing up the API) keep
  * working.
+ *
+ * Returns a `{ entries, menuOrderSnapshot }` pair — the snapshot
+ * comes from the `X-Apps-Menu-Snapshot` response header and is
+ * `null` on the fallback path (no header to surface).
  */
-export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
+export async function loadUserMenuEntries(): Promise<UserMenuEntriesResult> {
   // 1) Preferred path: API.
   try {
     const res = await kbFetch('/api/app/menu-entries')
     if (res.ok) {
+      const snapshot = res.headers.get('X-Apps-Menu-Snapshot')
       const wire = (await res.json()) as MenuEntryWire[]
       if (Array.isArray(wire)) {
-        return wire.map(toAppMenuEntry)
+        return {
+          entries: wire.map(toAppMenuEntry),
+          menuOrderSnapshot: snapshot,
+        }
       }
     } else if (res.status !== 404) {
       log.warn(
@@ -155,7 +184,9 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
   //    with tests that stub `app/menu.ts` without standing up the API).
   const modules = import.meta.glob<AppMenuModule>('../../app/menu.{ts,tsx}')
   const paths = Object.keys(modules)
-  if (paths.length === 0) return []
+  if (paths.length === 0) {
+    return { entries: [], menuOrderSnapshot: null }
+  }
 
   try {
     const mod = await modules[paths[0]]()
@@ -170,7 +201,7 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
     // `trustLevel` to `null` here so a hostile fallback module cannot
     // forge a trusted badge — the trust marker silently hides itself
     // in that case rather than rendering a misleading claim.
-    return raw.map((entry) => ({
+    const entries: AppMenuEntry[] = raw.map((entry) => ({
       ...entry,
       trustLevel: null,
       // The legacy direct-glob fallback predates the v0.2.1 wire
@@ -185,9 +216,10 @@ export async function loadUserMenuEntries(): Promise<AppMenuEntry[]> {
       menuOrder: null,
       userMenuLabel: null,
     }))
+    return { entries, menuOrderSnapshot: null }
   } catch (err) {
     log.warn({ err }, 'Failed to load app/menu (fallback glob path)')
-    return []
+    return { entries: [], menuOrderSnapshot: null }
   }
 }
 

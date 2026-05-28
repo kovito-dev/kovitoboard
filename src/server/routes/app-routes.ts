@@ -22,6 +22,7 @@
 import { Router } from 'express'
 import type { FileAccessLayer } from '../fs-layer'
 import {
+  computeMenuOrderSnapshotFromEntries,
   readUserMenuEntries,
   type AppManifestLookup,
   type MenuEntryWithPage,
@@ -96,6 +97,21 @@ export function createAppRouter(
       trustLookup,
       manifestLookup,
       recipeManifestLookup,
+    )
+    // Surface the current menu-order snapshot in a response header
+    // so the renderer can seed `snapshotVersionRef` before the user's
+    // very first reorder lands. The spec pins the wire body to
+    // `MenuEntryWithPage[]` (`http-api-contract.md` v1.7.1 §6.3.8.A
+    // table), so we route the snapshot through a custom header
+    // instead of reshaping the JSON payload (which would be a
+    // wire-level break for any pre-v0.2.1 consumer of the endpoint).
+    // The PUT side recomputes the snapshot from the live manifests
+    // at write time (`apps-routes.ts computeMenuOrderSnapshot`); the
+    // algorithms are pinned by `computeMenuOrderSnapshotFromEntries`
+    // here so the renderer's seed matches the PUT-side comparison.
+    res.setHeader(
+      'X-Apps-Menu-Snapshot',
+      computeMenuOrderSnapshotFromEntries(entries),
     )
     res.json(entries)
   })

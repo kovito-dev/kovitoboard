@@ -79,6 +79,19 @@ const MENU_LABEL_MAX_LENGTH = 80
 
 interface AppsTabProps {
   userMenuEntries: AppMenuEntry[]
+  /**
+   * Server-supplied menu-order snapshot string (sourced from the
+   * `X-Apps-Menu-Snapshot` response header of
+   * `GET /api/app/menu-entries`). Seeds `snapshotVersionRef` on
+   * mount and on every parent-driven refetch so the **first**
+   * `PUT /api/apps/menu-order` already carries `snapshotVersion`
+   * and engages the HTTP 409 `MenuOrderSnapshotDrift` gate
+   * (`http-api-contract.md` v1.7.1 §6.3.9.A BS-L6). `null` when
+   * the header was absent (legacy fallback path) — the renderer
+   * gracefully degrades to the prior last-write-wins behaviour
+   * without dropping the optimistic UI.
+   */
+  menuOrderSnapshot: string | null
   /** "+ Add app" handler — switches to the Sample apps tab. */
   onJumpToSamples: () => void
   /** "+ Create self-made app" handler — opens the AppCreateModal. */
@@ -97,6 +110,7 @@ interface AppsTabProps {
 
 export function AppsTab({
   userMenuEntries,
+  menuOrderSnapshot,
   onJumpToSamples,
   onCreateSelfMade,
   onRequestAppRemoval,
@@ -190,7 +204,24 @@ export function AppsTab({
     inflight: boolean
     error: string | null
   }>({ inflight: false, error: null })
-  const snapshotVersionRef = useRef<string | undefined>(undefined)
+  const snapshotVersionRef = useRef<string | undefined>(
+    menuOrderSnapshot ?? undefined,
+  )
+
+  // Seed the ref from the parent-supplied snapshot on every refetch
+  // so the next PUT carries the freshest server snapshot — without
+  // this the `MenuOrderSnapshotDrift` (HTTP 409) gate would be
+  // bypassed on the first reorder of a fresh page load, and a peer
+  // client's intervening reorder would silently overwrite the local
+  // one (`http-api-contract.md` v1.7.1 §6.3.9.A BS-L6). Only
+  // overwrite when the wire offered a value — `null` means the
+  // server omitted the header (e.g. legacy fallback path) and we
+  // keep whatever the previous successful PUT or fetch stored.
+  useEffect(() => {
+    if (menuOrderSnapshot !== null) {
+      snapshotVersionRef.current = menuOrderSnapshot
+    }
+  }, [menuOrderSnapshot])
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
