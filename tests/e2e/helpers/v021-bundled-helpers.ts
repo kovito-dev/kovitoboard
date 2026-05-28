@@ -122,7 +122,37 @@ export function restoreMenuTs(projectRoot: string, original: string): void {
   writeFileSync(menuTsPath, original)
 }
 
+/**
+ * Reject ids that could escape the intended app/recipe directory via
+ * path-separator or `..` segments. The destructive filesystem helpers
+ * below (`cleanupAppDir`, `seedGrandfatherManifest`) join the id into a
+ * write/delete path; trusting a raw id here would let a future caller
+ * (or a value derived from a server response or a malformed fixture)
+ * remove or overwrite arbitrary files under the test runner's working
+ * tree. The read helpers (`readAppManifest`, `readRecipeManifest`) go
+ * through the same gate so traversal is rejected uniformly regardless
+ * of which entry point a spec picks up.
+ */
+function assertSafePathSegment(value: string, label: string): void {
+  if (value === '' || value === '.' || value === '..') {
+    throw new Error(
+      `[v021-bundled-helpers] empty or relative ${label}: "${value}"`,
+    )
+  }
+  if (
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    value.split(/[/\\]/).includes('..')
+  ) {
+    throw new Error(
+      `[v021-bundled-helpers] unsafe ${label} (path traversal): "${value}"`,
+    )
+  }
+}
+
 export function cleanupAppDir(projectRoot: string, appId: string): void {
+  assertSafePathSegment(appId, 'appId')
   rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
 }
 
@@ -193,6 +223,7 @@ export function readAppManifest(
   projectRoot: string,
   appId: string,
 ): Record<string, unknown> | null {
+  assertSafePathSegment(appId, 'appId')
   const p = join(projectRoot, 'app', appId, 'manifest.json')
   if (!existsSync(p)) return null
   return JSON.parse(readFileSync(p, 'utf-8'))
@@ -206,6 +237,7 @@ export function readRecipeManifest(
   projectRoot: string,
   recipeId: string,
 ): Record<string, unknown> | null {
+  assertSafePathSegment(recipeId, 'recipeId')
   const p = join(
     projectRoot,
     '.kovitoboard',
@@ -240,6 +272,8 @@ export function seedGrandfatherManifest(
   projectRoot: string,
   seed: GrandfatherSeed,
 ): void {
+  assertSafePathSegment(seed.recipeId, 'recipeId')
+  assertSafePathSegment(seed.appId, 'appId')
   const displayName = seed.displayName ?? 'Document Viewer'
   const componentPath = seed.componentPath ?? 'pages/DocumentViewer'
 

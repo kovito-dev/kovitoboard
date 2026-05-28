@@ -86,6 +86,16 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
     await expect(sourceRow).toBeVisible()
     await expect(targetRow).toBeVisible()
 
+    // Capture the initial persisted order BEFORE the drag so the
+    // post-drag assertion can verify the drag actually moved
+    // something. Without this baseline, a no-op gesture that never
+    // crossed the 4 px activation threshold would still satisfy the
+    // contiguous `[0, 1]` permutation check below.
+    const initialDocManifest = readAppManifest(kbFixture.projectRoot, APP_DOC)
+    const initialTodoManifest = readAppManifest(kbFixture.projectRoot, APP_TODO)
+    const initialDocOrder = initialDocManifest?.menuOrder ?? null
+    const initialTodoOrder = initialTodoManifest?.menuOrder ?? null
+
     // Resolve the drag-handle bounding boxes so we can drive the
     // pointer trajectory directly. The sensor needs the pointer to
     // start on the handle (not the row body) and to move at least
@@ -168,6 +178,15 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
     expect(typeof todoOrder).toBe('number')
     const orders = [docOrder, todoOrder].sort()
     expect(orders).toEqual([0, 1])
+
+    // The drag must have actually moved something — a no-op gesture
+    // that never crossed the 4 px activation threshold would leave
+    // both `menuOrder` values at their initial state and still pass
+    // the contiguous `[0, 1]` permutation check above. Comparing
+    // against the captured initial baseline closes that gap.
+    const orderActuallyChanged =
+      docOrder !== initialDocOrder || todoOrder !== initialTodoOrder
+    expect(orderActuallyChanged).toBe(true)
 
     // Reload — the persisted order survives.
     await page.reload()
