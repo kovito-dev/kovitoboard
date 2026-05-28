@@ -278,7 +278,8 @@ const ja = {
   // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT で「アプリレシピ」→「アプリ」に
   // rebrand。key は維持し値だけ更新（backward compat）。
   'nav.menu.recipes': 'アプリ',
-  'nav.menu.workRoots': '作業ルート',
+  // v0.2.1 BL-2026-167: `nav.menu.workRoots` はサイドメニューエントリ
+  // と一緒に削除。設定モーダル側では `setting.tab.workRoots` を使う。
 
   // 作業ルート設定画面（仕様 cwd-allowlist.md v1.0 §7.4）。
   // プロジェクトルート以外で Claude Code に作業させるフォルダを
@@ -647,6 +648,10 @@ const ja = {
   // 設定
   'setting.title': '設定',
   'setting.tab.basic': '基本設定',
+  // v0.2.1 BL-2026-167: 「作業ルート」サイドメニュー独立項目を設定
+  // モーダルに統合した際に追加（判定書 v1.1 §2.5）。文言は旧
+  // `nav.menu.workRoots` と同一。
+  'setting.tab.workRoots': '作業ルート',
   'setting.tab.skills': 'スキル',
   'setting.tab.automations': '自動処理',
   'setting.tab.integrations': '外部連携',

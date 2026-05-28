@@ -43,6 +43,11 @@ const log = createLogger('App')
 // `readPersistedLocale()`, which restores the choice the user made
 // during onboarding from `localStorage` and falls back to `en` when
 // nothing has been recorded yet (OSS fallback).
+// v0.2.1 BL-2026-167: the standalone `work-roots` side-nav entry was
+// removed in favour of a tab inside the Settings modal (judgement
+// doc v1.1 §2.4 #1). The `/work-roots` route itself is preserved
+// (deep-link / e2e compatibility, §2.4 #4) — see the Routes block
+// below — but it no longer surfaces in the side rail.
 const menuEntries: MenuEntry[] = [
   {
     id: 'agents',
@@ -58,11 +63,6 @@ const menuEntries: MenuEntry[] = [
     id: 'recipes',
     label: t('nav.menu.recipes'),
     icon: Icons.seeds,
-  },
-  {
-    id: 'work-roots',
-    label: t('nav.menu.workRoots'),
-    icon: Icons.settings,
   },
 ]
 
@@ -252,11 +252,16 @@ export function App() {
     return map
   }, [userMenuEntries])
 
-  // Active menu determined by URL path
+  // Active menu determined by URL path.
+  // v0.2.1 BL-2026-167: the `/work-roots` branch was intentionally
+  // dropped along with the side-nav entry (judgement doc v1.1 §2.4
+  // #2). The route still renders but has no active menu — visiting
+  // it from a deep-link will leave the side rail in its default
+  // ("agents") active state, which mirrors how every other route
+  // outside the four canonical side-nav items behaves.
   const activeMenuId = useMemo(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
     if (location.pathname.startsWith('/recipes')) return 'recipes'
-    if (location.pathname.startsWith('/work-roots')) return 'work-roots'
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
