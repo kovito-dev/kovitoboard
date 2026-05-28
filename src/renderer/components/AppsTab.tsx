@@ -59,7 +59,10 @@ import { CSS } from '@dnd-kit/utilities'
 import { t } from '../i18n'
 import { kbFetch } from '../lib/kbFetch'
 import { createLogger } from '../lib/logger'
-import type { AppMenuEntry } from '../types/app-types'
+import {
+  isMenuMetadataEligible,
+  type AppMenuEntry,
+} from '../types/app-types'
 import { AppActionsPopover } from './AppActionsPopover'
 
 const log = createLogger('AppsTab')
@@ -99,20 +102,47 @@ export function AppsTab({
   onRequestAppRemoval,
   onRequestRecipeExport,
 }: AppsTabProps) {
-  // Default sort: ascending `menuOrder` (null entries pushed to the
-  // bottom in lexicographic `appId` order — the AppManifest spec
-  // (v1.6 §6.2) treats a missing `menuOrder` as "newly created, place
-  // at the end"). After the first D&D commit the server-side
-  // contiguous renumber lands so `null` is the transient state for
-  // newly-enabled apps only.
+  // Split menu-metadata eligible rows (AppManifest readable) from
+  // ineligible ones (partial residue / unreadable manifest). Only
+  // eligible rows participate in D&D reorder, the closed-world
+  // `PUT /api/apps/menu-order` batch, and inline rename — per
+  // `app-directory-extension.md` v1.6 §6.8.1 / §6.8.3. Ineligible
+  // rows still render in the list so the user can disable / remove
+  // them through the source-based routing path (§4.3 L3); their
+  // drag handle and Rename control are hidden because PATCH
+  // /menu-label would 500 `AppManifestUnreadable` and including
+  // them in the batch would 400 `MenuOrderCoverageMismatch`.
+  const { eligibleEntries, ineligibleEntries } = useMemo(() => {
+    const eligible: AppMenuEntry[] = []
+    const ineligible: AppMenuEntry[] = []
+    for (const entry of userMenuEntries) {
+      if (isMenuMetadataEligible(entry)) {
+        eligible.push(entry)
+      } else {
+        ineligible.push(entry)
+      }
+    }
+    return { eligibleEntries: eligible, ineligibleEntries: ineligible }
+  }, [userMenuEntries])
+
+  // Default sort for eligible rows: ascending `menuOrder`. Per
+  // `app-directory-extension.md` v1.6 §6.8.1, the scanner assigns a
+  // provisional order (menu.ts appearance order, then appId
+  // lexicographic for the rest) for any eligible app whose
+  // `AppManifest.menuOrder` is unset, and the API loader reflects
+  // that in the wire response. So the wire order is authoritative
+  // for `menuOrder === null` rows — we treat null as
+  // `+Infinity` to push them after the persisted block, then rely
+  // on JavaScript's stable Array.prototype.sort to preserve the
+  // server-provided order among nulls (no `appId` tie-break — that
+  // would discard the scanner's fallback order, which is the SSOT).
   const sortedFromProps = useMemo(() => {
-    return [...userMenuEntries].sort((a, b) => {
+    return [...eligibleEntries].sort((a, b) => {
       const orderA = a.menuOrder ?? Number.POSITIVE_INFINITY
       const orderB = b.menuOrder ?? Number.POSITIVE_INFINITY
-      if (orderA !== orderB) return orderA - orderB
-      return a.id.localeCompare(b.id)
+      return orderA - orderB
     })
-  }, [userMenuEntries])
+  }, [eligibleEntries])
 
   // Local mirror so the visual order can update optimistically on
   // drag-end before the server PUT round-trip lands. Re-synced
@@ -145,6 +175,10 @@ export function AppsTab({
         .filter((entry): entry is AppMenuEntry => entry !== undefined),
     [orderedIds, entryById],
   )
+  // Total rendered count drives the empty-state branch — both
+  // eligible (sortable) and ineligible (read-only) rows count.
+  const totalVisibleCount =
+    orderedEntries.length + ineligibleEntries.length
 
   // Inflight PUT /menu-order state. Disables the sortable surface
   // and shows a small "saving…" hint at the top of the list. The
@@ -297,7 +331,7 @@ export function AppsTab({
       )}
 
       {/* App list */}
-      {orderedEntries.length === 0 ? (
+      {totalVisibleCount === 0 ? (
         <div className="py-8 text-center">
           <p className="text-sm text-[var(--text-dim)]">
             {t('appsTab.empty')}
@@ -308,6 +342,9 @@ export function AppsTab({
         </div>
       ) : (
         <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+          {/* `SortableContext.items` is restricted to eligible rows
+              (see §6.8.3 closed-world batch) — ineligible rows still
+              render below but are not draggable. */}
           <SortableContext
             items={orderedIds}
             strategy={verticalListSortingStrategy}
@@ -323,6 +360,17 @@ export function AppsTab({
                   reorderInflight={reorderState.inflight}
                   onRequestAppRemoval={onRequestAppRemoval}
                   onRequestRecipeExport={onRequestRecipeExport}
+                />
+              ))}
+              {ineligibleEntries.map((entry) => (
+                <AppRow
+                  key={entry.id}
+                  entry={entry}
+                  eligible={false}
+                  onRequestAppRemoval={onRequestAppRemoval}
+                  onRequestRecipeExport={onRequestRecipeExport}
+                  reorderInflight={reorderState.inflight}
+                  sortable={null}
                 />
               ))}
             </ul>
@@ -368,6 +416,7 @@ function SortableAppRow({
   return (
     <AppRow
       entry={entry}
+      eligible
       onRequestAppRemoval={onRequestAppRemoval}
       onRequestRecipeExport={onRequestRecipeExport}
       reorderInflight={reorderInflight}
@@ -383,23 +432,39 @@ function SortableAppRow({
   )
 }
 
+interface SortableInfo {
+  ref: (node: HTMLElement | null) => void
+  style: CSSProperties
+  handleRef: (node: HTMLElement | null) => void
+  handleAttributes: ReturnType<typeof useSortable>['attributes']
+  handleListeners: ReturnType<typeof useSortable>['listeners']
+  isDragging: boolean
+}
+
 interface AppRowProps {
   entry: AppMenuEntry
+  /**
+   * True when the row is menu-metadata eligible (AppManifest
+   * readable, §6.8.1). Drives whether the drag handle and Rename
+   * control render. Ineligible rows can still be opened and reach
+   * the Actions menu (Remove app) so the user can recover from a
+   * partial-residue state through the source-based routing path.
+   */
+  eligible: boolean
   onRequestAppRemoval: AppsTabProps['onRequestAppRemoval']
   onRequestRecipeExport: AppsTabProps['onRequestRecipeExport']
   reorderInflight: boolean
-  sortable: {
-    ref: (node: HTMLElement | null) => void
-    style: CSSProperties
-    handleRef: (node: HTMLElement | null) => void
-    handleAttributes: ReturnType<typeof useSortable>['attributes']
-    handleListeners: ReturnType<typeof useSortable>['listeners']
-    isDragging: boolean
-  }
+  /**
+   * `null` for ineligible rows that render outside the
+   * `SortableContext` (no drag handle bindings, no reorder
+   * participation).
+   */
+  sortable: SortableInfo | null
 }
 
 function AppRow({
   entry,
+  eligible,
   onRequestAppRemoval,
   onRequestRecipeExport,
   reorderInflight,
@@ -420,41 +485,45 @@ function AppRow({
 
   return (
     <li
-      ref={sortable.ref}
-      style={sortable.style}
+      ref={sortable?.ref}
+      style={sortable?.style}
       data-testid={`apps-tab-row-${entry.id}`}
       data-app-id={entry.id}
+      data-eligible={eligible ? 'true' : 'false'}
       className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg px-3 py-2 flex items-center gap-3"
     >
-      {/* Drag handle — only this element initiates a sort. Pointer
-          activation requires 4px movement so accidental clicks on
-          the handle do not steal taps from the row body. */}
-      <button
-        ref={sortable.handleRef}
-        type="button"
-        data-testid={`apps-tab-row-${entry.id}-drag-handle`}
-        aria-label={t('appsScreen.label.dragHandle')}
-        title={t('appsScreen.label.dragHandle')}
-        disabled={reorderInflight}
-        {...sortable.handleAttributes}
-        {...sortable.handleListeners}
-        className="shrink-0 text-[var(--text-dim)] hover:text-[var(--text-secondary)] cursor-grab active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50 p-0.5"
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          aria-hidden="true"
+      {/* Drag handle — eligible rows only (ineligible rows are
+          excluded from the closed-world reorder batch §6.8.3).
+          Pointer activation requires 4px movement so accidental
+          clicks on the handle do not steal taps from the row body. */}
+      {sortable && (
+        <button
+          ref={sortable.handleRef}
+          type="button"
+          data-testid={`apps-tab-row-${entry.id}-drag-handle`}
+          aria-label={t('appsScreen.label.dragHandle')}
+          title={t('appsScreen.label.dragHandle')}
+          disabled={reorderInflight}
+          {...sortable.handleAttributes}
+          {...sortable.handleListeners}
+          className="shrink-0 text-[var(--text-dim)] hover:text-[var(--text-secondary)] cursor-grab active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50 p-0.5"
         >
-          <circle cx="9" cy="6" r="1.5" />
-          <circle cx="9" cy="12" r="1.5" />
-          <circle cx="9" cy="18" r="1.5" />
-          <circle cx="15" cy="6" r="1.5" />
-          <circle cx="15" cy="12" r="1.5" />
-          <circle cx="15" cy="18" r="1.5" />
-        </svg>
-      </button>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <circle cx="9" cy="6" r="1.5" />
+            <circle cx="9" cy="12" r="1.5" />
+            <circle cx="9" cy="18" r="1.5" />
+            <circle cx="15" cy="6" r="1.5" />
+            <circle cx="15" cy="12" r="1.5" />
+            <circle cx="15" cy="18" r="1.5" />
+          </svg>
+        </button>
+      )}
 
       {isRenaming ? (
         <RenameForm
@@ -479,30 +548,36 @@ function AppRow({
           {/* Source badge — `null` source hides the badge. */}
           {entry.source && <SourceBadge source={entry.source} />}
 
-          {/* Rename button — opens the inline edit form. */}
-          <button
-            type="button"
-            data-testid={`apps-tab-row-${entry.id}-rename`}
-            aria-label={t('appsScreen.button.rename')}
-            title={t('appsScreen.button.rename')}
-            onClick={() => setIsRenaming(true)}
-            className="shrink-0 text-[var(--text-dim)] hover:text-[var(--accent-text)] transition-colors p-0.5"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+          {/* Rename button — eligible rows only. PATCH
+              `/api/apps/:appId/menu-label` is reserved for apps with
+              a readable AppManifest (§6.8.2), so ineligible rows are
+              routed through the source-based disable / remove path
+              via the Actions menu instead. */}
+          {eligible && (
+            <button
+              type="button"
+              data-testid={`apps-tab-row-${entry.id}-rename`}
+              aria-label={t('appsScreen.button.rename')}
+              title={t('appsScreen.button.rename')}
+              onClick={() => setIsRenaming(true)}
+              className="shrink-0 text-[var(--text-dim)] hover:text-[var(--accent-text)] transition-colors p-0.5"
             >
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-            </svg>
-          </button>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </button>
+          )}
 
           {/* Actions menu — reuses the existing AppActionsPopover so
               the NavMenu actionSlot RemoveAppButton stays in sync

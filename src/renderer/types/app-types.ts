@@ -86,3 +86,24 @@ export interface AppMenuEntry extends AppMenuEntryMeta {
 export interface AppMenuModule {
   menuEntries: AppMenuEntry[]
 }
+
+/**
+ * Predicate: is this entry eligible for menu-metadata operations
+ * (`PUT /api/apps/menu-order` closed-world batch +
+ * `PATCH /api/apps/:appId/menu-label`)?
+ *
+ * `app-directory-extension.md` v1.6 §6.8.1 pins eligibility on
+ * AppManifest readability — the wire shape exposes that as a
+ * non-null `displayName` (every successful AppManifest read
+ * populates the field; partial residue / unreadable manifest
+ * surface `null`). Ineligible rows must be routed through the
+ * source-based disable / removal path (§4.3 L3) rather than
+ * through reorder / rename, otherwise the batch will fail with
+ * `MenuOrderCoverageMismatch` and PATCH will fail with
+ * `AppManifestUnreadable`.
+ *
+ * @stable v0.2.1
+ */
+export function isMenuMetadataEligible(entry: AppMenuEntry): boolean {
+  return entry.displayName !== null
+}
