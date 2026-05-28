@@ -197,16 +197,29 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     request,
     kbFixture,
   }) => {
-    // First seed the todo own-data (the "user task data from v0.1.x"
-    // surface).
+    // The committee request §3 framing is "v0.1.x → v0.2.1
+    // upgrade", so this spec must exercise the actual migration
+    // path: a pre-existing v0.1.x grandfather install for `todo`
+    // (RecipeManifest + AppManifest + history + menu.ts entry)
+    // PLUS pre-existing user data under `app/data/todo/`. The
+    // v0.2.1 enable call then hits the `'already-enabled'`
+    // short-circuit (BS-L2) instead of the fresh-install path.
+    seedGrandfatherManifest(kbFixture.projectRoot, {
+      recipeId: TODO_ID,
+      appId: TODO_ID,
+      source: 'sample',
+      displayName: 'Todo',
+      componentPath: 'pages/Todo',
+    })
     const sentinelPath = seedTodoOwnData(kbFixture.projectRoot, {
       id: 'sentinel',
       title: 'survives v0.2.1 upgrade',
     })
 
-    // Then walk through the v0.2.1 enable flow — this is the exact
-    // path a v0.1.x user takes the first time they hit the new
-    // Samples tab. The own-data directory must not be touched.
+    // Walk through the v0.2.1 enable flow — this is the exact path
+    // a v0.1.x user takes the first time they hit the new Samples
+    // tab against an already-installed sample. The own-data
+    // directory must not be touched.
     const enableRes = await request.post(
       `${API_BASE}/api/recipes/sample/${TODO_ID}/enable`,
     )

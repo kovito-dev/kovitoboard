@@ -48,7 +48,12 @@ test.describe('Recipes tab network silence (BS-T14)', () => {
     // to settle so any async hub fetch (which we don't expect) would
     // have a chance to fire before we assert silence.
     await expect(page.getByTestId('recipes-tab-banner')).toBeVisible()
-    await page.waitForTimeout(300)
+    // Wait for the app to fully settle (no in-flight requests for the
+    // standard networkidle window). The previous 300 ms fixed sleep
+    // could let a deferred fetch fire after the window and still
+    // pass; networkidle is a deterministic app-settled signal that
+    // catches both the sync render path and any delayed retry.
+    await page.waitForLoadState('networkidle')
 
     expect(hubRequests).toEqual([])
   })
@@ -90,7 +95,11 @@ test.describe('Recipes tab network silence (BS-T14)', () => {
       // mark the button as non-actionable from Playwright's standpoint.
       await installButtons.nth(i).click({ force: true })
     }
-    await page.waitForTimeout(300)
+    // Networkidle after the click loop catches any deferred fetch
+    // that a regression of the aria-disabled gate would issue. A
+    // fixed-timeout sleep here would miss requests fired after the
+    // window expires; networkidle is the deterministic settle signal.
+    await page.waitForLoadState('networkidle')
 
     expect(blockedRequests).toEqual([])
   })

@@ -59,7 +59,31 @@ const SEEDS: SeedSpec[] = [
   { appId: 'url-1', displayName: 'URL App', badge: 'url' },
 ]
 
+/**
+ * Reject seed ids that would escape the `app/<appId>/` directory.
+ * Mirrors `assertSafePathSegment` in
+ * `tests/e2e/helpers/v021-bundled-helpers.ts` so this spec's local
+ * fixture seeding gets the same path-safety boundary as the shared
+ * helpers (the same validation runs in both surfaces).
+ */
+function assertSafeAppId(value: string): void {
+  if (value === '' || value === '.' || value === '..') {
+    throw new Error(`[apps-tab-source-badge] empty or relative appId: "${value}"`)
+  }
+  if (
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    value.split(/[/\\]/).includes('..')
+  ) {
+    throw new Error(
+      `[apps-tab-source-badge] unsafe appId (path traversal): "${value}"`,
+    )
+  }
+}
+
 function seedAppManifest(projectRoot: string, seed: SeedSpec): void {
+  assertSafeAppId(seed.appId)
   const appDir = join(projectRoot, 'app', seed.appId)
   mkdirSync(join(appDir, 'pages'), { recursive: true })
   writeFileSync(
@@ -98,15 +122,25 @@ function appendMenuTsEntries(
   const menuTsPath = join(projectRoot, 'app', 'menu.ts')
   const current = readFileSync(menuTsPath, 'utf-8')
   const entries = seeds
-    .map(
-      (s) =>
+    .map((s) => {
+      // `appId` is also used as a path segment, so reject ids that
+      // would escape `app/<appId>/`. `displayName` is interpolated
+      // into a single-quoted string literal in the generated
+      // TypeScript source — pass it through `JSON.stringify` to
+      // produce a properly escaped double-quoted string so embedded
+      // quotes / backslashes / NUL bytes cannot break the menu.ts
+      // syntax or inject code.
+      assertSafeAppId(s.appId)
+      const safeLabel = JSON.stringify(s.displayName)
+      return (
         `  {\n` +
         `    id: '${s.appId}',\n` +
-        `    label: '${s.displayName}',\n` +
+        `    label: ${safeLabel},\n` +
         `    icon: 'content',\n` +
         `    component: () => import('./${s.appId}/pages/Page'),\n` +
-        `  },\n`,
-    )
+        `  },\n`
+      )
+    })
     .join('')
   // Insert just before the closing `]` of the menuEntries array. The
   // `rewriteMenuTsForEnable` step in beforeEach has already injected
