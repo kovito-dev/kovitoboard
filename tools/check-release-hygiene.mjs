@@ -70,41 +70,64 @@ export const PII_PATTERNS = [
   { label: '/home/irikura', regex: /\/home\/irikura/i },
 ]
 
-// Narrowly scoped PII allowlist.
+// Narrowly scoped PII allowlist for external-facing governance files.
 //
-// For governance files (CODEOWNERS / CODE_OF_CONDUCT.md / SECURITY.md), the
-// maintainer's published handle / email is intentional — ownership
-// declaration, Code of Conduct enforcement contact, security reporting
-// secondary channel. Listing the expected literals here — instead of
-// exempting the whole file — keeps the PII scan active for every other
-// pattern, so future edits that accidentally introduce a different email,
-// handle, or absolute path are still caught.
+// Each entry is keyed by repo-relative path and lists `{ literal,
+// lineMustMatch }` pairs:
 //
-// For the PII test (`tests/unit/check-release-hygiene.test.ts`), the same
-// literals appear inside test fixtures so that the regression coverage for
-// `PII_EXPECTED_LITERALS` exercises the actual maintainer values rather
-// than fabricated stand-ins. Without this entry the hygiene checker would
-// flag the test file itself; obfuscating the values via runtime
-// concatenation only kicks the problem down the line and weakens what the
-// tests assert.
+//   * `literal` — the regex describing the published handle / email that
+//     is intentional in the file (the maintainer's CODEOWNERS handle, the
+//     Code of Conduct enforcement contact, the security reporting
+//     fallback).
+//   * `lineMustMatch` — an anchor on the full line that confirms the
+//     literal is being used in its expected context. If a future edit
+//     pastes the same literal into an unrelated line (e.g. a log
+//     excerpt, a quoted incident report), the line will not match the
+//     anchor, the literal will not be stripped, and the PII scan will
+//     fire as normal.
 //
-// Semantics: when scanning a listed file, every line is first scrubbed of
-// these expected literals; if a PII pattern still matches the stripped
-// line, it is flagged as an error.
+// Test coverage for this map lives in
+// `tests/unit/check-release-hygiene.test.ts`. The PII test file itself is
+// not on this allowlist: its fixture strings are reconstructed at runtime
+// from neutral fragments so the hygiene checker does not flag the test
+// file as containing PII.
 export const PII_EXPECTED_LITERALS = new Map([
-  ['CODEOWNERS', [/@kousuke-irikura\b/g]],
-  ['CODE_OF_CONDUCT.md', [/orolira@gmail\.com/g]],
-  ['SECURITY.md', [/orolira@gmail\.com/g]],
   [
-    'tests/unit/check-release-hygiene.test.ts',
+    'CODEOWNERS',
     [
-      // Each entry is a literal that the PII-allowlist test must contain
-      // because it is exercising the production strip against the real
-      // maintainer values (see the rationale comment above).
-      /@kousuke-irikura\b/g,
-      /orolira@gmail\.com/g,
-      /bad@gmail\.com/g,
-      /\/home\/irikura\/scratch\/notes\.md/g,
+      {
+        literal: /@kousuke-irikura\b/g,
+        // Two contexts: the leading comment line that names the
+        // maintainer, and the global ownership rule `* @kousuke-irikura`.
+        // `\b` is intentionally only at the trailing side — the position
+        // before `@` is non-word / non-word and not a word boundary.
+        lineMustMatch:
+          /^#.*@kousuke-irikura\b|^\* @kousuke-irikura\s*$/,
+      },
+    ],
+  ],
+  [
+    'CODE_OF_CONDUCT.md',
+    [
+      {
+        literal: /orolira@gmail\.com/g,
+        // The Contributor Covenant v2.1 Enforcement paragraph reads:
+        //   "... may be reported to the community leaders responsible
+        //    for enforcement at <email>. All complaints will be ..."
+        lineMustMatch:
+          /reported to the community leaders responsible for enforcement at orolira@gmail\.com\./,
+      },
+    ],
+  ],
+  [
+    'SECURITY.md',
+    [
+      {
+        literal: /orolira@gmail\.com/g,
+        // The email appears once as bold text in the "Secondary channel
+        // — Email" subsection.
+        lineMustMatch: /^\*\*orolira@gmail\.com\*\*\s*$/,
+      },
     ],
   ],
 ])
@@ -704,13 +727,17 @@ export function runPiiCheckForFiles(files, error) {
 
       const expected = PII_EXPECTED_LITERALS.get(file)
       for (const hit of hits) {
-        // For allowlisted files, scrub the expected literal occurrences and
-        // re-test; only flag if a real match survives the strip. Every other
-        // file is reported as-is.
+        // For allowlisted files, only strip the literal if the full line
+        // also matches the per-entry contextual anchor. A literal pasted
+        // into an unrelated line (log excerpt, incident note, etc.) will
+        // not satisfy the anchor, so its strip pass is skipped and the
+        // PII scan still fires.
         if (expected) {
           let stripped = hit.text
-          for (const literal of expected) {
-            stripped = stripped.replace(literal, '')
+          for (const entry of expected) {
+            if (entry.lineMustMatch.test(hit.text)) {
+              stripped = stripped.replace(entry.literal, '')
+            }
           }
           if (!regex.test(stripped)) continue
         }
