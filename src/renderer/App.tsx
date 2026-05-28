@@ -148,6 +148,54 @@ export function App() {
     setManualSampleRefreshSeq((seq) => seq + 1)
   }, [])
 
+  // Shared non-destructive disable handler -- wired into both the
+  // AppsScreen Actions menu and the AmbientSidebar Actions menu.
+  // Keeps the two entry points routed through the same wire and
+  // the same eager-refresh fan-out, so a sidebar disable and an
+  // Apps-tab disable converge on identical state updates.
+  const handleSampleDisable = useCallback(
+    async (target: {
+      appId: string
+      recipeId: string
+      displayName: string
+    }) => {
+      try {
+        const res = await kbFetch(
+          `/api/recipes/sample/${encodeURIComponent(target.recipeId)}/disable`,
+          { method: 'POST' },
+        )
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as {
+            error?: string
+          }
+          log.warn(
+            {
+              appId: target.appId,
+              recipeId: target.recipeId,
+              status: res.status,
+              error: data.error,
+            },
+            'POST /api/recipes/sample/:recipeId/disable failed',
+          )
+          return
+        }
+        forceRefetchMenuEntries()
+        forceRefetchSamples()
+      } catch (err) {
+        log.warn(
+          {
+            err,
+            appId: target.appId,
+            recipeId: target.recipeId,
+            displayName: target.displayName,
+          },
+          'Failed to disable bundled sample app',
+        )
+      }
+    },
+    [forceRefetchMenuEntries, forceRefetchSamples],
+  )
+
   useEffect(() => {
     // `appMenuVersion` bumps whenever the server detects a change to
     // `app/menu.ts` (chokidar -> ws `app_menu_changed`). Re-running
@@ -491,6 +539,7 @@ export function App() {
                         setAppRemovalError(null)
                         setAppRemovalState({ appId, displayName })
                       }}
+                      onRequestSampleDisable={handleSampleDisable}
                       onRequestRecipeExport={({ appId, displayName }) => {
                         setRecipeExportState({ appId, displayName })
                       }}
@@ -551,47 +600,7 @@ export function App() {
                   setAppRemovalError(null)
                   setAppRemovalState({ appId, displayName })
                 }}
-                onRequestSampleDisable={({ appId, recipeId, displayName }) => {
-                  // Non-destructive disable path for bundled /
-                  // grandfather sample apps. The remove-app flow is
-                  // intentionally bypassed so `app/data/<appId>/`
-                  // survives -- the spec preserves user data across
-                  // bundled disable / re-enable cycles. The server
-                  // broadcasts `recipe_apps_changed` after the
-                  // transaction, which bumps `sampleRecipeVersion`
-                  // upstream and triggers a `loadUserMenuEntries`
-                  // refetch in this component.
-                  void (async () => {
-                    try {
-                      const res = await kbFetch(
-                        `/api/recipes/sample/${encodeURIComponent(recipeId)}/disable`,
-                        { method: 'POST' },
-                      )
-                      if (!res.ok) {
-                        const data = (await res.json().catch(() => ({}))) as {
-                          error?: string
-                        }
-                        log.warn(
-                          { appId, recipeId, status: res.status, error: data.error },
-                          'POST /api/recipes/sample/:recipeId/disable failed',
-                        )
-                        return
-                      }
-                      // Eager refetch so the row disappears from
-                      // the Apps tab AND the Samples tab
-                      // immediately on 2xx without waiting for
-                      // the ws broadcast. The ws path stays as
-                      // the secondary reconciliation route.
-                      forceRefetchMenuEntries()
-                      forceRefetchSamples()
-                    } catch (err) {
-                      log.warn(
-                        { err, appId, recipeId, displayName },
-                        'Failed to disable bundled sample app',
-                      )
-                    }
-                  })()
-                }}
+                onRequestSampleDisable={handleSampleDisable}
                 onRequestRecipeExport={({ appId, displayName }) => {
                   setRecipeExportState({ appId, displayName })
                 }}

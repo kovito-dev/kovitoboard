@@ -75,31 +75,53 @@ export function createAppRouter(
   }
 
   // Defence-in-depth: resolve the per-row `app/<appId>` directory
-  // through `realpath` and verify it stays inside
-  // `<canonicalProjectRoot>/app` before reading any manifest
-  // file. Without this gate, a crafted `app/<appId>` symlink
-  // could redirect the manifest reads (`readAppManifest` +
-  // `existsSync(getAppManifestPath(...))`) at a file outside the
-  // project tree -- exposing arbitrary `manifest.json`-shaped
-  // payloads as wire badge / displayName / recipe-lineage fields.
-  // The write routes (`apps-routes.ts`) already run this boundary
-  // check before mutating; the GET path now matches the same
-  // contract.
-  function withinAppBoundary(appId: string): boolean {
+  // through `realpath` and classify the result into three states.
+  //
+  //   - `'within'`   : the canonical directory exists and stays
+  //                    inside `<canonicalProjectRoot>/app`. Safe
+  //                    to read the manifest from it.
+  //   - `'missing'`  : the per-app directory simply does not
+  //                    exist (`ENOENT`). A legitimate legacy
+  //                    `menu.ts` row with no on-disk app
+  //                    subtree -- not an anomaly.
+  //   - `'anomalous'`: every other failure mode (`realpathSync`
+  //                    throws for any reason other than `ENOENT`,
+  //                    or the resolved path escapes
+  //                    `<canonicalProjectRoot>/app`). The row
+  //                    cannot be trusted; every destructive UI
+  //                    action must be suppressed.
+  //
+  // Separating `missing` from `anomalous` matters because the
+  // renderer suppresses Remove for `anomalous` rows. Treating a
+  // perfectly ordinary legacy row whose `app/<appId>/` does not
+  // exist as an anomaly would make it undeletable from the new
+  // Apps screen.
+  function appBoundaryState(
+    appId: string,
+  ): 'within' | 'missing' | 'anomalous' {
     const projectRoot = resolveProjectRoot(fs)
+    let realProjectRoot: string
     try {
-      const realProjectRoot = fs.realpathSync(projectRoot)
-      const realAppDir = fs.realpathSync(join(projectRoot, 'app', appId))
-      const appBoundary = join(realProjectRoot, 'app')
-      return isWithin(realAppDir, appBoundary)
+      realProjectRoot = fs.realpathSync(projectRoot)
     } catch {
-      // `realpathSync` failure (ENOENT for the per-app dir, broken
-      // symlink, ELOOP, etc.) is treated as "not safe to read"
-      // -- fail closed. Legitimate partial-residue states where
-      // the on-disk `app/<appId>` exists still resolve cleanly;
-      // truly absent rows just return `null` to the renderer
-      // (which already handles that as "no manifest attached").
-      return false
+      return 'anomalous'
+    }
+    const appBoundary = join(realProjectRoot, 'app')
+    try {
+      const realAppDir = fs.realpathSync(join(projectRoot, 'app', appId))
+      return isWithin(realAppDir, appBoundary) ? 'within' : 'anomalous'
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : undefined
+      // `ENOENT` is the ordinary "this app has no per-app
+      // directory yet" outcome -- treat it as legitimate missing
+      // so the renderer keeps Remove available for the row.
+      // Every other error (`ELOOP`, `EACCES`, broken symlink
+      // chains, permission failures) is opaque and treated as
+      // anomalous so the renderer fails closed.
+      return code === 'ENOENT' ? 'missing' : 'anomalous'
     }
   }
 
@@ -115,7 +137,9 @@ export function createAppRouter(
   // states on `source === null` and produced destructive-
   // routing risks; the structured result closes that surface.
   const manifestLookup: AppManifestLookup = (appId) => {
-    if (!withinAppBoundary(appId)) return { state: 'anomalous' }
+    const boundary = appBoundaryState(appId)
+    if (boundary === 'anomalous') return { state: 'anomalous' }
+    if (boundary === 'missing') return { state: 'missing' }
     const projectRoot = resolveProjectRoot(fs)
     const manifestPath = getAppManifestPath(projectRoot, appId)
     if (!fs.existsSync(manifestPath)) return { state: 'missing' }
@@ -140,7 +164,7 @@ export function createAppRouter(
   // "ever-installed-here" from "stale-residue collision" is the
   // deferred follow-up tracked in the PR's Out-of-Scope list.
   const recipeManifestLookup: RecipeManifestLookup = (appId) => {
-    if (!withinAppBoundary(appId)) return null
+    if (appBoundaryState(appId) !== 'within') return null
     const manifestPath = getAppManifestPath(resolveProjectRoot(fs), appId)
     if (!fs.existsSync(manifestPath)) {
       return null
