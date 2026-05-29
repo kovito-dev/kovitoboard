@@ -51,8 +51,13 @@ const TAB_LABELS_IN_ORDER = [
 
 async function openSettingsModal(page: Page): Promise<void> {
   await page.goto('/agents')
-  await page.waitForLoadState('networkidle')
-  await page.locator(`button[title="${SETTINGS_GEAR_TITLE}"]`).click()
+  // Deterministic readiness: wait for the title-bar gear (part of the
+  // app chrome) to render rather than `networkidle`, which is a brittle
+  // readiness signal for SPAs that keep background requests/polling
+  // alive.
+  const gear = page.locator(`button[title="${SETTINGS_GEAR_TITLE}"]`)
+  await gear.waitFor({ state: 'visible' })
+  await gear.click()
   // The modal heading confirms the dialog mounted before we touch tabs.
   await expect(
     page.getByRole('heading', { name: 'Settings' }),
@@ -65,32 +70,19 @@ test.describe('Work Roots → Settings modal integration (A-11)', () => {
   }) => {
     await openSettingsModal(page)
 
-    // WR-I7: the six pre-existing tabs are still present and the
-    // `workRoots` tab is added — exactly seven tab buttons.
-    for (const label of TAB_LABELS_IN_ORDER) {
-      await expect(
-        page.getByRole('button', { name: label, exact: true }),
-      ).toBeVisible()
-    }
-
-    // Decision doc §2.2 case B-1: `workRoots` sits at position 2,
-    // between `basic` and `skills`. The tab bar is laid out
-    // horizontally, so pin the order via left-edge x coordinates
-    // rather than coupling to a brittle DOM-index selector.
-    const basicBox = await page
-      .getByRole('button', { name: 'Basic', exact: true })
-      .boundingBox()
-    const workRootsBox = await page
+    // WR-I7 + decision doc §2.2 case B-1: exactly the seven expected
+    // tabs, in order, with `workRoots` right after `basic`. Scope to the
+    // tab bar (the parent of any tab button) and compare the buttons'
+    // text in DOM order — this pins both the exact count (an accidental
+    // eighth tab fails) and the order, without coupling to pixel layout,
+    // viewport width, or row wrapping.
+    const tabBar = page
       .getByRole('button', { name: 'Work roots', exact: true })
-      .boundingBox()
-    const skillsBox = await page
-      .getByRole('button', { name: 'Skills', exact: true })
-      .boundingBox()
-    expect(basicBox).not.toBeNull()
-    expect(workRootsBox).not.toBeNull()
-    expect(skillsBox).not.toBeNull()
-    expect(basicBox!.x).toBeLessThan(workRootsBox!.x)
-    expect(workRootsBox!.x).toBeLessThan(skillsBox!.x)
+      .locator('xpath=..')
+    const tabTexts = (await tabBar.getByRole('button').allInnerTexts()).map(
+      (s) => s.trim(),
+    )
+    expect(tabTexts).toEqual([...TAB_LABELS_IN_ORDER])
   })
 
   test('WR-T2: the Work roots tab mounts SettingsWorkRoots (new flow core)', async ({
@@ -111,7 +103,11 @@ test.describe('Work Roots → Settings modal integration (A-11)', () => {
     page,
   }) => {
     await page.goto('/agents')
-    await page.waitForLoadState('networkidle')
+    // Deterministic readiness: wait for a known sidebar entry to render
+    // before asserting the ABSENCE of the work-roots entry, so the
+    // count assertion can't run before the nav mounts (a bare
+    // networkidle would be a brittle proxy for that).
+    await expect(page.locator('button[title="Apps"]')).toBeVisible()
     // Side-nav entries render as `<button title="...">` (see
     // nav-rebrand.spec.ts). The Settings-modal tab is a text-content
     // button with NO title attribute, so this title selector matches
