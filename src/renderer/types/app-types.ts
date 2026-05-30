@@ -198,3 +198,35 @@ export interface AppMenuModule {
 export function isMenuMetadataEligible(entry: AppMenuEntry): boolean {
   return entry.displayName !== null
 }
+
+/**
+ * Sort menu entries by their persisted `menuOrder`, ascending.
+ *
+ * `app-directory-extension.md` v1.6.2 §6.8.1 pins the sort
+ * application to the renderer presentation layer: the server wire
+ * (`GET /api/app/menu-entries`) sends entries in scanner-walk order
+ * with `menuOrder` riding along as a field (so the
+ * `X-Apps-Menu-Snapshot` hash can be computed from persisted-only
+ * order), and every surface that *renders* a menu (the Apps tab list,
+ * the left-nav `NavMenu`, …) must apply this sort before display.
+ *
+ * Contract (must stay identical across all surfaces, hence this
+ * single shared util):
+ *   - ascending by `menuOrder`
+ *   - a missing / `null` `menuOrder` sorts to the end (`+Infinity`)
+ *   - relies on `Array.prototype.sort` stability to preserve the
+ *     server-provided (scanner) order among equal / null entries —
+ *     no `appId` tie-break, which would discard the scanner fallback
+ *     order that is itself the SSOT.
+ *
+ * Returns a new array; the input is not mutated.
+ */
+export function sortByMenuOrder<T extends { menuOrder: number | null }>(
+  entries: readonly T[],
+): T[] {
+  return [...entries].sort((a, b) => {
+    const orderA = a.menuOrder ?? Number.POSITIVE_INFINITY
+    const orderB = b.menuOrder ?? Number.POSITIVE_INFINITY
+    return orderA - orderB
+  })
+}
