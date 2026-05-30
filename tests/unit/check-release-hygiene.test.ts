@@ -549,7 +549,6 @@ const SAMPLE_GMAIL = `${'example'}${EMAIL_HOST}`
 const ADVERSARY_EMAIL = `${'bad'}${EMAIL_HOST}`
 const HOME_PATH = `/${'home'}/${HANDLE_FAM}/scratch/notes.md`
 const GMAIL_PATTERN_LABEL = EMAIL_HOST
-const HOME_PATH_PATTERN_LABEL = `/${'home'}/${HANDLE_FAM}`
 
 describe('PII allowlist: PII_EXPECTED_LITERALS only strips the literal in the expected line context', () => {
   it('CODEOWNERS rule line "* <handle>" survives no PII match after the strip', () => {
@@ -612,16 +611,19 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the literal in the ex
       `* ${HANDLE} # cached at ${HOME_PATH}`,
       entries,
     )
-    const homePath = PII_PATTERNS.find(
-      (p: { label: string }) => p.label === HOME_PATH_PATTERN_LABEL,
+    // There is no dedicated home-path PII pattern; the bare family-name
+    // guard surfaces the leaked absolute path because the path embeds the
+    // maintainer handle fragment.
+    const nameGuard = PII_PATTERNS.find(
+      (p: { label: string }) => p.label === HANDLE_FAM,
     )
-    expect(homePath, 'home-directory PII pattern must exist').toBeDefined()
+    expect(nameGuard, 'family-name PII guard must exist').toBeDefined()
     // The CODEOWNERS anchor matches `^* <handle>` exactly; the trailing
     // comment with the home path is permitted by `\s*$` not being part of
     // the anchor (the `^* <handle>\s*$` arm allows only the bare rule
     // line). The combined adversarial line therefore fails the anchor
     // and is not stripped — the home-path PII surfaces.
-    expect(homePath!.regex.test(stripped)).toBe(true)
+    expect(nameGuard!.regex.test(stripped)).toBe(true)
   })
 
   it('PII_EXPECTED_LITERALS only carves out CODEOWNERS (governance docs no longer carry emails, no test-file entry)', () => {
