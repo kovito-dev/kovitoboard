@@ -66,7 +66,6 @@ export const PII_PATTERNS = [
   { label: 'irikura', regex: /irikura/i },
   { label: '@Zenbook', regex: /@Zenbook/i },
   { label: '@gmail.com', regex: /@gmail\.com/i },
-  { label: '/home/irikura', regex: /\/home\/irikura/i },
 ]
 
 // Narrowly scoped PII allowlist for external-facing governance files.
