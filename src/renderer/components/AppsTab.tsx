@@ -61,6 +61,7 @@ import { kbFetch } from '../lib/kbFetch'
 import { createLogger } from '../lib/logger'
 import {
   isMenuMetadataEligible,
+  sortByMenuOrder,
   type AppMenuEntry,
 } from '../types/app-types'
 import { AppActionsPopover } from './AppActionsPopover'
@@ -170,23 +171,19 @@ export function AppsTab({
   }, [userMenuEntries])
 
   // Default sort for eligible rows: ascending `menuOrder`. Per
-  // `app-directory-extension.md` v1.6 §6.8.1, the scanner assigns a
+  // `app-directory-extension.md` v1.6.2 §6.8.1, the scanner assigns a
   // provisional order (menu.ts appearance order, then appId
   // lexicographic for the rest) for any eligible app whose
   // `AppManifest.menuOrder` is unset, and the API loader reflects
-  // that in the wire response. So the wire order is authoritative
-  // for `menuOrder === null` rows — we treat null as
-  // `+Infinity` to push them after the persisted block, then rely
-  // on JavaScript's stable Array.prototype.sort to preserve the
-  // server-provided order among nulls (no `appId` tie-break — that
-  // would discard the scanner's fallback order, which is the SSOT).
-  const sortedFromProps = useMemo(() => {
-    return [...eligibleEntries].sort((a, b) => {
-      const orderA = a.menuOrder ?? Number.POSITIVE_INFINITY
-      const orderB = b.menuOrder ?? Number.POSITIVE_INFINITY
-      return orderA - orderB
-    })
-  }, [eligibleEntries])
+  // that in the wire response. The shared `sortByMenuOrder` util
+  // (also used by the left-nav in `App.tsx`) treats a null order as
+  // `+Infinity` and relies on stable sort to preserve the
+  // server-provided order among nulls — keeping the sort contract
+  // identical across every menu surface.
+  const sortedFromProps = useMemo(
+    () => sortByMenuOrder(eligibleEntries),
+    [eligibleEntries],
+  )
 
   // Local mirror so the visual order can update optimistically on
   // drag-end before the server PUT round-trip lands. Re-synced
@@ -764,6 +761,13 @@ function AppRow({
             </button>
             <AppActionsPopover
               isOpen={isPopoverOpen}
+              // The actions trigger sits at the right edge of each
+              // full-width row, so a left-anchored popover would open
+              // past the viewport's right edge and become unreachable.
+              // Anchor it to the trigger's right edge (opens leftward,
+              // into the always-available row space) — same fix the
+              // right-anchored AmbientSidebar already uses.
+              align="right"
               onClose={() => setIsPopoverOpen(false)}
               source={entry.source}
               manifestState={entry.manifestState}

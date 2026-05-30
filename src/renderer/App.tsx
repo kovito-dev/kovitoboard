@@ -31,6 +31,7 @@ import WorkRootsPage from './pages/WorkRootsPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import { RecipePageHost } from './app-host/RecipePageHost'
 import type { AppMenuEntry } from './types/app-types'
+import { sortByMenuOrder } from './types/app-types'
 import { t } from './i18n'
 import { createLogger } from './lib/logger'
 import { kbFetch } from './lib/kbFetch'
@@ -233,13 +234,21 @@ export function App() {
     }
   }, [appMenuVersion, sampleRecipeVersion, manualRefreshSeq])
 
-  // Merge builtin + user menu entries for NavMenu
+  // Merge builtin + user menu entries for NavMenu.
+  // The server wire keeps entries in scanner-walk order with
+  // `menuOrder` riding along as a field, so the nav menu must apply
+  // the `menuOrder` sort itself before rendering — otherwise a drag
+  // reorder on the Apps tab persists but never shows up in the
+  // left-nav order (`app-directory-extension.md` v1.6.2 §6.8.1; the
+  // same `sortByMenuOrder` util backs the Apps tab list).
   const allMenuEntries: MenuEntry[] = useMemo(() => {
-    const userEntries: MenuEntry[] = userMenuEntries.map((entry) => ({
-      id: `ext/${entry.id}`,
-      label: entry.label,
-      icon: getIcon(entry.icon),
-    }))
+    const userEntries: MenuEntry[] = sortByMenuOrder(userMenuEntries).map(
+      (entry) => ({
+        id: `ext/${entry.id}`,
+        label: entry.label,
+        icon: getIcon(entry.icon),
+      }),
+    )
     return [...menuEntries, ...userEntries]
   }, [userMenuEntries])
 
