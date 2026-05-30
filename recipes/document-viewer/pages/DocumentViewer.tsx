@@ -130,14 +130,12 @@ function FolderIcon({ open }: { open: boolean }) {
       {open ? (
         <path
           d="M1.5 4.5A1 1 0 0 1 2.5 3.5h3l1.2 1.2h5.8a1 1 0 0 1 1 1v.5H3.2a1 1 0 0 0-.96.73L1.5 9.8V4.5Z"
-          fill="currentColor"
-          opacity="0.85"
+          fill="#d8a657"
         />
       ) : (
         <path
           d="M1.5 4.5A1 1 0 0 1 2.5 3.5h3l1.2 1.2h5.8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7.2Z"
-          fill="currentColor"
-          opacity="0.85"
+          fill="#d8a657"
         />
       )}
     </svg>
@@ -303,9 +301,14 @@ export default function DocumentViewer() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }} data-testid="docviewer">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
-        <h1 className="text-lg font-bold text-[var(--text-primary)]">
-          Document Viewer
-        </h1>
+        <div>
+          <h1 className="text-lg font-bold text-[var(--text-primary)]">
+            Document Viewer
+          </h1>
+          <p className="text-xs text-[var(--text-dim)] mt-0.5">
+            A viewer for Markdown and HTML files. To add or change features, ask the agent from the side panel on the right.
+          </p>
+        </div>
         <button
           onClick={fetchList}
           disabled={isListLoading}
