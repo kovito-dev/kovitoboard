@@ -26,11 +26,12 @@ import { AgentEditPage } from './pages/AgentEditPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
-import { RecipesPage } from './pages/RecipesPage'
+import { AppsScreen } from './components/AppsScreen'
 import WorkRootsPage from './pages/WorkRootsPage'
 import { loadUserMenuEntries, loadUserStyles } from './app-loader'
 import { RecipePageHost } from './app-host/RecipePageHost'
 import type { AppMenuEntry } from './types/app-types'
+import { sortByMenuOrder } from './types/app-types'
 import { t } from './i18n'
 import { createLogger } from './lib/logger'
 import { kbFetch } from './lib/kbFetch'
@@ -43,6 +44,11 @@ const log = createLogger('App')
 // `readPersistedLocale()`, which restores the choice the user made
 // during onboarding from `localStorage` and falls back to `en` when
 // nothing has been recorded yet (OSS fallback).
+// v0.2.1 BL-2026-167: the standalone `work-roots` side-nav entry was
+// removed in favour of a tab inside the Settings modal (judgement
+// doc v1.1 §2.4 #1). The `/work-roots` route itself is preserved
+// (deep-link / e2e compatibility, §2.4 #4) — see the Routes block
+// below — but it no longer surfaces in the side rail.
 const menuEntries: MenuEntry[] = [
   {
     id: 'agents',
@@ -59,11 +65,6 @@ const menuEntries: MenuEntry[] = [
     label: t('nav.menu.recipes'),
     icon: Icons.seeds,
   },
-  {
-    id: 'work-roots',
-    label: t('nav.menu.workRoots'),
-    icon: Icons.settings,
-  },
 ]
 
 export function App() {
@@ -74,7 +75,7 @@ export function App() {
     setSessionAgent, isSessionSendable, rollbackOptimisticMessage,
     getDraft, setDraft, agentActivities,
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
-    wsConnected, appMenuVersion,
+    wsConnected, appMenuVersion, sampleRecipeVersion,
   } = ipc
 
   // Admin status polling (5s interval, combined with WS state)
@@ -112,6 +113,89 @@ export function App() {
 
   // User extension menu entries from app/menu.ts
   const [userMenuEntries, setUserMenuEntries] = useState<AppMenuEntry[]>([])
+  // Server-supplied menu-order snapshot from the
+  // `X-Apps-Menu-Snapshot` response header. Forwarded into AppsTab
+  // so the very first reorder after page load already carries a
+  // `snapshotVersion` and engages the `MenuOrderSnapshotDrift`
+  // protection (`http-api-contract.md` v1.7.1 §6.3.9.A BS-L6).
+  // Refreshed on every `loadUserMenuEntries()` call (which itself
+  // re-fires on `appMenuVersion` / `sampleRecipeVersion` bumps), so
+  // a peer's reorder lands on the wire as 409 instead of silently
+  // overwriting the local snapshot.
+  const [menuOrderSnapshot, setMenuOrderSnapshot] = useState<string | null>(null)
+  // Manual-refresh sequence bumped by children that have already
+  // committed a write through the wire and need the local snapshot
+  // refetched without waiting for the asynchronous `app_menu_changed`
+  // broadcast (inline rename's `PATCH /api/apps/:appId/menu-label`
+  // success path is the v0.2.1 motivating case — a delayed /
+  // disconnected ws would otherwise leave the row showing the old
+  // label). Mirrors the eager-refetch pattern SamplesTab uses for
+  // bundled enable.
+  const [manualRefreshSeq, setManualRefreshSeq] = useState(0)
+  const forceRefetchMenuEntries = useCallback(() => {
+    setManualRefreshSeq((seq) => seq + 1)
+  }, [])
+  // Parallel manual-refresh trigger for the Samples tab. The
+  // bundled-sample disable success path needs to refresh BOTH
+  // the Apps list (already covered by `forceRefetchMenuEntries`)
+  // and the Samples list, otherwise a delayed / disconnected
+  // `recipe_apps_changed` ws broadcast would leave a successfully-
+  // disabled sample card stuck in its "Enabled" state. Bumping
+  // this seq is the synchronous equivalent of the ws-driven
+  // `sampleRecipeVersion` channel that already fans into
+  // SamplesTab's effect.
+  const [manualSampleRefreshSeq, setManualSampleRefreshSeq] = useState(0)
+  const forceRefetchSamples = useCallback(() => {
+    setManualSampleRefreshSeq((seq) => seq + 1)
+  }, [])
+
+  // Shared non-destructive disable handler -- wired into both the
+  // AppsScreen Actions menu and the AmbientSidebar Actions menu.
+  // Keeps the two entry points routed through the same wire and
+  // the same eager-refresh fan-out, so a sidebar disable and an
+  // Apps-tab disable converge on identical state updates.
+  const handleSampleDisable = useCallback(
+    async (target: {
+      appId: string
+      recipeId: string
+      displayName: string
+    }) => {
+      try {
+        const res = await kbFetch(
+          `/api/recipes/sample/${encodeURIComponent(target.recipeId)}/disable`,
+          { method: 'POST' },
+        )
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as {
+            error?: string
+          }
+          log.warn(
+            {
+              appId: target.appId,
+              recipeId: target.recipeId,
+              status: res.status,
+              error: data.error,
+            },
+            'POST /api/recipes/sample/:recipeId/disable failed',
+          )
+          return
+        }
+        forceRefetchMenuEntries()
+        forceRefetchSamples()
+      } catch (err) {
+        log.warn(
+          {
+            err,
+            appId: target.appId,
+            recipeId: target.recipeId,
+            displayName: target.displayName,
+          },
+          'Failed to disable bundled sample app',
+        )
+      }
+    },
+    [forceRefetchMenuEntries, forceRefetchSamples],
+  )
 
   useEffect(() => {
     // `appMenuVersion` bumps whenever the server detects a change to
@@ -119,17 +203,52 @@ export function App() {
     // the loader picks up newly installed recipes without a page
     // reload — see `app-loader.ts` for why the legacy
     // `import.meta.glob` path could not see those files.
-    loadUserMenuEntries().then(setUserMenuEntries)
+    //
+    // `sampleRecipeVersion` mirrors `appMenuVersion` for the
+    // bundled-enable / disable transaction (ws `recipe_apps_changed`,
+    // recipe-system.md v1.10 §10.9.5 + ws-event-contract.md v1.4
+    // §6.1 / §7.6). Enabling a bundled sample registers the new app
+    // in `recipes-installed/<appId>/manifest.json` + writes `app/<
+    // appId>/manifest.json`, which the Apps tab needs to reflect
+    // immediately without a full reload. Re-running the loader on
+    // both bumps keeps the Apps tab in sync regardless of which
+    // event the server emitted (chokidar `app_menu_changed` for raw
+    // menu.ts edits, manifest-store-driven `recipe_apps_changed`
+    // for enable / disable).
+    // Guard against out-of-order overlapping fetches. The effect
+    // can be re-fired by three independent triggers, and the
+    // network round-trip is not necessarily ordered with respect
+    // to React's effect cleanup, so a slower older request must
+    // not be allowed to overwrite a newer response. The `cancelled`
+    // flag from the previous run flips to `true` on cleanup and
+    // the late `.then` becomes a no-op.
+    let cancelled = false
+    loadUserMenuEntries().then(({ entries, menuOrderSnapshot }) => {
+      if (cancelled) return
+      setUserMenuEntries(entries)
+      setMenuOrderSnapshot(menuOrderSnapshot)
+    })
     loadUserStyles()
-  }, [appMenuVersion])
+    return () => {
+      cancelled = true
+    }
+  }, [appMenuVersion, sampleRecipeVersion, manualRefreshSeq])
 
-  // Merge builtin + user menu entries for NavMenu
+  // Merge builtin + user menu entries for NavMenu.
+  // The server wire keeps entries in scanner-walk order with
+  // `menuOrder` riding along as a field, so the nav menu must apply
+  // the `menuOrder` sort itself before rendering — otherwise a drag
+  // reorder on the Apps tab persists but never shows up in the
+  // left-nav order (`app-directory-extension.md` v1.6.2 §6.8.1; the
+  // same `sortByMenuOrder` util backs the Apps tab list).
   const allMenuEntries: MenuEntry[] = useMemo(() => {
-    const userEntries: MenuEntry[] = userMenuEntries.map((entry) => ({
-      id: `ext/${entry.id}`,
-      label: entry.label,
-      icon: getIcon(entry.icon),
-    }))
+    const userEntries: MenuEntry[] = sortByMenuOrder(userMenuEntries).map(
+      (entry) => ({
+        id: `ext/${entry.id}`,
+        label: entry.label,
+        icon: getIcon(entry.icon),
+      }),
+    )
     return [...menuEntries, ...userEntries]
   }, [userMenuEntries])
 
@@ -142,11 +261,23 @@ export function App() {
     return map
   }, [userMenuEntries])
 
-  // Active menu determined by URL path
-  const activeMenuId = useMemo(() => {
+  // Active menu determined by URL path.
+  // v0.2.1 BL-2026-167: the side-nav `work-roots` entry was folded
+  // into a Settings modal tab (judgement doc v1.1 §2.4 #1-2). The
+  // `/work-roots` route is preserved as a deep-link target but no
+  // longer maps to a menu entry, so we return `null` for that path
+  // instead of falling through to the Agents default — collapsing it
+  // into Agents would mis-highlight the nav rail, hide the ambient
+  // sidebar (the gating in `rightSidebar` treats `agents` as an
+  // ambient-suppressed route), and mis-highlight the mobile bottom
+  // nav. `null` lets every downstream consumer treat the route as
+  // "no canonical menu", which mirrors the previous behaviour where
+  // `work-roots` was a distinct value never matched by the side-nav
+  // gating.
+  const activeMenuId = useMemo<string | null>(() => {
     if (location.pathname.startsWith('/sessions')) return 'sessions'
     if (location.pathname.startsWith('/recipes')) return 'recipes'
-    if (location.pathname.startsWith('/work-roots')) return 'work-roots'
+    if (location.pathname.startsWith('/work-roots')) return null
     if (location.pathname.startsWith('/ext/')) {
       const parts = location.pathname.split('/')
       return `ext/${parts[2] ?? ''}`
@@ -404,7 +535,7 @@ export function App() {
                   // route observation. `null` when the route is not an
                   // `/ext/<appId>` page; the sidebar hides the per-app
                   // popover in that case (DEC-024 #5 / spec §F3).
-                  const activeAppId = activeMenuId.startsWith('ext/')
+                  const activeAppId = activeMenuId?.startsWith('ext/')
                     ? activeMenuId.slice('ext/'.length)
                     : null
                   const activeAppEntry = activeAppId
@@ -429,6 +560,7 @@ export function App() {
                         setAppRemovalError(null)
                         setAppRemovalState({ appId, displayName })
                       }}
+                      onRequestSampleDisable={handleSampleDisable}
                       onRequestRecipeExport={({ appId, displayName }) => {
                         setRecipeExportState({ appId, displayName })
                       }}
@@ -469,11 +601,30 @@ export function App() {
                 theme={theme}
               />
             } />
+            {/* v0.2.1: legacy `RecipesPage` (2-tab Sample / History)
+                replaced with `AppsScreen` (3-tab Apps / Sample apps /
+                Recipes) per judgement doc §4'.2. Route key
+                preserved at `/recipes` for backward compatibility
+                (the side-nav rebrand was a label-only change in
+                commit `e70a4f9`). */}
             <Route path="/recipes" element={
-              <RecipesPage
+              <AppsScreen
+                userMenuEntries={userMenuEntries}
+                menuOrderSnapshot={menuOrderSnapshot}
+                onForceRefetchMenuEntries={forceRefetchMenuEntries}
+                manualSampleRefreshSeq={manualSampleRefreshSeq}
                 agents={agents}
                 startNewSession={startNewSession}
                 theme={theme}
+                sampleRecipeVersion={sampleRecipeVersion}
+                onRequestAppRemoval={({ appId, displayName }) => {
+                  setAppRemovalError(null)
+                  setAppRemovalState({ appId, displayName })
+                }}
+                onRequestSampleDisable={handleSampleDisable}
+                onRequestRecipeExport={({ appId, displayName }) => {
+                  setRecipeExportState({ appId, displayName })
+                }}
               />
             } />
             <Route path="/sessions" element={<SessionsPage defaultSessionId={selectedId} />} />

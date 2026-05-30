@@ -161,7 +161,10 @@ const ja = {
   'screen.unknown': '不明な画面',
   'screen.agents': 'エージェント',
   'screen.sessions': 'セッション',
-  'screen.recipes': 'アプリレシピ',
+  // 'screen.recipes' is now rebranded as 'Apps' per the v0.2.1 BL-2026-162
+  // judgment doc §4'.1 (sidebar menu rebrand). The legacy key is kept
+  // so existing kbcontext / screenLabel references keep resolving.
+  'screen.recipes': 'アプリ',
 
   // チャット
   'chat.message.action.copy': 'コピー',
@@ -189,9 +192,14 @@ const ja = {
   'agent.edit.description': '{id} の属性を編集します',
 
   // レシピ
-  'recipe.title': 'アプリレシピ',
+  // v0.2.1 BL-2026-162 §4'.1 で「アプリレシピ」→「アプリ」に rebrand。
+  // 既存 key は維持し値だけ更新（backward compat）。
+  'recipe.title': 'アプリ',
   'recipe.button.createApp': 'アプリ新規作成',
   'recipe.code.button.expandAll': 'すべて展開',
+  // recipe.tab.sample / recipe.tab.history は v0.2.1 のアプリ画面 3 タブ
+  // 再構成（appsScreen.tab.*）に置き換えられ orphan 化。RecipesPage 自体
+  // が AppsScreen に統合されるため参照は撤去済。key は wire compat のため残置。
   'recipe.tab.sample': 'サンプルレシピ',
   'recipe.tab.history': '履歴',
   // recipe.tab.export was retired earlier — recipe export now runs
@@ -267,8 +275,11 @@ const ja = {
   // ナビゲーション（メニュー）
   'nav.menu.agents': 'エージェント',
   'nav.menu.sessions': 'セッション',
-  'nav.menu.recipes': 'アプリレシピ',
-  'nav.menu.workRoots': '作業ルート',
+  // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT で「アプリレシピ」→「アプリ」に
+  // rebrand。key は維持し値だけ更新（backward compat）。
+  'nav.menu.recipes': 'アプリ',
+  // v0.2.1 BL-2026-167: `nav.menu.workRoots` はサイドメニューエントリ
+  // と一緒に削除。設定モーダル側では `setting.tab.workRoots` を使う。
 
   // 作業ルート設定画面（仕様 cwd-allowlist.md v1.0 §7.4）。
   // プロジェクトルート以外で Claude Code に作業させるフォルダを
@@ -368,6 +379,8 @@ const ja = {
   'nav.action.appActions': 'アプリ操作',
   'app.actions.exportRecipe': 'レシピ書き出し',
   'app.actions.removeApp': 'アプリ削除',
+  'app.actions.disable': '無効化',
+  'appsTab.actions.disableError': '無効化に失敗しました',
   'appRemoval.modal.title': 'アプリ「{name}」を削除',
   'appRemoval.modal.body': '「{name}」を削除します。',
   'appRemoval.modal.bullet.menu': 'サイドバーからアプリが消えます',
@@ -519,7 +532,7 @@ const ja = {
   'recipe.export.error.recipeIdRequired': 'レシピ ID は必須です。',
   'recipe.export.error.recipeIdFormat': 'レシピ ID は半角英数字 / _ / - / . / / / @ のみ、1〜256 文字で入力してください。',
   'recipe.export.error.customBeNotExportable':
-    'このアプリはレシピとしてエクスポートできません: app/{appId}/api/ 配下のファイル({files})はレシピの安全境界の外側で扱われるためです (recipe-inspector は拡張子に関わらず api/ 配下のすべての artifact を拒否します)。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) api/ 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
+    'このアプリはレシピとして書き出せません。配布するには、次のどちらかの対応が必要です: (1) サーバー側の処理を、レシピが扱える宣言的な API 呼び出し（recipe.yaml の api.calls + window.kb.call）に書き直す、または (2) サーバー側の処理を手順書として別途まとめ、レシピのインストール後に利用者がエージェントの助けを借りて実装できるようにする。理由: app/{appId}/api/ 配下のコード（{files}）は、レシピが安全に取り込める範囲の外にあり、レシピに同梱できません。',
 
   // レシピインポート — v0.2.x でレシピインストール一時停止と合わせて廃止。
   // v0.3.0 の developer sideload mode で復活予定。
@@ -590,6 +603,7 @@ const ja = {
   'trust.level.kbTrusted': 'KB 信頼済',
   'trust.level.codeTrusted': 'コード信頼済（署名）',
   'trust.level.codeTrustedSideloaded': 'コード信頼済（サイドロード）',
+  'trust.level.codeTrustedBundled': 'コード信頼済（同梱）',
   'trust.level.unknown': '不明（グランドファーザー）',
   'trust.marker.ariaLabel': 'レシピの信頼レベル: {label}',
   'trust.unknown.reinstall': 'KovitoHub (v0.3.0) 経由で再インストールして検証',
@@ -634,6 +648,10 @@ const ja = {
   // 設定
   'setting.title': '設定',
   'setting.tab.basic': '基本設定',
+  // v0.2.1 BL-2026-167: 「作業ルート」サイドメニュー独立項目を設定
+  // モーダルに統合した際に追加（判定書 v1.1 §2.5）。文言は旧
+  // `nav.menu.workRoots` と同一。
+  'setting.tab.workRoots': '作業ルート',
   'setting.tab.skills': 'スキル',
   'setting.tab.automations': '自動処理',
   'setting.tab.integrations': '外部連携',
@@ -776,6 +794,87 @@ const ja = {
   'error.boundary.button.copyFailed': 'コピーに失敗しました（手動で選択してコピーしてください）',
   'error.boundary.diag.heading': '診断メッセージ（Claude Code エージェント向け）',
   'error.boundary.diag.promptHeader': 'KovitoBoard の Web UI で React レンダーエラーが発生しました。次の情報をもとに原因を調査して修正してください。',
+
+  // ---------------------------------------------------------------------
+  // v0.2.1 BL-2026-162 — Apps screen rebrand + 3-tab restructure
+  // SSOT: docs/design/discussions/v021-bundled-sample-enable-disable-decision-2026-05-18.md
+  //       §4'.2 wireframe + §6 i18n SSOT (group 6.2 / 6.3 / 6.4 / 6.5 / 6.6 / 6.7)
+  // ---------------------------------------------------------------------
+
+  // Tab labels for the new AppsScreen 3-tab layout (Apps / Sample apps /
+  // Recipes preview). The tab ids themselves are spec'd as 'apps',
+  // 'samples', 'recipes' (§4'.2 wireframe).
+  'appsScreen.tab.apps': 'アプリ',
+  'appsScreen.tab.samples': 'サンプルアプリ',
+  'appsScreen.tab.recipes': 'レシピ',
+
+  // App source identifier badges (§4.9 / §6.3 i18n SSOT). 4 persisted
+  // values + the scanner-derived 'self-made' category. The grandfather
+  // `'sample'` badge gets its own label so the Apps tab can
+  // distinguish a pre-v0.2.1 install lineage from a fresh v0.2.1
+  // bundled enable at a glance.
+  'app.source.selfMade': '自作',
+  'app.source.bundled': '同梱',
+  'app.source.sample': 'サンプル',
+  'app.source.import': 'インポート',
+  'app.source.url': 'URL',
+
+  // Apps tab controls (§6.4). The "+ Add app" button jumps to the
+  // Sample apps tab in v0.2.x (network-silent, BS-L8). The "+ Create
+  // self-made app" sub-button keeps the AppCreateModal entry alive
+  // from the apps tab. Rename + drag handle drive the inline-edit /
+  // D&D affordances.
+  'appsScreen.button.addApp': '+ アプリ追加',
+  'appsScreen.button.createSelfMade': '+ 自作アプリ作成',
+  'appsScreen.button.rename': '名前変更',
+  'appsScreen.button.renameSave': '保存',
+  'appsScreen.button.renameCancel': 'キャンセル',
+  'appsScreen.button.renameReset': 'リセット',
+  'appsScreen.button.renameResetTooltip':
+    'デフォルトのアプリ名に戻します。',
+  'appsScreen.label.dragHandle': 'ドラッグで並び替え',
+  'appsScreen.label.renamePlaceholder': 'アプリメニュー名を入力',
+  'appsScreen.error.menuLabelTooLong': 'メニュー名が長すぎます (最大 80 文字)。',
+  'appsScreen.error.menuLabelEmpty':
+    'メニュー名を空にはできません。リセットでデフォルト名に戻します。',
+
+  // Apps tab empty-state hints (§6.4).
+  'appsTab.empty': 'まだアプリがインストールされていません。',
+  'appsTab.emptyHint':
+    '「+ アプリ追加」でサンプルアプリを有効化するか、「+ 自作アプリ作成」で新しいアプリを作成してください。',
+
+  // Apps tab D&D reorder feedback (BS-L6).
+  'appsTab.reorder.saving': '並び順を保存中…',
+  'appsTab.reorder.hint': 'ドラッグ＆ドロップで表示順を変更できます',
+
+  // Per-row Actions menu trigger (§4'.6).
+  'app.actions.menu': 'アプリ操作',
+
+  // Sample apps tab (§6.5). Top notice explains the v0.3.0 KovitoHub
+  // arrival. Enable / Enabled buttons drive the bundled enable
+  // transaction; the manage link routes users back to the Apps tab.
+  'samplesTab.info.comingSoon':
+    'v0.3.0 で KovitoHub からのアプリインストールが追加されます。まずは下のサンプルアプリをお試しください。',
+  'samplesTab.button.enable': '有効化',
+  'samplesTab.label.enabled': '有効化済み',
+  'samplesTab.label.openInAppsTab': 'アプリタブで管理',
+
+  // Recipes tab preview UI (§6.6 / §4.10 BS-L10). Network silence is
+  // mandatory — these strings render a disabled mock-up only.
+  'recipeTab.banner.comingSoon': 'v0.3.0 で KovitoHub と連動して提供予定',
+  'recipeTab.banner.description':
+    'KovitoHub から署名済みレシピをインストールできます。各レシピは publisher により署名され、KovitoBoard が監査します。',
+  'recipeTab.mockup.exampleRecipeTitle': '例: レシピ',
+  'recipeTab.mockup.signBadge': '署名済み',
+  'recipeTab.mockup.installButton': 'インストール',
+  'recipeTab.footnote.previewOnly': 'プレビュー表示のみ。実機能は v0.3.0 で提供予定です。',
+
+  // Bundled enable / disable user-facing strings (§6.7). The confirm
+  // dialog wording is reused by the disable transaction (BS-L3-A:
+  // data preserved guarantee).
+  'recipe.bundled.enable.button': '有効化',
+  'recipe.bundled.disable.confirm': 'このアプリを無効化しますか？データは保持されます。',
+  'recipe.bundled.dataPreservedNotice': 'アプリデータは保持されました。再有効化で復元できます。',
 } as const
 
 export type MessageKey = keyof typeof ja

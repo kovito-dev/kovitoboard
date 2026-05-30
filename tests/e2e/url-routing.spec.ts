@@ -39,15 +39,22 @@ test.describe('URL routing', () => {
     await page.goto('/recipes')
     await page.waitForLoadState('networkidle')
 
-    // Recipe page heading (en: "App recipes").
-    const heading = page.locator('h1').filter({ hasText: /recipes/i })
+    // v0.2.1 (judgement doc 4'.2): the legacy "App recipes" /
+    // "Sample recipes" labels were rebranded to "Apps" / "Sample
+    // apps" alongside the 3-tab restructure. The route key
+    // `/recipes` is preserved for backward compatibility.
+    const heading = page.locator('h1').filter({ hasText: /^Apps$/i })
     await expect(heading).toBeVisible()
 
-    // The Sample tab is the default tab and stays available in
-    // v0.2.x. The Import tab was retired alongside the recipe
-    // install temporary disable.
-    const sampleTab = page.getByRole('button', { name: 'Sample recipes' })
-    await expect(sampleTab).toBeVisible()
+    // The Apps tab is the default landing tab; the Sample apps and
+    // Recipes tabs are reachable from the tab bar.
+    await expect(page.getByTestId('apps-screen-tab-apps')).toBeVisible()
+    await expect(
+      page.getByTestId('apps-screen-tab-samples'),
+    ).toBeVisible()
+    await expect(
+      page.getByTestId('apps-screen-tab-recipes'),
+    ).toBeVisible()
   })
 
   test('存在しないパスは /agents にリダイレクトされる', async ({ page }) => {

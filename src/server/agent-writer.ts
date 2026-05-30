@@ -14,7 +14,7 @@
 
 import { serverLogger } from './logger'
 import { join } from 'path'
-import matter from 'gray-matter'
+import { safeMatter as matter, safeStringify } from './recipe/safe-matter'
 import type { FileAccessLayer } from './fs-layer'
 import { resolveProjectRoot } from './config'
 import { getAgentTemplateContent } from './template-reader'
@@ -100,7 +100,7 @@ export function createAgentFromTemplate(
   }
 
   // Rebuild frontmatter
-  const finalContent = matter.stringify(processedBody, frontmatterData)
+  const finalContent = safeStringify(processedBody, frontmatterData)
 
   // Ensure .claude/agents/ directory exists
   const projectRoot = resolveProjectRoot(fs)
@@ -230,7 +230,7 @@ export function createAgentFromScratch(
 
   // matter.stringify takes the body first (no trailing newline,
   // we add one) and the frontmatter object second.
-  const finalContent = matter.stringify(`${trimmedPrompt}\n`, frontmatter)
+  const finalContent = safeStringify(`${trimmedPrompt}\n`, frontmatter)
 
   // Ensure .claude/agents/ directory exists. Same handling as the
   // template path; duplicated rather than extracted because
@@ -395,7 +395,7 @@ export function updateAgentSections(
       }
     }
 
-    const finalContent = matter.stringify(processedBody, frontmatterData)
+    const finalContent = safeStringify(processedBody, frontmatterData)
     fs.writeFileSync(filePath, finalContent, 'utf-8')
 
     return { success: true }
@@ -502,7 +502,7 @@ export function injectMarkerSections(
     const markerBlock = MARKER_NAMES.map((name) => buildEmptyMarkerSection(name)).join('\n\n')
     const nextBody = `${trimmed}\n\n${markerBlock}\n`
 
-    const finalContent = matter.stringify(nextBody, frontmatterData)
+    const finalContent = safeStringify(nextBody, frontmatterData)
     fs.writeFileSync(filePath, finalContent, 'utf-8')
     return { success: true, alreadyHasMarkers: false }
   } catch (err) {

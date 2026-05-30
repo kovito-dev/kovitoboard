@@ -1,0 +1,4 @@
+# Global ownership — @kousuke-irikura is the maintainer for all areas.
+# Single-owner model is intentional for v0.2.x; review the split when
+# additional maintainers join.
+* @kousuke-irikura

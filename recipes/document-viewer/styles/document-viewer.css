@@ -1,11 +1,65 @@
 /* Document Viewer — markdown styling */
 
+/*
+ * Always-visible custom scrollbars for the two scroll panes.
+ *
+ * The panes already use `overflow-y: auto`, but on platforms with
+ * overlay scrollbars (and in WSL/Windows where the track is hard to
+ * see) the track can stay invisible, hiding the fact that more
+ * content exists below the fold. These rules paint an explicit,
+ * theme-aware track + thumb so hidden content is discoverable.
+ */
+.dv-scroll {
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.dv-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.dv-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dv-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 6px;
+  /* Inset the thumb so it reads as a rounded pill, not a full-width bar. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.dv-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-dim, var(--text-secondary));
+}
+
 .dv-prose {
   max-width: 48rem;
   margin: 0 auto;
   color: var(--text-primary);
   font-size: 0.875rem;
   line-height: 1.75;
+}
+
+/*
+ * Sandboxed HTML preview frame.
+ *
+ * Untrusted HTML files render inside a sandboxed, opaque-origin iframe
+ * (see DocumentViewer.tsx security note / security-threat-model S10).
+ * Because the frame has no `allow-scripts`, its content cannot measure
+ * its own height and grow the element; the host therefore fixes the
+ * size. The frame fills the right pane and the iframe's own scrollbar
+ * handles overflow within the isolated document. A white background is
+ * set so dark-on-transparent host themes don't render the untrusted
+ * document unreadable — the frame is visually distinct from the host
+ * realm by design (theme/font are intentionally not inherited in
+ * v0.2.1; full visual unification is a v0.3.0 candidate).
+ */
+.dv-html-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  display: block;
 }
 
 /* Headings */

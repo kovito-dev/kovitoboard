@@ -75,6 +75,20 @@ export function maskHomePath(input: string): string {
  * exact length range). Broad heuristics (e.g. "any 40-char hex
  * string") will mask hashes / sha256 commit ids that handlers and
  * tests legitimately log.
+ *
+ * Path redaction (`maskHomePath` above) is applied to every string
+ * field in every log line via the `applyRedactionsToValue` walker
+ * the pino formatter installs at startup. Concretely, absolute
+ * paths under the operator's home directory are rewritten to `~`
+ * before the line lands on disk or stdout — this covers the
+ * `projectRoot` / `appRootPath` / `leftoverPath` / `resolvedTarget`
+ * / `appManifestPath` / `menuTsPath` / `appDir` fields the
+ * bundled-installer's audit lines carry (codex review #58 attempt
+ * 7 abstain on log-redaction coverage). The walker runs on the
+ * entire log object tree (including nested `err.message` /
+ * `err.stack` etc.), so the audit lines emitted by `recipeLogger`
+ * and `apiLogger` inherit the same masking as the rest of the
+ * server log.
  */
 const SENSITIVE_TOKEN_PATTERNS: ReadonlyArray<{ pattern: RegExp; placeholder: string }> = [
   // Anthropic API key prefix; emitted in plaintext by `claude` CLI on

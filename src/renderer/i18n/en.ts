@@ -165,7 +165,9 @@ const en: Record<MessageKey, string> = {
   'screen.unknown': 'Unknown screen',
   'screen.agents': 'Agents',
   'screen.sessions': 'Sessions',
-  'screen.recipes': 'App recipes',
+  // v0.2.1 BL-2026-162 §4'.1 (sidebar rebrand): legacy 'App recipes'
+  // value is rebranded to 'Apps'. Key kept for backward compat.
+  'screen.recipes': 'Apps',
 
   // Chat
   'chat.message.action.copy': 'Copy',
@@ -194,9 +196,14 @@ const en: Record<MessageKey, string> = {
   'agent.edit.description': 'Edit attributes of {id}',
 
   // Recipe
-  'recipe.title': 'App recipes',
+  // v0.2.1 BL-2026-162 §4'.1: 'App recipes' → 'Apps' (value-only
+  // rebrand; key intentionally retained).
+  'recipe.title': 'Apps',
   'recipe.button.createApp': 'Create new app',
   'recipe.code.button.expandAll': 'Expand all',
+  // recipe.tab.sample / recipe.tab.history are now orphan in v0.2.1.
+  // The 3-tab restructure (§4'.2) replaces them with appsScreen.tab.*.
+  // Keys kept for wire compatibility (legacy clients).
   'recipe.tab.sample': 'Sample recipes',
   'recipe.tab.history': 'History',
   // recipe.tab.export was retired earlier — recipe export now runs
@@ -272,8 +279,12 @@ const en: Record<MessageKey, string> = {
   // Navigation (menu)
   'nav.menu.agents': 'Agents',
   'nav.menu.sessions': 'Sessions',
-  'nav.menu.recipes': 'App recipes',
-  'nav.menu.workRoots': 'Work roots',
+  // v0.2.1 BL-2026-162 §4'.1 / §6.1 i18n SSOT: 'App recipes' → 'Apps'.
+  // Key retained so existing nav references stay valid.
+  'nav.menu.recipes': 'Apps',
+  // v0.2.1 BL-2026-167: `nav.menu.workRoots` was removed alongside
+  // the side-nav entry; the Settings modal uses `setting.tab.workRoots`
+  // instead.
 
   // Work roots settings page (spec cwd-allowlist.md v1.0 §7.4). The
   // page lists / adds / removes the cwd allow-list entries that sit
@@ -374,6 +385,8 @@ const en: Record<MessageKey, string> = {
   'nav.action.appActions': 'App actions',
   'app.actions.exportRecipe': 'Export recipe',
   'app.actions.removeApp': 'Remove app',
+  'app.actions.disable': 'Disable',
+  'appsTab.actions.disableError': 'Disable failed',
   'appRemoval.modal.title': 'Remove app "{name}"',
   'appRemoval.modal.body': 'About to remove "{name}".',
   'appRemoval.modal.bullet.menu': 'The app disappears from the sidebar',
@@ -525,7 +538,7 @@ const en: Record<MessageKey, string> = {
   'recipe.export.error.recipeIdRequired': 'Recipe ID is required.',
   'recipe.export.error.recipeIdFormat': 'Recipe ID must contain only A-Z / a-z / 0-9 / _ / - / . / / / @ and be 1–256 characters.',
   'recipe.export.error.customBeNotExportable':
-    'This app cannot be exported as a recipe: app/{appId}/api/ contains files ({files}) which fall outside the recipe safety boundary — recipe-inspector rejects every artifact whose path starts with api/, regardless of extension. To distribute this app, either rewrite the BE logic using Category A handlers (declarative api.calls + window.kb.call) or document the api/ part separately and ask recipients to implement it via agent assistance after recipe install.',
+    'This app cannot be exported as a recipe. To distribute it, do one of the following: (1) rewrite the server-side logic as declarative API calls that recipes support (api.calls in recipe.yaml + window.kb.call), or (2) document the server-side logic separately so recipients can implement it with agent assistance after installing the recipe. Why: the code under app/{appId}/api/ ({files}) falls outside what a recipe can safely package.',
 
   // Recipe import — retired in v0.2.x alongside the recipe install
   // temporary disable. Will return with the v0.3.0 sideload mode.
@@ -594,6 +607,7 @@ const en: Record<MessageKey, string> = {
   'trust.level.kbTrusted': 'KB-trusted',
   'trust.level.codeTrusted': 'Code-trusted (signed)',
   'trust.level.codeTrustedSideloaded': 'Code-trusted (sideloaded)',
+  'trust.level.codeTrustedBundled': 'Code-trusted (bundled)',
   'trust.level.unknown': 'Unknown (grandfather)',
   'trust.marker.ariaLabel': 'Recipe trust level: {label}',
   'trust.unknown.reinstall': 'Re-install via KovitoHub (v0.3.0) to verify',
@@ -638,6 +652,10 @@ const en: Record<MessageKey, string> = {
   // Settings
   'setting.title': 'Settings',
   'setting.tab.basic': 'Basic',
+  // v0.2.1 BL-2026-167: added when the standalone Work Roots side-nav
+  // item was folded into the Settings modal (judgement doc v1.1
+  // §2.5). Same wording as the previous `nav.menu.workRoots`.
+  'setting.tab.workRoots': 'Work roots',
   'setting.tab.skills': 'Skills',
   'setting.tab.automations': 'Automations',
   'setting.tab.integrations': 'Integrations',
@@ -780,6 +798,76 @@ const en: Record<MessageKey, string> = {
   'error.boundary.button.copyFailed': 'Copy failed (please select and copy manually)',
   'error.boundary.diag.heading': 'Diagnostic message (for the Claude Code agent)',
   'error.boundary.diag.promptHeader': 'A React render error occurred in the KovitoBoard web UI. Please investigate the root cause and fix it using the information below.',
+
+  // ---------------------------------------------------------------------
+  // v0.2.1 BL-2026-162 — Apps screen rebrand + 3-tab restructure
+  // SSOT: docs/design/discussions/v021-bundled-sample-enable-disable-decision-2026-05-18.md
+  //       §4'.2 wireframe + §6 i18n SSOT (group 6.2 / 6.3 / 6.4 / 6.5 / 6.6 / 6.7)
+  // ---------------------------------------------------------------------
+
+  // Tab labels for the new AppsScreen 3-tab layout.
+  'appsScreen.tab.apps': 'Apps',
+  'appsScreen.tab.samples': 'Sample apps',
+  'appsScreen.tab.recipes': 'Recipes',
+
+  // App source identifier badges (§4.9 / §6.3). 4 persisted values +
+  // the scanner-derived 'self-made' category. The grandfather
+  // `'sample'` badge gets its own value so the Apps tab can
+  // distinguish a pre-v0.2.1 install lineage from a fresh v0.2.1
+  // bundled enable at a glance.
+  'app.source.selfMade': 'Self-made',
+  'app.source.bundled': 'Bundled',
+  'app.source.sample': 'Sample',
+  'app.source.import': 'Imported',
+  'app.source.url': 'URL',
+
+  // Apps tab controls (§6.4).
+  'appsScreen.button.addApp': '+ Add app',
+  'appsScreen.button.createSelfMade': '+ Create self-made app',
+  'appsScreen.button.rename': 'Rename',
+  'appsScreen.button.renameSave': 'Save',
+  'appsScreen.button.renameCancel': 'Cancel',
+  'appsScreen.button.renameReset': 'Reset',
+  'appsScreen.button.renameResetTooltip':
+    'Reset to the default app name.',
+  'appsScreen.label.dragHandle': 'Drag to reorder',
+  'appsScreen.label.renamePlaceholder': 'Enter app menu label',
+  'appsScreen.error.menuLabelTooLong': 'Menu label is too long (max 80 characters).',
+  'appsScreen.error.menuLabelEmpty':
+    'Menu label cannot be empty. Use Reset to restore the default.',
+
+  // Apps tab empty-state hints (§6.4).
+  'appsTab.empty': 'No apps installed yet.',
+  'appsTab.emptyHint':
+    'Use "+ Add app" to enable a sample app, or "+ Create self-made app" to start a new one.',
+
+  // Apps tab D&D reorder feedback (BS-L6).
+  'appsTab.reorder.saving': 'Saving the new order…',
+  'appsTab.reorder.hint': 'Drag and drop to reorder apps',
+
+  // Per-row Actions menu trigger (§4'.6).
+  'app.actions.menu': 'App actions',
+
+  // Sample apps tab (§6.5).
+  'samplesTab.info.comingSoon':
+    'Coming in v0.3.0: install apps from KovitoHub. For now, try sample apps below.',
+  'samplesTab.button.enable': 'Enable',
+  'samplesTab.label.enabled': 'Enabled',
+  'samplesTab.label.openInAppsTab': 'Manage in Apps tab',
+
+  // Recipes tab preview UI (§6.6 / §4.10 BS-L10 — network silent).
+  'recipeTab.banner.comingSoon': 'Coming in v0.3.0 with KovitoHub',
+  'recipeTab.banner.description':
+    'Install signed recipes from KovitoHub. Each recipe is verified by the publisher and audited by KovitoBoard.',
+  'recipeTab.mockup.exampleRecipeTitle': 'Example Recipe',
+  'recipeTab.mockup.signBadge': 'Signed',
+  'recipeTab.mockup.installButton': 'Install',
+  'recipeTab.footnote.previewOnly': 'Preview only. Full functionality in v0.3.0.',
+
+  // Bundled enable / disable user-facing strings (§6.7).
+  'recipe.bundled.enable.button': 'Enable',
+  'recipe.bundled.disable.confirm': 'Disable this app? Your data will be preserved.',
+  'recipe.bundled.dataPreservedNotice': 'App data preserved. Re-enable to restore.',
 }
 
 export default en

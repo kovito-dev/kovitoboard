@@ -141,6 +141,20 @@ interface AmbientSidebarProps {
   currentAppDisplayName: string | null
   /** Open the AppRemovalModal for the popover-selected app. */
   onRequestAppRemoval: (target: { appId: string; displayName: string }) => void
+  /**
+   * Non-destructive disable for a bundled / grandfather sample
+   * app from the AmbientSidebar Actions popover. The destructive
+   * remove-app flow is now gated on `source` -- bundled / sample
+   * apps must take this path so `app/data/<appId>/` is preserved
+   * (grandfather data-preservation invariant). The sidebar wires
+   * the same callback the Apps tab uses (`App.tsx` implements
+   * `POST /api/recipes/sample/:recipeId/disable`).
+   */
+  onRequestSampleDisable: (target: {
+    appId: string
+    recipeId: string
+    displayName: string
+  }) => void
   /** Open the RecipeExportModal for the popover-selected app. */
   onRequestRecipeExport: (target: { appId: string; displayName: string }) => void
   /** UI theme. Forwarded to <AgentAvatar> in the agent picker so the
@@ -162,6 +176,7 @@ export function AmbientSidebar({
   currentAppId,
   currentAppDisplayName,
   onRequestAppRemoval,
+  onRequestSampleDisable,
   onRequestRecipeExport,
   theme = 'dark',
 }: AmbientSidebarProps) {
@@ -582,31 +597,73 @@ export function AmbientSidebar({
           the sidebar itself is closed. */}
       <div className="flex items-center justify-between border-b border-[var(--border)] h-10 px-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          {isOpen && currentAppId !== null && (
-            <div className="relative">
-              <AppActionsMenuButton
-                appId={currentAppId}
-                isOpen={isAppActionsOpen}
-                onToggle={() => setIsAppActionsOpen((v) => !v)}
-              />
-              <AppActionsPopover
-                isOpen={isAppActionsOpen}
-                onClose={() => setIsAppActionsOpen(false)}
-                onSelectExport={() =>
-                  onRequestRecipeExport({
-                    appId: currentAppId,
-                    displayName: currentAppDisplayName ?? currentAppId,
-                  })
-                }
-                onSelectRemoval={() =>
-                  onRequestAppRemoval({
-                    appId: currentAppId,
-                    displayName: currentAppDisplayName ?? currentAppId,
-                  })
-                }
-              />
-            </div>
-          )}
+          {isOpen && currentAppId !== null && (() => {
+            // Resolve the focused app's wire metadata so the
+            // popover can route actions safely. The source /
+            // manifestState / recipeId fields are populated by
+            // `loadUserMenuEntries()`; without them, the popover
+            // would default to the destructive Remove branch
+            // even for bundled / sample apps -- the very HIGH
+            // codex flagged in attempt 21.
+            const focused = userMenuEntries.find(
+              (entry) => entry.id === currentAppId,
+            )
+            const focusedDisplayName =
+              currentAppDisplayName ?? currentAppId
+            return (
+              <div className="relative">
+                <AppActionsMenuButton
+                  appId={currentAppId}
+                  isOpen={isAppActionsOpen}
+                  onToggle={() => setIsAppActionsOpen((v) => !v)}
+                />
+                <AppActionsPopover
+                  isOpen={isAppActionsOpen}
+                  onClose={() => setIsAppActionsOpen(false)}
+                  // The sidebar is pinned to the right edge of the
+                  // viewport and its column can shrink to its minimum
+                  // width, so a left-anchored popover (default) would
+                  // expand past the window edge and become unclickable.
+                  // Anchor to the right edge and expand leftward instead.
+                  align="right"
+                  source={focused?.source}
+                  manifestState={focused?.manifestState}
+                  onSelectExport={() =>
+                    onRequestRecipeExport({
+                      appId: currentAppId,
+                      displayName: focusedDisplayName,
+                    })
+                  }
+                  onSelectRemoval={() =>
+                    onRequestAppRemoval({
+                      appId: currentAppId,
+                      displayName: focusedDisplayName,
+                    })
+                  }
+                  onSelectDisable={
+                    // Only wire Disable when the focused entry
+                    // actually has the recipe lineage required by
+                    // `POST /api/recipes/sample/:recipeId/disable`.
+                    // The popover renders the Disable button
+                    // disabled when no callback is provided, so
+                    // missing-lineage rows visibly surface the
+                    // unavailable state instead of silently
+                    // falling through to destructive Remove.
+                    focused?.recipeId &&
+                    (focused.source === 'bundled' ||
+                      focused.source === 'sample')
+                      ? () =>
+                          onRequestSampleDisable({
+                            appId: currentAppId,
+                            recipeId: focused.recipeId as string,
+                            displayName: focusedDisplayName,
+                          })
+                      : undefined
+                  }
+                />
+              </div>
+            )
+          })()}
           {/* AS-1: heading row removed — it duplicated the picker
               label below it, and the toggle button on the right
               already conveys "this is the sidebar". */}

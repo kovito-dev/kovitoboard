@@ -55,8 +55,23 @@ export type AppSourceInfo =
       recipeId: string
       /** The `version` from `recipe.yaml` at install time. */
       recipeVersion: string
-      /** Where the recipe was sourced from. */
-      recipeSource: 'sample' | 'import' | 'url'
+      /**
+       * Where the recipe was sourced from.
+       *
+       * - `'bundled'`: enabled via `POST /api/recipes/sample/:recipeId/enable`
+       *   for a recipe that ships with KovitoBoard (`recipes/<recipeId>/`).
+       *   Trust origin = KB itself (`code-trusted (bundled)`).
+       * - `'sample'`: legacy installed via the v0.1.x `recipes/install` flow
+       *   (grandfathered; persisted source is never rewritten — BS-L2).
+       * - `'import'`: YAML / ZIP import (currently disabled in v0.2.x).
+       * - `'url'`: URL-based install (v0.3.0+).
+       *
+       * Spec SSOT: docs/specs/app-directory-extension.md v1.6 §6.2
+       * (v1.5.1 added `'bundled'`); docs/specs/recipe-system.md v1.10
+       * §10.9.1 (bundled trust model) / §10.9.5 BS-L9 (4-value persisted
+       * source).
+       */
+      recipeSource: 'sample' | 'bundled' | 'import' | 'url'
     }
   | {
       type: 'user-creation'
@@ -105,4 +120,42 @@ export interface AppManifest {
 
   /** Source information — recipe-derived or user-creation. */
   source: AppSourceInfo
+
+  /**
+   * v0.2.1 additive: user-controlled menu display order.
+   *
+   * Set by `PUT /api/apps/menu-order` (closed-world batch update,
+   * see `http-api-contract.md` v1.7.1 §6.3.9.A). Values are integers
+   * in the contiguous range `0..N-1` where `N` is the size of the
+   * eligible app set (apps with a readable `AppManifest`).
+   *
+   * When this field is missing the scanner assigns a provisional
+   * order — first by `app/menu.ts` array position, then by
+   * lexicographic `appId` — without writing the provisional value
+   * back to disk. Only explicit user action through the wire
+   * endpoint persists this field.
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2 / §6.8.1
+   * @stable v0.2.1
+   */
+  menuOrder?: number
+
+  /**
+   * v0.2.1 additive: user override for the menu display label.
+   *
+   * Set by `PATCH /api/apps/:appId/menu-label` (see
+   * `http-api-contract.md` v1.7.1 §6.3.9.A). When `string`, this
+   * value wins over `recipe.yaml`'s `menu.label` and `app/menu.ts`
+   * `entry.label`. When `null` (explicit reset) or missing, label
+   * resolution falls through to the recipe-defined or menu.ts
+   * base label, and finally to `appId` itself.
+   *
+   * Empty string is rejected on the wire (400 MenuLabelEmpty) so
+   * `null` stays the only sentinel for "fall through to base
+   * label".
+   *
+   * @see docs/specs/app-directory-extension.md v1.6 §6.2 / §6.8.2
+   * @stable v0.2.1
+   */
+  userMenuLabel?: string | null
 }

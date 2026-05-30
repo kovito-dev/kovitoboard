@@ -137,15 +137,41 @@ export interface AgentActivityPayload {
 }
 
 /**
- * `app/menu.ts` was created, modified, or removed on disk.
+ * `app/menu.ts` was created, modified, or removed on disk, or one of
+ * the v0.2.1 menu metadata routes (`PUT /api/apps/menu-order` /
+ * `PATCH /api/apps/:appId/menu-label`) committed a change.
  *
  * The renderer should re-fetch `GET /api/app/menu-entries` so newly
  * installed recipes (which write `app/menu.ts` via the agent) appear
- * in the navigation without requiring a page reload.
+ * in the navigation, and re-fetch the affected `AppManifest`(s) when
+ * the event carries a `menu-order-update` / `menu-label-update`
+ * trigger.
+ *
+ * For `event: 'menu-label-update'` the `appId` field is set so a
+ * narrow refetch is possible; for `event: 'menu-order-update'` the
+ * `appId` is omitted because the closed-world batch update affects
+ * every eligible app at once.
+ *
+ * @see docs/specs/ws-event-contract.md v1.4 §6.1 / §7.6.2
  */
 export interface AppMenuChangedPayload {
-  /** chokidar event kind: 'add' | 'change' | 'unlink'. */
-  event: 'add' | 'change' | 'unlink'
+  /**
+   * Either a chokidar watcher event (`'add' | 'change' | 'unlink'`,
+   * `appId` omitted) or a v0.2.1 menu-metadata HTTP route emission
+   * (`'menu-order-update' | 'menu-label-update'`, see comment above).
+   */
+  event:
+    | 'add'
+    | 'change'
+    | 'unlink'
+    | 'menu-order-update'
+    | 'menu-label-update'
+  /**
+   * Optional KB-local app identifier. Set when `event` is
+   * `'menu-label-update'`; omitted for the closed-world
+   * `'menu-order-update'` and the three chokidar watcher events.
+   */
+  appId?: string
   /** Server-side timestamp the change was observed. */
   ts: number
 }
@@ -162,6 +188,31 @@ export type ServerToClientEvent =
   | { type: 'app_menu_changed'; payload: AppMenuChangedPayload }
   | { type: 'agent_activity'; payload: AgentActivityPayload }
   | { type: 'agents_changed'; payload: AgentsChangedPayload }
+  | { type: 'recipe_apps_changed'; payload: RecipeAppsChangedPayload }
+
+/**
+ * Fired when a bundled sample recipe is enabled or disabled (v0.2.1).
+ *
+ * Carries the trigger action, the affected `appId`, and the persisted
+ * manifest `source` (so consumers can distinguish a fresh bundled
+ * enable from a grandfather-sample disable without re-querying the
+ * manifest store).
+ *
+ * The `source` field uses the persisted four-value enum (`'bundled' |
+ * 'sample'` for the bundled-installer paths covered by this event;
+ * the UI alias `'sample (grandfather)'` is derivation-only and not
+ * carried on the wire).
+ *
+ * @see docs/specs/ws-event-contract.md v1.4 §6.1 / §7.6.3
+ * @see docs/specs/http-api-contract.md v1.7.1 §6.3.8.B
+ * @stable v0.2.1
+ */
+export interface RecipeAppsChangedPayload {
+  trigger: 'enable' | 'disable'
+  appId: string
+  source: 'bundled' | 'sample'
+  ts: number
+}
 
 /**
  * Fired when the on-disk agent set changes (create / update / delete

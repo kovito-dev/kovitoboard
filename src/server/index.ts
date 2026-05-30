@@ -15,6 +15,11 @@ import { randomUUID } from 'crypto'
 import { DirectFsLayer } from './fs-layer'
 import { loadConfig, resolveProjectRoot, resolveProjectRootWithSource } from './config'
 import { ensureKovitoboardDir, ensureLogsDir, getUploadDir } from './paths'
+import {
+  createCleanupUploads,
+  inFlightUploads,
+} from './upload-tracker'
+import { buildCSPHeader } from './security-headers'
 import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } from './logger'
 import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
@@ -68,6 +73,7 @@ import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
 import { createAppRouter } from './routes/app-routes'
+import { createAppsRouter } from './routes/apps-routes'
 import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
 import { createCaptureMountRouter } from './routes/capture-mount-routes'
@@ -83,6 +89,15 @@ import {
 } from './claude-code-settings-check'
 import { getMenuTsPath } from './services/menu-extractor'
 import { scanSampleRecipes, getSampleRecipes, refreshInstallStatus } from './services/recipe-scanner'
+import {
+  BundledInstallerError,
+  classifyLocalResidue,
+  disableBundledRecipe,
+  enableBundledRecipe,
+  isBundledEligibleRecipeId,
+  loadRecipeHistorySnapshot,
+  resolveBundledAppIdForDisable,
+} from './services/bundled-installer'
 import { parseRecipe, RecipeParseError } from './recipe-parser'
 import { inspectRecipe } from './recipe-inspector'
 import {
@@ -113,7 +128,12 @@ import type {
   ClientLogPayload,
 } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
-import { dispatch as dispatchHandler } from './handlerDispatcher'
+import {
+  acquireAppLock,
+  acquireGlobalMenuTsLock,
+  AppLockWaitTimeoutError,
+  dispatch as dispatchHandler,
+} from './handlerDispatcher'
 import type {
   KbCallRequest,
   KbCallResponse,
@@ -162,13 +182,7 @@ app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY')
   res.setHeader('X-XSS-Protection', '0')  // Disabled as recommended for modern browsers
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
-  res.setHeader('Content-Security-Policy', [
-    "default-src 'self'",
-    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",  // Tailwind inline styles
-    "img-src 'self' data: blob:",
-  ].join('; '))
+  res.setHeader('Content-Security-Policy', buildCSPHeader())
   next()
 })
 
@@ -184,6 +198,19 @@ app.use((_req, res, next) => {
 // JSON body parsing. Without this ordering an attacker could keep the
 // server busy parsing megabyte-sized JSON bodies even though the
 // request would ultimately be rejected.
+//
+// The `verifyTokenAndOrigin` mount below is **the** authentication
+// + authorization gate for every `/api/...` route in this server,
+// including the bundled-installer endpoints
+// (`POST /api/recipes/sample/:recipeId/enable` and `.../disable`).
+// Spec recipe-system v1.12 §10.9.3 + §10.9.4 normatively pin
+// `middleware: verifyTokenAndOrigin` for both endpoints; placing
+// the gate at the `/api` namespace level (rather than per-route)
+// is what makes that contract robust against a future route
+// registration that forgets to declare the middleware. The guard
+// itself (`createTokenAndOriginGuard` in `auth/`) verifies the
+// launch-token bearer header + the Origin allowlist before the
+// JSON body parser ever sees the request payload.
 app.use('/api', verifyTokenAndOrigin)
 app.use(express.json())
 
@@ -276,6 +303,16 @@ try {
   startupLogger.error({ err }, 'Manifest store load failed (non-fatal)')
 }
 
+// Refresh sample-recipe enable-state now that the manifest store is
+// loaded. The initial `scanSampleRecipes(fs)` above runs before the
+// store exists, so the scanner cache has `enabled: false` for every
+// entry until this call rewires the derived fields (v0.2.1 §6.7.2).
+try {
+  refreshInstallStatus(fs, manifestStore)
+} catch (err) {
+  startupLogger.error({ err }, 'Sample recipe enable-state refresh failed (non-fatal)')
+}
+
 const sessionManager = new SessionManager()
 const watcher = new Watcher(config, sessionManager, fs)
 const claudeBridge = new ClaudeBridge(projectRoot)
@@ -358,6 +395,24 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 app.use('/api/recipes', createRecipeUploadRouter(fs))
 app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
 app.use('/api/app', createAppRouter(fs, manifestStore))
+// Apps menu-metadata routes (`PUT /api/apps/menu-order`,
+// `PATCH /api/apps/:appId/menu-label`). Mounted at the plural
+// `/api/apps` path because the previously-inline `/api/apps/...`
+// handlers (`request-removal`, `check-id-availability`) are also
+// declared on `app.<verb>('/api/apps/...')` later in this file;
+// mounting the router here ensures the closed-world batch path is
+// captured at the same prefix without conflicting with those
+// pre-existing leaf routes (Express 5 matches by mount order and
+// the leaf handlers carry an exact path).
+app.use(
+  '/api/apps',
+  createAppsRouter({
+    fs,
+    projectRoot,
+    broadcast,
+    apiLogger,
+  }),
+)
 // Capture-token issuance / revoke endpoints
 // (v0.2.0 Phase 1 ①, spec v1.6 §6.10.6 / v1.4 §10.6.7).
 // MUST be mounted before the `/api/app/capture` router because
@@ -1196,8 +1251,10 @@ app.get('/api/settings/rules', (_req, res) => {
 
 app.get('/api/recipes/sample', (_req, res) => {
   try {
-    // Refresh install status against current history before returning
-    refreshInstallStatus(fs)
+    // Refresh install + enable state against current history /
+    // manifest store before returning (v0.2.1: `enabled` + `source`
+    // are derived from the manifest store cache).
+    refreshInstallStatus(fs, manifestStore)
     const recipes = getSampleRecipes()
     res.json(recipes)
   } catch (err) {
@@ -1205,6 +1262,486 @@ app.get('/api/recipes/sample', (_req, res) => {
     res.status(500).json({ error: 'Failed to get sample recipes' })
   }
 })
+
+// --- v0.2.1 bundled sample enable/disable ---
+//
+// The generic install path (`POST /api/recipes/install`) stays 410
+// Gone in v0.2.x. Bundled samples — `recipes/document-viewer/` and
+// `recipes/todo/` — are re-enabled through a dedicated transaction
+// that bypasses the 7-layer install dialog (trust origin = KB
+// itself, OSS PR-merge gated; recipe-system v1.10 §10.9 +
+// http-api-contract v1.7.1 §6.3.8.B). The handlers below stay thin
+// — the transaction lives in services/bundled-installer.ts.
+
+app.post('/api/recipes/sample/:recipeId/enable', async (req, res) => {
+  const recipeId = req.params.recipeId
+  if (typeof recipeId !== 'string' || recipeId.length === 0) {
+    res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  // Defence-in-depth allowlist gate. The closed-world set is the
+  // only thing that can reach the privileged bundled-enable path —
+  // anything else falls through to 404 even if a future scan of
+  // `recipes/` surfaces additional directories.
+  if (!isBundledEligibleRecipeId(recipeId)) {
+    res.status(404).json({ error: 'BundledNotFound' })
+    return
+  }
+  // Step 1: registry presence. The lookup is keyed on the
+  // **physical directory id** (`sample.id`, the `recipes/<id>/`
+  // folder name) and we then verify that `metadata.recipeId`
+  // matches verbatim. Without the second check, a malicious
+  // recipe.yaml under `recipes/evil/` declaring
+  // `metadata.recipeId: "document-viewer"` would slip through the
+  // allowlist (`isBundledEligibleRecipeId('document-viewer')`
+  // returns true) and the installer would then copy `recipes/evil/`
+  // under the bundled trust label. Pinning both axes closes that
+  // impersonation path.
+  const samples = getSampleRecipes()
+  const sample = samples.find(
+    (s) => s.id === recipeId && s.metadata.recipeId === recipeId,
+  )
+  if (sample === undefined) {
+    if (samples.length === 0) {
+      res.status(503).json({ error: 'BundledRegistryUnavailable' })
+      return
+    }
+    res.status(404).json({ error: 'BundledNotFound' })
+    return
+  }
+  // BL-2026-176 (a) acquireAppLock integration. The bundled-enable
+  // transaction copies artifacts into `<projectRoot>/app/<appId>/`
+  // and writes the manifest. A concurrent handler dispatch for the
+  // same appId could see a half-written appDir or stale manifest
+  // snapshot — `acquireAppLock(appId)` is the same gate
+  // `handlerDispatcher.dispatch` already takes, so by sharing the
+  // key we make the two paths mutually exclusive for the duration
+  // of the destructive write.
+  //
+  // The bundled-registry id (`sample.id`) is also the target appId
+  // (BS-L9 default), so the lock key is known before any disk read
+  // and we acquire it here, before `enableBundledRecipe` opens its
+  // first file.
+  const appIdForLock = sample.id
+  // Spec v1.12 §10.9.3 Step 5.6 + §10.9.5 BS-L1' rollback lock
+  // discipline: acquire the global menu.ts lock **before** the
+  // per-app lock so the bundled-installer transaction (Step 5.6
+  // append + rollback path) and the disable transaction (Step 4.5
+  // remove + rollback) cannot race against each other for the
+  // shared `app/menu.ts` resource. Release order is reverse
+  // (acquire global → app → release app → release global) so a
+  // deadlocked counter-party can never observe a half-released
+  // lock pair.
+  let releaseMenuTs: (() => void)
+  try {
+    releaseMenuTs = await acquireGlobalMenuTsLock()
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+        'Bundled enable rejected (global menu.ts lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    apiLogger.error(
+      { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+      'Bundled enable failed (acquireGlobalMenuTsLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Acquire the lock outside the result `try` so a wait-queue
+  // timeout (503 `BundledAppLockTimeout`) returns immediately
+  // without running the post-commit work that the success path
+  // owns.
+  let release: (() => void)
+  try {
+    release = await acquireAppLock(appIdForLock)
+  } catch (lockErr) {
+    releaseMenuTs()
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+        'Bundled enable rejected (app lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    // The app-lock contract only models the wait-timeout failure
+    // mode (`AppLockWaitTimeoutError`), but the async signature does
+    // not statically prevent an unrelated rejection (e.g. a future
+    // implementation bug, a `setTimeout` failure under host stress).
+    // Letting such a rejection escape from this async route handler
+    // would hand control to Express's default error handler, which
+    // serves an HTML body / hangs the response — a JSON API contract
+    // violation. Local-catch + structured 500 keeps the surface
+    // consistent with `handleBundledInstallerError` and lets clients
+    // recover deterministically (PR #56 codex attempt 3 Finding
+    // "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'enable', recipeId, appId: appIdForLock },
+      'Bundled enable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Hold the lock only for the destructive disk transaction
+  // (artifacts copy + manifest write + history append). The
+  // post-commit work (sample-cache refresh + ws-event broadcast +
+  // response serialisation) is best-effort and does not need
+  // serialisation with `handlerDispatcher.dispatch` — keeping it
+  // inside the locked section makes `BundledAppLockTimeout` easier
+  // to hit under slow rescans, which is an avoidable availability
+  // regression (PR #56 codex attempt 1 Finding 3).
+  let result: ReturnType<typeof enableBundledRecipe>
+  try {
+    try {
+      result = enableBundledRecipe({
+        fs,
+        manifestStore,
+        projectRoot,
+        kovitoboardRoot: resolveKovitoboardInstallRoot(),
+        recipeId,
+        sample,
+      })
+    } finally {
+      release()
+      releaseMenuTs()
+    }
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'enable', recipeId)
+    return
+  }
+  // Post-commit work runs after the lock release. Best-effort:
+  // the artifacts copy + manifest write + history append have
+  // already landed; if the sample-cache refresh or ws-event
+  // broadcast throws we still need to acknowledge the state
+  // change. Throwing would turn a successful enable into a 500
+  // and let clients retry — only to get `already-enabled`, which
+  // is the worst of both worlds.
+  try {
+    refreshInstallStatus(fs, manifestStore)
+  } catch (refreshErr) {
+    apiLogger.warn(
+      { err: refreshErr, action: 'enable', recipeId },
+      'refreshInstallStatus failed (non-fatal post-commit)',
+    )
+  }
+  // ws-event broadcast: recipe_apps_changed (L11 cascade). Only
+  // emit on an actual state change — `already-enabled` is an
+  // idempotent retry that downstream consumers would otherwise
+  // re-handle as a fresh enable (refetching menus, replaying
+  // audit work, etc.).
+  //
+  // Best-effort wrap: symmetric with the refreshInstallStatus
+  // block above. `broadcastRecipeAppsChanged` already swallows
+  // and logs broadcast failures internally (see the helper
+  // below), but the callsite wrap removes any visual asymmetry
+  // and guards against future helper refactors that might
+  // accidentally let an exception escape after the destructive
+  // disk transaction already committed (PR #56 codex attempt 2
+  // Finding "post-commit error handling").
+  if (result.status === 'enabled') {
+    try {
+      broadcastRecipeAppsChanged({
+        trigger: 'enable',
+        appId: result.appId,
+        source: result.source === 'sample (grandfather)' ? 'sample' : 'bundled',
+      })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'enable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
+    }
+  }
+  res.json(result)
+})
+
+app.post('/api/recipes/sample/:recipeId/disable', async (req, res) => {
+  const recipeId = req.params.recipeId
+  if (typeof recipeId !== 'string' || recipeId.length === 0) {
+    res.status(400).json({ error: 'BundledRecipeIdRequired' })
+    return
+  }
+  // Load `recipe-history.jsonl` once per request path. The same
+  // snapshot is threaded into both `classifyLocalResidue` (the
+  // allowlist short-circuit gate, when applicable) and
+  // `resolveBundledAppIdForDisable` to avoid redundant O(n) sync
+  // reads of the append-only history file as it grows (PR #56
+  // codex attempt 2 Finding "resource exhaustion"). Probe failures
+  // (`EACCES` / `EPERM` / `EIO` / `EBUSY` etc.) surface as 503
+  // `BundledLocalStateUnavailable`, identical to the embedded
+  // probe path before the dedup.
+  let historySnapshot
+  try {
+    historySnapshot = loadRecipeHistorySnapshot(fs)
+  } catch (snapshotErr) {
+    handleBundledInstallerError(req, res, snapshotErr, 'disable', recipeId)
+    return
+  }
+  // Authorization gate: disable accepts a recipeId iff either
+  // (a) it is in the closed bundled-eligible allowlist, or
+  // (b) a bundled/sample manifest / history record already exists
+  //     locally (registry-stale grandfather sample path,
+  //     recipe-system v1.10 §10.9.4 Step 2).
+  // A `recipeId` that is neither bundled-eligible nor locally
+  // recorded as bundled/sample is rejected with 404 so the
+  // dedicated bundled endpoint never becomes a generic uninstall
+  // primitive.
+  if (!isBundledEligibleRecipeId(recipeId)) {
+    try {
+      const residue = classifyLocalResidue({
+        fs,
+        manifestStore,
+        recipeId,
+        historySnapshot,
+      })
+      if (residue === 'none') {
+        res.status(404).json({ error: 'BundledNotFound' })
+        return
+      }
+    } catch (probeErr) {
+      handleBundledInstallerError(req, res, probeErr, 'disable', recipeId)
+      return
+    }
+  }
+  // BL-2026-176 (a) acquireAppLock integration. Resolve the appId *before*
+  // we take the lock so handler-dispatch and bundled-disable share
+  // the same mutual-exclusion key (spec recipe-system v1.10 §10.9.4
+  // Step 1 + handlerDispatcher.ts SSOT). The resolve helper does
+  // the minimum read necessary; any IO failure surfaces as a
+  // `BundledInstallerError` with the spec-normative error code.
+  let resolved
+  try {
+    resolved = resolveBundledAppIdForDisable({
+      fs,
+      manifestStore,
+      recipeId,
+      historySnapshot,
+    })
+  } catch (resolveErr) {
+    handleBundledInstallerError(req, res, resolveErr, 'disable', recipeId)
+    return
+  }
+  // Lock key resolution: prefer the residue-resolved appId (the
+  // current committed local state's appId) when we already saw
+  // residue at the pre-lock probe; otherwise (resolved === undefined
+  // and the recipeId is bundled-eligible) fall back to the bundled
+  // registry mapping, which for bundled samples is the recipeId
+  // itself per spec recipe-system v1.10 §10.9.1 BS-L9. Without this
+  // fallback, the disable route would skip the lock entirely on the
+  // "no committed residue" branch and race with an in-flight enable
+  // for the same appId — the enable could finish committing after
+  // this handler returns 200 `already-disabled`, leaving the app
+  // enabled even though the caller just requested disable (PR #56
+  // codex attempt 8 Finding "race condition / lock bypass"). For
+  // non-allowlisted recipeIds with no residue the residue gate at
+  // line 1430 already returned 404; reaching the `undefined` branch
+  // therefore implies bundled-eligible.
+  const appIdForLock = resolved?.appId ?? recipeId
+  // Spec v1.12 §10.9.4 Step 4.5 + §10.9.5 BS-L1' lock acquisition
+  // order: global menu.ts lock acquired before per-app lock, mirror
+  // of the enable handler. The disable transaction's Step 4.5 also
+  // mutates `app/menu.ts`, so without the global lock a concurrent
+  // enable could be Step 5.6-appending an entry while this disable
+  // is Step 4.5-removing one — the file would race in the kernel
+  // tempdir + rename layer.
+  let releaseMenuTs: (() => void)
+  try {
+    releaseMenuTs = await acquireGlobalMenuTsLock()
+  } catch (lockErr) {
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+        'Bundled disable rejected (global menu.ts lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    apiLogger.error(
+      { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+      'Bundled disable failed (acquireGlobalMenuTsLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Acquire the lock outside the result `try` so a wait-queue
+  // timeout (503 `BundledAppLockTimeout`) returns immediately
+  // without running the post-commit work that the success path
+  // owns. Mirrors the enable handler structure (PR #56 codex
+  // attempt 1 Finding 3 lock-scope narrowing).
+  let release: (() => void)
+  try {
+    release = await acquireAppLock(appIdForLock)
+  } catch (lockErr) {
+    releaseMenuTs()
+    if (lockErr instanceof AppLockWaitTimeoutError) {
+      apiLogger.warn(
+        { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+        'Bundled disable rejected (app lock timeout)',
+      )
+      res.status(503).json({ error: 'BundledAppLockTimeout' })
+      return
+    }
+    // Mirror the enable handler local-catch: an unexpected lock
+    // rejection must not escape an async route handler (no
+    // centralized JSON error middleware exists, so Express's default
+    // handler would serve HTML and break the API contract). See the
+    // matching block in the enable handler for the full rationale
+    // (PR #56 codex attempt 3 Finding "unhandled async route error").
+    apiLogger.error(
+      { err: lockErr, action: 'disable', recipeId, appId: appIdForLock },
+      'Bundled disable failed (acquireAppLock unexpected)',
+    )
+    res.status(500).json({ error: 'BundledTransactionUnexpected' })
+    return
+  }
+  // Hold the lock only for the destructive disk transaction
+  // (`disableBundledRecipe`: rmSync appDir + manifest unlink +
+  // history append). The post-commit work (sample-cache refresh +
+  // ws-event broadcast + response serialisation) is best-effort
+  // and does not need serialisation with `handlerDispatcher.dispatch`.
+  let result: ReturnType<typeof disableBundledRecipe>
+  try {
+    try {
+      result = disableBundledRecipe({
+        fs,
+        manifestStore,
+        projectRoot,
+        recipeId,
+        // Deliberately do NOT thread the pre-lock historySnapshot
+        // into the locked transaction. The pre-lock snapshot is
+        // taken BEFORE acquireAppLock; if a concurrent enable /
+        // disable for the same appId commits while this waiter is
+        // queued, the snapshot becomes stale and the locked
+        // classifyLocalResidue would mis-decide (returning
+        // already-disabled even though enable just finished, or
+        // appending a second uninstall record after the first
+        // disable already completed). disableBundledRecipe falls
+        // back to its own internal loadRecipeHistorySnapshot under
+        // the lock, which sees the post-wait state (PR #56 codex
+        // attempt 7 Finding "stale state across lock boundary").
+        // The pre-lock snapshot is still consumed by the upstream
+        // residue / appId-resolution probes that derive the
+        // tentative lock key — those run *before* the lock and
+        // tolerate the stale-state race because their decisions
+        // are re-validated under the lock anyway.
+      })
+    } finally {
+      release()
+      releaseMenuTs()
+    }
+  } catch (err) {
+    handleBundledInstallerError(req, res, err, 'disable', recipeId)
+    return
+  }
+  try {
+    refreshInstallStatus(fs, manifestStore)
+  } catch (refreshErr) {
+    apiLogger.warn(
+      { err: refreshErr, action: 'disable', recipeId },
+      'refreshInstallStatus failed (non-fatal post-commit)',
+    )
+  }
+  if (
+    result.status === 'disabled' &&
+    result.appId !== undefined &&
+    result.source !== undefined
+  ) {
+    // Round-trip the persisted source (`'bundled'` for bundled-
+    // enable lineage, `'sample'` for grandfather-sample lineage).
+    // Hard-coding `'bundled'` here would break BS-L3-B and
+    // mis-signal grandfather-sample disables to UI consumers
+    // (http-api-contract v1.7.1 §6.3.8.B broadcast contract).
+    // Skip the broadcast on `already-disabled` no-ops — see the
+    // matching guard on the enable handler.
+    //
+    // Best-effort wrap mirrors the enable handler (PR #56 codex
+    // attempt 2 Finding "post-commit error handling").
+    try {
+      broadcastRecipeAppsChanged({
+        trigger: 'disable',
+        appId: result.appId,
+        source: result.source,
+      })
+    } catch (broadcastErr) {
+      apiLogger.warn(
+        { err: broadcastErr, action: 'disable', recipeId },
+        'broadcastRecipeAppsChanged failed (non-fatal post-commit)',
+      )
+    }
+  }
+  res.json(result)
+})
+
+function handleBundledInstallerError(
+  _req: import('express').Request,
+  res: import('express').Response,
+  err: unknown,
+  action: 'enable' | 'disable',
+  recipeId: string,
+): void {
+  if (err instanceof BundledInstallerError) {
+    // Forensic detail (raw exception text, absolute filesystem
+    // paths, internal probe values) stays in the server log via the
+    // structured `err` field. The wire body only carries the stable
+    // public error code so a hostile client cannot enumerate the
+    // installation layout from API responses
+    // (http-api-contract v1.7.1 §8.6 server-side redaction SSOT).
+    apiLogger.warn(
+      { err, action, recipeId, code: err.errorCode, detail: err.detail },
+      `Bundled ${action} rejected`,
+    )
+    res.status(err.httpStatus).json({ error: err.errorCode })
+    return
+  }
+  apiLogger.error({ err, action, recipeId }, `Bundled ${action} failed (unexpected)`)
+  res.status(500).json({ error: 'BundledTransactionUnexpected' })
+}
+
+/**
+ * Best-effort post-commit notifier for the bundled enable / disable
+ * lifecycle (recipe-system v1.11 §10.9 + http-api-contract v1.7.3
+ * §6.3.8.B BS-L3-B). Broadcast failures are **swallowed and logged
+ * internally** — this function is contractually non-throwing so the
+ * destructive disk transaction (already committed by the caller)
+ * cannot be retroactively reported as a 500 to the HTTP client. The
+ * callsites add a defensive try/catch wrap on top of this internal
+ * guard for symmetry with `refreshInstallStatus` and to insulate
+ * against future refactors.
+ */
+function broadcastRecipeAppsChanged(payload: {
+  trigger: 'enable' | 'disable'
+  appId: string
+  source: 'bundled' | 'sample'
+}): void {
+  try {
+    broadcast({
+      type: 'recipe_apps_changed',
+      payload: { ...payload, ts: Date.now() },
+    })
+  } catch (err) {
+    apiLogger.warn({ err }, 'recipe_apps_changed broadcast failed (non-fatal)')
+  }
+}
+
+function resolveKovitoboardInstallRoot(): string {
+  // Identical resolution to recipe-scanner's own internal helper.
+  // Kept inline (rather than re-exported) so the install root and the
+  // sample-scanner cache stay impossible to drift via a separate
+  // override.
+  const here = fileURLToPath(import.meta.url)
+  const candidates = [
+    resolve(dirname(here), '..', '..'),
+    resolve(dirname(here), '..', '..', '..'),
+  ]
+  for (const c of candidates) {
+    if (fs.existsSync(join(c, 'package.json'))) return c
+  }
+  return candidates[0]
+}
 
 app.post('/api/recipes/parse', async (req, res) => {
   try {
@@ -1999,20 +2536,16 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 }
 
-// Periodically delete old uploaded files
-function cleanupUploads() {
-  try {
-    if (!fs.existsSync(UPLOAD_DIR)) return
-    const now = Date.now()
-    for (const file of fs.readdirSync(UPLOAD_DIR)) {
-      const filePath = join(UPLOAD_DIR, file)
-      const stat = fs.statSync(filePath)
-      if (now - stat.mtimeMs > UPLOAD_TTL_MS) {
-        fs.unlinkSync(filePath)
-      }
-    }
-  } catch { /* Ignore cleanup failures */ }
-}
+// Periodically delete old uploaded files. The handler tracks
+// in-flight basenames via the `inFlightUploads` singleton so the
+// sweep below skips a file the upload route is mid-writing. The
+// helper lives in its own module so the race scenario can be
+// exercised in unit tests without standing up the HTTP server.
+const cleanupUploads = createCleanupUploads({
+  fs,
+  uploadDir: UPLOAD_DIR,
+  ttlMs: UPLOAD_TTL_MS,
+})
 cleanupUploads()
 setInterval(cleanupUploads, 60 * 60 * 1000) // Every hour
 
@@ -2058,15 +2591,25 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '20mb' }), (req, res) 
     const fileName = `upload-${uuid}${ext}`
     const filePath = join(UPLOAD_DIR, fileName)
 
-    fs.writeFileSync(filePath, body)
+    // Mark the basename as in-flight so the periodic cleanup
+    // sweep skips it for the duration of the write. The try
+    // wrapper around the existing logic is unchanged; the
+    // finally block guarantees we drop the entry even if
+    // writeFileSync throws.
+    inFlightUploads.add(fileName)
+    try {
+      fs.writeFileSync(filePath, body)
 
-    res.json({
-      success: true,
-      filePath,
-      fileName,
-      size: body.length,
-      contentType,
-    })
+      res.json({
+        success: true,
+        filePath,
+        fileName,
+        size: body.length,
+        contentType,
+      })
+    } finally {
+      inFlightUploads.delete(fileName)
+    }
   } catch (err) {
     apiLogger.error({ err }, 'Upload error')
     res.status(500).json({ error: 'Upload failed' })

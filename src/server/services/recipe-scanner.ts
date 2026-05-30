@@ -23,10 +23,30 @@ import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from '../fs-layer'
 import { parseRecipe, deriveRecipeIdFromName } from '../recipe-parser'
 import { readRecipeHistory } from '../recipe-history'
+import { resolveProjectRoot } from '../config'
 import type { RecipeMetadata, RecipeHistoryEntry } from '../../shared/recipe-types'
+import type { RecipeManifestStore } from '../recipeManifestStore'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+/**
+ * Derived source label for a bundled-eligible sample (v0.2.1).
+ *
+ * - `'bundled'`: the manifest at `recipes-installed/<appId>/manifest.json`
+ *   was written by the v0.2.1 bundled enable flow (`source: 'bundled'`).
+ * - `'sample (grandfather)'`: a v0.2.0 sample-install manifest still on
+ *   disk (`source: 'sample'`). The bundled disable endpoint accepts it,
+ *   but the persisted `source` field stays `'sample'` (BS-L2 grandfather
+ *   idempotent merge, recipe-system v1.10 §10.9.5).
+ *
+ * UI displays this verbatim ("Bundled" / "Sample (grandfather)") via the
+ * scanner contract (`app-directory-extension.md` v1.6 §6.7.2). The
+ * persisted manifest schema remains the four-value set
+ * (`'sample' | 'bundled' | 'import' | 'url'`) — `'self-made'` and the
+ * grandfather alias are derivation-only labels (BS-L9).
+ */
+export type SampleRecipeSourceLabel = 'bundled' | 'sample (grandfather)'
 
 /** Lightweight metadata for a sample recipe (no full artifact content). */
 export interface SampleRecipeInfo {
@@ -40,10 +60,40 @@ export interface SampleRecipeInfo {
   sourceFormat: 'directory' | 'markdown'
   /** Recipe content hash */
   hash: string
-  /** Whether this recipe has been installed (matched against recipe-history.jsonl) */
+  /**
+   * Legacy install-history flag (pre-v0.2.1). True iff the recipe has
+   * an install-action record in `recipe-history.jsonl` (regardless of
+   * later uninstall). Kept for backward compatibility with the v0.2.0
+   * sample-card UI; new code should consult {@link enabled} instead.
+   */
   installed: boolean
   /** History entry if installed */
   historyEntry?: RecipeHistoryEntry
+  /**
+   * v0.2.1 enable-state flag — true iff a coherent
+   * `recipes-installed/<appId>/manifest.json` is currently present for
+   * this recipe id (bundled enable transaction completed and no
+   * disable has taken effect). Computed via
+   * `bundled-installer.isEnabledAndManifestCoherent` after each scan.
+   *
+   * Distinct from {@link installed}: a grandfather sample whose
+   * v0.2.0 install record is still in history is `installed: true`,
+   * but it is `enabled` only as long as the manifest is on disk.
+   *
+   * @see recipe-system.md v1.10 §10.9.5 BS-L2'
+   */
+  enabled: boolean
+  /**
+   * Derived source label for the currently-enabled manifest, or
+   * `undefined` when {@link enabled} is false. The bundled-enable
+   * flow writes `'bundled'`; a v0.2.0 grandfather manifest surfaces
+   * as `'sample (grandfather)'` (the persisted `source` stays
+   * `'sample'`).
+   *
+   * @see recipe-system.md v1.10 §10.9 / §10.9.5 BS-L2
+   * @see app-directory-extension.md v1.6 §6.7.2
+   */
+  source?: SampleRecipeSourceLabel
 }
 
 /** In-memory cache of scanned sample recipes. */
@@ -52,8 +102,22 @@ let sampleRecipeCache: SampleRecipeInfo[] = []
 /**
  * Scan the `recipes/` directory under the KovitoBoard installation root
  * and cache the results. Safe to call at startup — never throws.
+ *
+ * The optional `manifestStore` is consulted to derive the per-recipe
+ * `enabled` + `source` fields (v0.2.1). Callers that scan before the
+ * manifest store has loaded (or that do not need the enable-state)
+ * may pass `undefined` and refresh the fields later via
+ * {@link refreshInstallStatus}.
  */
-export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
+export function scanSampleRecipes(
+  fs: FileAccessLayer,
+  manifestStore?: RecipeManifestStore,
+): SampleRecipeInfo[] {
+  // Snapshot the project-root once per scan — the per-recipe
+  // `enabled` derivation needs the `app/<appId>/` existence check,
+  // and pulling the resolver inside the loop would amortise the
+  // module-level cache hit but obscure the dependency.
+  const projectRoot = manifestStore ? resolveProjectRoot(fs) : null
   const kbRoot = resolveKovitoboardRoot(fs)
   const recipesDir = join(kbRoot, 'recipes')
 
@@ -78,34 +142,35 @@ export function scanSampleRecipes(fs: FileAccessLayer): SampleRecipeInfo[] {
       try {
         // Check for directory format: recipes/<name>/recipe.yaml
         const yamlPath = join(itemPath, 'recipe.yaml')
+        let parsed: ReturnType<typeof parseRecipe> | null = null
+        let entryId = item
         if (fs.existsSync(yamlPath)) {
-          const parsed = parseRecipe(itemPath, fs)
-          const historyEntry = findHistoryMatch(history, parsed.metadata.recipeId, parsed.hash)
-          entries.push({
-            id: item,
-            metadata: parsed.metadata,
-            sourcePath: itemPath,
-            sourceFormat: parsed.sourceFormat,
-            hash: parsed.hash,
-            installed: historyEntry !== undefined,
-            historyEntry,
-          })
+          parsed = parseRecipe(itemPath, fs)
         } else if (item.endsWith('.md') || item.endsWith('.markdown')) {
           // Single-file Markdown format
-          const parsed = parseRecipe(itemPath, fs)
-          const id = item.replace(/\.(md|markdown)$/, '')
-          const historyEntry = findHistoryMatch(history, parsed.metadata.recipeId, parsed.hash)
-          entries.push({
-            id,
-            metadata: parsed.metadata,
-            sourcePath: itemPath,
-            sourceFormat: parsed.sourceFormat,
-            hash: parsed.hash,
-            installed: historyEntry !== undefined,
-            historyEntry,
-          })
+          parsed = parseRecipe(itemPath, fs)
+          entryId = item.replace(/\.(md|markdown)$/, '')
+        } else {
+          continue
         }
-        // Other items are silently skipped
+        const historyEntry = findHistoryMatch(history, parsed.metadata.recipeId, parsed.hash)
+        const { enabled, source } = deriveEnableState({
+          fs,
+          manifestStore,
+          projectRoot,
+          recipeId: parsed.metadata.recipeId,
+        })
+        entries.push({
+          id: entryId,
+          metadata: parsed.metadata,
+          sourcePath: itemPath,
+          sourceFormat: parsed.sourceFormat,
+          hash: parsed.hash,
+          installed: historyEntry !== undefined,
+          historyEntry,
+          enabled,
+          source,
+        })
       } catch (err) {
         recipeLogger.warn({ err }, `[recipe-scanner] Failed to parse recipe "${item}"`)
         // Skip this recipe, continue scanning others
@@ -128,14 +193,95 @@ export function getSampleRecipes(): SampleRecipeInfo[] {
 /**
  * Refresh the install status of cached recipes against current history.
  * Useful after a recipe is installed/uninstalled without a full rescan.
+ *
+ * Also re-derives the v0.2.1 `enabled` + `source` fields from the
+ * manifest store when one is provided. Call this after every bundled
+ * enable / disable transaction so the sample-card UI reflects the new
+ * state without a full rescan.
  */
-export function refreshInstallStatus(fs: FileAccessLayer): void {
+export function refreshInstallStatus(
+  fs: FileAccessLayer,
+  manifestStore?: RecipeManifestStore,
+): void {
   const history = readRecipeHistory(fs)
+  const projectRoot = manifestStore ? resolveProjectRoot(fs) : null
   for (const recipe of sampleRecipeCache) {
     const historyEntry = findHistoryMatch(history, recipe.metadata.recipeId, recipe.hash)
     recipe.installed = historyEntry !== undefined
     recipe.historyEntry = historyEntry
+    const { enabled, source } = deriveEnableState({
+      fs,
+      manifestStore,
+      projectRoot,
+      recipeId: recipe.metadata.recipeId,
+    })
+    recipe.enabled = enabled
+    recipe.source = source
   }
+}
+
+/**
+ * Compute the v0.2.1 `enabled` + `source` pair for a single recipe id.
+ *
+ * Returns `{ enabled: false, source: undefined }` when no manifest
+ * store is available or when no bundled/sample manifest exists for
+ * the recipe id. The grandfather alias (`'sample (grandfather)'`)
+ * is derived here based on the persisted `source` field.
+ *
+ * Coherence: a manifest alone is not enough — the matching
+ * `<projectRoot>/app/<appId>/` directory must also exist. A user
+ * who manually deleted `app/<appId>/` while the manifest was still
+ * on disk leaves a non-coherent state that should surface as
+ * `enabled: false` so the next bundled-enable runs the artifacts
+ * recovery path (recipe-system v1.10 §10.9.5 BS-L2'). This mirrors
+ * `bundled-installer.isEnabledAndManifestCoherent`.
+ */
+function deriveEnableState(args: {
+  fs: FileAccessLayer
+  manifestStore?: RecipeManifestStore
+  projectRoot: string | null
+  recipeId: string
+}): { enabled: boolean; source: SampleRecipeSourceLabel | undefined } {
+  const { fs, manifestStore, projectRoot, recipeId } = args
+  if (!manifestStore || projectRoot === null) {
+    return { enabled: false, source: undefined }
+  }
+  // Source-scoped uniqueness (recipe-system v1.10 §10.9.3 Step 2):
+  // exactly one bundled/sample manifest per recipeId. Collecting
+  // every match — and surfacing the corruption case as
+  // `enabled: false` — mirrors `findManifestByRecipeId` in
+  // `bundled-installer.ts`, so the sample-card UI never reports
+  // `enabled: true` while the installer endpoint would 500 with
+  // `BundledManifestUniquenessViolation`.
+  const matches = manifestStore.list().filter((manifest) => {
+    if (manifest.recipeId !== recipeId) return false
+    const persisted = manifest.source
+    return persisted === 'bundled' || persisted === 'sample'
+  })
+  if (matches.length > 1) {
+    recipeLogger.warn(
+      {
+        recipeId,
+        foundAppIds: matches.map((m) => m.appId),
+      },
+      '[recipe-scanner] Multiple bundled/sample manifests for the same recipeId — surfacing as enabled=false',
+    )
+    return { enabled: false, source: undefined }
+  }
+  const manifest = matches[0]
+  if (!manifest) return { enabled: false, source: undefined }
+  const persisted = manifest.source
+  const appDir = join(projectRoot, 'app', manifest.appId)
+  if (!fs.existsSync(appDir)) {
+    // Manifest still on disk but the artifacts are gone — surface
+    // this as `enabled: false` so a subsequent enable call goes
+    // through the recovery path instead of short-circuiting on
+    // the stale manifest.
+    return { enabled: false, source: undefined }
+  }
+  if (persisted === 'bundled') return { enabled: true, source: 'bundled' }
+  if (persisted === 'sample') return { enabled: true, source: 'sample (grandfather)' }
+  return { enabled: false, source: undefined }
 }
 
 /**

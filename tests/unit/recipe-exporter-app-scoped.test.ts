@@ -240,6 +240,23 @@ describe('parseMenuTsForApp', () => {
         // `null` so the trust marker hides itself for entries written
         // outside the install flow.
         trustLevel: null,
+        // v0.2.1 AppManifest-derived fields (source / displayName /
+        // menuOrder / userMenuLabel / recipeId) are filled in by
+        // `readUserMenuEntries` when the corresponding lookups are
+        // provided. The bare parser leaves them `null` so a hand-edited
+        // `menu.ts` row inherits no badge / label / order / recipe
+        // lineage, matching the same defence-in-depth pattern as the
+        // trust attachment above.
+        source: null,
+        displayName: null,
+        menuOrder: null,
+        userMenuLabel: null,
+        recipeId: null,
+        // Parser-default `manifestState` is `'missing'` because
+        // `parseMenuTsForApp` runs without a manifest lookup --
+        // matching the row contract for a `menu.ts` entry with
+        // no manifest attached.
+        manifestState: 'missing',
       },
     ])
   })

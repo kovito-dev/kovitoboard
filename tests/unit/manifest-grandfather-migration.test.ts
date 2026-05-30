@@ -47,17 +47,40 @@ describe('applyGrandfatherMigration', () => {
   })
 
   it('passes through a fully-current manifest unchanged', () => {
+    // v0.2.1: a "fully-current" manifest now also carries `source`
+    // (data-persistence v1.4 §6.4). A v0.2.0-style manifest that
+    // happens to omit `source` is treated as needing migration so
+    // the loader can default it to `'sample'` on the next save.
     const current = {
       ...legacyManifest(),
       captureRequires: ['a11y'],
       approvedCaptures: ['a11y'],
       trustLevel: 'unknown',
+      source: 'sample',
     }
     const { manifest, migrated } = applyGrandfatherMigration(current)
     expect(migrated).toBe(false)
     expect(manifest.captureRequires).toEqual(['a11y'])
     expect(manifest.approvedCaptures).toEqual(['a11y'])
     expect(manifest.trustLevel).toBe('unknown')
+    expect(manifest.source).toBe('sample')
+  })
+
+  it('defaults source to "sample" on a v0.2.0 manifest that omits it (v0.2.1 cascade)', () => {
+    // v0.2.0 manifests predate the `source` field entirely. The
+    // migration helper defaults the absent field to `'sample'` —
+    // sample-install was the only writer in v0.2.0 — so the loaded
+    // manifest carries a value the new bundled-installer disable
+    // path can round-trip into the uninstall record (BS-L3-B).
+    const v020 = {
+      ...legacyManifest(),
+      captureRequires: ['a11y'],
+      approvedCaptures: ['a11y'],
+      trustLevel: 'unknown',
+    }
+    const { manifest, migrated } = applyGrandfatherMigration(v020)
+    expect(migrated).toBe(true)
+    expect(manifest.source).toBe('sample')
   })
 
   it('treats a partial migration (only approvedCaptures present) as needing migration', () => {

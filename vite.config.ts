@@ -86,6 +86,21 @@ export default defineConfig({
       '@app': resolve(__dirname, 'app'),
     },
   },
+  // Recipe pages are dynamic-imported via `/@fs` + `@vite-ignore`
+  // (see `app-loader.ts`), so Vite's dep scanner never walks their
+  // import graph. Any npm dep used *only* by a recipe page (not by
+  // the host renderer under `src/renderer/**`) is therefore not
+  // auto pre-bundled, and at runtime its bare specifier cannot be
+  // resolved from the user project root — the recipe page fails to
+  // load with `Failed to fetch dynamically imported module`. Such
+  // recipe-page-only deps must be declared here explicitly. We list
+  // the full set the bundled recipe pages import (not just the lone
+  // host-invisible `dompurify`) because a fresh dep scan can abort on
+  // the first unresolved entry and drop the others as collateral.
+  // Spec: recipe-system.md §6.10.6.13 (cross-cutting invariant).
+  optimizeDeps: {
+    include: ['dompurify', 'react-markdown', 'remark-gfm', 'rehype-highlight'],
+  },
   build: {
     outDir: '../../dist',
     emptyOutDir: true,

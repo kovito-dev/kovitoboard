@@ -7,6 +7,64 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-05-30
+
+User-facing improvements from a full manual UX pass, plus security
+hardening ahead of the public release.
+
+### Added
+
+- Bundled sample apps can now be enabled and disabled directly, without
+  going through the recipe install flow. The Apps screen is reorganized
+  into a three-tab layout (Apps / Sample Apps / Recipes) with
+  drag-and-drop ordering that persists.
+- The Document Viewer sample app now renders HTML files in addition to
+  Markdown, shows an icon-based file tree in the left pane, and has
+  visible scrollbars in both panes.
+- Governance files for external contributors: pull-request and issue
+  templates, `CODEOWNERS`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, and a
+  "For External Contributors" section in `CONTRIBUTING.md`.
+- The Apps screen now shows a hint that apps can be reordered by drag
+  and drop.
+
+### Changed
+
+- Work Roots moved from a standalone sidebar item into a tab in the
+  Settings modal.
+- Agents created from KovitoBoard templates now include structured
+  field markers by default, so their personality, tone, and extra
+  instructions are editable right away.
+- The recipe export refusal message (for apps with server-side `api/`
+  code) is now action-first and avoids internal jargon, making it
+  clearer how to make an app distributable.
+- The "Code-trusted (bundled)" trust badge is now placed at the
+  top-right of the app view.
+
+### Fixed
+
+- The per-app three-dot menu (export recipe / disable) no longer renders
+  off the right edge of the window where it could not be used.
+- Session input area: the attach and send buttons now align with the
+  text area, the text-area scrollbar appears only when needed, and the
+  Ambient sidebar input no longer opens oversized on first display.
+
+### Security
+
+- The Document Viewer now renders untrusted HTML inside a sandboxed
+  iframe (a separate, script-less, opaque-origin browsing context) so
+  that hostile inline styles cannot overlay or spoof the host UI,
+  including trust prompts.
+- Hardened the Content-Security-Policy (`base-uri`, `object-src`,
+  `form-action`, `frame-ancestors`), menu page path resolution, an
+  upload write race, and YAML parser denial-of-service handling.
+- Strengthened the `.git` directory exclusion against bare-repository,
+  case-insensitive, and Unicode-variant bypass attempts.
+- Updated `ws` to 8.21.0 and `qs` to 6.15.2 to resolve
+  CVE-2026-45736 and CVE-2026-8723.
+- Removed the maintainer's personal email from the governance docs;
+  security reports are now handled through GitHub's private
+  vulnerability reporting.
+
 ## [0.2.0] - 2026-05-26
 
 Security and design hardening release. Adds protected-path reference,

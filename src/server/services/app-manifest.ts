@@ -64,7 +64,30 @@ export function readAppManifest(
 ): AppManifest | null {
   const path = getAppManifestPath(projectRoot, appId)
   if (!fs.existsSync(path)) return null
+  return readAppManifestAtPath(fs, path, appId)
+}
 
+/**
+ * Read an `AppManifest` from a caller-resolved canonical path,
+ * skipping the `appId` to path resolution that {@link readAppManifest}
+ * does internally.
+ *
+ * Use this when the caller has already verified that the path is
+ * safe to open (e.g. the apps-routes handlers run a `realpathSync`
+ * + `isWithin` boundary check before this call, so the read cannot
+ * follow a symlink out of `<projectRoot>/app/`). Returns `null`
+ * with the same warn-on-failure semantics as {@link readAppManifest};
+ * `appId` is accepted as a hint for the warn line metadata so the
+ * server log stays grep-able by app identifier even when the path
+ * is canonical / resolved.
+ *
+ * @stable v0.2.1
+ */
+export function readAppManifestAtPath(
+  fs: FileAccessLayer,
+  path: string,
+  appId: string,
+): AppManifest | null {
   let raw: string
   try {
     raw = fs.readFileSync(path, 'utf-8')
@@ -173,8 +196,15 @@ export function scanAppManifests(
  * for both `AppManifest` itself and the `AppSourceInfo` discriminator.
  * Optional / future fields are not gated here; we do not want a
  * v0.2.0 manifest to be rejected by a v0.1.0 reader.
+ *
+ * Exported (v0.2.1) so the bundled-installer can re-run the same
+ * schema check while computing `isEnabledAndManifestCoherent`'s
+ * coherence verdict — the readAppManifest helper trusts its callers
+ * not to wrap the disk read in try/catch, but the coherence path
+ * needs to silently downgrade any schema-invalid AppManifest to
+ * "not coherent" without surfacing a warn line on every scan.
  */
-function isAppManifest(value: unknown): value is AppManifest {
+export function isAppManifest(value: unknown): value is AppManifest {
   if (!isPlainObject(value)) return false
   if (typeof value.appId !== 'string' || value.appId.length === 0) return false
   if (typeof value.displayName !== 'string') return false
@@ -188,6 +218,7 @@ function isAppManifest(value: unknown): value is AppManifest {
       typeof src.recipeId === 'string' &&
       typeof src.recipeVersion === 'string' &&
       (src.recipeSource === 'sample' ||
+        src.recipeSource === 'bundled' ||
         src.recipeSource === 'import' ||
         src.recipeSource === 'url')
     )
