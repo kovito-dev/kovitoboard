@@ -9,14 +9,21 @@
  * Customization hint: change EXTENSIONS to add more file types.
  * e.g. ['.md', '.ts'] to also show TypeScript files.
  *
- * Security note: HTML files are rendered via `dangerouslySetInnerHTML`
- * after being sanitized with DOMPurify. Even though bundled sample
- * recipes run as `code-trusted (bundled)`, the *content* they read
- * (arbitrary project HTML) is untrusted and runs in the same realm as
- * the host renderer. Sanitizing strips `<script>`, event handlers
- * (`onerror`, `onload`, ...), `javascript:` URLs, etc. before they can
- * reach the DOM. This is defense-in-depth on top of the host CSP
- * (`script-src 'self'`), not a replacement for it.
+ * Security note: HTML files are rendered inside a sandboxed
+ * `<iframe sandbox srcdoc>` — a separate, opaque-origin browsing
+ * context. Bundled sample recipes run as `code-trusted (bundled)`,
+ * but the *content* they read (arbitrary project HTML) is untrusted.
+ * Rendering it in the host realm would let an inline `style` such as
+ * `position:fixed;width:100vw;height:100vh` paint a full-screen
+ * overlay over the host chrome / trust-prompt UI (a viewport hijack
+ * that needs no script). The sandbox iframe is the PRIMARY defense:
+ * with neither `allow-same-origin` nor `allow-scripts`, the frame
+ * gets an opaque origin (no access to the host DOM / `window.kb`) and
+ * runs no JS, so viewport-affecting styles are structurally confined
+ * to the iframe's own box. DOMPurify is kept as DEFENSE-IN-DEPTH (a
+ * secondary layer that degrades gracefully if a sandbox flag is ever
+ * misconfigured) — it is NOT the thing that stops the viewport
+ * hijack. See docs security-threat-model S10 / §7.10.
  */
 import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -374,12 +381,23 @@ export default function DocumentViewer() {
 
           {content !== null && !isReadLoading && !readError && selectedPath && (
             isHtmlPath(selectedPath) ? (
-              <div
-                className="dv-prose"
+              // Untrusted HTML is isolated in a sandboxed, opaque-origin
+              // iframe (primary defense). `sandbox=""` enables every
+              // restriction: no `allow-same-origin` (opaque origin → no
+              // host DOM / window.kb access) and no `allow-scripts` (no
+              // JS runs in the frame). A `position:fixed` overlay in the
+              // content therefore stays inside the iframe's box and can
+              // never cover the host viewport. DOMPurify still runs as a
+              // secondary (defense-in-depth) layer. The frame has no
+              // script to self-measure its height, so the host fixes the
+              // size and the parent pane scrolls (security-threat-model
+              // §7.10.4 invariant (c)).
+              <iframe
+                sandbox=""
+                srcDoc={DOMPurify.sanitize(content)}
+                className="dv-html-frame"
+                title="Document preview"
                 data-testid="docviewer-html"
-                // Sanitized with DOMPurify before injection — strips
-                // <script>, event handlers, javascript: URLs, etc.
-                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(content) }}
               />
             ) : (
               <div className="dv-prose">

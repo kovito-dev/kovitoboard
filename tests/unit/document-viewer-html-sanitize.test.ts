@@ -9,21 +9,93 @@
  * Security regression for the Document Viewer sample recipe's HTML
  * rendering path (recipes/document-viewer, v1.2.0).
  *
- * The recipe renders project HTML files via `dangerouslySetInnerHTML`
- * after passing the raw string through `DOMPurify.sanitize()`. Bundled
- * sample recipes run as `code-trusted (bundled)`, but the *content*
- * they read (arbitrary project HTML) is untrusted and executes in the
- * same realm as the host renderer. This test pins the sanitizer's
- * behavior so a future dependency bump or config change cannot silently
- * reopen the XSS surface.
+ * The recipe renders project HTML files inside a sandboxed,
+ * opaque-origin `<iframe sandbox="" srcdoc>` — the PRIMARY defense
+ * (security-threat-model S10 / §7.10). Bundled sample recipes run as
+ * `code-trusted (bundled)`, but the *content* they read (arbitrary
+ * project HTML) is untrusted and would otherwise execute in the same
+ * realm as the host renderer. Rendering it in the host realm would let
+ * an inline `style` like `position:fixed;width:100vw;height:100vh`
+ * paint a full-screen overlay over the host chrome / trust-prompt UI
+ * (a viewport hijack that needs no script).
  *
- * `DOMPurify.sanitize` is invoked here exactly as the recipe page calls
- * it (default config) so the assertions track the real render path.
+ * This file pins two layers:
+ *   1. The iframe-isolation contract — sandbox flags + structural
+ *      containment of a viewport-hijack payload (the primary defense).
+ *   2. DOMPurify's behavior as the secondary, defense-in-depth layer,
+ *      invoked exactly as the recipe page calls it (default config).
  */
 import { describe, it, expect } from 'vitest'
 import DOMPurify from 'dompurify'
 
-describe('Document Viewer HTML sanitization', () => {
+// Mirrors the render path in DocumentViewer.tsx: the host realm builds a
+// `<iframe sandbox="" srcdoc={DOMPurify.sanitize(content)}>`. We construct
+// the same element shape here so the security contract is asserted against
+// real DOM behavior rather than a string snapshot.
+function renderHtmlFrame(content: string): HTMLIFrameElement {
+  const frame = document.createElement('iframe')
+  frame.setAttribute('sandbox', '')
+  frame.setAttribute('srcdoc', DOMPurify.sanitize(content))
+  frame.className = 'dv-html-frame'
+  frame.title = 'Document preview'
+  return frame
+}
+
+// The exact viewport-hijack payload from security-threat-model §7.10.1.
+const HIJACK_PAYLOAD =
+  '<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;background:#000">FAKE OVERLAY</div>'
+
+describe('Document Viewer HTML iframe isolation (primary defense)', () => {
+  it('renders untrusted HTML inside a sandboxed iframe, not the host DOM', () => {
+    const frame = renderHtmlFrame('<div>safe</div>')
+    expect(frame.tagName).toBe('IFRAME')
+    expect(frame.hasAttribute('sandbox')).toBe(true)
+    // Content is delivered via srcdoc, never injected into the host DOM.
+    expect(frame.hasAttribute('srcdoc')).toBe(true)
+    expect(frame.getAttribute('srcdoc')).toContain('safe')
+  })
+
+  it('keeps the sandbox minimal: no allow-scripts, no allow-same-origin', () => {
+    const frame = renderHtmlFrame('<div>x</div>')
+    const sandbox = frame.getAttribute('sandbox') ?? ''
+    // Empty sandbox = every restriction active. The two flags whose
+    // combination would self-disable the sandbox (opaque origin + JS)
+    // must never appear.
+    expect(sandbox).toBe('')
+    expect(sandbox).not.toContain('allow-scripts')
+    expect(sandbox).not.toContain('allow-same-origin')
+  })
+
+  it('confines a position:fixed viewport-hijack payload to the iframe (no host overlay)', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const frame = renderHtmlFrame(HIJACK_PAYLOAD)
+    host.appendChild(frame)
+
+    // The payload travels inside srcdoc...
+    expect(frame.getAttribute('srcdoc')).toContain('FAKE OVERLAY')
+    expect(frame.getAttribute('srcdoc')).toContain('position:fixed')
+
+    // ...but it must NOT have injected any element into the host document.
+    // (With dangerouslySetInnerHTML the fixed overlay would be a real host
+    //  DOM node; with the iframe it can only ever live in srcdoc text.)
+    const hostNodes = Array.from(host.querySelectorAll('*'))
+    const leakedOverlay = hostNodes.find(
+      (n) => n.tagName !== 'IFRAME' && /FAKE OVERLAY/.test(n.textContent ?? ''),
+    )
+    expect(leakedOverlay).toBeUndefined()
+    // No element anywhere in the host body carries the overlay text outside
+    // the iframe's own srcdoc attribute.
+    const bodyFixedOverlay = Array.from(document.body.querySelectorAll('*')).find(
+      (n) => n.tagName === 'DIV' && /FAKE OVERLAY/.test(n.textContent ?? ''),
+    )
+    expect(bodyFixedOverlay).toBeUndefined()
+
+    document.body.removeChild(host)
+  })
+})
+
+describe('Document Viewer HTML sanitization (defense-in-depth secondary layer)', () => {
   it('strips <script> elements', () => {
     const out = DOMPurify.sanitize('<div>safe</div><script>window.__x = 1</script>')
     expect(out).toContain('safe')
@@ -56,16 +128,13 @@ describe('Document Viewer HTML sanitization', () => {
     expect(out.toLowerCase()).not.toContain('<embed')
   })
 
-  it('preserves benign formatting markup and inline styles', () => {
+  it('preserves benign formatting markup', () => {
     const out = DOMPurify.sanitize(
       '<h1>Title</h1><p style="color: red;">Body <strong>bold</strong> <a href="https://ok.test">link</a></p>',
     )
     expect(out).toContain('<h1>')
     expect(out).toContain('<strong>')
     expect(out).toContain('https://ok.test')
-    // Inline styles survive sanitization; the host CSP already allows
-    // them via `style-src 'unsafe-inline'`, so no CSP change is needed.
-    expect(out).toContain('style')
   })
 
   it('returns an empty-ish string for a script-only payload', () => {

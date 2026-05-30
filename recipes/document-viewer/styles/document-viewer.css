@@ -40,6 +40,28 @@
   line-height: 1.75;
 }
 
+/*
+ * Sandboxed HTML preview frame.
+ *
+ * Untrusted HTML files render inside a sandboxed, opaque-origin iframe
+ * (see DocumentViewer.tsx security note / security-threat-model S10).
+ * Because the frame has no `allow-scripts`, its content cannot measure
+ * its own height and grow the element; the host therefore fixes the
+ * size. The frame fills the right pane and the iframe's own scrollbar
+ * handles overflow within the isolated document. A white background is
+ * set so dark-on-transparent host themes don't render the untrusted
+ * document unreadable — the frame is visually distinct from the host
+ * realm by design (theme/font are intentionally not inherited in
+ * v0.2.1; full visual unification is a v0.3.0 candidate).
+ */
+.dv-html-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  display: block;
+}
+
 /* Headings */
 .dv-prose h1,
 .dv-prose h2,
