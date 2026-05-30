@@ -2,11 +2,11 @@
 
 # KovitoBoard
 
-Self-extending AI agent team system that runs on Claude Code.
+KovitoBoard is a local web application platform that makes Claude Code operable from your browser.
 
-KovitoBoard reads `.claude/agents/` definitions from an existing Claude Code
-project and provides a browser dashboard for session monitoring, recipe
-management, and trust-prompt relay.
+It reads the Claude Code definitions of the project it is installed in, letting
+you manage agents, monitor sessions, and develop and run apps — all from your
+browser, without ever touching the terminal.
 
 <!-- A demo GIF will be added in Phase 6 -->
 
@@ -41,6 +41,8 @@ tmux -V   # → tmux 3.4 or higher
 
 ## Quick Start
 
+### Starting from an existing Claude Code project directory
+
 ```bash
 # 1) Clone KovitoBoard inside your Claude Code project directory
 cd /path/to/your-claude-code-project
@@ -57,6 +59,26 @@ npm start -- --project-root ..
 #    for the backend) is already in use, so always read the
 #    "Frontend: http://localhost:<port>  ← open this in your browser"
 #    line from the supervisor.
+```
+
+### Starting from a new directory
+
+Don't have a Claude Code project yet? You can still start by installing
+KovitoBoard into a freshly created empty directory. The agent list starts
+empty, and you grow your team by adding `.claude/agents/*.md` files.
+
+```bash
+# 1) Create a new working directory and clone KovitoBoard inside it
+mkdir my-workspace
+cd my-workspace
+git clone https://github.com/kovito-dev/kovitoboard.git
+cd kovitoboard
+npm install
+
+# 2) Launch
+npm start -- --project-root ..
+
+# 3) Open the URL printed at the end of `npm start`'s output in your browser
 ```
 
 > **Note:** KovitoBoard runs in development mode by default. This enables
