@@ -1,5 +1,37 @@
 /* Document Viewer — markdown styling */
 
+/*
+ * Always-visible custom scrollbars for the two scroll panes.
+ *
+ * The panes already use `overflow-y: auto`, but on platforms with
+ * overlay scrollbars (and in WSL/Windows where the track is hard to
+ * see) the track can stay invisible, hiding the fact that more
+ * content exists below the fold. These rules paint an explicit,
+ * theme-aware track + thumb so hidden content is discoverable.
+ */
+.dv-scroll {
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.dv-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.dv-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dv-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 6px;
+  /* Inset the thumb so it reads as a rounded pill, not a full-width bar. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.dv-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-dim, var(--text-secondary));
+}
+
 .dv-prose {
   max-width: 48rem;
   margin: 0 auto;
