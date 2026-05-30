@@ -270,14 +270,53 @@ export function MessageInput({
     const minHeight = resizable ? manualHeightPx : 0
     const maxHeight = resizable ? Math.max(manualHeightPx, RESIZE_MAX_PX) : 200
     el.style.height = 'auto'
-    const natural = Math.min(el.scrollHeight, maxHeight)
+    // `scrollHeight` reports the content box + padding but excludes the
+    // border. Under `box-sizing: border-box` the CSS `height` we assign
+    // *includes* the border, so writing `height = scrollHeight` leaves
+    // the content area 1px short on each edge — a permanent 2px overflow
+    // that forces the vertical scrollbar to stay visible even when the
+    // text fits. Add the border back so the box exactly contains its
+    // content and overflow-y:auto stays hidden.
+    const borderHeight = el.offsetHeight - el.clientHeight
+    const natural = Math.min(el.scrollHeight + borderHeight, maxHeight)
     el.style.height = Math.max(minHeight, natural) + 'px'
   }, [manualHeightPx, resizable])
 
   // Reapply height whenever the manual minimum changes so the textarea
-  // expands/shrinks in lockstep with the drag.
+  // expands/shrinks in lockstep with the drag. The first pass also seeds
+  // the initial mount height. Deferred to the next animation frame so it
+  // runs after the surrounding layout has flushed (also matches the
+  // `handleInput` path and adds at most one imperceptible frame).
   useEffect(() => {
-    applyTextareaHeight()
+    const id = requestAnimationFrame(applyTextareaHeight)
+    return () => cancelAnimationFrame(id)
+  }, [applyTextareaHeight])
+
+  // Recompute height whenever the textarea's *width* changes. The height
+  // is derived from `scrollHeight`, which depends on how the placeholder
+  // (and any typed text) wraps — and that in turn depends on the current
+  // width. The Ambient sidebar mounts this input while its open/close
+  // width transition (`transition-[width] duration-200`) is still
+  // running, so the textarea is briefly only a couple dozen px wide. At
+  // that width the placeholder wraps into ~17 lines and `scrollHeight`
+  // balloons to ~272px; the value got latched as the textarea height and
+  // the input occupied roughly half the sidebar until the first drag
+  // forced a re-measure.
+  // A ResizeObserver re-runs the height formula once the transition (or a
+  // window resize / sidebar drag-resize) settles the real width, so the
+  // empty input collapses back to `manualHeightPx`.
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      const width = el.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      applyTextareaHeight()
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [applyTextareaHeight])
 
   /** Upload file to the server */
@@ -524,7 +563,7 @@ export function MessageInput({
     : 'shrink-0 border-t border-[var(--border)] bg-[var(--bg-surface)] px-2 md:px-4 py-2 md:py-3'
   const innerWrapperClass = compact
     ? 'flex items-end gap-1.5 max-w-full'
-    : 'flex items-center gap-2 md:gap-3 max-w-4xl mx-auto'
+    : 'flex items-end gap-2 md:gap-3 max-w-4xl mx-auto'
   const previewWrapperClass = compact
     ? 'flex flex-wrap gap-1.5 max-w-full mb-1.5'
     : 'flex flex-wrap gap-2 max-w-4xl mx-auto mb-2'
@@ -534,7 +573,7 @@ export function MessageInput({
   const buttonSizeClass = compact ? 'w-8 h-8' : 'w-10 h-10'
   const textareaClass = compact
     ? `
-        w-full resize-none rounded-lg px-2.5 py-2 pr-3
+        w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
         bg-[var(--bg-base)] border border-[var(--border)]
         text-xs text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
@@ -542,7 +581,7 @@ export function MessageInput({
         transition-colors
       `
     : `
-        w-full resize-none rounded-xl px-4 py-3 pr-12
+        w-full resize-none overflow-y-auto rounded-xl px-4 py-3 pr-12
         bg-[var(--bg-elevated)] border border-[var(--border)]
         text-sm text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
