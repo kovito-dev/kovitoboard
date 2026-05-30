@@ -1,6 +1,6 @@
 ╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
-│                Welcome back Developer!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                Welcome back Developer!             │ Run /init to create a CLAUDE.md file with instructions for Claude │
 │                                                    │ ───────────────────────────────────────────────────────────────── │
 │                       ▐▛███▜▌                      │ Recent activity                                                   │
 │                      ▝▜█████▛▘                     │ No recent activity                                                │

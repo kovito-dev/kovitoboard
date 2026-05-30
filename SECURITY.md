@@ -11,28 +11,28 @@
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub
-issues.**
+issues, discussions, or pull requests.**
 
-### Preferred channel — GitHub Private Vulnerability Reporting
+### How to report — GitHub Private Vulnerability Reporting
 
 Use the [Security tab](https://github.com/kovito-dev/kovitoboard/security)
-of this repository and click "Report a vulnerability". This routes the
-report into GitHub's private disclosure flow and gives the maintainer a
-secure channel before public disclosure.
-
-### Secondary channel — Email
-
-If GitHub Private Vulnerability Reporting is not available to you, email
-the maintainer at:
-
-**security@example.com**
+of this repository and click **"Report a vulnerability"**. This opens
+GitHub's private advisory flow, giving the maintainer a secure channel to
+triage and coordinate a fix before any public disclosure.
 
 Please include:
 
 - A clear description of the vulnerability
-- Steps to reproduce (proof of concept code if applicable)
+- Steps to reproduce (proof-of-concept code if applicable)
 - The affected version(s)
 - Any mitigations or workarounds you've identified
+
+### If private reporting is unavailable
+
+If you cannot access GitHub Private Vulnerability Reporting, open a public
+issue that **only** says you would like to report a security concern
+privately — do **not** include any vulnerability details. The maintainer
+will follow up to establish a private channel.
 
 ## Response Timeline
 

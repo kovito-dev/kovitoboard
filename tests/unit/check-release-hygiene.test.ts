@@ -533,14 +533,19 @@ function stripExpectedLiteralsIfLineMatches(
 }
 
 // Fragments are never written as a continuous PII string in this file's
-// source. At runtime the templates evaluate to the real maintainer
-// literals, but the hygiene checker only ever sees the fragmented form.
+// source. At runtime the templates evaluate to the real maintainer handle
+// (for the CODEOWNERS allowlist) or to a synthetic, non-PII Gmail address
+// (for the Gmail-pattern guard tests), but the hygiene checker only ever
+// sees the fragmented form. The Gmail dummy uses an `example` local-part
+// that carries no real personal information; it is fragmented purely so
+// this test file is not self-flagged by the tool's Gmail-host pattern.
 const HANDLE_USER = 'kousuke'
 const HANDLE_FAM = 'iri' + 'kura'
 const HANDLE = `@${HANDLE_USER}-${HANDLE_FAM}`
-const EMAIL_LOCAL = 'REDACTED'
 const EMAIL_HOST = '@' + 'gmail' + '.com'
-const EMAIL = `${EMAIL_LOCAL}${EMAIL_HOST}`
+// Synthetic Gmail dummy (no real PII): an `example` local-part on the
+// Gmail host, fragmented so the live hygiene scan does not flag this file.
+const SAMPLE_GMAIL = `${'example'}${EMAIL_HOST}`
 const ADVERSARY_EMAIL = `${'bad'}${EMAIL_HOST}`
 const HOME_PATH = `/${'home'}/${HANDLE_FAM}/scratch/notes.md`
 const GMAIL_PATTERN_LABEL = EMAIL_HOST
@@ -570,56 +575,34 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the literal in the ex
     }
   })
 
-  it('SECURITY.md bold-email line is stripped cleanly', () => {
-    const entries = PII_EXPECTED_LITERALS.get('SECURITY.md')
-    expect(entries).toBeDefined()
-    const stripped = stripExpectedLiteralsIfLineMatches(`**${EMAIL}**`, entries!)
-    for (const { regex } of PII_PATTERNS) {
-      expect(regex.test(stripped)).toBe(false)
-    }
-  })
-
-  it('CODE_OF_CONDUCT.md Enforcement paragraph is stripped cleanly', () => {
-    const entries = PII_EXPECTED_LITERALS.get('CODE_OF_CONDUCT.md')
-    expect(entries).toBeDefined()
-    const stripped = stripExpectedLiteralsIfLineMatches(
-      `Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at ${EMAIL}. All complaints will be reviewed and investigated promptly and fairly.`,
-      entries!,
+  it('the Gmail PII pattern detects an arbitrary local-part address (guard is generic, not literal-bound)', () => {
+    // The hygiene tool no longer carries a maintainer-specific email
+    // literal: governance files report through GitHub's private channel.
+    // The remaining guard is the generic Gmail-host pattern, which must
+    // still fire for any local-part. SAMPLE_GMAIL is a synthetic, non-PII
+    // probe with an `example` local-part.
+    const gmail = PII_PATTERNS.find(
+      (p: { label: string }) => p.label === GMAIL_PATTERN_LABEL,
     )
-    for (const { regex } of PII_PATTERNS) {
-      expect(regex.test(stripped)).toBe(false)
-    }
+    expect(gmail, 'Gmail PII pattern must exist').toBeDefined()
+    expect(gmail!.regex.test(SAMPLE_GMAIL)).toBe(true)
+    expect(gmail!.regex.test(ADVERSARY_EMAIL)).toBe(true)
   })
 
-  it('an extra unexpected email on the same line as the expected literal still triggers PII detection', () => {
-    const entries = PII_EXPECTED_LITERALS.get('SECURITY.md')!
-    // Adversarial: someone edits SECURITY.md and adds a foreign address on
-    // the same line as the expected one. The expected literal is stripped
-    // (the anchor still matches because the bold form is present), but
-    // the foreign email survives and must match the Gmail PII pattern.
+  it('a Gmail address pasted onto an allowlisted CODEOWNERS line still triggers PII detection (no allowlist blind spot)', () => {
+    const entries = PII_EXPECTED_LITERALS.get('CODEOWNERS')!
+    // Adversarial: someone edits CODEOWNERS and appends a foreign Gmail
+    // address as a trailing comment on the global ownership rule. The
+    // CODEOWNERS anchor matches the bare `* <handle>` line only, so the
+    // combined line is not stripped and the Gmail PII surfaces.
     const stripped = stripExpectedLiteralsIfLineMatches(
-      `**${EMAIL}** see also ${ADVERSARY_EMAIL}`,
+      `* ${HANDLE} # contact ${SAMPLE_GMAIL}`,
       entries,
     )
     const gmail = PII_PATTERNS.find(
       (p: { label: string }) => p.label === GMAIL_PATTERN_LABEL,
     )
     expect(gmail, 'Gmail PII pattern must exist').toBeDefined()
-    expect(gmail!.regex.test(stripped)).toBe(true)
-  })
-
-  it('the expected literal in a non-anchor line is NOT stripped (no blind spot from line-context mismatch)', () => {
-    const entries = PII_EXPECTED_LITERALS.get('SECURITY.md')!
-    // Same literal as the expected bold-line context, but appearing in a
-    // free-form sentence (e.g. a pasted log excerpt) that does not match
-    // the bold anchor. The strip pass must be skipped and the line must
-    // still carry the literal.
-    const adversarialLine = `please ignore the address ${EMAIL} found in the log excerpt above`
-    const stripped = stripExpectedLiteralsIfLineMatches(adversarialLine, entries)
-    expect(stripped).toBe(adversarialLine)
-    const gmail = PII_PATTERNS.find(
-      (p: { label: string }) => p.label === GMAIL_PATTERN_LABEL,
-    )
     expect(gmail!.regex.test(stripped)).toBe(true)
   })
 
@@ -641,13 +624,13 @@ describe('PII allowlist: PII_EXPECTED_LITERALS only strips the literal in the ex
     expect(homePath!.regex.test(stripped)).toBe(true)
   })
 
-  it('PII_EXPECTED_LITERALS only carves out the three governance files (no test-file entry)', () => {
+  it('PII_EXPECTED_LITERALS only carves out CODEOWNERS (governance docs no longer carry emails, no test-file entry)', () => {
     expect(PII_EXPECTED_LITERALS.has('README.md')).toBe(false)
     expect(PII_EXPECTED_LITERALS.has('src/server/index.ts')).toBe(false)
     expect(PII_EXPECTED_LITERALS.has('CONTRIBUTING.md')).toBe(false)
     expect(PII_EXPECTED_LITERALS.has('CODEOWNERS')).toBe(true)
-    expect(PII_EXPECTED_LITERALS.has('CODE_OF_CONDUCT.md')).toBe(true)
-    expect(PII_EXPECTED_LITERALS.has('SECURITY.md')).toBe(true)
+    expect(PII_EXPECTED_LITERALS.has('CODE_OF_CONDUCT.md')).toBe(false)
+    expect(PII_EXPECTED_LITERALS.has('SECURITY.md')).toBe(false)
     expect(
       PII_EXPECTED_LITERALS.has('tests/unit/check-release-hygiene.test.ts'),
     ).toBe(false)

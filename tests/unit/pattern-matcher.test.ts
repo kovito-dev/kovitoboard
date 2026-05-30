@@ -214,7 +214,7 @@ describe('PatternMatcher 不マッチ', () => {
     // so matcher.match() itself returns null if the footer does not match
     const normalPrompt = `
 ╭─── Claude Code v2.1.97 ──╮
-│   Welcome back Developer!   │
+│  Welcome back Developer!  │
 ╰───────────────────────────╯
 
 ❯ Hello
