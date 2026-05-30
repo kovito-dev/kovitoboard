@@ -71,13 +71,20 @@ type TreeNode =
  * position in the sorted flat list) so existing
  * `data-testid="docviewer-file-${index}"` selectors keep working.
  *
+ * Paths are split on both `/` and `\` so the tree nests correctly
+ * regardless of separator: the backend's `list-files` handler derives
+ * entry paths with `path.relative()`, which yields `\`-separated paths
+ * on Windows. The original `file.path` is preserved on the leaf node so
+ * the `read-doc` round-trip back to the backend still uses the exact
+ * path the backend reported.
+ *
  * Pure: depends only on its input.
  */
 export function buildTree(files: FileEntry[]): TreeNode[] {
   const root: TreeNode[] = []
 
   files.forEach((file, fileIndex) => {
-    const segments = file.path.split('/').filter(Boolean)
+    const segments = file.path.split(/[/\\]/).filter(Boolean)
     let level = root
     let prefix = ''
 

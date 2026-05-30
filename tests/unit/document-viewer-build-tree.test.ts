@@ -65,6 +65,32 @@ describe('buildTree', () => {
     expect(tree[2].name).toBe('z.md')
   })
 
+  it('nests Windows backslash-separated paths and preserves the original leaf path', () => {
+    // The backend derives entry paths with path.relative(), which yields
+    // `\`-separated paths on Windows. The tree must still nest, and the leaf
+    // node must keep the exact original path for the read-doc round-trip.
+    const winFile: FileEntry = {
+      name: 'intro.md',
+      path: 'docs\\guide\\intro.md',
+      isDirectory: false,
+      size: 1,
+      modifiedAt: '2026-01-01T00:00:00Z',
+    }
+    const tree = buildTree([winFile])
+    expect(tree).toHaveLength(1)
+    const docs = tree[0]
+    if (docs.kind !== 'dir') throw new Error('expected dir')
+    expect(docs.name).toBe('docs')
+    const guide = docs.children[0]
+    if (guide.kind !== 'dir') throw new Error('expected dir')
+    expect(guide.name).toBe('guide')
+    const leaf = guide.children[0]
+    if (leaf.kind !== 'file') throw new Error('expected file')
+    expect(leaf.name).toBe('intro.md')
+    // Original separator preserved on the leaf for the backend round-trip.
+    expect(leaf.path).toBe('docs\\guide\\intro.md')
+  })
+
   it('assigns each file a stable fileIndex matching its flat-list position', () => {
     // Input order is the sorted flat list the component passes in.
     const tree = buildTree([file('a.md'), file('docs/b.md'), file('c.md')])
