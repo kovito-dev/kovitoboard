@@ -620,6 +620,12 @@ export function AmbientSidebar({
                 <AppActionsPopover
                   isOpen={isAppActionsOpen}
                   onClose={() => setIsAppActionsOpen(false)}
+                  // The sidebar is pinned to the right edge of the
+                  // viewport and its column can shrink to its minimum
+                  // width, so a left-anchored popover (default) would
+                  // expand past the window edge and become unclickable.
+                  // Anchor to the right edge and expand leftward instead.
+                  align="right"
                   source={focused?.source}
                   manifestState={focused?.manifestState}
                   onSelectExport={() =>

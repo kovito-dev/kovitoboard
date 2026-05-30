@@ -845,6 +845,7 @@ const ja = {
 
   // Apps tab D&D reorder feedback (BS-L6).
   'appsTab.reorder.saving': '並び順を保存中…',
+  'appsTab.reorder.hint': 'ドラッグ＆ドロップで表示順を変更できます',
 
   // Per-row Actions menu trigger (§4'.6).
   'app.actions.menu': 'アプリ操作',

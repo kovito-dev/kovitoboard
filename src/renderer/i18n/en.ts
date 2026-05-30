@@ -843,6 +843,7 @@ const en: Record<MessageKey, string> = {
 
   // Apps tab D&D reorder feedback (BS-L6).
   'appsTab.reorder.saving': 'Saving the new order…',
+  'appsTab.reorder.hint': 'Drag and drop to reorder apps',
 
   // Per-row Actions menu trigger (§4'.6).
   'app.actions.menu': 'App actions',
