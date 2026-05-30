@@ -25,7 +25,7 @@
  * misconfigured) — it is NOT the thing that stops the viewport
  * hijack. See docs security-threat-model S10 / §7.10.
  */
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -273,7 +273,9 @@ export default function DocumentViewer() {
     },
   }
 
-  const tree = buildTree(files)
+  // `buildTree` is pure over `files`; memoize so the tree is built once
+  // per file-list change instead of on every render.
+  const tree = useMemo(() => buildTree(files), [files])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }} data-testid="docviewer">
