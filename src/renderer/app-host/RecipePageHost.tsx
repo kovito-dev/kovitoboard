@@ -177,7 +177,7 @@ export function RecipePageHost({ appId, Page, trustLevel }: Props) {
       <div className="flex flex-1 flex-col">
         <header
           data-testid="recipe-trust-header"
-          className="flex items-center justify-start gap-2 px-4 pt-2"
+          className="flex items-center justify-end gap-2 px-4 pt-2"
         >
           <TrustMarker level={trustLevel} />
         </header>

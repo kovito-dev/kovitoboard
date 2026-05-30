@@ -72,6 +72,17 @@ interface AppActionsPopoverProps {
    * source-less rows).
    */
   manifestState?: 'present' | 'unreadable' | 'missing' | 'anomalous'
+  /**
+   * Horizontal expansion direction. `'left'` (default) anchors the
+   * popover's left edge to the trigger and expands rightward; `'right'`
+   * anchors the right edge to the trigger and expands leftward.
+   * Right-anchored hosts (the viewport-pinned AmbientSidebar, whose
+   * narrow column sits flush against the right edge of the window) must
+   * pass `'right'` so the 180px-wide popover never overflows the
+   * viewport edge and becomes unclickable. The AppsTab keeps the
+   * default `'left'` so its behaviour is unchanged.
+   */
+  align?: 'left' | 'right'
 }
 
 export function AppActionsPopover({
@@ -82,6 +93,7 @@ export function AppActionsPopover({
   onSelectDisable,
   source,
   manifestState,
+  align = 'left',
 }: AppActionsPopoverProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const exportItemRef = useRef<HTMLButtonElement>(null)
@@ -161,11 +173,11 @@ export function AppActionsPopover({
       role="menu"
       data-testid="app-actions-popover"
       onKeyDown={handleMenuKeyDown}
-      className="
-        absolute top-full left-0 mt-1 z-30
+      className={`
+        absolute top-full ${align === 'right' ? 'right-0' : 'left-0'} mt-1 z-30
         bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-lg
         min-w-[180px] py-1
-      "
+      `}
     >
       <button
         ref={exportItemRef}

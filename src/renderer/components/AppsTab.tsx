@@ -383,6 +383,39 @@ export function AppsTab({
 
       <div className="border-t border-[var(--border)]" />
 
+      {/* Drag-and-drop reorder discoverability hint. Only shown when
+          there are at least two sortable rows — with one or fewer
+          eligible rows reordering is meaningless and the hint would be
+          noise. The hint is scoped to the Apps tab only (sample /
+          recipe-preview tabs are not D&D sortable). */}
+      {orderedEntries.length >= 2 && (
+        <div
+          data-testid="apps-tab-reorder-hint"
+          className="flex items-center gap-1.5 text-xs text-[var(--text-dim)]"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {/* Drag handle (grip) icon */}
+            <circle cx="9" cy="6" r="1" />
+            <circle cx="9" cy="12" r="1" />
+            <circle cx="9" cy="18" r="1" />
+            <circle cx="15" cy="6" r="1" />
+            <circle cx="15" cy="12" r="1" />
+            <circle cx="15" cy="18" r="1" />
+          </svg>
+          <span>{t('appsTab.reorder.hint')}</span>
+        </div>
+      )}
+
       {/* Inflight indicator + reorder error banner */}
       {reorderState.inflight && (
         <div
