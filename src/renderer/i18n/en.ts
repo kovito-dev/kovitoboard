@@ -538,7 +538,7 @@ const en: Record<MessageKey, string> = {
   'recipe.export.error.recipeIdRequired': 'Recipe ID is required.',
   'recipe.export.error.recipeIdFormat': 'Recipe ID must contain only A-Z / a-z / 0-9 / _ / - / . / / / @ and be 1–256 characters.',
   'recipe.export.error.customBeNotExportable':
-    'This app cannot be exported as a recipe: app/{appId}/api/ contains files ({files}) which fall outside the recipe safety boundary — recipe-inspector rejects every artifact whose path starts with api/, regardless of extension. To distribute this app, either rewrite the BE logic using Category A handlers (declarative api.calls + window.kb.call) or document the api/ part separately and ask recipients to implement it via agent assistance after recipe install.',
+    'This app cannot be exported as a recipe. To distribute it, do one of the following: (1) rewrite the server-side logic as declarative API calls that recipes support (api.calls in recipe.yaml + window.kb.call), or (2) document the server-side logic separately so recipients can implement it with agent assistance after installing the recipe. Why: the code under app/{appId}/api/ ({files}) falls outside what a recipe can safely package.',
 
   // Recipe import — retired in v0.2.x alongside the recipe install
   // temporary disable. Will return with the v0.3.0 sideload mode.

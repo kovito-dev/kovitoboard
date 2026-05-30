@@ -532,7 +532,7 @@ const ja = {
   'recipe.export.error.recipeIdRequired': 'レシピ ID は必須です。',
   'recipe.export.error.recipeIdFormat': 'レシピ ID は半角英数字 / _ / - / . / / / @ のみ、1〜256 文字で入力してください。',
   'recipe.export.error.customBeNotExportable':
-    'このアプリはレシピとしてエクスポートできません: app/{appId}/api/ 配下のファイル({files})はレシピの安全境界の外側で扱われるためです (recipe-inspector は拡張子に関わらず api/ 配下のすべての artifact を拒否します)。配布したい場合は (1) BE のロジックを Category A ハンドラ(`api.calls` + `window.kb.call`)で書き直す、もしくは (2) api/ 部分を別途ドキュメント化して、レシピのインストール後にエージェント経由で利用者に実装してもらう、のいずれかを選んでください。',
+    'このアプリはレシピとして書き出せません。配布するには、次のどちらかの対応が必要です: (1) サーバー側の処理を、レシピが扱える宣言的な API 呼び出し（recipe.yaml の api.calls + window.kb.call）に書き直す、または (2) サーバー側の処理を手順書として別途まとめ、レシピのインストール後に利用者がエージェントの助けを借りて実装できるようにする。理由: app/{appId}/api/ 配下のコード（{files}）は、レシピが安全に取り込める範囲の外にあり、レシピに同梱できません。',
 
   // レシピインポート — v0.2.x でレシピインストール一時停止と合わせて廃止。
   // v0.3.0 の developer sideload mode で復活予定。
