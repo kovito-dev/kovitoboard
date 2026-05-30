@@ -571,6 +571,20 @@ export function MessageInput({
     ? 'max-w-full mb-1.5'
     : 'max-w-4xl mx-auto mb-2'
   const buttonSizeClass = compact ? 'w-8 h-8' : 'w-10 h-10'
+  // Non-compact textarea is `block` + `py-[9px]` so the input row's
+  // `items-end` alignment lines the attach/send buttons up with the
+  // textarea exactly. Two box quirks made the buttons look "sunk" before:
+  //   1. A `<textarea>` defaults to inline-level, so its `flex-1 relative`
+  //      wrapper reserved ~7px of inline line-box descender below it; the
+  //      buttons bottom-aligned to the wrapper (not the textarea) and hung
+  //      ~7px under the textarea's bottom edge. `block` collapses the
+  //      wrapper to the textarea's own height.
+  //   2. With `py-3` the single-line textarea was 46px tall vs the 40px
+  //      (`w-10 h-10`) buttons, leaving a 6px top-edge offset under
+  //      `items-end`. `py-[9px]` (9+9 padding + 20px line + 2px border)
+  //      makes the resting single-line height exactly 40px, so top and
+  //      bottom line up; auto-grow still lets the buttons follow the
+  //      bottom edge on multi-line input.
   const textareaClass = compact
     ? `
         w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
@@ -581,7 +595,7 @@ export function MessageInput({
         transition-colors
       `
     : `
-        w-full resize-none overflow-y-auto rounded-xl px-4 py-3 pr-12
+        block w-full resize-none overflow-y-auto rounded-xl px-4 py-[9px] pr-12
         bg-[var(--bg-elevated)] border border-[var(--border)]
         text-sm text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
