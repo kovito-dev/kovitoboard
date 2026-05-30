@@ -152,6 +152,9 @@ export default function TodoPage() {
       <div className="max-w-2xl mx-auto w-full px-4 py-6 flex flex-col gap-4">
         {/* Header */}
         <h1 className="text-lg font-bold text-[var(--text-primary)]">TODO</h1>
+        <p className="text-xs text-[var(--text-dim)] mt-0.5">
+          A simple to-do app. To add or change features, ask the agent from the side panel on the right.
+        </p>
 
         {/* Error banner */}
         {error && (
