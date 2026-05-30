@@ -8,7 +8,7 @@ It reads the Claude Code definitions of the project it is installed in, letting
 you manage agents, monitor sessions, and develop and run apps — all from your
 browser, without ever touching the terminal.
 
-<!-- A demo GIF will be added in Phase 6 -->
+<!-- A demo GIF will be added in a future release. -->
 
 ## Requirements
 
@@ -309,8 +309,10 @@ System prompt and instructions go here.
 ## Features
 
 ### Agent Dashboard
-Browse and inspect agent definitions. View agent details, metadata, and
-the raw Markdown definition file. (Read-only in v0.1.0.)
+Browse and inspect agent definitions — view details, metadata, and the
+raw Markdown definition. Create agents from templates or from scratch,
+and edit their structured fields (personality, tone, extra instructions)
+directly in the browser.
 
 ### Session Monitor
 Watch active Claude Code sessions in real time. JSONL session files are
@@ -362,11 +364,6 @@ tests/
 app.example/    Example app extension (menu, page, API, styles)
 docs/           Specifications and known issues
 ```
-
-## Known Limitations (v0.1.0)
-
-- **Settings are read-only.** The settings modal displays configuration but cannot save changes.
-- **dist/ ESM issue.** The tsc output requires `tsx` runtime; an esbuild bundler will be introduced in v0.2.0.
 
 ## Contributing
 
