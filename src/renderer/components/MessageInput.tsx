@@ -319,14 +319,33 @@ export function MessageInput({
     const el = textareaRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
     let lastWidth = el.clientWidth
+    // Defer the height recompute to the next animation frame. The
+    // callback runs inside the ResizeObserver delivery, and
+    // `applyTextareaHeight` mutates the observed textarea's own
+    // height — doing that synchronously trips the browser's loop
+    // guard ("ResizeObserver loop completed with undelivered
+    // notifications"), a benign warning that `global-errors.ts`
+    // still records as an uncaught error. Running the mutation in a
+    // follow-up frame breaks the same-frame feedback so the warning
+    // never fires. A single pending frame is coalesced so a burst of
+    // width changes (e.g. the Ambient sidebar open/close transition)
+    // schedules at most one recompute.
+    let rafId = 0
     const observer = new ResizeObserver(() => {
       const width = el.clientWidth
       if (width === lastWidth) return
       lastWidth = width
-      applyTextareaHeight()
+      if (rafId !== 0) return
+      rafId = requestAnimationFrame(() => {
+        rafId = 0
+        applyTextareaHeight()
+      })
     })
     observer.observe(el)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      if (rafId !== 0) cancelAnimationFrame(rafId)
+    }
   }, [applyTextareaHeight])
 
   /** Upload file to the server */
