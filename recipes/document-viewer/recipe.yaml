@@ -1,15 +1,15 @@
 ---
 recipeId: "document-viewer"
 name: "ドキュメントビュアー"
-description: "プロジェクト内の Markdown ファイルを一覧・閲覧する。.md ファイルをクリックすると本文がレンダリングされます。"
-version: "1.1.0"
+description: "プロジェクト内の Markdown / HTML ファイルをツリー表示で一覧・閲覧する。ファイルをクリックすると本文がレンダリングされます（HTML は隔離された sandbox iframe 内で安全に表示）。"
+version: "1.2.0"
 author: "kovito-dev"
 kovitoboard: ">=0.1.0"
-tags: ["sample", "documents", "markdown"]
+tags: ["sample", "documents", "markdown", "html"]
 i18n:
   en:
     name: "Document Viewer"
-    description: "Browse and read the Markdown files in your project. Click a .md file to render its body."
+    description: "Browse and read the Markdown and HTML files in your project as a tree. Click a file to render its body (HTML renders inside an isolated sandbox iframe for safety)."
 
 artifacts:
   - path: "pages/DocumentViewer.tsx"
@@ -40,7 +40,9 @@ api:
         path: "${input.path}"
 
 instruction: |
-  このレシピは Markdown ファイルの一覧・閲覧のみ行います。
+  このレシピは Markdown / HTML ファイルの一覧・閲覧のみ行います。
+  HTML は隔離された sandbox iframe（別 origin・スクリプト無効）内で
+  表示し、DOMPurify を二次防御層として併用します。
   対象拡張子を変更したい場合は pages/DocumentViewer.tsx 内の
   EXTENSIONS 定数を編集してください。
 ---
