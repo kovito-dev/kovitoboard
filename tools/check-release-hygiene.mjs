@@ -65,7 +65,6 @@ export const JAPANESE_EXCLUDE_PREFIXES = [
 export const PII_PATTERNS = [
   { label: 'irikura', regex: /irikura/i },
   { label: '@Zenbook', regex: /@Zenbook/i },
-  { label: 'orolira', regex: /orolira/i },
   { label: '@gmail.com', regex: /@gmail\.com/i },
   { label: '/home/irikura', regex: /\/home\/irikura/i },
 ]
@@ -75,10 +74,8 @@ export const PII_PATTERNS = [
 // Each entry is keyed by repo-relative path and lists `{ literal,
 // lineMustMatch }` pairs:
 //
-//   * `literal` — the regex describing the published handle / email that
-//     is intentional in the file (the maintainer's CODEOWNERS handle, the
-//     Code of Conduct enforcement contact, the security reporting
-//     fallback).
+//   * `literal` — the regex describing the published handle that is
+//     intentional in the file (the maintainer's CODEOWNERS handle).
 //   * `lineMustMatch` — an anchor on the full line that confirms the
 //     literal is being used in its expected context. If a future edit
 //     pastes the same literal into an unrelated line (e.g. a log
@@ -103,30 +100,6 @@ export const PII_EXPECTED_LITERALS = new Map([
         // before `@` is non-word / non-word and not a word boundary.
         lineMustMatch:
           /^#.*@kousuke-irikura\b|^\* @kousuke-irikura\s*$/,
-      },
-    ],
-  ],
-  [
-    'CODE_OF_CONDUCT.md',
-    [
-      {
-        literal: /orolira@gmail\.com/g,
-        // The Contributor Covenant v2.1 Enforcement paragraph reads:
-        //   "... may be reported to the community leaders responsible
-        //    for enforcement at <email>. All complaints will be ..."
-        lineMustMatch:
-          /reported to the community leaders responsible for enforcement at orolira@gmail\.com\./,
-      },
-    ],
-  ],
-  [
-    'SECURITY.md',
-    [
-      {
-        literal: /orolira@gmail\.com/g,
-        // The email appears once as bold text in the "Secondary channel
-        // — Email" subsection.
-        lineMustMatch: /^\*\*orolira@gmail\.com\*\*\s*$/,
       },
     ],
   ],
