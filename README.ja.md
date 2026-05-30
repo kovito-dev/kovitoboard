@@ -2,9 +2,9 @@
 
 # KovitoBoard
 
-Claude Code 上で動作する自己拡張型 AI エージェントチームシステム。
+KovitoBoard は、Claude Code をブラウザから操作可能にするローカル Web アプリケーション基盤です。
 
-KovitoBoard は既存の Claude Code プロジェクトの `.claude/agents/` 定義を読み取り、セッション監視・レシピ管理・trust prompt 中継を行うブラウザダッシュボードを提供します。
+インストールされたプロジェクトの Claude Code の定義を読み取り、エージェント管理、セッション機能、アプリの開発と実行などを、ターミナルを使うことなくブラウザだけで実行することができます。
 
 <!-- A demo GIF will be added in Phase 6 -->
 
@@ -37,6 +37,8 @@ tmux -V   # → tmux 3.4 以上
 
 ## クイックスタート
 
+### 既存の Claude Code プロジェクトディレクトリで始める場合
+
 ```bash
 # 1) 自分の Claude Code プロジェクトディレクトリ内で KovitoBoard を clone
 cd /path/to/your-claude-code-project
@@ -53,6 +55,24 @@ npm start -- --project-root ..
 #    必ず supervisor が出力する
 #    "Frontend: http://localhost:<port>  ← open this in your browser"
 #    の行を確認してください。
+```
+
+### 新規ディレクトリで始める場合
+
+まだ Claude Code プロジェクトを持っていない場合でも、新しく作った空のディレクトリに KovitoBoard を導入して始められます。エージェント一覧は空の状態でスタートし、`.claude/agents/*.md` を追加しながらチームを育てていけます。
+
+```bash
+# 1) 新しい作業ディレクトリを作成し、その中で KovitoBoard を clone
+mkdir my-workspace
+cd my-workspace
+git clone https://github.com/kovito-dev/kovitoboard.git
+cd kovitoboard
+npm install
+
+# 2) 起動
+npm start -- --project-root ..
+
+# 3) `npm start` の出力末尾に表示される URL をブラウザで開く
 ```
 
 > **Note:** KovitoBoard は既定で開発モードで起動します。これにより、プロジェクト直下の `app/` ディレクトリに配置されたユーザー拡張(レシピ apply 経由など)のホットリロードが有効になります。同ディレクトリのファイルを変更してもサーバーの再ビルド・再起動は不要です。
