@@ -184,14 +184,20 @@ function ChevronIcon({ open }: { open: boolean }) {
 
 // --- Helpers ------------------------------------------------------------
 
-function classifyFile(name: string): 'md' | 'html' | 'other' {
+export function classifyFile(name: string): 'md' | 'html' | 'other' {
   const lower = name.toLowerCase()
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html'
   if (lower.endsWith('.md')) return 'md'
   return 'other'
 }
 
-function isHtmlPath(path: string): boolean {
+/**
+ * True when `path` should render in the sandboxed HTML iframe rather
+ * than the host-realm Markdown path. This predicate is the render-time
+ * dispatch invariant: `.html` / `.htm` → isolated iframe, everything
+ * else (including `.md`) → ReactMarkdown in the host realm.
+ */
+export function isHtmlPath(path: string): boolean {
   return classifyFile(path) === 'html'
 }
 

@@ -27,6 +27,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import DOMPurify from 'dompurify'
+import { isHtmlPath, classifyFile } from '../../recipes/document-viewer/pages/DocumentViewer'
 
 // Mirrors the render path in DocumentViewer.tsx: the host realm builds a
 // `<iframe sandbox="" srcdoc={DOMPurify.sanitize(content)}>`. We construct
@@ -44,6 +45,35 @@ function renderHtmlFrame(content: string): HTMLIFrameElement {
 // The exact viewport-hijack payload from security-threat-model §7.10.1.
 const HIJACK_PAYLOAD =
   '<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;background:#000">FAKE OVERLAY</div>'
+
+describe('Document Viewer render-dispatch invariant (HTML → iframe, everything else → host realm)', () => {
+  // `isHtmlPath` is the predicate the render branch uses to decide
+  // between the sandboxed iframe (`.html` / `.htm`) and the host-realm
+  // ReactMarkdown path (everything else). Pinning it here pins the
+  // security-relevant split: only HTML content reaches the iframe, and
+  // Markdown never goes through the raw-HTML path.
+  it('routes .html and .htm to the isolated iframe path', () => {
+    expect(isHtmlPath('page.html')).toBe(true)
+    expect(isHtmlPath('docs/guide.htm')).toBe(true)
+    expect(isHtmlPath('docs/UPPER.HTML')).toBe(true)
+  })
+
+  it('keeps .md (and other extensions) on the host-realm Markdown path', () => {
+    expect(isHtmlPath('README.md')).toBe(false)
+    expect(isHtmlPath('docs/notes.MD')).toBe(false)
+    expect(isHtmlPath('data.json')).toBe(false)
+    expect(isHtmlPath('plain.txt')).toBe(false)
+  })
+
+  it('classifies file kinds consistently with the dispatch predicate', () => {
+    expect(classifyFile('a.html')).toBe('html')
+    expect(classifyFile('a.htm')).toBe('html')
+    expect(classifyFile('a.md')).toBe('md')
+    expect(classifyFile('a.json')).toBe('other')
+    // A path that does not classify as html must not route to the iframe.
+    expect(classifyFile('a.md') === 'html').toBe(isHtmlPath('a.md'))
+  })
+})
 
 describe('Document Viewer HTML iframe isolation (primary defense)', () => {
   it('renders untrusted HTML inside a sandboxed iframe, not the host DOM', () => {
