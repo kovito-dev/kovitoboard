@@ -172,16 +172,26 @@ export function RecipePageHost({ appId, Page, trustLevel }: Props) {
   // version of this defence will live; until then the marker
   // reduces forgeability for honest-but-mistaken recipes and
   // surfaces the trust level to attentive users.
+  // Height contract for recipe pages: the host hands the page a
+  // viewport-bounded slot so a recipe whose root is `height:100%`
+  // (or `h-full`) resolves against a bounded height and its own
+  // panes can `overflow-y:auto` into a scrollbar. Both wrappers are
+  // flex items, and a flex item's default `min-height: auto` lets it
+  // grow past the free space to fit its content — which would
+  // unbound the slot and make tall recipe content (e.g. a long file
+  // tree) overflow without a scrollbar. `min-h-0` on *both* the outer
+  // column and the page slot clears that default so the chain stays
+  // viewport-bounded; dropping either one re-breaks the scroll.
   return (
     <TrustProvider value={trustLevel}>
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col min-h-0">
         <header
           data-testid="recipe-trust-header"
           className="flex items-center justify-end gap-2 px-4 pt-2"
         >
           <TrustMarker level={trustLevel} />
         </header>
-        <div className="flex-1">
+        <div className="flex-1 min-h-0">
           <Page />
         </div>
       </div>
