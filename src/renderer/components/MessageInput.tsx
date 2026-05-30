@@ -570,21 +570,25 @@ export function MessageInput({
   const errorWrapperClass = compact
     ? 'max-w-full mb-1.5'
     : 'max-w-4xl mx-auto mb-2'
+  // Shared control height for the non-compact input row. The attach /
+  // screenshot / send buttons and the textarea's resting (single-line)
+  // height all use Tailwind's `10` size token (2.5rem / 40px) so the
+  // row's `items-end` alignment lines them up exactly — and so a future
+  // size change is made in one obvious place rather than via a derived
+  // magic value.
   const buttonSizeClass = compact ? 'w-8 h-8' : 'w-10 h-10'
-  // Non-compact textarea is `block` + `py-[9px]` so the input row's
-  // `items-end` alignment lines the attach/send buttons up with the
-  // textarea exactly. Two box quirks made the buttons look "sunk" before:
+  // Two box quirks made the non-compact buttons look "sunk" below the
+  // textarea before this was tuned:
   //   1. A `<textarea>` defaults to inline-level, so its `flex-1 relative`
   //      wrapper reserved ~7px of inline line-box descender below it; the
   //      buttons bottom-aligned to the wrapper (not the textarea) and hung
   //      ~7px under the textarea's bottom edge. `block` collapses the
   //      wrapper to the textarea's own height.
-  //   2. With `py-3` the single-line textarea was 46px tall vs the 40px
-  //      (`w-10 h-10`) buttons, leaving a 6px top-edge offset under
-  //      `items-end`. `py-[9px]` (9+9 padding + 20px line + 2px border)
-  //      makes the resting single-line height exactly 40px, so top and
-  //      bottom line up; auto-grow still lets the buttons follow the
-  //      bottom edge on multi-line input.
+  //   2. The single-line textarea was taller than the 40px buttons,
+  //      leaving a top-edge offset under `items-end`. `min-h-10` pins the
+  //      resting height to the same 40px (`h-10`) token the buttons use,
+  //      so top and bottom line up; auto-grow still lets the buttons
+  //      follow the bottom edge on multi-line input.
   const textareaClass = compact
     ? `
         w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
@@ -595,7 +599,7 @@ export function MessageInput({
         transition-colors
       `
     : `
-        block w-full resize-none overflow-y-auto rounded-xl px-4 py-[9px] pr-12
+        block w-full resize-none overflow-y-auto rounded-xl px-4 py-2 pr-12 min-h-10
         bg-[var(--bg-elevated)] border border-[var(--border)]
         text-sm text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
