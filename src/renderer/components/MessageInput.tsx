@@ -110,6 +110,16 @@ const RESIZE_MAX_PX = 400
 const RESIZE_DEFAULT_PX = 80
 
 /**
+ * Single source of truth for the non-compact input-row control height.
+ * The attach / screenshot / send buttons (`REGULAR_CONTROL_CLASS`, i.e.
+ * Tailwind `h-10` = 2.5rem = 40px) and the textarea's resting
+ * single-line `minHeight` are both derived from this so the row's
+ * `items-end` alignment lines them up exactly — change it here only.
+ */
+const REGULAR_CONTROL_PX = 40
+const REGULAR_CONTROL_CLASS = 'w-10 h-10' // 40px square — keep in sync with REGULAR_CONTROL_PX
+
+/**
  * Read a previously persisted manual textarea height. Defensive against
  * SSR / privacy-mode environments where localStorage may throw.
  */
@@ -570,25 +580,21 @@ export function MessageInput({
   const errorWrapperClass = compact
     ? 'max-w-full mb-1.5'
     : 'max-w-4xl mx-auto mb-2'
-  // Shared control height for the non-compact input row. The attach /
-  // screenshot / send buttons and the textarea's resting (single-line)
-  // height all use Tailwind's `10` size token (2.5rem / 40px) so the
-  // row's `items-end` alignment lines them up exactly — and so a future
-  // size change is made in one obvious place rather than via a derived
-  // magic value.
-  const buttonSizeClass = compact ? 'w-8 h-8' : 'w-10 h-10'
-  // Two box quirks made the non-compact buttons look "sunk" below the
-  // textarea before this was tuned:
+  // Non-compact buttons share REGULAR_CONTROL_CLASS so their height is
+  // bound to the same source as the textarea's resting min-height (see
+  // REGULAR_CONTROL_PX). Two box quirks made the buttons look "sunk"
+  // below the textarea before this was tuned:
   //   1. A `<textarea>` defaults to inline-level, so its `flex-1 relative`
   //      wrapper reserved ~7px of inline line-box descender below it; the
   //      buttons bottom-aligned to the wrapper (not the textarea) and hung
   //      ~7px under the textarea's bottom edge. `block` collapses the
   //      wrapper to the textarea's own height.
-  //   2. The single-line textarea was taller than the 40px buttons,
-  //      leaving a top-edge offset under `items-end`. `min-h-10` pins the
-  //      resting height to the same 40px (`h-10`) token the buttons use,
-  //      so top and bottom line up; auto-grow still lets the buttons
-  //      follow the bottom edge on multi-line input.
+  //   2. The single-line textarea was taller than the buttons, leaving a
+  //      top-edge offset under `items-end`. Pinning the textarea's resting
+  //      `minHeight` to REGULAR_CONTROL_PX makes both exactly 40px, so top
+  //      and bottom line up; auto-grow still lets the buttons follow the
+  //      bottom edge on multi-line input.
+  const buttonSizeClass = compact ? 'w-8 h-8' : REGULAR_CONTROL_CLASS
   const textareaClass = compact
     ? `
         w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
@@ -599,7 +605,7 @@ export function MessageInput({
         transition-colors
       `
     : `
-        block w-full resize-none overflow-y-auto rounded-xl px-4 py-2 pr-12 min-h-10
+        block w-full resize-none overflow-y-auto rounded-xl px-4 py-2 pr-12
         bg-[var(--bg-elevated)] border border-[var(--border)]
         text-sm text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
@@ -790,7 +796,9 @@ export function MessageInput({
             style={{
               ...(resizable
                 ? { minHeight: `${manualHeightPx}px`, maxHeight: `${Math.max(manualHeightPx, RESIZE_MAX_PX)}px` }
-                : { maxHeight: '200px' }),
+                : compact
+                  ? { maxHeight: '200px' }
+                  : { minHeight: `${REGULAR_CONTROL_PX}px`, maxHeight: '200px' }),
             }}
           />
         </div>
