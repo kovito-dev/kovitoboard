@@ -3,7 +3,7 @@ Kovito shortcuts loaded: kovito(VsCode), sec, wsa, arc, biz, pipe, director, ops
 user@host:/tmp/kb-test-example$ claude --permission-mode plan
 ╭─── Claude Code v2.1.97 ────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
-│                Welcome back Kousuke!               │ Run /init to create a CLAUDE.md file with instructions for Claude │
+│                Welcome back Developer!             │ Run /init to create a CLAUDE.md file with instructions for Claude │
 │                                                    │ ───────────────────────────────────────────────────────────────── │
 │                       ▐▛███▜▌                      │ Recent activity                                                   │
 │                      ▝▜█████▛▘                     │ No recent activity                                                │
