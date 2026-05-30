@@ -284,6 +284,15 @@ export default function DocumentViewer() {
   // per file-list change instead of on every render.
   const tree = useMemo(() => buildTree(files), [files])
 
+  // Sanitize the HTML body (the iframe's defense-in-depth secondary
+  // layer) once per content change, so unrelated re-renders — tree
+  // expand/collapse, loading/error toggles — don't re-run DOMPurify on
+  // a potentially large document.
+  const sanitizedHtml = useMemo(
+    () => (content !== null && selectedPath && isHtmlPath(selectedPath) ? DOMPurify.sanitize(content) : null),
+    [content, selectedPath],
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }} data-testid="docviewer">
       {/* Header */}
@@ -403,7 +412,7 @@ export default function DocumentViewer() {
               // §7.10.4 invariant (c)).
               <iframe
                 sandbox=""
-                srcDoc={DOMPurify.sanitize(content)}
+                srcDoc={sanitizedHtml ?? ''}
                 className="dv-html-frame"
                 title="Document preview"
                 data-testid="docviewer-html"
