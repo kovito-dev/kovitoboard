@@ -30,6 +30,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import DOMPurify from 'dompurify'
+import { STRINGS } from './strings'
 import '../styles/highlight-atom-one-dark.css'
 import '../styles/document-viewer.css'
 
@@ -52,6 +53,13 @@ declare global {
   interface Window {
     kb: {
       call: <T = unknown>(callId: string, input?: Record<string, unknown>) => Promise<HandlerResponse<T>>
+      /**
+       * Active UI locale, injected by the host bridge at mount time.
+       * Optional because this page lives outside the host build graph
+       * and the bridge is only guaranteed once a recipe page is mounted;
+       * read it at render/handler time and fall back to 'en'.
+       */
+      locale?: 'ja' | 'en'
     }
   }
 }
@@ -128,10 +136,15 @@ function FolderIcon({ open }: { open: boolean }) {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
       {open ? (
-        <path
-          d="M1.5 4.5A1 1 0 0 1 2.5 3.5h3l1.2 1.2h5.8a1 1 0 0 1 1 1v.5H3.2a1 1 0 0 0-.96.73L1.5 9.8V4.5Z"
-          fill="#d8a657"
-        />
+        // Open folder, modeled on the classic "folder-open" silhouette: a
+        // back panel (with tab) behind a forward-flaring front flap. The two
+        // shapes use slightly different shades (darker back, lighter flap) so
+        // the depth — and thus the "open" state — reads clearly even at 14px.
+        // The earlier single thin back-rim band was too faint to recognize.
+        <>
+          <path d="M1.4 12.2 1.4 4.4A1 1 0 0 1 2.4 3.4H5.5L6.7 4.6H12.4A1 1 0 0 1 13.4 5.6V7H4.6A1.4 1.4 0 0 0 3.3 7.9Z" fill="#b87a2b" />
+          <path d="M3.6 8.2A.9 .9 0 0 1 4.45 7.6H15A.6 .6 0 0 1 15.56 8.42L13.5 12.9A1.2 1.2 0 0 1 12.4 13.6H1.7A.6 .6 0 0 1 1.14 12.78Z" fill="#e0b35e" />
+        </>
       ) : (
         <path
           d="M1.5 4.5A1 1 0 0 1 2.5 3.5h3l1.2 1.2h5.8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7.2Z"
@@ -200,6 +213,12 @@ export function isHtmlPath(path: string): boolean {
 }
 
 export default function DocumentViewer() {
+  // Read the locale snapshot at render time. Never read `window.kb`
+  // at module top level — the bridge may not be installed when this
+  // module is first evaluated (app-directory-extension.md v1.7 §5.4.4).
+  const locale = window.kb?.locale === 'ja' ? 'ja' : 'en'
+  const s = STRINGS[locale]
+
   const [files, setFiles] = useState<FileEntry[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [content, setContent] = useState<string | null>(null)
@@ -227,11 +246,11 @@ export default function DocumentViewer() {
       // Expand all directories by default so files are visible at a glance.
       setExpanded(collectDirPaths(buildTree(filtered)))
     } catch (err) {
-      setListError(err instanceof Error ? err.message : 'Failed to list files')
+      setListError(err instanceof Error ? err.message : s.failedToListFiles)
     } finally {
       setIsListLoading(false)
     }
-  }, [])
+  }, [s])
 
   const fetchContent = useCallback(async (path: string) => {
     setIsReadLoading(true)
@@ -247,12 +266,12 @@ export default function DocumentViewer() {
       }
       setContent(res.data.content)
     } catch (err) {
-      setReadError(err instanceof Error ? err.message : 'Failed to read file')
+      setReadError(err instanceof Error ? err.message : s.failedToReadFile)
       setContent(null)
     } finally {
       setIsReadLoading(false)
     }
-  }, [])
+  }, [s])
 
   useEffect(() => {
     fetchList()
@@ -303,10 +322,10 @@ export default function DocumentViewer() {
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
         <div>
           <h1 className="text-lg font-bold text-[var(--text-primary)]">
-            Document Viewer
+            {s.title}
           </h1>
           <p className="text-xs text-[var(--text-dim)] mt-0.5">
-            A viewer for Markdown and HTML files. To add or change features, ask the agent from the side panel on the right.
+            {s.subtitle}
           </p>
         </div>
         <button
@@ -315,7 +334,7 @@ export default function DocumentViewer() {
           data-testid="docviewer-reload"
           className="px-3 py-1.5 text-xs border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--bg-elevated)] disabled:opacity-40 transition-colors"
         >
-          {isListLoading ? 'Loading...' : 'Reload'}
+          {isListLoading ? s.loading : s.reload}
         </button>
       </div>
 
@@ -348,25 +367,25 @@ export default function DocumentViewer() {
           {listError && (
             <div className="p-3">
               <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
-                Failed to load file list: {listError}
+                {s.failedToLoadFileList}: {listError}
               </div>
               <button
                 onClick={fetchList}
                 className="mt-2 px-3 py-1 text-xs border border-[var(--border)] text-[var(--text-secondary)] rounded hover:bg-[var(--bg-elevated)] transition-colors"
               >
-                Retry
+                {s.retry}
               </button>
             </div>
           )}
 
           {!listError && files.length === 0 && !isListLoading && (
             <div className="p-4 text-sm text-[var(--text-dim)]">
-              No {EXTENSIONS.join(', ')} files found
+              {s.noFilesFound(EXTENSIONS.join(', '))}
             </div>
           )}
 
           {isListLoading && files.length === 0 && (
-            <div className="p-4 text-sm text-[var(--text-dim)]">Loading...</div>
+            <div className="p-4 text-sm text-[var(--text-dim)]">{s.loading}</div>
           )}
 
           <div style={{ padding: '0.25rem 0' }}>
@@ -391,18 +410,18 @@ export default function DocumentViewer() {
           data-testid="docviewer-content"
         >
           {isReadLoading && (
-            <div className="text-sm text-[var(--text-dim)]">Loading...</div>
+            <div className="text-sm text-[var(--text-dim)]">{s.loading}</div>
           )}
 
           {readError && (
             <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
-              Failed to read file: {readError}
+              {s.failedToReadFile}: {readError}
             </div>
           )}
 
           {!selectedPath && !isReadLoading && !readError && (
             <div className="text-sm text-[var(--text-dim)]">
-              Select a file from the left panel to view
+              {s.selectFile}
             </div>
           )}
 
@@ -423,7 +442,7 @@ export default function DocumentViewer() {
                 sandbox=""
                 srcDoc={sanitizedHtml ?? ''}
                 className="dv-html-frame"
-                title="Document preview"
+                title={s.documentPreview}
                 data-testid="docviewer-html"
               />
             ) : (

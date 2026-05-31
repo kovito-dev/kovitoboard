@@ -1,7 +1,7 @@
 # 10. Upgrading KovitoBoard
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-04-27
+**Target KB version:** v0.2.2
+**Last updated:** 2026-05-31
 **Authoritative source:** [`../10-upgrade.md`](../10-upgrade.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.

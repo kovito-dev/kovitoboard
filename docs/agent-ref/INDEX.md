@@ -1,7 +1,7 @@
 # KovitoBoard 仕様リファレンス（エージェント用）
 
-**対象 KB バージョン:** v0.1.0（§12 のみ v0.2.0）
-**最終更新:** 2026-05-09
+**対象 KB バージョン:** v0.2.2
+**最終更新:** 2026-05-31
 
 このドキュメントは、Kovito のコンシェルジュ「コビー」をはじめとするエージェントがユーザーの質問に答えるために参照する、KovitoBoard（以下 KB）仕様の目次です。
 
@@ -38,11 +38,11 @@
 
 ### 📦 レシピに関すること
 - レシピとは何か → [`04-recipes.md`](./04-recipes.md) §1
-- 外部レシピをインストールしたい → [`04-recipes.md`](./04-recipes.md) §2
+- 外部レシピをインストールしたい（**v0.2.x は無効・v0.3.0 で KovitoHub 連動予定**）→ [`04-recipes.md`](./04-recipes.md) §2
+- 同梱サンプルレシピを使いたい → [`04-recipes.md`](./04-recipes.md) §5（「アプリ」画面の Sample apps タブから有効化）
 - レシピの scope 承認を求められた → [`04-recipes.md`](./04-recipes.md) §7
 - 自分で作ったものをレシピとして出力したい → [`04-recipes.md`](./04-recipes.md) §4
-- 公式レシピを使いたい → [`04-recipes.md`](./04-recipes.md) §5
-- レシピが読み込めない → [`06-troubleshooting.md`](./06-troubleshooting.md) §4
+- レシピが読み込めない / 入れられない → [`04-recipes.md`](./04-recipes.md) §8
 
 ### 🛠️ 独自アプリ開発に関すること
 - 自分だけのアプリを作りたい → [`05-apps.md`](./05-apps.md) §2
@@ -104,8 +104,8 @@
 | [`07-advanced.md`](./07-advanced.md) | スキル・自動化・高度な設定 | 200 |
 | [`09-data-handling.md`](./09-data-handling.md) | データ取扱いと注意事項（KB→Claude Code 経由のデータフロー、マスキング推奨） | 150 |
 | [`10-upgrade.md`](./10-upgrade.md) | KB のバージョンアップ手順とユーザーエージェント向けプロトコル | 350 |
-| [`11-lifecycle.md`](./11-lifecycle.md) | KB プロセスの起動・停止プロトコル（embedded model / `kb-stop` 仕様 / 自殺禁止原則） — 英語で記述 | 250 |
-| [`12-protected-paths.md`](./12-protected-paths.md) | KB が保護する領域（直接編集禁止）の SSOT — 英語で記述 | 200 |
+| [`11-lifecycle.md`](./11-lifecycle.md) | KB プロセスの起動・停止プロトコル（embedded model / `kb-stop` 仕様 / 自殺禁止原則） | 250 |
+| [`12-protected-paths.md`](./12-protected-paths.md) | KB が保護する領域（直接編集禁止）の SSOT | 200 |
 
 ---
 

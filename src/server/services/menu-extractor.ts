@@ -21,6 +21,8 @@ import { createHash } from 'crypto'
 import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
+import { parseRecipe } from '../recipe-parser'
+import type { ParsedRecipe } from '../../shared/recipe-types'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
 import type { AppManifest } from '../../shared/app-manifest-types'
@@ -431,12 +433,25 @@ export function computeMenuOrderSnapshotFromEntries(
  * so the Apps screen surfaces the recovery state instead of hiding
  * the badge. See {@link RecipeManifestLookup} JSDoc for the spec
  * basis (`app-directory-extension.md` v1.6 §6.7 note 4).
+ *
+ * When `kovitoboardRoot` is supplied (v0.2.1 BL-2026-206), the base
+ * label of recipe-install-derived apps (`source.type === 'recipe'`)
+ * is resolved locale-aware from the source-tree recipe.yaml
+ * (`app-directory-extension.md` v1.7.1 §6.8.2.1): the
+ * `i18n.<locale>.menu[appId].label` override wins, else the top-level
+ * `menu[appId].label`. `locale` selects the override map and defaults
+ * to the OSS fallback `'en'`. The `NavMenu` / renderer / snapshot are
+ * unchanged — the wire `label` field simply carries the
+ * locale-resolved base label. Callers that omit `kovitoboardRoot`
+ * (unit tests) keep the pre-v0.2.1 menu.ts-derived base label.
  */
 export function readUserMenuEntries(
   fs: FileAccessLayer,
   trustLookup?: TrustLevelLookup,
   manifestLookup?: AppManifestLookup,
   recipeManifestLookup?: RecipeManifestLookup,
+  locale: 'ja' | 'en' = 'en',
+  kovitoboardRoot?: string,
 ): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
@@ -452,6 +467,11 @@ export function readUserMenuEntries(
     serverLogger.warn({ err }, '[menu-extractor] Failed to read or parse app/menu.ts:')
     return []
   }
+
+  // Per-call cache for source-tree recipe parses so a recipe.yaml that
+  // exposes multiple apps is read/parsed at most once per request
+  // (keyed by recipeId; `null` records an unresolved attempt).
+  const recipeParseCache = new Map<string, ParsedRecipe | null>()
 
   // Resolve each `page` to an absolute path on disk. Tries `.tsx`
   // first (the recipe convention), then `.ts`. Leaves the field
@@ -628,6 +648,24 @@ export function readUserMenuEntries(
           // remove-app flow.
           if (manifest.source.type === 'recipe') {
             entry.recipeId = manifest.source.recipeId
+            // Locale-aware base label resolution
+            // (app-directory-extension.md v1.7.1 §6.8.2.1). Only when
+            // there is no `userMenuLabel` override (which wins above
+            // the base label) and a source-tree root is supplied. The
+            // resolved label replaces the menu.ts-derived base label on
+            // the wire; `userMenuLabel` is sent separately and layered
+            // on top by the renderer, so this stays below it.
+            if (entry.userMenuLabel == null && kovitoboardRoot !== undefined) {
+              const localeLabel = resolveRecipeLocaleBaseLabel(
+                fs,
+                kovitoboardRoot,
+                manifest.source.recipeId,
+                entry.id,
+                locale,
+                recipeParseCache,
+              )
+              if (localeLabel !== null) entry.label = localeLabel
+            }
           }
         } else if (
           lookup.state === 'unreadable' &&
@@ -676,6 +714,133 @@ export function readUserMenuEntries(
   // caller runs *after* snapshot computation; see
   // `app-routes.ts` for the call site.
   return entries
+}
+
+/**
+ * Resolve the locale-aware base label for a recipe-install-derived
+ * app from its source-tree recipe.yaml
+ * (`app-directory-extension.md` v1.7.1 §6.8.2.1, read-source pin
+ * §6.8.2).
+ *
+ * Read source = `<kovitoboardRoot>/recipes/<recipeId>/recipe.yaml`
+ * (the OSS source tree; install persists only `manifest.json`, never
+ * the recipe.yaml). `recipeId` comes from `AppManifest.source.recipeId`.
+ *
+ * Returns (3 exclusive cases, §6.8.2.1):
+ *   - case (1): the `i18n.<locale>.menu[appId].label` override when
+ *     present (`id === appId` exists ∧ override non-empty);
+ *   - case (2): the top-level `menu[appId].label` (locale-independent)
+ *     when the entry exists but the locale override is absent;
+ *   - case (3): `null` when the recipe.yaml is absent / unreadable /
+ *     has no `menu` entry whose `id === appId`, so the caller falls
+ *     back to the next precedence stage (menu.ts label → appId).
+ *
+ * The parser enforces `menu[].id` uniqueness, so a matching entry is
+ * unique when it exists.
+ */
+function resolveRecipeLocaleBaseLabel(
+  fs: FileAccessLayer,
+  kovitoboardRoot: string,
+  recipeId: string,
+  appId: string,
+  locale: 'ja' | 'en',
+  cache: Map<string, ParsedRecipe | null>,
+): string | null {
+  // Memoize parsed recipes within a single `readUserMenuEntries` call
+  // so a multi-app recipe.yaml is read and parsed at most once per
+  // `/api/app/menu-entries` request (`undefined` = not yet attempted,
+  // `null` = attempted and unresolved).
+  let parsed = cache.get(recipeId)
+  if (parsed === undefined) {
+    parsed = loadSourceTreeRecipe(fs, kovitoboardRoot, recipeId, appId)
+    cache.set(recipeId, parsed)
+  }
+  if (parsed === null) return null
+  const menuEntry = parsed.menu.find((m) => m.id === appId)
+  if (!menuEntry) return null // case (3): (a)=No
+  const override = parsed.metadata.i18n?.[locale]?.menu?.[appId]?.label
+  if (override) return override // case (1): locale override present
+  return menuEntry.label // case (2): top-level base label (locale-independent)
+}
+
+/**
+ * Read + parse the source-tree recipe for `recipeId`, or `null` when it
+ * is absent / out of bounds / unparseable. Split out from
+ * {@link resolveRecipeLocaleBaseLabel} so the result can be memoized.
+ */
+function loadSourceTreeRecipe(
+  fs: FileAccessLayer,
+  kovitoboardRoot: string,
+  recipeId: string,
+  appId: string,
+): ParsedRecipe | null {
+  // `recipeId` originates from the on-disk `AppManifest` and is
+  // interpolated into a filesystem path. The recipe-id slug grammar
+  // permits `.` and `/` (namespaced ids), so a tampered manifest could
+  // carry `../…`; resolve and require lexical containment under
+  // `<kovitoboardRoot>/recipes/` before touching the filesystem.
+  const recipesRoot = resolve(join(kovitoboardRoot, 'recipes'))
+  const recipeDir = resolve(join(recipesRoot, recipeId))
+  const recipesRootMarker = recipesRoot.endsWith(sep) ? recipesRoot : recipesRoot + sep
+  if (recipeDir !== recipesRoot && !recipeDir.startsWith(recipesRootMarker)) {
+    serverLogger.warn(
+      { recipeId, appId, reason: 'recipe-id-path-escape' },
+      '[menu-extractor] Recipe id escapes the recipes/ root; skipping locale base-label resolution',
+    )
+    return null
+  }
+  // Absent source-tree recipe.yaml is the normal case (3) for
+  // import/url apps that have no live install in v0.2.x; stay silent.
+  const recipeYamlPath = join(recipeDir, 'recipe.yaml')
+  if (!fs.existsSync(recipeYamlPath)) return null
+  // Canonical containment: lexical `resolve` blocks `../` in `recipeId`
+  // but not a symlinked `recipes/<recipeId>` (or recipe.yaml) that
+  // redirects outside the tree. Canonicalize the real recipe.yaml path
+  // and require it to stay under the real recipes/ root before reading
+  // — mirrors the Layer-3 symlink defence on the app/ page resolution.
+  try {
+    const realRecipesRoot = fs.realpathSync(recipesRoot)
+    const realRecipeYaml = fs.realpathSync(recipeYamlPath)
+    const realRootMarker = realRecipesRoot.endsWith(sep)
+      ? realRecipesRoot
+      : realRecipesRoot + sep
+    if (!realRecipeYaml.startsWith(realRootMarker)) {
+      serverLogger.warn(
+        { recipeId, appId, reason: 'recipe-yaml-symlink-escape' },
+        '[menu-extractor] Recipe path canonicalizes outside recipes/; skipping locale base-label resolution',
+      )
+      return null
+    }
+  } catch (err) {
+    serverLogger.warn(
+      { recipeId, appId, err, reason: 'recipe-yaml-realpath-failure' },
+      '[menu-extractor] Could not canonicalize source-tree recipe path; falling back',
+    )
+    return null
+  }
+  try {
+    // `parseRecipe` takes the recipe *directory* and reads recipe.yaml
+    // itself (reusing the shared parser SSOT, §6.8.2.1) — do not pass
+    // the file contents.
+    //
+    // Residual TOCTOU (accepted): the containment check above
+    // canonicalizes by path, then `parseRecipe` re-opens recipe.yaml by
+    // pathname, so an attacker who can win a race against the
+    // canonical check could swap in a symlink between the two. This is
+    // the same accepted residual documented for the app/ page
+    // resolution above (an O_NOFOLLOW / fd-based read would be needed
+    // to close it, and the shared parser must not be forked); it
+    // requires write access to the read-only OSS install `recipes/`
+    // tree, where direct file replacement is already possible. Tracked
+    // as the same follow-up as the app/ page residual.
+    return parseRecipe(recipeDir, fs)
+  } catch (err) {
+    serverLogger.warn(
+      { recipeId, appId, err },
+      '[menu-extractor] Failed to parse source-tree recipe.yaml for base label; falling back',
+    )
+    return null
+  }
 }
 
 /**

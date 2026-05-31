@@ -204,8 +204,10 @@ function assertSafeRelativePath(value: string, label: string): void {
 }
 
 /**
- * Verify the `<projectRoot>/app` root is a real directory (not a
- * symlink). The destructive helpers below recurse into `app/<appId>/`
+ * Verify `dirPath` is a real directory (not a symlink) before a
+ * recursive delete recurses into it. A no-op when the path does not
+ * exist (the caller's `rmSync({ force: true })` tolerates absence).
+ * The destructive helpers below recurse into a sub-path of this root
  * with `rmSync({ recursive: true })`, so if a prior test or the SUT
  * has replaced the root with a symlink to somewhere outside the
  * fixture, the cleanup would follow the link and remove files outside
@@ -213,21 +215,48 @@ function assertSafeRelativePath(value: string, label: string): void {
  * check (`src/server/services/bundled-installer.ts` boundary
  * verification).
  */
-function assertAppRootIsDirectory(projectRoot: string): void {
-  const appRoot = join(projectRoot, 'app')
-  if (!existsSync(appRoot)) return
-  const st = lstatSync(appRoot)
+function assertRealDirectory(dirPath: string, label: string): void {
+  if (!existsSync(dirPath)) return
+  const st = lstatSync(dirPath)
   if (!st.isDirectory() || st.isSymbolicLink()) {
     throw new Error(
-      `[v021-bundled-helpers] refusing to mutate non-directory app root: "${appRoot}"`,
+      `[v021-bundled-helpers] refusing to mutate non-directory ${label}: "${dirPath}"`,
     )
   }
+}
+
+function assertAppRootIsDirectory(projectRoot: string): void {
+  assertRealDirectory(join(projectRoot, 'app'), 'app root')
 }
 
 export function cleanupAppDir(projectRoot: string, appId: string): void {
   assertSafePathSegment(appId, 'appId')
   assertAppRootIsDirectory(projectRoot)
   rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
+}
+
+/**
+ * Remove `app/data/<appId>/` (the recipe's own-data area) after a test
+ * that enabled a bundled sample. `app/data/` lives outside the
+ * `.kovitoboard/` snapshot prefix, so kbFixture's snapshot-restore does
+ * not roll it back; specs strip it explicitly in afterEach to keep the
+ * next test order-independent.
+ *
+ * Goes through the same slug + symlink guards as `cleanupAppDir`: the
+ * `appId` is slug-validated and BOTH the `app` root and the `app/data`
+ * root are verified to be real directories before the recursive delete,
+ * so a symlink planted at either level (by a prior test or the SUT)
+ * cannot make the cleanup follow the link and remove files outside the
+ * per-test boundary.
+ */
+export function removeAppDataDir(projectRoot: string, appId: string): void {
+  assertSafePathSegment(appId, 'appId')
+  assertAppRootIsDirectory(projectRoot)
+  assertRealDirectory(join(projectRoot, 'app', 'data'), 'app/data root')
+  rmSync(join(projectRoot, 'app', 'data', appId), {
+    recursive: true,
+    force: true,
+  })
 }
 
 export function readHistoryLines(projectRoot: string): unknown[] {

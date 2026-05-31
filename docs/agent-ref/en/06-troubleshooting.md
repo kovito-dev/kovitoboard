@@ -1,7 +1,7 @@
 # 06. Troubleshooting
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-04-18
+**Target KB version:** v0.2.2
+**Last updated:** 2026-05-31
 **Authoritative source:** [`../06-troubleshooting.md`](../06-troubleshooting.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
@@ -17,7 +17,7 @@ Give the user a fast path from symptom to fix for the most common problems in v0
 - §1 KB won't start → [`../06-troubleshooting.md`](../06-troubleshooting.md) §1
 - §2 An agent isn't showing up → [`../06-troubleshooting.md`](../06-troubleshooting.md) §2
 - §3 A session isn't progressing → [`../06-troubleshooting.md`](../06-troubleshooting.md) §3
-- §4 A recipe won't load → [`../06-troubleshooting.md`](../06-troubleshooting.md) §4
+- §4 A recipe can't be installed / won't run (external install is disabled in v0.2.x) → [`../06-troubleshooting.md`](../06-troubleshooting.md) §4
 - §5 File access errors → [`../06-troubleshooting.md`](../06-troubleshooting.md) §5
 - §6 Claude Code isn't responding → [`../06-troubleshooting.md`](../06-troubleshooting.md) §6
 - §7 A trust prompt keeps reappearing → [`../06-troubleshooting.md`](../06-troubleshooting.md) §7

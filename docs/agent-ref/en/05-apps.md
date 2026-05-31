@@ -1,7 +1,7 @@
 # 05. Custom App Development (`app/`)
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-05-03
+**Target KB version:** v0.2.2
+**Last updated:** 2026-05-31
 **Authoritative source:** [`../05-apps.md`](../05-apps.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
@@ -23,11 +23,12 @@ Introduce the `app/` extension area: what it is, how to add a page or a custom b
 - §7 Example: a lightweight Intel-style viewer app → [`../05-apps.md`](../05-apps.md) §7
 - §8 Long-running BE app pattern (job queue + polling) → [`../05-apps.md`](../05-apps.md) §8
 - §9 Publishing internal state to the Ambient Sidebar (`window.kb.exposeContext`, β-method) → [`../05-apps.md`](../05-apps.md) §9
-- §10 Removing an app (NavMenu remove button, agent-led deletion) → [`../05-apps.md`](../05-apps.md) §10
+- §10 Disabling / removing an app (non-destructive disable for samples vs agent-led full deletion) → [`../05-apps.md`](../05-apps.md) §10
 
 ## English-specific notes
 
-_None at v0.1.0. This section is reserved for English-locale-specific guidance (English page naming conventions, English route path examples, etc.) that does not belong in the authoritative Japanese source._
+- **Disable vs delete (v0.2.x):** Bundled sample apps can be **disabled** (non-destructive) from the Sample apps tab — the artifacts under `app/<appId>/` are removed but `app/data/<appId>/` is kept, so re-enabling restores prior data. Full **deletion** (agent-led, §10.1+) permanently removes both code and data. When a user wants to "remove" a sample app, suggest the non-destructive disable first.
+- **Recipe export refusal:** an app containing `app/<appId>/api/` cannot be exported as a recipe (HTTP 400 `CustomBeNotExportable`); see [`./04-recipes.md`](./04-recipes.md) §4.3.
 
 ---
 

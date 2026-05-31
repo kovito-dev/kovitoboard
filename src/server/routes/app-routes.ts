@@ -32,6 +32,7 @@ import {
   type TrustLevelLookup,
 } from '../services/menu-extractor'
 import { getAppManifestPath, readAppManifest } from '../services/app-manifest'
+import { readSetting } from '../setting-manager'
 import { resolveProjectRoot } from '../config'
 import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
@@ -50,6 +51,7 @@ import { isRecipePageTrustLevel } from '../recipe/apiTypes'
 export function createAppRouter(
   fs: FileAccessLayer,
   manifestStore: RecipeManifestStore,
+  kovitoboardRoot: string,
 ): Router {
   const router = Router()
 
@@ -173,11 +175,17 @@ export function createAppRouter(
   }
 
   router.get('/menu-entries', (_req, res) => {
+    // Active server locale for recipe nav base-label resolution
+    // (app-directory-extension.md v1.7.1 §6.8.2.1 / i18n-architecture
+    // v1.1 §6.6). Invalid / null / unset falls back to OSS default.
+    const locale = readSetting(fs)?.locale ?? 'en'
     const entries: MenuEntryWithPage[] = readUserMenuEntries(
       fs,
       trustLookup,
       manifestLookup,
       recipeManifestLookup,
+      locale,
+      kovitoboardRoot,
     )
     // The wire ships every entry the parser produced; anomalies
     // are NOT filtered out -- they ride with `manifestState ===

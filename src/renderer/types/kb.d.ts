@@ -16,6 +16,8 @@
  * @stable v0.1.0
  */
 
+import type { Locale } from '../i18n'
+
 interface KbHandlerResponse<T> {
   ok: true
   data: T
@@ -132,6 +134,23 @@ declare global {
        * @see KbCaptureBridge
        */
       capture?: KbCaptureBridge
+      /**
+       * Active UI locale, snapshotted when the bridge was installed
+       * (the ambient bridge at app start, the recipe-scoped bridge at
+       * recipe page mount). Recipe pages read this to localize their
+       * own hardcoded copy: they live outside the host build graph and
+       * cannot import the `getLocale()` / `t()` catalog directly, so
+       * `window.kb.locale` is the only host→recipe locale channel.
+       *
+       * Mount-snapshot semantics: an in-place locale switch is NOT
+       * reflected live — the new locale takes effect on the next recipe
+       * page remount (app-directory-extension.md v1.7 §5.4.4).
+       *
+       * @see app-directory-extension.md v1.7 §5.4.1 / §5.4.2 / §5.4.4
+       * @see i18n-architecture.md v1.1 §5.3 (Locale)
+       * @stable v0.2.2
+       */
+      locale: Locale
     }
   }
 }

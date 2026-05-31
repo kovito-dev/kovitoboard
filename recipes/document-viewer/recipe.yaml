@@ -10,10 +10,15 @@ i18n:
   en:
     name: "Document Viewer"
     description: "Browse and read the Markdown and HTML files in your project as a tree. Click a file to render its body (HTML renders inside an isolated sandbox iframe for safety)."
+    menu:
+      document-viewer:
+        label: "Documents"
 
 artifacts:
   - path: "pages/DocumentViewer.tsx"
     type: "page"
+  - path: "pages/strings.ts"
+    type: "lib"
   - path: "styles/document-viewer.css"
     type: "style"
   - path: "styles/highlight-atom-one-dark.css"

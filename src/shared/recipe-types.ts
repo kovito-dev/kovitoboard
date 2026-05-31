@@ -68,8 +68,13 @@ export interface RecipeMetadata {
   tags?: string[]
   /**
    * Optional locale-specific overrides for the human-readable
-   * `name` / `description`. The renderer picks the entry matching
-   * the active UI locale and falls back to the top-level fields
+   * `name` / `description` (card surface) and `menu[<id>].label`
+   * (nav menu base label). The renderer picks the `name` /
+   * `description` entry matching the active UI locale; the
+   * server-side menu resolver (`menu-extractor.ts`,
+   * `app-directory-extension.md` v1.7.1 §6.8.2.1) picks the
+   * `menu[<id>].label` entry matching the active server locale
+   * (`setting.json:locale`). Both fall back to the top-level fields
    * when the active locale is missing or the map is absent.
    *
    * Authors who only ship one locale do not need to populate this.
@@ -79,9 +84,19 @@ export interface RecipeMetadata {
    *     en:
    *       name: "Document Viewer"
    *       description: "..."
+   *       menu:
+   *         document-viewer:
+   *           label: "Documents"
    * alongside the Japanese top-level fields.
    */
-  i18n?: Record<string, { name?: string; description?: string }>
+  i18n?: Record<
+    string,
+    {
+      name?: string
+      description?: string
+      menu?: Record<string, { label?: string }>
+    }
+  >
 }
 
 /** Menu entry defined in recipe YAML */

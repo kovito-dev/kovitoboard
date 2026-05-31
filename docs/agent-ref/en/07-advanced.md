@@ -1,7 +1,7 @@
 # 07. Advanced
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-04-18
+**Target KB version:** v0.2.2
+**Last updated:** 2026-05-31
 **Authoritative source:** [`../07-advanced.md`](../07-advanced.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.

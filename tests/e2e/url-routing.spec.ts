@@ -66,23 +66,35 @@ test.describe('URL routing', () => {
   })
 
   test('ブラウザの戻る/進むが動作する', async ({ page }) => {
+    // Exercise browser back/forward across two URL-stable routes
+    // (`/agents` <-> `/recipes`, the latter being the rebranded "Apps"
+    // screen). `/sessions` is deliberately NOT used here: it
+    // immediately auto-redirects to `/sessions/<latestId>` via
+    // `<Navigate replace />` once `useIPC`'s async session load
+    // resolves, and under full-suite load that pending replace-redirect
+    // races `goBack()` — leaving the history stack in a non-deterministic
+    // state and flaking the back/forward assertions. Both `/agents` and
+    // `/recipes` settle synchronously with no follow-up navigation, so
+    // the history stack is stable.
+
     // 1. Access /agents
     await page.goto('/agents')
     await page.waitForLoadState('networkidle')
+    await expect(page).toHaveURL(/\/agents$/)
 
-    // 2. Navigate to sessions
-    const sessionsButton = page.locator('button[title="Sessions"]').first()
-    await sessionsButton.click()
-    await page.waitForURL('**/sessions')
+    // 2. Navigate to the Apps screen (route key `/recipes` is retained)
+    const appsButton = page.locator('button[title="Apps"]').first()
+    await appsButton.click()
+    await expect(page).toHaveURL(/\/recipes$/)
 
     // 3. Use browser "back" to return to /agents
     await page.goBack()
-    await page.waitForURL('**/agents')
+    await expect(page).toHaveURL(/\/agents$/)
     expect(page.url()).toContain('/agents')
 
-    // 4. Use browser "forward" to go back to /sessions
+    // 4. Use browser "forward" to return to /recipes
     await page.goForward()
-    await page.waitForURL('**/sessions')
-    expect(page.url()).toContain('/sessions')
+    await expect(page).toHaveURL(/\/recipes$/)
+    expect(page.url()).toContain('/recipes')
   })
 })
