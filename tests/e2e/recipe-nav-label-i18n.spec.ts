@@ -42,39 +42,18 @@
  *     lineage keeps its menu.ts label across locales (resolver skipped).
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import {
   rewriteMenuTsForEnable,
   restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
 } from './helpers/v021-bundled-helpers'
+import { setLocaleOnDisk } from './helpers/locale-fixture'
 
-const API_BASE = 'http://127.0.0.1:3001'
 const DOC_RECIPE_ID = 'document-viewer'
 const DOC_APP_ID = 'document-viewer'
 const TODO_RECIPE_ID = 'todo'
 const TODO_APP_ID = 'todo'
-
-type Locale = 'ja' | 'en'
-
-/**
- * Overwrite `setting.json:locale` on disk. The route reads the active
- * locale from disk on every `GET /api/app/menu-entries`, so a plain
- * file edit followed by a refetch is enough — no API round-trip or
- * server restart needed. The per-test `.kovitoboard/` snapshot/restore
- * rolls the file back, keeping tests order-independent.
- */
-function setLocaleOnDisk(projectRoot: string, locale: Locale): void {
-  const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
-  const setting = JSON.parse(readFileSync(settingPath, 'utf-8')) as Record<
-    string,
-    unknown
-  >
-  setting.locale = locale
-  writeFileSync(settingPath, JSON.stringify(setting, null, 2))
-}
 
 interface MenuEntryWire {
   id: string
@@ -92,8 +71,9 @@ interface MenuEntryWire {
  */
 async function fetchMenuEntries(
   request: import('@playwright/test').APIRequestContext,
+  apiBase: string,
 ): Promise<Record<string, MenuEntryWire>> {
-  const res = await request.get(`${API_BASE}/api/app/menu-entries`)
+  const res = await request.get(`${apiBase}/api/app/menu-entries`)
   expect(res.status()).toBe(200)
   const entries = (await res.json()) as MenuEntryWire[]
   const byId: Record<string, MenuEntryWire> = {}
@@ -109,8 +89,9 @@ function effectiveLabel(entry: MenuEntryWire): string {
 /** Convenience: fetch menu-entries and return id→effective-label map. */
 async function fetchMenuLabels(
   request: import('@playwright/test').APIRequestContext,
+  apiBase: string,
 ): Promise<Record<string, string>> {
-  const entries = await fetchMenuEntries(request)
+  const entries = await fetchMenuEntries(request, apiBase)
   const byId: Record<string, string> = {}
   for (const id of Object.keys(entries)) byId[id] = effectiveLabel(entries[id])
   return byId
@@ -124,7 +105,7 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     expect(
       (
         await request.post(
-          `${API_BASE}/api/recipes/sample/${DOC_RECIPE_ID}/enable`,
+          `${kbFixture.apiBaseUrl}/api/recipes/sample/${DOC_RECIPE_ID}/enable`,
         )
       ).status(),
     ).toBe(200)
@@ -146,7 +127,7 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    const labels = await fetchMenuLabels(request)
+    const labels = await fetchMenuLabels(request, kbFixture.apiBaseUrl)
     expect(labels[DOC_APP_ID]).toBe('Documents')
   })
 
@@ -155,7 +136,7 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    const labels = await fetchMenuLabels(request)
+    const labels = await fetchMenuLabels(request, kbFixture.apiBaseUrl)
     expect(labels[DOC_APP_ID]).toBe('ドキュメント')
   })
 
@@ -166,16 +147,20 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     expect(
       (
         await request.post(
-          `${API_BASE}/api/recipes/sample/${TODO_RECIPE_ID}/enable`,
+          `${kbFixture.apiBaseUrl}/api/recipes/sample/${TODO_RECIPE_ID}/enable`,
         )
       ).status(),
     ).toBe(200)
 
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    expect((await fetchMenuLabels(request))[TODO_APP_ID]).toBe('TODO')
+    expect(
+      (await fetchMenuLabels(request, kbFixture.apiBaseUrl))[TODO_APP_ID],
+    ).toBe('TODO')
 
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    expect((await fetchMenuLabels(request))[TODO_APP_ID]).toBe('TODO')
+    expect(
+      (await fetchMenuLabels(request, kbFixture.apiBaseUrl))[TODO_APP_ID],
+    ).toBe('TODO')
   })
 
   test('T1-d regression: userMenuLabel override is locale-invariant (highest precedence)', async ({
@@ -185,9 +170,10 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     const override = 'Mes documents'
     expect(
       (
-        await request.patch(`${API_BASE}/api/apps/${DOC_APP_ID}/menu-label`, {
-          data: { userMenuLabel: override },
-        })
+        await request.patch(
+          `${kbFixture.apiBaseUrl}/api/apps/${DOC_APP_ID}/menu-label`,
+          { data: { userMenuLabel: override } },
+        )
       ).status(),
     ).toBe(200)
 
@@ -199,12 +185,16 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     // locales, even though the i18n.en.menu override exists on the
     // recipe.yaml.
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    const en = (await fetchMenuEntries(request))[DOC_APP_ID]
+    const en = (await fetchMenuEntries(request, kbFixture.apiBaseUrl))[
+      DOC_APP_ID
+    ]
     expect(en.userMenuLabel).toBe(override)
     expect(effectiveLabel(en)).toBe(override)
 
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    const ja = (await fetchMenuEntries(request))[DOC_APP_ID]
+    const ja = (await fetchMenuEntries(request, kbFixture.apiBaseUrl))[
+      DOC_APP_ID
+    ]
     expect(ja.userMenuLabel).toBe(override)
     expect(effectiveLabel(ja)).toBe(override)
   })
@@ -218,13 +208,13 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     // source.type === 'recipe'), so the recipe.yaml locale resolver is
     // never entered and the menu.ts label rides through unchanged.
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    expect((await fetchMenuLabels(request))['l1-fixture-app']).toBe(
-      'L1 Fixture App',
-    )
+    expect(
+      (await fetchMenuLabels(request, kbFixture.apiBaseUrl))['l1-fixture-app'],
+    ).toBe('L1 Fixture App')
 
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    expect((await fetchMenuLabels(request))['l1-fixture-app']).toBe(
-      'L1 Fixture App',
-    )
+    expect(
+      (await fetchMenuLabels(request, kbFixture.apiBaseUrl))['l1-fixture-app'],
+    ).toBe('L1 Fixture App')
   })
 })

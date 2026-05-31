@@ -52,22 +52,18 @@
  *   - T2-d TodoPage body renders English copy (locale=en).
  */
 import { test, expect, type Page } from './helpers/l1-per-test-setup'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import {
   rewriteMenuTsForEnable,
   restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
 } from './helpers/v021-bundled-helpers'
+import { setLocaleOnDisk } from './helpers/locale-fixture'
 
-const API_BASE = 'http://127.0.0.1:3001'
 const DOC_RECIPE_ID = 'document-viewer'
 const DOC_APP_ID = 'document-viewer'
 const TODO_RECIPE_ID = 'todo'
 const TODO_APP_ID = 'todo'
-
-type Locale = 'ja' | 'en'
 
 // Spec-owned expected copy, mirrored from recipes/<id>/pages/strings.ts.
 // Defined here (not imported) so a wrong edit to the implementation's
@@ -96,22 +92,6 @@ const EXPECTED = {
     },
   },
 } as const
-
-/**
- * Overwrite `setting.json:locale` on disk. The renderer boots its
- * locale from this value (`bootstrapLocaleFromSetting`), so it must be
- * set before the first navigation. The per-test `.kovitoboard/`
- * snapshot/restore rolls the file back afterwards.
- */
-function setLocaleOnDisk(projectRoot: string, locale: Locale): void {
-  const settingPath = join(projectRoot, '.kovitoboard', 'setting.json')
-  const setting = JSON.parse(readFileSync(settingPath, 'utf-8')) as Record<
-    string,
-    unknown
-  >
-  setting.locale = locale
-  writeFileSync(settingPath, JSON.stringify(setting, null, 2))
-}
 
 /**
  * Land on /agents (full reload — boots the locale from setting.json),
@@ -143,7 +123,9 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     for (const recipeId of [DOC_RECIPE_ID, TODO_RECIPE_ID]) {
       expect(
         (
-          await request.post(`${API_BASE}/api/recipes/sample/${recipeId}/enable`)
+          await request.post(
+            `${kbFixture.apiBaseUrl}/api/recipes/sample/${recipeId}/enable`,
+          )
         ).status(),
       ).toBe(200)
     }
