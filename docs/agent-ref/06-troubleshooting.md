@@ -100,7 +100,7 @@ KB リポジトリ内の `README.md` のトラブルシュート節、または 
 - これは仕様です（不具合ではありません）。外部レシピのインストール経路は v0.2.x では無効です（上記）
 - 同梱サンプルレシピ（Document Viewer / TODO）は「アプリ」画面の **Sample apps タブ**から有効化できます（[`04-recipes.md`](./04-recipes.md) §5）
 
-### 4.3 有効化したサンプルレシピが動かない場合
+### 4.2 有効化したサンプルレシピが動かない場合
 
 - **scope 不足:** `ScopeViolation` エラーが監査ログ（`app/data/{recipe-id}/_audit.log`）に出ている可能性
 - **handler 引数エラー:** パスが scope の範囲外だと handler が拒否されます
