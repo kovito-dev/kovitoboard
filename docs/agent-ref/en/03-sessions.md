@@ -1,7 +1,7 @@
 # 03. Session Management
 
-**Target KB version:** v0.1.0
-**Last updated:** 2026-04-18
+**Target KB version:** v0.2.1
+**Last updated:** 2026-05-31
 **Authoritative source:** [`../03-sessions.md`](../03-sessions.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.

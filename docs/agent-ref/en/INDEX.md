@@ -1,7 +1,7 @@
 # KovitoBoard Reference (for Agents) — English
 
-**Target KB version:** v0.1.0 (chapter 12 is at v0.2.0)
-**Last updated:** 2026-05-09
+**Target KB version:** v0.2.1
+**Last updated:** 2026-05-31
 **Role:** Navigation layer for chapters 01–10. Detailed content for those chapters lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md). **Chapter 12 is an exception** — it is authored in English at [`../12-protected-paths.md`](../12-protected-paths.md) and has no `en/` proxy. Read it directly.
 
 > ℹ️ **About this tree:** `docs/agent-ref/en/` is primarily a **navigation layer**, not a translation. Most chapters here provide English section titles and pointers into the Japanese authoritative source (`docs/agent-ref/`). Agents reading this tree should follow the pointers and read the Japanese detailed content directly — Claude can read Japanese and respond in English without loss.
@@ -46,11 +46,11 @@ This document is the entry point that Kovito's Concierge "Kobi" and other agents
 
 ### 📦 Recipes
 - What is a recipe → [`04-recipes.md`](./04-recipes.md) §1
-- Install an external recipe → [`04-recipes.md`](./04-recipes.md) §2
+- Install an external recipe (**disabled in v0.2.x — coming in v0.3.0 with KovitoHub**) → [`04-recipes.md`](./04-recipes.md) §2
+- Use a bundled sample recipe → [`04-recipes.md`](./04-recipes.md) §5 (enable from the Sample apps tab on the Apps screen)
 - A recipe is asking for scope approval → [`04-recipes.md`](./04-recipes.md) §7
 - Export something I built as a recipe → [`04-recipes.md`](./04-recipes.md) §4
-- Use an official recipe → [`04-recipes.md`](./04-recipes.md) §5
-- A recipe won't load → [`06-troubleshooting.md`](./06-troubleshooting.md) §4
+- A recipe won't load / can't be installed → [`04-recipes.md`](./04-recipes.md) §8
 
 ### 🛠️ Custom app development
 - Build my own app → [`05-apps.md`](./05-apps.md) §2
