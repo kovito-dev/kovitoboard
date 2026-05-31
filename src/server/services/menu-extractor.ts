@@ -22,6 +22,7 @@ import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import { parseRecipe } from '../recipe-parser'
+import type { ParsedRecipe } from '../../shared/recipe-types'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
 import type { AppManifest } from '../../shared/app-manifest-types'
@@ -467,6 +468,11 @@ export function readUserMenuEntries(
     return []
   }
 
+  // Per-call cache for source-tree recipe parses so a recipe.yaml that
+  // exposes multiple apps is read/parsed at most once per request
+  // (keyed by recipeId; `null` records an unresolved attempt).
+  const recipeParseCache = new Map<string, ParsedRecipe | null>()
+
   // Resolve each `page` to an absolute path on disk. Tries `.tsx`
   // first (the recipe convention), then `.ts`. Leaves the field
   // `null` if neither exists; the renderer surfaces a clear error
@@ -656,6 +662,7 @@ export function readUserMenuEntries(
                 manifest.source.recipeId,
                 entry.id,
                 locale,
+                recipeParseCache,
               )
               if (localeLabel !== null) entry.label = localeLabel
             }
@@ -737,27 +744,66 @@ function resolveRecipeLocaleBaseLabel(
   recipeId: string,
   appId: string,
   locale: 'ja' | 'en',
+  cache: Map<string, ParsedRecipe | null>,
 ): string | null {
-  const recipeYamlPath = join(kovitoboardRoot, 'recipes', recipeId, 'recipe.yaml')
-  let parsed
-  try {
-    // Absent source-tree recipe.yaml is the normal case (3) for
-    // import/url apps that have no live install in v0.2.x; stay silent.
-    if (!fs.existsSync(recipeYamlPath)) return null
-    const source = fs.readFileSync(recipeYamlPath, 'utf-8')
-    parsed = parseRecipe(source, fs)
-  } catch (err) {
-    serverLogger.warn(
-      { recipeId, appId, err },
-      '[menu-extractor] Failed to read/parse source-tree recipe.yaml for base label; falling back',
-    )
-    return null
+  // Memoize parsed recipes within a single `readUserMenuEntries` call
+  // so a multi-app recipe.yaml is read and parsed at most once per
+  // `/api/app/menu-entries` request (`undefined` = not yet attempted,
+  // `null` = attempted and unresolved).
+  let parsed = cache.get(recipeId)
+  if (parsed === undefined) {
+    parsed = loadSourceTreeRecipe(fs, kovitoboardRoot, recipeId, appId)
+    cache.set(recipeId, parsed)
   }
+  if (parsed === null) return null
   const menuEntry = parsed.menu.find((m) => m.id === appId)
   if (!menuEntry) return null // case (3): (a)=No
   const override = parsed.metadata.i18n?.[locale]?.menu?.[appId]?.label
   if (override) return override // case (1): locale override present
   return menuEntry.label // case (2): top-level base label (locale-independent)
+}
+
+/**
+ * Read + parse the source-tree recipe for `recipeId`, or `null` when it
+ * is absent / out of bounds / unparseable. Split out from
+ * {@link resolveRecipeLocaleBaseLabel} so the result can be memoized.
+ */
+function loadSourceTreeRecipe(
+  fs: FileAccessLayer,
+  kovitoboardRoot: string,
+  recipeId: string,
+  appId: string,
+): ParsedRecipe | null {
+  // `recipeId` originates from the on-disk `AppManifest` and is
+  // interpolated into a filesystem path. The recipe-id slug grammar
+  // permits `.` and `/` (namespaced ids), so a tampered manifest could
+  // carry `../…`; resolve and require lexical containment under
+  // `<kovitoboardRoot>/recipes/` before touching the filesystem.
+  const recipesRoot = resolve(join(kovitoboardRoot, 'recipes'))
+  const recipeDir = resolve(join(recipesRoot, recipeId))
+  const recipesRootMarker = recipesRoot.endsWith(sep) ? recipesRoot : recipesRoot + sep
+  if (recipeDir !== recipesRoot && !recipeDir.startsWith(recipesRootMarker)) {
+    serverLogger.warn(
+      { recipeId, appId, reason: 'recipe-id-path-escape' },
+      '[menu-extractor] Recipe id escapes the recipes/ root; skipping locale base-label resolution',
+    )
+    return null
+  }
+  // Absent source-tree recipe.yaml is the normal case (3) for
+  // import/url apps that have no live install in v0.2.x; stay silent.
+  if (!fs.existsSync(join(recipeDir, 'recipe.yaml'))) return null
+  try {
+    // `parseRecipe` takes the recipe *directory* and reads recipe.yaml
+    // itself (reusing the shared parser SSOT, §6.8.2.1) — do not pass
+    // the file contents.
+    return parseRecipe(recipeDir, fs)
+  } catch (err) {
+    serverLogger.warn(
+      { recipeId, appId, err },
+      '[menu-extractor] Failed to parse source-tree recipe.yaml for base label; falling back',
+    )
+    return null
+  }
 }
 
 /**
