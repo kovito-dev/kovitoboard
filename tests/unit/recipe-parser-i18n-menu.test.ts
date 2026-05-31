@@ -142,6 +142,31 @@ menu:
     expect(recipe.metadata.i18n?.en?.menu?.['document-viewer']?.label).toBeUndefined()
   })
 
+  it('does not pollute Object.prototype via __proto__ locale / menu keys', async () => {
+    const { parseRecipe } = await import('../../src/server/recipe-parser')
+    const yaml = `${BASE_YAML}i18n:
+  __proto__:
+    name: "polluted"
+  en:
+    menu:
+      __proto__:
+        label: "polluted"
+      document-viewer:
+        label: "Documents"
+menu:
+  - id: "document-viewer"
+    label: "ドキュメント"
+    icon: "content"
+    page: "pages/DocumentViewer"
+---`
+    const recipe = parseRecipe(RECIPE_DIR, seed(yaml))
+    // Object.prototype must be untouched
+    expect(({} as Record<string, unknown>).name).toBeUndefined()
+    expect(({} as Record<string, unknown>).label).toBeUndefined()
+    // Legitimate keys still resolve
+    expect(recipe.metadata.i18n?.en?.menu?.['document-viewer']?.label).toBe('Documents')
+  })
+
   it('keeps name/description overrides working without a menu axis', async () => {
     const { parseRecipe } = await import('../../src/server/recipe-parser')
     const yaml = `${BASE_YAML}i18n:

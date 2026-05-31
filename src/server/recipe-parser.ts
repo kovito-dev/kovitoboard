@@ -539,10 +539,14 @@ function extractI18nOverrides(
   { name?: string; description?: string; menu?: Record<string, { label: string }> }
 > | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  // Prototype-less records so untrusted YAML keys (`locale` / `menuId`)
+  // such as `__proto__` / `constructor` / `prototype` land as plain
+  // data instead of mutating an object's prototype chain (same guard
+  // pattern as `logger.ts`'s sanitized clone).
   const out: Record<
     string,
     { name?: string; description?: string; menu?: Record<string, { label: string }> }
-  > = {}
+  > = Object.create(null)
   for (const [locale, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     const entry = value as Record<string, unknown>
@@ -564,8 +568,8 @@ function extractI18nOverrides(
             ? ((menuValue as Record<string, unknown>).label as string).trim()
             : undefined
         if (!label) continue
-        menu = menu ?? {}
-        menu[menuId] = { label }
+        menu = menu ?? Object.create(null)
+        menu![menuId] = { label }
       }
     }
     if (!name && !description && !menu) continue
