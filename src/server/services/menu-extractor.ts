@@ -822,6 +822,17 @@ function loadSourceTreeRecipe(
     // `parseRecipe` takes the recipe *directory* and reads recipe.yaml
     // itself (reusing the shared parser SSOT, §6.8.2.1) — do not pass
     // the file contents.
+    //
+    // Residual TOCTOU (accepted): the containment check above
+    // canonicalizes by path, then `parseRecipe` re-opens recipe.yaml by
+    // pathname, so an attacker who can win a race against the
+    // canonical check could swap in a symlink between the two. This is
+    // the same accepted residual documented for the app/ page
+    // resolution above (an O_NOFOLLOW / fd-based read would be needed
+    // to close it, and the shared parser must not be forked); it
+    // requires write access to the read-only OSS install `recipes/`
+    // tree, where direct file replacement is already possible. Tracked
+    // as the same follow-up as the app/ page residual.
     return parseRecipe(recipeDir, fs)
   } catch (err) {
     serverLogger.warn(
