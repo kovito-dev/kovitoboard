@@ -121,6 +121,13 @@ jobs:
 
       - run: npm ci
 
+      # L1 E2E boots the real host server, which serves the built SPA from
+      # `dist/`. Without a build the `/work-roots` SPA fallback returns 500
+      # (dist/index.html ENOENT). `needs:` cannot share the build job's
+      # artifacts because each job runs on a fresh runner, so build here.
+      - name: Build
+        run: npm run build
+
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
