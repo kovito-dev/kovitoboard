@@ -7,6 +7,21 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-05-31
+
+Localization fixes for the bundled sample apps and a small visual
+polish.
+
+### Fixed
+
+- Recipe-based sample apps now show their navigation menu labels and
+  in-app text in the active display language. Previously the bundled
+  Document Viewer displayed Japanese labels and text even when
+  KovitoBoard was set to English.
+- The "open folder" icon in the Document Viewer's file tree is now
+  clearly visible; it previously appeared faint compared to the
+  closed-folder icon.
+
 ## [0.2.1] - 2026-05-30
 
 User-facing improvements from a full manual UX pass, plus security
