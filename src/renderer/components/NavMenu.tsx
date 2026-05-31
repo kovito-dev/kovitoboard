@@ -233,6 +233,7 @@ export function NavMenu({ entries, activeId, onSelect, compact, onToggleCompact,
                 isActive={hasActiveChild}
                 onClick={() => toggleFolder(entry.id)}
                 compact={compact}
+                testId={`nav-entry-${entry.id}`}
                 badge={
                   <span className={`absolute bottom-0.5 right-0.5 text-[var(--text-dim)]`}>
                     {isExpanded ? Icons.chevronDown : Icons.chevronRight}
@@ -251,6 +252,7 @@ export function NavMenu({ entries, activeId, onSelect, compact, onToggleCompact,
                       onClick={() => onSelect(child.id)}
                       isChild
                       compact={compact}
+                      testId={`nav-entry-${child.id}`}
                     />
                   ))}
                 </div>
@@ -268,6 +270,7 @@ export function NavMenu({ entries, activeId, onSelect, compact, onToggleCompact,
             isActive={entry.id === activeId}
             onClick={() => onSelect(entry.id)}
             compact={compact}
+            testId={`nav-entry-${entry.id}`}
           />
         )
       })}
@@ -301,15 +304,24 @@ interface NavIconButtonProps {
   badge?: ReactNode
   isChild?: boolean
   compact?: boolean
+  /**
+   * Stable, locale-independent test hook keyed by the entry id (e.g.
+   * `nav-entry-ext/document-viewer`). Lets E2E specs select a nav entry
+   * by app identity instead of its localized `title`, so navigation
+   * does not couple to the menu-label localization under test
+   * elsewhere.
+   */
+  testId?: string
 }
 
-function NavIconButton({ icon, label, isActive, onClick, badge, isChild, compact }: NavIconButtonProps) {
+function NavIconButton({ icon, label, isActive, onClick, badge, isChild, compact, testId }: NavIconButtonProps) {
   // Compact mode: icon only (legacy display)
   if (compact) {
     return (
       <button
         onClick={onClick}
         title={label}
+        data-testid={testId}
         className={`
           relative flex items-center justify-center rounded-lg transition-colors
           ${isChild ? 'w-8 h-8' : 'w-10 h-10'}
@@ -333,6 +345,7 @@ function NavIconButton({ icon, label, isActive, onClick, badge, isChild, compact
     <button
       onClick={onClick}
       title={label}
+      data-testid={testId}
       className={`
         relative flex items-center gap-2 rounded-lg transition-colors
         ${isChild ? 'h-8 pl-7 pr-2' : 'h-10 px-2.5'} w-full

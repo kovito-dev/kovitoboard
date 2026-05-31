@@ -27,9 +27,23 @@
  *   l1-per-test-setup page fixture writes. The recipe-scoped
  *   `injectKb` bridge then snapshots that server-resolved locale at
  *   mount. So the recipe page body locale tracks `setting.json:locale`.
- *   These tests therefore edit `setting.json` on disk before the first
- *   navigation (the per-test snapshot/restore rolls it back). This is
- *   also why the nav button label tracks the same locale.
+ *   These tests edit `setting.json` on disk before the first
+ *   navigation (the per-test snapshot/restore rolls it back).
+ *
+ * Expected copy is asserted against literals owned by this test layer
+ * (NOT imported from the recipe's own `pages/strings.ts`): importing
+ * the implementation's table would make the assertions tautological —
+ * a wrong edit to `strings.ts` (e.g. a ja/en swap) would flow into the
+ * expectation and still pass. The literals below mirror
+ * `recipes/<id>/pages/strings.ts` and must be updated together with an
+ * intentional copy change.
+ *
+ * Navigation is decoupled from the nav-label localization under test in
+ * recipe-nav-label-i18n.spec.ts: the sidebar entry is selected by its
+ * stable, locale-independent `data-testid` (`nav-entry-ext/<appId>`)
+ * rather than by its localized title. A nav-label regression therefore
+ * fails T1 (its dedicated spec) rather than masking a body-i18n
+ * failure here.
  *
  * Coverage:
  *   - T2-a DocumentViewer body renders Japanese copy (locale=ja).
@@ -46,8 +60,6 @@ import {
   cleanupAppDir,
   removeAppDataDir,
 } from './helpers/v021-bundled-helpers'
-import { STRINGS as DOC_STRINGS } from '../../recipes/document-viewer/pages/strings'
-import { STRINGS as TODO_STRINGS } from '../../recipes/todo/pages/strings'
 
 const API_BASE = 'http://127.0.0.1:3001'
 const DOC_RECIPE_ID = 'document-viewer'
@@ -57,11 +69,33 @@ const TODO_APP_ID = 'todo'
 
 type Locale = 'ja' | 'en'
 
-/** The server-resolved nav label per locale (drives the button title). */
-const NAV_LABEL: Record<string, Record<Locale, string>> = {
-  [DOC_APP_ID]: { ja: 'ドキュメント', en: 'Documents' },
-  [TODO_APP_ID]: { ja: 'TODO', en: 'TODO' },
-}
+// Spec-owned expected copy, mirrored from recipes/<id>/pages/strings.ts.
+// Defined here (not imported) so a wrong edit to the implementation's
+// table cannot silently satisfy these assertions.
+const EXPECTED = {
+  doc: {
+    ja: {
+      subtitle:
+        'Markdown / HTML ファイルのビューアです。機能の追加・変更は、右側のサイドパネルからエージェントに依頼してください。',
+      selectFile: '左のパネルからファイルを選択してください',
+    },
+    en: {
+      subtitle:
+        'A viewer for Markdown and HTML files. To add or change features, ask the agent from the side panel on the right.',
+      selectFile: 'Select a file from the left panel to view',
+    },
+  },
+  todo: {
+    ja: {
+      subtitle:
+        'シンプルな ToDo アプリです。機能の追加・変更は、右側のサイドパネルからエージェントに依頼してください。',
+    },
+    en: {
+      subtitle:
+        'A simple to-do app. To add or change features, ask the agent from the side panel on the right.',
+    },
+  },
+} as const
 
 /**
  * Overwrite `setting.json:locale` on disk. The renderer boots its
@@ -81,21 +115,20 @@ function setLocaleOnDisk(projectRoot: string, locale: Locale): void {
 
 /**
  * Land on /agents (full reload — boots the locale from setting.json),
- * wait for menu-entries, then click the recipe's nav button to route
- * to /ext/<appId> via the in-app router (no reload, so the dynamic
- * route stays registered). Mirrors s12-ambient-sidebar's
- * `openExtAppWithSidebar` navigation contract.
+ * wait for menu-entries, then click the recipe's nav entry (selected by
+ * its stable `data-testid`, NOT its localized title) to route to
+ * /ext/<appId> via the in-app router (no reload, so the dynamic route
+ * stays registered). Mirrors s12-ambient-sidebar's `openExtAppWithSidebar`
+ * navigation contract, but keyed by app identity for locale independence.
  */
-async function openRecipePage(
-  page: Page,
-  appId: string,
-  navLabel: string,
-): Promise<void> {
+async function openRecipePage(page: Page, appId: string): Promise<void> {
   await page.goto('/agents')
   await page.waitForResponse(
     (r) => r.url().endsWith('/api/app/menu-entries') && r.ok(),
   )
-  const navButton = page.locator(`button[title="${navLabel}"]`).first()
+  // App.tsx prefixes user menu entry ids with `ext/`, so the nav button
+  // testid is `nav-entry-ext/<appId>`.
+  const navButton = page.getByTestId(`nav-entry-ext/${appId}`)
   await navButton.waitFor({ state: 'visible', timeout: 10_000 })
   await navButton.click()
   await page.waitForURL(`**/ext/${appId}`)
@@ -132,10 +165,10 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    await openRecipePage(page, DOC_APP_ID, NAV_LABEL[DOC_APP_ID].ja)
+    await openRecipePage(page, DOC_APP_ID)
     await expect(page.getByTestId('docviewer')).toBeVisible()
-    await expect(page.getByText(DOC_STRINGS.ja.subtitle)).toBeVisible()
-    await expect(page.getByText(DOC_STRINGS.ja.selectFile)).toBeVisible()
+    await expect(page.getByText(EXPECTED.doc.ja.subtitle)).toBeVisible()
+    await expect(page.getByText(EXPECTED.doc.ja.selectFile)).toBeVisible()
   })
 
   test('T2-b DocumentViewer body renders English copy (locale=en)', async ({
@@ -143,10 +176,10 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    await openRecipePage(page, DOC_APP_ID, NAV_LABEL[DOC_APP_ID].en)
+    await openRecipePage(page, DOC_APP_ID)
     await expect(page.getByTestId('docviewer')).toBeVisible()
-    await expect(page.getByText(DOC_STRINGS.en.subtitle)).toBeVisible()
-    await expect(page.getByText(DOC_STRINGS.en.selectFile)).toBeVisible()
+    await expect(page.getByText(EXPECTED.doc.en.subtitle)).toBeVisible()
+    await expect(page.getByText(EXPECTED.doc.en.selectFile)).toBeVisible()
   })
 
   test('T2-c TodoPage body renders Japanese copy (locale=ja)', async ({
@@ -154,9 +187,9 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'ja')
-    await openRecipePage(page, TODO_APP_ID, NAV_LABEL[TODO_APP_ID].ja)
+    await openRecipePage(page, TODO_APP_ID)
     await expect(page.getByTestId('todo')).toBeVisible()
-    await expect(page.getByText(TODO_STRINGS.ja.subtitle)).toBeVisible()
+    await expect(page.getByText(EXPECTED.todo.ja.subtitle)).toBeVisible()
   })
 
   test('T2-d TodoPage body renders English copy (locale=en)', async ({
@@ -164,8 +197,8 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     kbFixture,
   }) => {
     setLocaleOnDisk(kbFixture.projectRoot, 'en')
-    await openRecipePage(page, TODO_APP_ID, NAV_LABEL[TODO_APP_ID].en)
+    await openRecipePage(page, TODO_APP_ID)
     await expect(page.getByTestId('todo')).toBeVisible()
-    await expect(page.getByText(TODO_STRINGS.en.subtitle)).toBeVisible()
+    await expect(page.getByText(EXPECTED.todo.en.subtitle)).toBeVisible()
   })
 })
