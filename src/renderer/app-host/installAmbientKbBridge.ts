@@ -35,6 +35,7 @@
 
 import { setExposedContext } from '../lib/exposeContext'
 import { createLogger } from '../lib/logger'
+import { getLocale } from '../i18n'
 
 const log = createLogger('installAmbientKbBridge')
 
@@ -72,5 +73,10 @@ export function installAmbientKbBridge(): void {
     exposeContext: (payload: Record<string, unknown>) => {
       setExposedContext(payload)
     },
+    // Snapshot the active locale at bridge install time so non-recipe
+    // surfaces also expose a stable `window.kb.locale`. Recipe pages
+    // read this when they cannot import the host i18n catalog directly
+    // (app-directory-extension.md v1.7 §5.4.1 / §5.4.4).
+    locale: getLocale(),
   }
 }

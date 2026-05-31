@@ -10,6 +10,7 @@
  * e.g. ask your concierge "change the TODO background color to blue"
  */
 import { useState, useEffect, useCallback } from 'react'
+import { STRINGS } from './strings'
 
 const TASK_PREFIX = 'task:'
 const MAX_TASKS = 100
@@ -29,11 +30,24 @@ declare global {
   interface Window {
     kb: {
       call: <T = unknown>(callId: string, input?: Record<string, unknown>) => Promise<HandlerResponse<T>>
+      /**
+       * Active UI locale, injected by the host bridge at mount time.
+       * Optional because this page lives outside the host build graph
+       * and the bridge is only guaranteed once a recipe page is mounted;
+       * read it at render/handler time and fall back to 'en'.
+       */
+      locale?: 'ja' | 'en'
     }
   }
 }
 
 export default function TodoPage() {
+  // Read the locale snapshot at render time. Never read `window.kb`
+  // at module top level — the bridge may not be installed when this
+  // module is first evaluated (app-directory-extension.md v1.7 §5.4.4).
+  const locale = window.kb?.locale === 'ja' ? 'ja' : 'en'
+  const s = STRINGS[locale]
+
   const [tasks, setTasks] = useState<Task[]>([])
   const [inputValue, setInputValue] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -63,11 +77,11 @@ export default function TodoPage() {
       items.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       setTasks(items)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tasks')
+      setError(err instanceof Error ? err.message : s.failedToLoadTasks)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [s])
 
   useEffect(() => {
     loadAll()
@@ -78,7 +92,7 @@ export default function TodoPage() {
     if (!title) return
 
     if (tasks.length >= MAX_TASKS) {
-      setError(`Maximum of ${MAX_TASKS} tasks reached. Please delete some tasks before adding new ones.`)
+      setError(s.maxTasksReached(MAX_TASKS))
       return
     }
 
@@ -102,10 +116,10 @@ export default function TodoPage() {
         setTasks((prev) => prev.filter((t) => t.id !== task.id)) // Rollback
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save task')
+      setError(err instanceof Error ? err.message : s.failedToSaveTask)
       setTasks((prev) => prev.filter((t) => t.id !== task.id))
     }
-  }, [inputValue, tasks.length])
+  }, [inputValue, tasks.length, s])
 
   const handleToggle = useCallback(async (id: string) => {
     const target = tasks.find((t) => t.id === id)
@@ -124,10 +138,10 @@ export default function TodoPage() {
         setTasks((prev) => prev.map((t) => (t.id === id ? target : t))) // Rollback
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update task')
+      setError(err instanceof Error ? err.message : s.failedToUpdateTask)
       setTasks((prev) => prev.map((t) => (t.id === id ? target : t)))
     }
-  }, [tasks])
+  }, [tasks, s])
 
   const handleDelete = useCallback(async (id: string) => {
     const snapshot = tasks
@@ -140,10 +154,10 @@ export default function TodoPage() {
         setTasks(snapshot) // Rollback
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete task')
+      setError(err instanceof Error ? err.message : s.failedToDeleteTask)
       setTasks(snapshot)
     }
-  }, [tasks])
+  }, [tasks, s])
 
   const doneCount = tasks.filter((t) => t.done).length
 
@@ -153,7 +167,7 @@ export default function TodoPage() {
         {/* Header */}
         <h1 className="text-lg font-bold text-[var(--text-primary)]">TODO</h1>
         <p className="text-xs text-[var(--text-dim)] mt-0.5">
-          A simple to-do app. To add or change features, ask the agent from the side panel on the right.
+          {s.subtitle}
         </p>
 
         {/* Error banner */}
@@ -176,8 +190,8 @@ export default function TodoPage() {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-            placeholder="New task..."
-            aria-label="New task"
+            placeholder={s.newTaskPlaceholder}
+            aria-label={s.newTaskAriaLabel}
             data-testid="todo-input"
             className="flex-1 px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-dim)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-border)]"
           />
@@ -187,14 +201,14 @@ export default function TodoPage() {
             data-testid="todo-add"
             className="px-4 py-2 bg-[var(--accent-bg)] text-[var(--accent-text)] rounded-lg text-sm font-medium hover:opacity-80 disabled:opacity-40 transition-opacity"
           >
-            Add
+            {s.add}
           </button>
         </div>
 
         {/* Task list */}
         {isLoading && tasks.length === 0 && (
           <div className="text-sm text-[var(--text-dim)] text-center py-4">
-            Loading...
+            {s.loading}
           </div>
         )}
 
@@ -228,7 +242,7 @@ export default function TodoPage() {
                 data-testid={`todo-delete-${index}`}
                 className="text-red-400 hover:text-red-300 text-xs font-bold ml-2 shrink-0"
               >
-                Delete
+                {s.delete}
               </button>
             </div>
           ))}
@@ -237,14 +251,14 @@ export default function TodoPage() {
         {/* Empty state */}
         {!isLoading && tasks.length === 0 && (
           <div className="text-sm text-[var(--text-dim)] text-center py-4">
-            No tasks yet. Add one using the form above.
+            {s.emptyState}
           </div>
         )}
 
         {/* Footer: count */}
         {tasks.length > 0 && (
           <div className="text-xs text-[var(--text-dim)] text-right">
-            {doneCount} of {tasks.length} completed
+            {s.completedCount(doneCount, tasks.length)}
           </div>
         )}
       </div>
