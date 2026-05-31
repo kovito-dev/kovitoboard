@@ -791,7 +791,33 @@ function loadSourceTreeRecipe(
   }
   // Absent source-tree recipe.yaml is the normal case (3) for
   // import/url apps that have no live install in v0.2.x; stay silent.
-  if (!fs.existsSync(join(recipeDir, 'recipe.yaml'))) return null
+  const recipeYamlPath = join(recipeDir, 'recipe.yaml')
+  if (!fs.existsSync(recipeYamlPath)) return null
+  // Canonical containment: lexical `resolve` blocks `../` in `recipeId`
+  // but not a symlinked `recipes/<recipeId>` (or recipe.yaml) that
+  // redirects outside the tree. Canonicalize the real recipe.yaml path
+  // and require it to stay under the real recipes/ root before reading
+  // — mirrors the Layer-3 symlink defence on the app/ page resolution.
+  try {
+    const realRecipesRoot = fs.realpathSync(recipesRoot)
+    const realRecipeYaml = fs.realpathSync(recipeYamlPath)
+    const realRootMarker = realRecipesRoot.endsWith(sep)
+      ? realRecipesRoot
+      : realRecipesRoot + sep
+    if (!realRecipeYaml.startsWith(realRootMarker)) {
+      serverLogger.warn(
+        { recipeId, appId, reason: 'recipe-yaml-symlink-escape' },
+        '[menu-extractor] Recipe path canonicalizes outside recipes/; skipping locale base-label resolution',
+      )
+      return null
+    }
+  } catch (err) {
+    serverLogger.warn(
+      { recipeId, appId, err, reason: 'recipe-yaml-realpath-failure' },
+      '[menu-extractor] Could not canonicalize source-tree recipe path; falling back',
+    )
+    return null
+  }
   try {
     // `parseRecipe` takes the recipe *directory* and reads recipe.yaml
     // itself (reusing the shared parser SSOT, §6.8.2.1) — do not pass

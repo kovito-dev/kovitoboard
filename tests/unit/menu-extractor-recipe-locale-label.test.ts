@@ -73,7 +73,10 @@ function recipeYaml(opts: { withEnMenu: boolean }): string {
   return lines.join('\n')
 }
 
-function makeFs(files: Record<string, string>): FileAccessLayer {
+function makeFs(
+  files: Record<string, string>,
+  realpaths: Record<string, string> = {},
+): FileAccessLayer {
   const fileMap = new Map(Object.entries(files))
   const dirs = new Set<string>([PROJECT_ROOT, KB_ROOT])
   for (const p of fileMap.keys()) {
@@ -98,7 +101,7 @@ function makeFs(files: Record<string, string>): FileAccessLayer {
       if (!fileMap.has(p)) throw new Error(`ENOENT: ${p}`)
       return { size: fileMap.get(p)!.length } as unknown as ReturnType<FileAccessLayer['statSync']>
     },
-    realpathSync: (p) => p,
+    realpathSync: (p) => realpaths[p] ?? p,
     lstatSync: (p) =>
       ({ size: fileMap.get(p)?.length ?? 0, isSymbolicLink: false }) as unknown as ReturnType<
         FileAccessLayer['lstatSync']
@@ -239,6 +242,32 @@ describe('readUserMenuEntries — recipe locale base label (§6.8.2.1)', () => {
     })
     const entries = readUserMenuEntries(fs, undefined, lookupFor(recipeManifest()), undefined, 'en')
     expect(entries.find((e) => e.id === APP_ID)?.label).toBe('menu-ts-label')
+  })
+
+  it('symlinked recipe.yaml that canonicalizes outside recipes/ is refused', () => {
+    const fs = makeFs(
+      {
+        [MENU_TS]: MENU_TS_BODY,
+        [PAGE_FILE]: '// stub',
+        [RECIPE_YAML]: recipeYaml({ withEnMenu: true }),
+        [RECIPE_ARTIFACT]: '// stub',
+      },
+      // recipe.yaml canonicalizes to a path outside the recipes/ root
+      { [RECIPE_YAML]: '/evil/recipe.yaml' },
+    )
+    const entries = readUserMenuEntries(
+      fs,
+      undefined,
+      lookupFor(recipeManifest()),
+      undefined,
+      'en',
+      KB_ROOT,
+    )
+    expect(entries.find((e) => e.id === APP_ID)?.label).toBe('menu-ts-label')
+    expect(serverLoggerStub.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'recipe-yaml-symlink-escape' }),
+      expect.any(String),
+    )
   })
 
   it('path-escape recipeId is refused (no read outside recipes/)', () => {
