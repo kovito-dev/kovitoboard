@@ -35,6 +35,7 @@ import { installAmbientKbBridge } from './installAmbientKbBridge'
 import { createCaptureBridge } from '../lib/captureBridge'
 import type { CaptureKind, CaptureBridge } from '../lib/captureBridge'
 import { openMount, closeMount, closeMountSync } from './captureBridgeRegistry'
+import { getLocale } from '../i18n'
 
 const ownLog = createLogger('injectKb')
 
@@ -211,6 +212,12 @@ export function injectKb(
     exposeContext: existingExpose ?? ((payload: Record<string, unknown>) => {
       setExposedContext(payload)
     }),
+    // Snapshot the active locale at recipe page mount so recipe code
+    // (which lives outside the host build graph and cannot import the
+    // i18n catalog) can localize its own copy. Mount-snapshot semantics:
+    // an in-place locale switch is reflected on the next remount, not
+    // live (app-directory-extension.md v1.7 §5.4.2 / §5.4.4).
+    locale: getLocale(),
     // Expose only the capture methods recipe code is allowed to
     // call. `dispose` stays on the closure-side bridge object so
     // recipe authors cannot tear down the registration manually.

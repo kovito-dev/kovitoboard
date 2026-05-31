@@ -42,6 +42,14 @@ export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.css']
 export const JAPANESE_EXCLUDE = new Set([
   'src/renderer/i18n/ja.ts',
   'src/renderer/i18n/en.ts',       // language endonyms are intentional
+  // Recipe-local i18n dictionaries. A recipe page lives outside the
+  // host build graph (/@fs dynamic import) and cannot reach the host
+  // t() catalog, so each recipe carries its own per-locale STRINGS in a
+  // dedicated module and selects the set via window.kb.locale
+  // (app-directory-extension.md v1.7 §5.4.4). These are the recipe-local
+  // equivalent of i18n/ja.ts and are intentionally allowed Japanese.
+  'recipes/document-viewer/pages/strings.ts',
+  'recipes/todo/pages/strings.ts',
   'src/server/services/initial-prompts.ts',
   'src/server/services/upgrade-prompts.ts',
   'src/shared/app-creation-prompt.ts',  // agent prompt template

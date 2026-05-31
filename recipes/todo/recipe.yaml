@@ -14,6 +14,8 @@ i18n:
 artifacts:
   - path: "pages/TodoPage.tsx"
     type: "page"
+  - path: "pages/strings.ts"
+    type: "lib"
 
 menu:
   - id: "todo"
