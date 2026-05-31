@@ -128,13 +128,14 @@ function FolderIcon({ open }: { open: boolean }) {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
       {open ? (
-        // Open folder: a back panel (with tab) plus a forward-flaring
-        // front flap. Two filled shapes give it the same visual mass as
-        // the closed variant, so the "open" state stays legible at 14px
-        // (the previous single thin back-rim band was too faint to read).
+        // Open folder, modeled on the classic "folder-open" silhouette: a
+        // back panel (with tab) behind a forward-flaring front flap. The two
+        // shapes use slightly different shades (darker back, lighter flap) so
+        // the depth — and thus the "open" state — reads clearly even at 14px.
+        // The earlier single thin back-rim band was too faint to recognize.
         <>
-          <path d="M1.5 4.5A1 1 0 0 1 2.5 3.5h3l1.2 1.2h5.8a1 1 0 0 1 1 1v1.5H1.5Z" fill="#d8a657" />
-          <path d="M3.2 7h8.6l1.4 5.2a.6 .6 0 0 1-.58.75H2.38a.6 .6 0 0 1-.58-.75L3.2 7Z" fill="#d8a657" />
+          <path d="M1.4 12.2 1.4 4.4A1 1 0 0 1 2.4 3.4H5.5L6.7 4.6H12.4A1 1 0 0 1 13.4 5.6V7H4.6A1.4 1.4 0 0 0 3.3 7.9Z" fill="#b87a2b" />
+          <path d="M3.6 8.2A.9 .9 0 0 1 4.45 7.6H15A.6 .6 0 0 1 15.56 8.42L13.5 12.9A1.2 1.2 0 0 1 12.4 13.6H1.7A.6 .6 0 0 1 1.14 12.78Z" fill="#e0b35e" />
         </>
       ) : (
         <path
