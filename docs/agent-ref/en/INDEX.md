@@ -1,12 +1,10 @@
 # KovitoBoard Reference (for Agents) — English
 
-**Target KB version:** v0.2.1
+**Target KB version:** v0.2.2
 **Last updated:** 2026-05-31
-**Role:** Navigation layer for chapters 01–10. Detailed content for those chapters lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md). **Chapter 12 is an exception** — it is authored in English at [`../12-protected-paths.md`](../12-protected-paths.md) and has no `en/` proxy. Read it directly.
+**Role:** Navigation layer for chapters 01–12. Detailed content for every chapter lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md).
 
 > ℹ️ **About this tree:** `docs/agent-ref/en/` is primarily a **navigation layer**, not a translation. Most chapters here provide English section titles and pointers into the Japanese authoritative source (`docs/agent-ref/`). Agents reading this tree should follow the pointers and read the Japanese detailed content directly — Claude can read Japanese and respond in English without loss.
->
-> Chapter 12 (Protected Paths, added in v0.2.0) breaks this pattern: it is authored in English and is itself the SSOT for OSS users and external contributors. There is no Japanese parallel chapter under `docs/agent-ref/`; the design-side internal SSOT is the project's specification document.
 >
 > This split keeps detailed information in one place per chapter, avoiding spec drift between languages. English-locale-specific notes (UI labels, common English-speaker confusions) may be added to each navigation chapter's "English-specific notes" section when needed.
 
@@ -85,10 +83,17 @@ This document is the entry point that Kovito's Concierge "Kobi" and other agents
 - Version-related warnings → [`06-troubleshooting.md`](./06-troubleshooting.md) §8
 
 ### 🛡️ Files KB protects (do not edit directly)
-- KB-managed files list → [`../12-protected-paths.md`](../12-protected-paths.md) §2
-- External preconditions (`.claude/agents` etc.) → [`../12-protected-paths.md`](../12-protected-paths.md) §3
-- Runtime state (tmux / ports / internal APIs) → [`../12-protected-paths.md`](../12-protected-paths.md) §4
-- Alternative routes summary → [`../12-protected-paths.md`](../12-protected-paths.md) §7
+- KB-managed files list → [`./12-protected-paths.md`](./12-protected-paths.md) §2
+- External preconditions (`.claude/agents` etc.) → [`./12-protected-paths.md`](./12-protected-paths.md) §3
+- Runtime state (tmux / ports / internal APIs) → [`./12-protected-paths.md`](./12-protected-paths.md) §4
+- Alternative routes summary → [`./12-protected-paths.md`](./12-protected-paths.md) §7
+
+### 🚀 Starting / stopping KB
+- Start KB / asked to start it → [`./11-lifecycle.md`](./11-lifecycle.md) §2
+- Stop KB / asked to stop it → [`./11-lifecycle.md`](./11-lifecycle.md) §3
+- A multi-launch error appears → [`./11-lifecycle.md`](./11-lifecycle.md) §4
+- May a KB-internal agent (Concierge / Developer / Secretary) stop KB? → [`./11-lifecycle.md`](./11-lifecycle.md) §5
+- `kb-stop` behavior and exit codes → [`./11-lifecycle.md`](./11-lifecycle.md) §6
 
 ---
 
@@ -105,7 +110,8 @@ This document is the entry point that Kovito's Concierge "Kobi" and other agents
 | [`07-advanced.md`](./07-advanced.md) | Skills, automation, advanced settings | [`../07-advanced.md`](../07-advanced.md) |
 | [`09-data-handling.md`](./09-data-handling.md) | Data handling and notes (KB→Claude Code data flow, masking recommendations) | [`../09-data-handling.md`](../09-data-handling.md) |
 | [`10-upgrade.md`](./10-upgrade.md) | Upgrading KB — procedure and agent protocol | [`../10-upgrade.md`](../10-upgrade.md) |
-| (chapter 12 has no `en/` proxy) | Protected paths (KB-managed files / runtime / boundaries) | [`../12-protected-paths.md`](../12-protected-paths.md) (authored in English) |
+| [`./11-lifecycle.md`](./11-lifecycle.md) | KB process start / stop protocol (embedded model, `kb-stop` spec) | [`../11-lifecycle.md`](../11-lifecycle.md) |
+| [`./12-protected-paths.md`](./12-protected-paths.md) | Protected paths (KB-managed files / runtime / security boundaries) | [`../12-protected-paths.md`](../12-protected-paths.md) |
 
 ---
 

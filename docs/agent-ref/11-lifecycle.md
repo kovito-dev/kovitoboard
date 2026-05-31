@@ -1,26 +1,25 @@
-# 11. KovitoBoard Process Lifecycle
+# 11. KovitoBoard のプロセス・ライフサイクル
 
-**Target KB version:** v0.2.0
-**Last updated:** 2026-05-10
-**Authoritative:** This chapter is authored in English here (no parallel Japanese chapter under `docs/agent-ref/`). Agents and contributors should rely on this chapter as the public-facing source of truth for starting, stopping, and recovering KB.
+**対象 KB バージョン:** v0.2.2
+**最終更新:** 2026-05-31
 
-> 📖 **When to read this chapter:** Whenever a user asks an agent to "start KovitoBoard", "stop KovitoBoard", "restart KovitoBoard", or when an agent encounters a multi-launch error, a stale PID file, or any KB-related process question. KovitoBoard agents that live inside KB itself (Kovito Concierge / Kovito Developer / Secretary) must read §5 before considering any process action.
-
----
-
-## Purpose
-
-KovitoBoard's start / stop story is intentionally narrow: every supported entry point goes through `tools/kb-start.mjs` (the supervisor) and `tools/kb-stop.mjs` (the cleaner). This chapter defines the protocols all three agent audiences must follow:
-
-- KB users invoking the CLI directly.
-- Claude Code agents living in the user's project, asked to launch / stop the embedded KB.
-- KB-internal agents living *inside* a running KB session (must NOT stop themselves).
-
-If an agent's instinct is to call `pkill`, `tmux kill-server`, `kill -9`, or `npm run dev`, that instinct is wrong — read the rest of this chapter first.
+> 📖 **この章を読むタイミング:** ユーザーからエージェントが「KovitoBoard を起動して」「KovitoBoard を停止して」「KovitoBoard を再起動して」と頼まれたとき、または多重起動エラー・stale な PID ファイル・KB プロセスに関する疑問に遭遇したとき。KB 自身の内部で動くエージェント（Kovito コンシェルジュ「コビー」/ Kovito 開発者 / 秘書）は、プロセス操作を検討する前に必ず §5 を読んでください。
 
 ---
 
-## §1 The two official commands
+## この章の目的
+
+KovitoBoard の起動・停止のあり方は意図的に狭く設計されています。サポートされる入口はすべて `tools/kb-start.mjs`（スーパーバイザ）と `tools/kb-stop.mjs`（クリーナー）を経由します。この章では、3 種類のエージェント利用者すべてが従うべきプロトコルを定義します。
+
+- CLI を直接実行する KB ユーザー。
+- ユーザーのプロジェクト内で動き、組み込み KB の起動・停止を依頼される Claude Code エージェント。
+- 実行中の KB セッションの *内部* で動く KB 内部エージェント（自分自身を停止してはならない）。
+
+エージェントが反射的に `pkill`・`tmux kill-server`・`kill -9`・`npm run dev` を呼ぼうとしたら、その反射は誤りです。先にこの章の残りを読んでください。
+
+---
+
+## §1 2 つの公式コマンド
 
 ```bash
 # Start KovitoBoard (embedded model)
@@ -34,130 +33,130 @@ cd <project>/kovitoboard
 npm run kb:stop
 ```
 
-That is the entire user-facing surface area for normal operation.
+これが通常運用におけるユーザー向けの操作面のすべてです。
 
-`npm run dev` exists, but it is **for KB contributors only**. It bypasses the supervisor, so `npm run kb:stop` cannot find or stop it. Agents must never recommend or invoke `npm run dev` when fulfilling a user request.
+`npm run dev` も存在しますが、これは **KB のコントリビューター専用** です。スーパーバイザをバイパスするため、`npm run kb:stop` では検出も停止もできません。ユーザーの依頼を果たす際にエージェントが `npm run dev` を推奨・実行してはいけません。
 
 ---
 
-## §2 Starting KB (agent protocol)
+## §2 KB の起動（エージェント向けプロトコル）
 
-When a user asks an agent to "start KovitoBoard / KB", do this:
+ユーザーがエージェントに「KovitoBoard / KB を起動して」と頼んだら、次を行います。
 
-1. `pwd` and confirm you are sitting at the user's project directory (the parent of `kovitoboard/`).
-2. Verify `<project>/kovitoboard/package.json` exists. If it does not, tell the user "I cannot find a `kovitoboard/` subdirectory in this project" and stop.
-3. Check `<project>/kovitoboard/.kovitoboard/run/supervisor.pid`:
-   - File present + pid alive (`kill -0 <pid>` succeeds) → KB is already running. Tell the user "KovitoBoard is already running (pid=N)" and read the `ports.vite` field of the PID file to give them the URL `http://localhost:<port>`. Do **not** start a second supervisor.
-   - File present + pid dead (ESRCH) → stale PID file, harmless; continue.
-   - File absent → continue.
-4. Run **exactly** this command:
+1. `pwd` を実行し、自分がユーザーのプロジェクトディレクトリ（`kovitoboard/` の親）にいることを確認する。
+2. `<project>/kovitoboard/package.json` が存在することを確認する。存在しなければ、ユーザーに「このプロジェクトに `kovitoboard/` サブディレクトリが見つかりません」と伝えて停止する。
+3. `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` を確認する:
+   - ファイルが存在 + pid が生存（`kill -0 <pid>` が成功）→ KB は既に起動済み。ユーザーに「KovitoBoard は既に起動しています（pid=N）」と伝え、PID ファイルの `ports.vite` フィールドを読んで URL `http://localhost:<port>` を案内する。2 つ目のスーパーバイザを起動 **しない**。
+   - ファイルが存在 + pid が死亡（ESRCH）→ stale な PID ファイル。無害なので続行する。
+   - ファイルが存在しない → 続行する。
+4. **正確に** 次のコマンドを実行する:
    ```bash
    cd <project>/kovitoboard && npm start -- --project-root ..
    ```
-5. Watch the supervisor output. Once you see `[kb-start] Frontend: http://localhost:<port>`, hand the URL back to the user.
+5. スーパーバイザの出力を見守る。`[kb-start] Frontend: http://localhost:<port>` が表示されたら、その URL をユーザーに渡す。
 
-### Never do these when starting
+### 起動時に絶対にしないこと
 
-- Do not run `npm run dev` (contributor-only, bypasses the supervisor).
-- Do not run from inside the KB clone without `--project-root` — the supervisor will refuse with an explicit error message and exit code 1.
-- Do not start KB from a directory that is not `<project>/kovitoboard/`.
-- Do not edit `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` by hand.
+- `npm run dev` を実行しない（コントリビューター専用、スーパーバイザをバイパスする）。
+- `--project-root` なしで KB clone 内部から実行しない。スーパーバイザが明示的なエラーメッセージと終了コード 1 で拒否する。
+- `<project>/kovitoboard/` 以外のディレクトリから KB を起動しない。
+- `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` を手で編集しない。
 
 ---
 
-## §3 Stopping KB (agent protocol)
+## §3 KB の停止（エージェント向けプロトコル）
 
-When a user asks an agent to "stop KovitoBoard / KB", do this:
+ユーザーがエージェントに「KovitoBoard / KB を停止して」と頼んだら、次を行います。
 
-1. Verify `<project>/kovitoboard/package.json` exists.
-2. Run **exactly** this command:
+1. `<project>/kovitoboard/package.json` が存在することを確認する。
+2. **正確に** 次のコマンドを実行する:
    ```bash
    cd <project>/kovitoboard && npm run kb:stop
    ```
-3. Read the exit code:
-   - **0** → done; tell the user KovitoBoard stopped cleanly.
-   - **3** → graceful shutdown timed out. Ask the user "May I retry with `--force`?" and, on confirmation, run `npm run kb:stop -- --force`.
-   - **4** → partial success: the supervisor stopped, but residual processes were detected (printed to stderr by `kb-stop`). Show the user the residue list and ask whether to escalate to `--force`.
-   - **2** → permission denied (probably owned by another user). Report and stop; do not retry under elevated privileges without an explicit request.
-4. Never default to `pkill`, `kill -9`, `tmux kill-server`, or `pkill -f kb-start`. The official `kb:stop` command exits with the codes above for a reason — its diagnostic output already tells you and the user what to do next.
+3. 終了コードを読む:
+   - **0** → 完了。KovitoBoard がクリーンに停止したとユーザーに伝える。
+   - **3** → graceful shutdown がタイムアウトした。ユーザーに「`--force` で再試行してよいですか？」と尋ね、了承を得たら `npm run kb:stop -- --force` を実行する。
+   - **4** → 部分的成功。スーパーバイザは停止したが、残留プロセスが検出された（`kb-stop` が stderr に出力）。残留リストをユーザーに見せ、`--force` にエスカレーションするか尋ねる。
+   - **2** → 権限拒否（おそらく別ユーザーの所有）。報告して停止する。明示的な依頼なしに昇格権限で再試行しない。
+4. `pkill`・`kill -9`・`tmux kill-server`・`pkill -f kb-start` をデフォルトで使わない。公式の `kb:stop` コマンドが上記のコードで終了するのには理由があります。その診断出力が、あなたとユーザーに次に何をすべきかを既に伝えています。
 
-### Never do these when stopping
+### 停止時に絶対にしないこと
 
-- Do not run `kill <pid>` directly using the PID file unless `kb:stop` itself failed.
-- Do not run `tmux kill-server` — it would kill every tmux session on the host, including ones unrelated to KovitoBoard.
-- Do not delete `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` by hand to "force" a restart; that drops the multi-launch guard and the host has zero record of what was running.
-
----
-
-## §4 Multi-launch errors and stale PID files
-
-If `npm start` exits with `[kb-start] ERROR: KovitoBoard supervisor is already running (pid=N)`:
-
-1. Read `<project>/kovitoboard/.kovitoboard/run/supervisor.pid`. The JSON contains `ports.vite`; the URL is `http://localhost:<vite-port>`.
-2. If the user wanted to **reach** the running KB, give them the URL.
-3. If the user wanted to **restart** KB, run §3 (`npm run kb:stop`) then §2 (`npm start -- --project-root ..`).
-
-If `kb-start` reports `WARN: stale PID file detected`, this is informational — the previous supervisor died without cleanup, and `kb-start` already overwrote the file. No agent action required.
+- `kb:stop` 自体が失敗した場合を除き、PID ファイルを使って `kill <pid>` を直接実行しない。
+- `tmux kill-server` を実行しない。ホスト上の KovitoBoard と無関係なものを含むすべての tmux セッションを kill してしまう。
+- 「再起動を強制する」ために `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` を手で削除しない。多重起動ガードが外れ、何が動いていたかの記録がホストから消える。
 
 ---
 
-## §5 Agents living *inside* KB must not stop KB
+## §4 多重起動エラーと stale な PID ファイル
 
-If your agent definition is one of:
+`npm start` が `[kb-start] ERROR: KovitoBoard supervisor is already running (pid=N)` で終了した場合:
 
-- Kovito Concierge (Kobi)
-- Kovito Developer
-- Secretary
-- Any other agent whose tmux session lives inside a `kovitoboard-<projectDir>` session
+1. `<project>/kovitoboard/.kovitoboard/run/supervisor.pid` を読む。JSON には `ports.vite` が含まれ、URL は `http://localhost:<vite-port>` となる。
+2. ユーザーが起動中の KB に **アクセスしたい** なら、URL を案内する。
+3. ユーザーが KB を **再起動したい** なら、§3（`npm run kb:stop`）を行ってから §2（`npm start -- --project-root ..`）を行う。
 
-…then you must **never** invoke any of the following:
+`kb-start` が `WARN: stale PID file detected` を報告した場合、これは情報提供にすぎません。前のスーパーバイザがクリーンアップせずに死亡し、`kb-start` が既にファイルを上書きしています。エージェントの操作は不要です。
+
+---
+
+## §5 KB の *内部* で動くエージェントは KB を停止してはならない
+
+あなたのエージェント定義が次のいずれかなら:
+
+- Kovito コンシェルジュ（コビー）
+- Kovito 開発者
+- 秘書
+- その他、tmux セッションが `kovitoboard-<projectDir>` セッション内部に存在するエージェント
+
+…次のいずれも **絶対に** 実行してはいけません:
 
 - `npm run kb:stop`
 - `tmux kill-server`
-- `tmux kill-session` against your own session
+- 自分自身のセッションに対する `tmux kill-session`
 - `kill <supervisor-pid>` / `kill -9 <supervisor-pid>`
-- Any command that would terminate the supervisor that is hosting you
+- あなたをホストしているスーパーバイザを終了させるあらゆるコマンド
 
-Stopping KB stops your tmux window. Even if `kb-stop` has a self-suicide guard (it does — see the `--force` notes below), there is no scenario in which an in-KB agent legitimately needs to stop KB. If a user asks you to "restart KovitoBoard from inside KB", reply: "I cannot restart KovitoBoard from inside this session. Please open a terminal outside KovitoBoard and run `npm run kb:stop` followed by `npm start -- --project-root ..`."
+KB を停止すると、あなたの tmux ウィンドウが停止します。`kb-stop` に自殺防止ガードがあるとしても（実際にあります。下記の `--force` 注記を参照）、KB 内部エージェントが正当に KB を停止する必要があるシナリオは存在しません。ユーザーから「KB の内部から KovitoBoard を再起動して」と頼まれたら、こう返してください:「このセッションの内部からは KovitoBoard を再起動できません。KovitoBoard の外側でターミナルを開き、`npm run kb:stop` の後に `npm start -- --project-root ..` を実行してください。」
 
-This rule is the same family as `agent-ref/10-upgrade.md` §7.4 ("KB self-restart is forbidden"). Both protect against the situation where the agent kills the very process running it, leaving the user with no path back.
+このルールは `agent-ref/10-upgrade.md` §7.4（「KB のセルフ再起動は禁止」）と同じ系統です。どちらも、エージェントが自分を動かしているまさにそのプロセスを kill してしまい、ユーザーに戻る経路が残らない状況を防ぎます。
 
-For defense in depth, `kb-stop.mjs` itself refuses to kill the tmux session it is currently running inside (it warns and skips that session). The agent-side rule above is the primary line of defense.
-
----
-
-## §6 What `kb-stop` does and does not do
-
-`kb-stop` performs, in order:
-
-1. Reads the PID file. If absent (or `--all` is set), falls back to `pgrep -f tools/kb-start.mjs`.
-2. Sends `SIGTERM` to each supervisor pid found.
-3. Waits up to 5 seconds for the PID file to disappear (the supervisor's shutdown handler removes it as the publicly-visible "shutting down" signal).
-4. With `--force` and a timeout, escalates to `SIGKILL`.
-5. Kills the tmux session recorded in the PID file (`tmux.sessionName`). With `--all` plus `KB_FORCE_TMUX_PREFIX_KILL=1`, also kills any remaining `tmux ls` session whose name starts with `kovitoboard-`.
-6. Reports residual `tsx watch`, `vite`, and `claude` processes. Without `--force`, these are reported but **not** killed; the operator decides.
-
-`kb-stop` does **not**:
-
-- Touch processes outside the project root by default (the prefix-wide tmux kill is opt-in).
-- Affect any tmux session it is itself running inside (self-suicide guard, see §5).
-- Restart anything — that is `kb-start`'s job.
+多層防御として、`kb-stop.mjs` 自身も、現在自分が動いている tmux セッションの kill を拒否します（警告してそのセッションをスキップする）。上記のエージェント側ルールが第一の防御線です。
 
 ---
 
-## §7 Common questions
+## §6 `kb-stop` がすること・しないこと
 
-**"How do I restart KB?"**
-→ `npm run kb:stop` followed by `npm start -- --project-root ..`. There is no single "restart" command on purpose; the two-step form keeps the multi-launch guard honest.
+`kb-stop` は次の順で実行します:
 
-**"Can I just `kill` the supervisor pid?"**
-→ Possible, but it skips the tmux cleanup, the residual diagnostic, and the deterministic exit codes. Use `kb:stop` first and fall back to a manual `kill` only when `kb:stop` itself is broken.
+1. PID ファイルを読む。存在しない場合（または `--all` 指定時）は `pgrep -f tools/kb-start.mjs` にフォールバックする。
+2. 見つかった各スーパーバイザ pid に `SIGTERM` を送る。
+3. PID ファイルが消えるのを最大 5 秒待つ（スーパーバイザの shutdown ハンドラが、公開向けの「停止処理中」シグナルとしてこれを削除する）。
+4. `--force` 指定でタイムアウトした場合、`SIGKILL` にエスカレーションする。
+5. PID ファイルに記録された tmux セッション（`tmux.sessionName`）を kill する。`--all` に加えて `KB_FORCE_TMUX_PREFIX_KILL=1` を付けると、`kovitoboard-` で始まる名前の残存 `tmux ls` セッションもすべて kill する。
+6. 残留する `tsx watch`・`vite`・`claude` プロセスを報告する。`--force` なしの場合、これらは報告されるだけで kill **されない**。判断はオペレータに委ねられる。
 
-**"My CI script wants a non-interactive stop."**
-→ `npm run kb:stop -- --force` is safe in non-interactive contexts; it returns 0 / 3 / 4 deterministically and never blocks on input.
+`kb-stop` が **しない** こと:
 
-**"I see two `kovitoboard-...` tmux sessions on my machine."**
-→ Either you have two KB clones running for two different projects (expected, embedded model), or one supervisor died and left an orphan tmux session. `npm run kb:stop -- --all` (with `KB_FORCE_TMUX_PREFIX_KILL=1`) will sweep them, but only do this if you understand both sessions belong to KovitoBoard.
+- デフォルトでプロジェクトルート外のプロセスに触れる（プレフィックス全体の tmux kill はオプトイン）。
+- 自分自身が動いている tmux セッションに影響する（自殺防止ガード、§5 参照）。
+- 何かを再起動する。それは `kb-start` の役割。
 
-**"The startup banner says `(cwd fallback)` next to the project path."**
-→ `kb-start` could not find `--project-root` or `KOVITOBOARD_PROJECT_ROOT`, and the cwd happens to live outside the KB clone. KB will run, but the project root might not be the one you intended. Stop with `kb:stop` and restart with the explicit `--project-root`.
+---
+
+## §7 よくある質問
+
+**「KB を再起動するには？」**
+→ `npm run kb:stop` の後に `npm start -- --project-root ..`。単一の「再起動」コマンドが無いのは意図的です。2 ステップ形式により多重起動ガードが正しく保たれます。
+
+**「スーパーバイザの pid を `kill` するだけでもいい？」**
+→ 可能ですが、tmux クリーンアップ・残留診断・決定論的な終了コードをスキップしてしまいます。まず `kb:stop` を使い、`kb:stop` 自体が壊れているときだけ手動 `kill` にフォールバックしてください。
+
+**「CI スクリプトで非対話の停止がしたい。」**
+→ `npm run kb:stop -- --force` は非対話コンテキストで安全です。0 / 3 / 4 を決定論的に返し、入力待ちでブロックしません。
+
+**「マシン上に `kovitoboard-...` の tmux セッションが 2 つ見える。」**
+→ 2 つの異なるプロジェクト用に 2 つの KB clone を動かしている（embedded model では想定内）か、片方のスーパーバイザが死亡して孤立した tmux セッションを残したかのどちらかです。`npm run kb:stop -- --all`（`KB_FORCE_TMUX_PREFIX_KILL=1` 付き）で一掃できますが、両方のセッションが KovitoBoard のものだと理解している場合に限り実行してください。
+
+**「起動バナーでプロジェクトパスの横に `(cwd fallback)` と出る。」**
+→ `kb-start` が `--project-root` も `KOVITOBOARD_PROJECT_ROOT` も見つけられず、たまたま cwd が KB clone の外側にあった、という状態です。KB は動きますが、プロジェクトルートが意図したものでない可能性があります。`kb:stop` で停止し、明示的な `--project-root` を付けて再起動してください。

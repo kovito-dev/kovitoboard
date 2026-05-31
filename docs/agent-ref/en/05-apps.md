@@ -1,6 +1,6 @@
 # 05. Custom App Development (`app/`)
 
-**Target KB version:** v0.2.1
+**Target KB version:** v0.2.2
 **Last updated:** 2026-05-31
 **Authoritative source:** [`../05-apps.md`](../05-apps.md) (Japanese)
 
