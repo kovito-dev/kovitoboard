@@ -139,9 +139,13 @@ test.describe('Sample apps tab — Enable toggle UI (BS-T8)', () => {
     await page
       .getByTestId(`samples-tab-card-${RECIPE_ID}-enable-button`)
       .click()
+    // The enable response is the deterministic settle signal: the click
+    // handler issues exactly one wire request (the sample enable), so
+    // once its 200 response lands the click's network work is complete
+    // and any legacy `/api/recipes/install` call would already have been
+    // captured by the route handler. No fixed sleep needed.
     await enableResponsePromise
 
-    await page.waitForTimeout(200)
     expect(installCalls).toEqual([])
   })
 })
