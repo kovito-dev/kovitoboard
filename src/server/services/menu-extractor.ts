@@ -21,6 +21,7 @@ import { createHash } from 'crypto'
 import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
+import { parseRecipe } from '../recipe-parser'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
 import type { AppManifest } from '../../shared/app-manifest-types'
@@ -431,12 +432,25 @@ export function computeMenuOrderSnapshotFromEntries(
  * so the Apps screen surfaces the recovery state instead of hiding
  * the badge. See {@link RecipeManifestLookup} JSDoc for the spec
  * basis (`app-directory-extension.md` v1.6 §6.7 note 4).
+ *
+ * When `kovitoboardRoot` is supplied (v0.2.1 BL-2026-206), the base
+ * label of recipe-install-derived apps (`source.type === 'recipe'`)
+ * is resolved locale-aware from the source-tree recipe.yaml
+ * (`app-directory-extension.md` v1.7.1 §6.8.2.1): the
+ * `i18n.<locale>.menu[appId].label` override wins, else the top-level
+ * `menu[appId].label`. `locale` selects the override map and defaults
+ * to the OSS fallback `'en'`. The `NavMenu` / renderer / snapshot are
+ * unchanged — the wire `label` field simply carries the
+ * locale-resolved base label. Callers that omit `kovitoboardRoot`
+ * (unit tests) keep the pre-v0.2.1 menu.ts-derived base label.
  */
 export function readUserMenuEntries(
   fs: FileAccessLayer,
   trustLookup?: TrustLevelLookup,
   manifestLookup?: AppManifestLookup,
   recipeManifestLookup?: RecipeManifestLookup,
+  locale: 'ja' | 'en' = 'en',
+  kovitoboardRoot?: string,
 ): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
@@ -628,6 +642,23 @@ export function readUserMenuEntries(
           // remove-app flow.
           if (manifest.source.type === 'recipe') {
             entry.recipeId = manifest.source.recipeId
+            // Locale-aware base label resolution
+            // (app-directory-extension.md v1.7.1 §6.8.2.1). Only when
+            // there is no `userMenuLabel` override (which wins above
+            // the base label) and a source-tree root is supplied. The
+            // resolved label replaces the menu.ts-derived base label on
+            // the wire; `userMenuLabel` is sent separately and layered
+            // on top by the renderer, so this stays below it.
+            if (entry.userMenuLabel == null && kovitoboardRoot !== undefined) {
+              const localeLabel = resolveRecipeLocaleBaseLabel(
+                fs,
+                kovitoboardRoot,
+                manifest.source.recipeId,
+                entry.id,
+                locale,
+              )
+              if (localeLabel !== null) entry.label = localeLabel
+            }
           }
         } else if (
           lookup.state === 'unreadable' &&
@@ -676,6 +707,57 @@ export function readUserMenuEntries(
   // caller runs *after* snapshot computation; see
   // `app-routes.ts` for the call site.
   return entries
+}
+
+/**
+ * Resolve the locale-aware base label for a recipe-install-derived
+ * app from its source-tree recipe.yaml
+ * (`app-directory-extension.md` v1.7.1 §6.8.2.1, read-source pin
+ * §6.8.2).
+ *
+ * Read source = `<kovitoboardRoot>/recipes/<recipeId>/recipe.yaml`
+ * (the OSS source tree; install persists only `manifest.json`, never
+ * the recipe.yaml). `recipeId` comes from `AppManifest.source.recipeId`.
+ *
+ * Returns (3 exclusive cases, §6.8.2.1):
+ *   - case (1): the `i18n.<locale>.menu[appId].label` override when
+ *     present (`id === appId` exists ∧ override non-empty);
+ *   - case (2): the top-level `menu[appId].label` (locale-independent)
+ *     when the entry exists but the locale override is absent;
+ *   - case (3): `null` when the recipe.yaml is absent / unreadable /
+ *     has no `menu` entry whose `id === appId`, so the caller falls
+ *     back to the next precedence stage (menu.ts label → appId).
+ *
+ * The parser enforces `menu[].id` uniqueness, so a matching entry is
+ * unique when it exists.
+ */
+function resolveRecipeLocaleBaseLabel(
+  fs: FileAccessLayer,
+  kovitoboardRoot: string,
+  recipeId: string,
+  appId: string,
+  locale: 'ja' | 'en',
+): string | null {
+  const recipeYamlPath = join(kovitoboardRoot, 'recipes', recipeId, 'recipe.yaml')
+  let parsed
+  try {
+    // Absent source-tree recipe.yaml is the normal case (3) for
+    // import/url apps that have no live install in v0.2.x; stay silent.
+    if (!fs.existsSync(recipeYamlPath)) return null
+    const source = fs.readFileSync(recipeYamlPath, 'utf-8')
+    parsed = parseRecipe(source, fs)
+  } catch (err) {
+    serverLogger.warn(
+      { recipeId, appId, err },
+      '[menu-extractor] Failed to read/parse source-tree recipe.yaml for base label; falling back',
+    )
+    return null
+  }
+  const menuEntry = parsed.menu.find((m) => m.id === appId)
+  if (!menuEntry) return null // case (3): (a)=No
+  const override = parsed.metadata.i18n?.[locale]?.menu?.[appId]?.label
+  if (override) return override // case (1): locale override present
+  return menuEntry.label // case (2): top-level base label (locale-independent)
 }
 
 /**

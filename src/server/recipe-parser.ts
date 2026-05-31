@@ -534,19 +534,45 @@ function extractMetadata(data: Record<string, unknown>): RecipeMetadata {
  */
 function extractI18nOverrides(
   raw: unknown,
-): Record<string, { name?: string; description?: string }> | undefined {
+): Record<
+  string,
+  { name?: string; description?: string; menu?: Record<string, { label: string }> }
+> | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
-  const out: Record<string, { name?: string; description?: string }> = {}
+  const out: Record<
+    string,
+    { name?: string; description?: string; menu?: Record<string, { label: string }> }
+  > = {}
   for (const [locale, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     const entry = value as Record<string, unknown>
     const name = typeof entry.name === 'string' ? entry.name.trim() : undefined
     const description =
       typeof entry.description === 'string' ? entry.description.trim() : undefined
-    if (!name && !description) continue
+    // Menu label overrides keyed by menu-id
+    // (app-directory-extension.md v1.7.1 §6.8.2.1). Each `label` is
+    // trimmed; empty / non-string labels are dropped so a blank
+    // override never shadows the top-level base label.
+    let menu: Record<string, { label: string }> | undefined
+    if (entry.menu && typeof entry.menu === 'object' && !Array.isArray(entry.menu)) {
+      for (const [menuId, menuValue] of Object.entries(
+        entry.menu as Record<string, unknown>,
+      )) {
+        if (!menuValue || typeof menuValue !== 'object' || Array.isArray(menuValue)) continue
+        const label =
+          typeof (menuValue as Record<string, unknown>).label === 'string'
+            ? ((menuValue as Record<string, unknown>).label as string).trim()
+            : undefined
+        if (!label) continue
+        menu = menu ?? {}
+        menu[menuId] = { label }
+      }
+    }
+    if (!name && !description && !menu) continue
     out[locale] = {
       ...(name ? { name } : {}),
       ...(description ? { description } : {}),
+      ...(menu ? { menu } : {}),
     }
   }
   return Object.keys(out).length > 0 ? out : undefined
@@ -666,15 +692,27 @@ function isPathWithin(child: string, parent: string): boolean {
 
 /**
  * Extract menu entries from YAML data (optional field).
+ *
+ * `menu[].id` must be unique within a recipe.yaml. This is a parse-time
+ * prerequisite for the id-keyed locale-aware base-label resolution
+ * (app-directory-extension.md v1.7.1 §6.8.2.1: the server resolves
+ * `i18n.<locale>.menu[<id>].label` by `id === appId`, which assumes the
+ * id maps to exactly one entry). A duplicate id is rejected as a recipe
+ * error so a malformed recipe cannot make `id === appId` ambiguous.
  */
 function extractMenuEntries(menu: unknown): RecipeMenuEntry[] {
   if (!Array.isArray(menu)) return []
 
+  const seenIds = new Set<string>()
   return menu
     .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
     .map((m, i) => {
       if (typeof m.id !== 'string') throw new Error(`Menu entry ${i}: "id" is required`)
       if (typeof m.label !== 'string') throw new Error(`Menu entry ${i}: "label" is required`)
+      if (seenIds.has(m.id)) {
+        throw new Error(`Menu entry ${i}: duplicate "id" "${m.id}" (menu ids must be unique)`)
+      }
+      seenIds.add(m.id)
       return {
         id: m.id,
         label: m.label,
