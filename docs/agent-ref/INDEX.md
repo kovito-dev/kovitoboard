@@ -1,6 +1,6 @@
 # KovitoBoard 仕様リファレンス（エージェント用）
 
-**対象 KB バージョン:** v0.2.1
+**対象 KB バージョン:** v0.2.2
 **最終更新:** 2026-05-31
 
 このドキュメントは、Kovito のコンシェルジュ「コビー」をはじめとするエージェントがユーザーの質問に答えるために参照する、KovitoBoard（以下 KB）仕様の目次です。
@@ -104,8 +104,8 @@
 | [`07-advanced.md`](./07-advanced.md) | スキル・自動化・高度な設定 | 200 |
 | [`09-data-handling.md`](./09-data-handling.md) | データ取扱いと注意事項（KB→Claude Code 経由のデータフロー、マスキング推奨） | 150 |
 | [`10-upgrade.md`](./10-upgrade.md) | KB のバージョンアップ手順とユーザーエージェント向けプロトコル | 350 |
-| [`11-lifecycle.md`](./11-lifecycle.md) | KB プロセスの起動・停止プロトコル（embedded model / `kb-stop` 仕様 / 自殺禁止原則） — 英語で記述 | 250 |
-| [`12-protected-paths.md`](./12-protected-paths.md) | KB が保護する領域（直接編集禁止）の SSOT — 英語で記述 | 200 |
+| [`11-lifecycle.md`](./11-lifecycle.md) | KB プロセスの起動・停止プロトコル（embedded model / `kb-stop` 仕様 / 自殺禁止原則） | 250 |
+| [`12-protected-paths.md`](./12-protected-paths.md) | KB が保護する領域（直接編集禁止）の SSOT | 200 |
 
 ---
 
