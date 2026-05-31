@@ -45,301 +45,32 @@
  *     as a spec audit-logging.md v1.2 §6.6 vs implementation drift.
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { WebSocket } from 'ws'
+import {
+  seedGrandfatherManifest,
+  readHistoryLines,
+  cleanupAppDir,
+  removeAppDataDir,
+  rewriteMenuTsForEnable,
+  restoreMenuTs,
+  waitForWsFrame,
+} from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
-const WS_URL = (token: string) =>
-  `ws://127.0.0.1:3001/api/ws?token=${encodeURIComponent(token)}`
 
 const SAMPLE_RECIPE_ID = 'document-viewer'
 const SAMPLE_APP_ID = 'document-viewer'
 
 // ---------------------------------------------------------------------------
-// Fixture helpers (method A — programmatic state construction inside the
-// existing l1-default project root, no playwright.config.l1.ts extension).
-// kbFixture's snapshot/restore wraps `.kovitoboard/` so per-test state
-// disposes naturally; we explicitly tear down `app/<appId>/` (which lives
-// outside `.kovitoboard/`) in afterEach.
+// Fixture helpers live in `./helpers/v021-bundled-helpers` (method A —
+// programmatic state construction inside the existing l1-default project
+// root, no playwright.config.l1.ts extension). kbFixture's snapshot/restore
+// wraps `.kovitoboard/` so per-test state disposes naturally; we explicitly
+// tear down `app/<appId>/` + `app/data/<appId>/` (which live outside
+// `.kovitoboard/`) in afterEach via the shared `cleanupAppDir` /
+// `removeAppDataDir` helpers (both carry the slug + symlink guards).
 // ---------------------------------------------------------------------------
-
-interface GrandfatherSeed {
-  recipeId: string
-  appId: string
-  source: 'sample'
-}
-
-/**
- * Reject ids that could escape the intended app/recipe directory via
- * path-separator or `..` segments. Mirrors `assertSafePathSegment` in
- * `tests/e2e/helpers/v021-bundled-helpers.ts` so the Phase 1 inline
- * filesystem helpers below get the same path-safety guarantee as the
- * shared Phase 2/3 helpers, without folding the Phase 1 spec into the
- * shared helper module (the consolidation lives in a follow-up PR).
- */
-function assertSafePathSegment(value: string, label: string): void {
-  if (value === '' || value === '.' || value === '..') {
-    throw new Error(
-      `[bundled-enable-disable] empty or relative ${label}: "${value}"`,
-    )
-  }
-  if (
-    value.includes('/') ||
-    value.includes('\\') ||
-    value.includes('\0') ||
-    value.split(/[/\\]/).includes('..')
-  ) {
-    throw new Error(
-      `[bundled-enable-disable] unsafe ${label} (path traversal): "${value}"`,
-    )
-  }
-}
-
-function seedGrandfatherManifest(projectRoot: string, seed: GrandfatherSeed) {
-  assertSafePathSegment(seed.recipeId, 'recipeId')
-  assertSafePathSegment(seed.appId, 'appId')
-  // RecipeManifest schema: source is the flat 4-value enum
-  // ('sample' | 'bundled' | 'import' | 'url') — see
-  // src/server/recipe/apiTypes.ts:290.
-  const recipesInstalledDir = join(
-    projectRoot,
-    '.kovitoboard',
-    'recipes-installed',
-    seed.recipeId,
-  )
-  mkdirSync(recipesInstalledDir, { recursive: true })
-  writeFileSync(
-    join(recipesInstalledDir, 'manifest.json'),
-    JSON.stringify(
-      {
-        appId: seed.appId,
-        recipeId: seed.recipeId,
-        recipeVersion: '1.0.0',
-        hash: 'sha256-grandfather-stub',
-        installedAt: '2026-04-18T00:00:00.000Z',
-        approvedScopes: ['project-read'],
-        api: { scopes: ['project-read'], calls: [] },
-        captureRequires: [],
-        approvedCaptures: [],
-        trust: 'unknown',
-        source: seed.source,
-      },
-      null,
-      2,
-    ),
-  )
-  // AppManifest schema: source is a discriminated union — for recipe-
-  // derived apps that means
-  //   { type: 'recipe', recipeId, recipeVersion, recipeSource }
-  // (src/shared/app-manifest-types.ts:47).
-  const appDir = join(projectRoot, 'app', seed.appId)
-  mkdirSync(join(appDir, 'pages'), { recursive: true })
-  writeFileSync(
-    join(appDir, 'manifest.json'),
-    JSON.stringify(
-      {
-        appId: seed.appId,
-        displayName: 'Document Viewer',
-        createdAt: '2026-04-18T00:00:00.000Z',
-        kovitoboardVersion: '0.1.0',
-        source: {
-          type: 'recipe',
-          recipeId: seed.recipeId,
-          recipeVersion: '1.0.0',
-          recipeSource: seed.source,
-        },
-      },
-      null,
-      2,
-    ),
-  )
-  // Minimal artifact stub so the manifest is internally consistent;
-  // the bundled-enable transaction will not overwrite when the
-  // idempotent path is taken (BS-L2).
-  writeFileSync(
-    join(appDir, 'pages', 'DocumentViewer.tsx'),
-    '// grandfather stub — not the real bundled artifact\n',
-  )
-  // recipe-history.jsonl with an install record matching v0.1.x layout.
-  const historyPath = join(projectRoot, '.kovitoboard', 'recipe-history.jsonl')
-  const record =
-    JSON.stringify({
-      action: 'install',
-      recipe: seed.recipeId,
-      version: '1.0.0',
-      timestamp: '2026-04-18T00:00:00.000Z',
-      result: 'success',
-    }) + '\n'
-  writeFileSync(historyPath, record)
-  // app/menu.ts entry for the grandfather app — the coherence helper
-  // (bundled-installer.ts:1616 BS-L2' Round 2 Critical 4) requires a
-  // menu.ts entry whose `id` matches the grandfather appId, otherwise
-  // it falls through to the fresh enable transaction.
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  const current = readFileSync(menuTsPath, 'utf-8')
-  // Insert just before the closing `]` of the menuEntries array.
-  // `rewriteMenuTsForEnable` (called in beforeEach) has already
-  // injected the `AppMenuEntry[]` type annotation so `appendMenuEntry`-
-  // style regexes are happy; here we just splice in the row directly.
-  const grandfatherEntry =
-    `  {\n` +
-    `    id: '${seed.appId}',\n` +
-    `    label: 'Document Viewer',\n` +
-    `    icon: 'content',\n` +
-    `    component: () => import('./${seed.appId}/pages/DocumentViewer'),\n` +
-    `  },\n`
-  const arrayMatch = /(\]\s*\n?)$/.exec(current)
-  if (!arrayMatch) {
-    throw new Error(
-      '[bundled-enable-disable] seedGrandfatherManifest: cannot locate menu.ts closing bracket',
-    )
-  }
-  const insertPos = arrayMatch.index
-  const updated = current.slice(0, insertPos) + grandfatherEntry + current.slice(insertPos)
-  writeFileSync(menuTsPath, updated)
-}
-
-function readHistoryLines(projectRoot: string): unknown[] {
-  const historyPath = join(projectRoot, '.kovitoboard', 'recipe-history.jsonl')
-  if (!existsSync(historyPath)) return []
-  return readFileSync(historyPath, 'utf-8')
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line))
-}
-
-function cleanupAppDir(projectRoot: string, appId: string) {
-  assertSafePathSegment(appId, 'appId')
-  rmSync(join(projectRoot, 'app', appId), { recursive: true, force: true })
-}
-
-/**
- * Workaround for a fixture vs implementation drift:
- *   - The bundled-installer's menu.ts editor (`appendMenuEntry`,
- *     `src/server/services/menu-ts-editor.ts:473`) requires the
- *     `export const menuEntries: AppMenuEntry[] = [...]` form (the
- *     canonical shape emitted by `buildEmptyMenuTs`).
- *   - `tests/fixtures/projects/blank-onboarded/app/menu.ts` omits the
- *     type annotation on purpose (its leading comment notes that the
- *     `AppMenuEntry` import path would escape the fixture project root
- *     at parse time).
- *   - As a result, every `POST /api/recipes/sample/.../enable` against
- *     the l1-default project root currently fails with HTTP 500
- *     `EnableMenuTsAppendFailed`.
- *
- * The drift is escalated to kb-architect / developer per request v1.1
- * §7.4; while the canonical fix lands we rewrite `app/menu.ts` into the
- * append-friendly form inside this spec's beforeEach and restore the
- * original content in afterEach so adjacent L1 specs that rely on the
- * fixture's exact shape (especially the `l1-fixture-app` ambient-sidebar
- * tests) keep passing.
- *
- * The restored content is the bytes that were on disk at the start of
- * the test — that is what kbFixture's snapshot-restore would have
- * preserved for `.kovitoboard/`, but `app/menu.ts` lives outside the
- * snapshotted prefix so we shoulder the restore here.
- */
-function rewriteMenuTsForEnable(projectRoot: string): string {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  const original = readFileSync(menuTsPath, 'utf-8')
-  // Already annotated? Leave it alone so a future fixture refresh that
-  // matches the canonical shape stays a no-op here.
-  if (
-    /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.test(
-      original,
-    )
-  ) {
-    return original
-  }
-  const rewritten = original.replace(
-    /export\s+const\s+menuEntries\s*=\s*\[/,
-    'export const menuEntries: AppMenuEntry[] = [',
-  )
-  writeFileSync(menuTsPath, rewritten)
-  return original
-}
-
-function restoreMenuTs(projectRoot: string, original: string) {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  writeFileSync(menuTsPath, original)
-}
-
-/**
- * Open a fresh Node-side WebSocket connection and resolve with the
- * first frame matching `frameType`. We use the `ws` package (rather
- * than the page-side `WebSocket` global) so the Origin header is
- * settable: the WS verifier (`src/server/middleware/auth.ts:236`)
- * rejects any origin not in the loopback allowlist, and a browser
- * page that has not navigated away from `about:blank` produces a
- * `null` origin that fails the check. Driving from Node lets us pin
- * the Origin to the renderer's loopback URL so the WS upgrade
- * succeeds even before the page navigates.
- *
- * Each test opens its own connection so a leaked broadcast from a
- * neighbour cannot leak into this listener — the listener subscribes
- * before the HTTP request is fired and races the broadcast against
- * `timeoutMs`.
- */
-async function waitForWsFrame(
-  frameType: string,
-  timeoutMs = 5_000,
-): Promise<{ type: string; payload: Record<string, unknown> }> {
-  const token = process.env.KB_LAUNCH_TOKEN ?? ''
-  const url = WS_URL(token)
-  return new Promise<{ type: string; payload: Record<string, unknown> }>(
-    (resolve, reject) => {
-      const ws = new WebSocket(url, {
-        headers: { Origin: 'http://localhost:5174' },
-      })
-      const deadline = setTimeout(() => {
-        try {
-          ws.close()
-        } catch {
-          /* ignore close-on-timeout race */
-        }
-        reject(
-          new Error(
-            `[bundled-enable-disable] ws frame "${frameType}" not observed within ${timeoutMs}ms`,
-          ),
-        )
-      }, timeoutMs)
-      ws.on('message', (raw) => {
-        try {
-          const data = JSON.parse(raw.toString())
-          if (data && typeof data === 'object' && data.type === frameType) {
-            clearTimeout(deadline)
-            ws.close()
-            resolve(data)
-          }
-        } catch {
-          // ignore non-JSON / heartbeat frames
-        }
-      })
-      ws.on('error', (err) => {
-        clearTimeout(deadline)
-        try {
-          ws.close()
-        } catch {
-          /* ignore */
-        }
-        reject(
-          new Error(
-            `[bundled-enable-disable] ws connection error: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          ),
-        )
-      })
-    },
-  )
-}
 
 // ---------------------------------------------------------------------------
 // BS-T1 ~ BS-T7
@@ -358,10 +89,7 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     // materialisation. Strip both explicitly so the next test starts
     // from the same blank project state.
     cleanupAppDir(kbFixture.projectRoot, SAMPLE_APP_ID)
-    rmSync(join(kbFixture.projectRoot, 'app', 'data', SAMPLE_APP_ID), {
-      recursive: true,
-      force: true,
-    })
+    removeAppDataDir(kbFixture.projectRoot, SAMPLE_APP_ID)
     if (originalMenuTs !== null) {
       restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
       originalMenuTs = null
@@ -376,7 +104,9 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     // broadcast cannot fire before we are listening. broadcastRecipeAppsChanged
     // runs after lock release (index.ts L1445), so a race is plausible
     // when the listener subscribes too late.
-    const wsFramePromise = waitForWsFrame('recipe_apps_changed', 5_000)
+    const wsFramePromise = waitForWsFrame('recipe_apps_changed', {
+      timeoutMs: 5_000,
+    })
 
     const res = await request.post(
       `${API_BASE}/api/recipes/sample/${SAMPLE_RECIPE_ID}/enable`,
@@ -499,7 +229,9 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     writeFileSync(sentinelPath, 'user-data-keep-me')
 
     // Listen for the disable broadcast before firing the request.
-    const wsFramePromise = waitForWsFrame('recipe_apps_changed', 5_000)
+    const wsFramePromise = waitForWsFrame('recipe_apps_changed', {
+      timeoutMs: 5_000,
+    })
 
     const res = await request.post(
       `${API_BASE}/api/recipes/sample/${SAMPLE_RECIPE_ID}/disable`,

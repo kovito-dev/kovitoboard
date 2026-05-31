@@ -161,10 +161,12 @@ test.describe('Recipe install disable (v0.2.x)', () => {
 
     // The renderer has no surface that can issue POST
     // /api/recipes/install anymore — confirm by asserting no install
-    // request happens after the page settles. (The Sample apps tab
-    // Enable button hits /api/recipes/sample/:recipeId/enable, not
-    // the install endpoint.)
-    await page.waitForTimeout(200)
+    // request happens. (The Sample apps tab Enable button hits
+    // /api/recipes/sample/:recipeId/enable, not the install endpoint.)
+    // The coming-soon banner asserted visible above is the deterministic
+    // settle signal: the Sample apps panel has fully rendered, and it
+    // exposes no install affordance, so no install request can be in
+    // flight by this point. No fixed sleep needed.
     expect(installCalled).toBe(false)
   })
 })

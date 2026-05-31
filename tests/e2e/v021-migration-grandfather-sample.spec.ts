@@ -33,18 +33,13 @@
  * (BS-T4) for the upstream gap on the coherence short-circuit.
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   rewriteMenuTsForEnable,
   restoreMenuTs,
   cleanupAppDir,
+  removeAppDataDir,
   readHistoryLines,
   readAppManifest,
   readRecipeManifest,
@@ -78,15 +73,10 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     // template-cache restore in `globalTeardown` does not roll it
     // back. Without this explicit removal, the `task-sentinel.json`
     // seeded by §3.2 #5 would persist into later `todo`-based tests
-    // and make them order-dependent.
-    rmSync(join(kbFixture.projectRoot, 'app', 'data', DOC_ID), {
-      recursive: true,
-      force: true,
-    })
-    rmSync(join(kbFixture.projectRoot, 'app', 'data', TODO_ID), {
-      recursive: true,
-      force: true,
-    })
+    // and make them order-dependent. `removeAppDataDir` applies the
+    // shared slug + symlink guards before the recursive delete.
+    removeAppDataDir(kbFixture.projectRoot, DOC_ID)
+    removeAppDataDir(kbFixture.projectRoot, TODO_ID)
     if (originalMenuTs !== null) {
       restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
       originalMenuTs = null

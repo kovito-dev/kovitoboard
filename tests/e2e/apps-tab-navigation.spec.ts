@@ -91,8 +91,12 @@ test.describe('Apps screen navigation (BS-T12)', () => {
     expect(page.url()).toBe(urlBefore)
 
     // BS-L8: no `/api/recipes/install` request is fired during the
-    // jump (the legacy 7-layer install dialog is gone in v0.2.x).
-    await page.waitForTimeout(200)
+    // jump (the legacy 7-layer install dialog is gone in v0.2.x). The
+    // panel swap asserted above is the deterministic settle signal —
+    // the "+ Add app" handler's only side-effect is the in-page tab
+    // switch, so once `apps-screen-panel-samples` is visible any
+    // install request would already have been captured by the route
+    // handler. No fixed sleep needed.
     expect(installCalls).toEqual([])
   })
 })
