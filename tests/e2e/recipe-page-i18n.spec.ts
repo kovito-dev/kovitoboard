@@ -103,9 +103,11 @@ const EXPECTED = {
  */
 async function openRecipePage(page: Page, appId: string): Promise<void> {
   await page.goto('/agents')
-  await page.waitForResponse(
-    (r) => r.url().endsWith('/api/app/menu-entries') && r.ok(),
-  )
+  // Deterministic UI wait: the ext-app nav entry only renders after
+  // `loadUserMenuEntries()` resolves and React paints it, so waiting for
+  // the button is a strictly stronger signal than a `waitForResponse`
+  // attached post-navigation (which can miss a response that completes
+  // before the waiter subscribes — a known E2E flake source).
   // App.tsx prefixes user menu entry ids with `ext/`, so the nav button
   // testid is `nav-entry-ext/<appId>`.
   const navButton = page.getByTestId(`nav-entry-ext/${appId}`)
