@@ -394,6 +394,7 @@ export default function DocumentViewer() {
                 key={node.path}
                 node={node}
                 depth={0}
+                dateLocale={s.dateLocale}
                 expanded={expanded}
                 selectedPath={selectedPath}
                 onToggle={toggleDir}
@@ -476,6 +477,7 @@ function collectDirPaths(nodes: TreeNode[], acc: Set<string> = new Set()): Set<s
 function TreeNodeRow({
   node,
   depth,
+  dateLocale,
   expanded,
   selectedPath,
   onToggle,
@@ -483,6 +485,7 @@ function TreeNodeRow({
 }: {
   node: TreeNode
   depth: number
+  dateLocale: string
   expanded: Set<string>
   selectedPath: string | null
   onToggle: (path: string) => void
@@ -519,6 +522,7 @@ function TreeNodeRow({
               key={child.path}
               node={child}
               depth={depth + 1}
+              dateLocale={dateLocale}
               expanded={expanded}
               selectedPath={selectedPath}
               onToggle={onToggle}
@@ -531,7 +535,7 @@ function TreeNodeRow({
 
   const fileKind = classifyFile(node.name)
   const isSelected = selectedPath === node.path
-  const meta = `${formatSize(node.file.size)} · ${formatDate(node.file.modifiedAt)}`
+  const meta = `${formatSize(node.file.size)} · ${formatDate(node.file.modifiedAt, dateLocale)}`
   return (
     <button
       onClick={() => onSelect(node.path)}
@@ -561,9 +565,9 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, dateLocale: string): string {
   try {
-    return new Date(iso).toLocaleDateString('en-US', {
+    return new Date(iso).toLocaleDateString(dateLocale, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

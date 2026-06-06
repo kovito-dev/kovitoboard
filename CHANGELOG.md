@@ -7,6 +7,25 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-07
+
+A maintenance patch: a localization fix and a security dependency update.
+
+### Fixed
+
+- The Document Viewer sample app now shows file modification dates in
+  the active display language. Previously the dates were always
+  formatted in US English regardless of the selected language.
+
+### Security
+
+- Updated the bundled `react-router-dom` to 7.17.0, clearing two
+  upstream High advisories (GHSA-49rj-9fvp-4h2h, GHSA-8x6r-g9mw-2r78).
+  Both affect React Router's framework-mode server only; KovitoBoard
+  uses React Router client-side in declarative (`<BrowserRouter>`)
+  mode, so it was not exploitable. The update is applied as dependency
+  hygiene.
+
 ## [0.2.2] - 2026-05-31
 
 Localization fixes for the bundled sample apps and a small visual

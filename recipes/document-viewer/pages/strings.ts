@@ -19,6 +19,9 @@
  */
 export const STRINGS = {
   ja: {
+    // BCP 47 tag passed to `Date.prototype.toLocaleDateString` so the
+    // file-modified timestamp follows the active UI locale.
+    dateLocale: 'ja-JP',
     title: 'ドキュメントビューア',
     subtitle:
       'Markdown / HTML ファイルのビューアです。機能の追加・変更は、右側のサイドパネルからエージェントに依頼してください。',
@@ -33,6 +36,7 @@ export const STRINGS = {
     documentPreview: 'ドキュメントプレビュー',
   },
   en: {
+    dateLocale: 'en-US',
     title: 'Document Viewer',
     subtitle:
       'A viewer for Markdown and HTML files. To add or change features, ask the agent from the side panel on the right.',

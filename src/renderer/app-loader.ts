@@ -94,15 +94,16 @@ interface MenuEntryWire extends AppMenuEntryMeta {
   source?: MenuEntrySourceBadge | null
   /**
    * Display name from `AppManifest.displayName`. `null` when no
-   * manifest exists. Drives the row title on the Apps screen.
+   * manifest exists.
    *
-   * Renderer fallback chain (`AppsTab.tsx`):
-   *   `userMenuLabel ?? label ?? displayName ?? appId`
-   * `label` (menu.ts-derived, refreshed on every scan) precedes
-   * `displayName` (AppManifest install snapshot). See the
-   * renderer-side `AppMenuEntry.displayName` JSDoc in
-   * `types/app-types.ts` for the spec rationale
-   * (`app-directory-extension.md` v1.6 §6.8.2 file SSOT).
+   * NOT part of the renderer display-label chain, which is
+   * `userMenuLabel ?? label ?? appId` (`AppsTab.tsx`,
+   * `app-directory-extension.md` v1.7.2 §6.8.2). The server lands the
+   * base label on the single `label` wire field, so `displayName`
+   * (a stale-prone install snapshot) carries no display-label
+   * authority. This field survives as the SSOT for
+   * `isMenuMetadataEligible` (§6.8.1) — a separate axis from
+   * display-label resolution.
    *
    * @stable v0.2.1
    */
