@@ -88,18 +88,18 @@ export interface AppMenuEntry extends AuthoredAppMenuEntry {
     | null
   /**
    * Display name from `AppManifest.displayName`. `null` when no
-   * manifest exists. Drives the row title on the Apps screen.
+   * manifest exists.
    *
-   * Renderer fallback chain (`AppsTab.tsx`):
-   *   `userMenuLabel ?? label ?? displayName ?? appId`
-   * `label` (menu.ts-derived, refreshed on every scan) precedes
-   * `displayName` (AppManifest install snapshot) so recipe upgrades
-   * that mutate `app/menu.ts` are reflected in the Apps screen
-   * without rewriting the AppManifest. This approximates the
-   * `app-directory-extension.md` v1.6 §6.8.2 file-SSOT precedence
-   * (`recipe.yaml.menu.label` / `app/menu.ts`) without introducing
-   * a new wire field; a server-side resolver that surfaces
-   * `recipe.yaml.menu.label` directly is the deferred follow-up.
+   * NOT part of the renderer display-label chain, which is
+   * `userMenuLabel ?? label ?? appId` (`AppsTab.tsx`,
+   * `app-directory-extension.md` v1.7.2 §6.8.2). The server resolves
+   * the base label and lands it on the single `label` wire field
+   * (recipe.yaml locale label / menu.ts entry label / appId), so
+   * `displayName` (a stale-prone AppManifest install snapshot) carries
+   * no display-label authority. This field survives as the SSOT for
+   * `isMenuMetadataEligible` (§6.8.1): the menu-metadata eligible test
+   * is `displayName !== null` — a separate axis from display-label
+   * resolution.
    *
    * @stable v0.2.1
    */

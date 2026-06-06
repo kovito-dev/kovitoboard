@@ -600,21 +600,20 @@ function AppRow({
   const [isPopoverOpen, setIsPopoverOpen] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
 
-  // Display label fallback chain. The wire-side
-  // `app-directory-extension.md` v1.6 §6.8.2 pins the base label
-  // SSOT to a **file** (`recipe.yaml.menu.label` for recipe-install
-  // apps, `app/menu.ts` for self-made apps) rather than to the
-  // AppManifest's install-time `displayName` snapshot. The renderer
-  // approximates that precedence by preferring `entry.label`
-  // (menu.ts-derived, refreshed on every scan) over
-  // `entry.displayName` (AppManifest install snapshot, stale after
-  // recipe upgrades). A server-side resolver that reads
-  // `recipe.yaml` directly is deferred — see the PR description's
-  // "Out of Scope" entry on `resolvedBaseLabel`. `userMenuLabel`
-  // stays at the top of the chain (user override; survives a reset
-  // via `userMenuLabel = null`); `appId` is the final fallback.
-  const displayLabel =
-    entry.userMenuLabel ?? entry.label ?? entry.displayName ?? entry.id
+  // Display label fallback chain (`app-directory-extension.md` v1.7.2
+  // §6.8.2, normative). The server resolves the base label and lands
+  // it on the single `label` wire field (recipe.yaml locale label /
+  // menu.ts entry label / appId are all carried by `label`, including
+  // the final `appId` fallback). The renderer therefore completes with
+  // `userMenuLabel ?? label ?? appId`. The AppManifest install-time
+  // `displayName` snapshot is intentionally NOT in this chain: the base
+  // label SSOT is a file (recipe.yaml / menu.ts), and `displayName` can
+  // go stale after recipe upgrades or menu.ts edits, so it has no
+  // authority over the base label. `displayName` survives as a wire
+  // field for `isMenuMetadataEligible` (§6.8.1) — that is a separate
+  // axis from display-label resolution. `userMenuLabel` stays at the
+  // top (user override; a reset sets `userMenuLabel = null`).
+  const displayLabel = entry.userMenuLabel ?? entry.label ?? entry.id
 
   return (
     <li
