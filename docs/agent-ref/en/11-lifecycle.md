@@ -1,7 +1,7 @@
 # 11. KovitoBoard Process Lifecycle
 
-**Target KB version:** v0.2.2
-**Last updated:** 2026-05-31
+**Target KB version:** v0.2.4
+**Last updated:** 2026-06-11
 **Authoritative source:** [`../11-lifecycle.md`](../11-lifecycle.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
@@ -24,7 +24,7 @@ KovitoBoard's start / stop story is intentionally narrow: every supported entry 
 
 ## English-specific notes
 
-_None at v0.2.2. This section is reserved for English-locale-specific guidance (e.g., English-only supervisor banner strings) that does not belong in the authoritative Japanese source._
+_None at v0.2.4. This section is reserved for English-locale-specific guidance (e.g., English-only supervisor banner strings) that does not belong in the authoritative Japanese source._
 
 ---
 
