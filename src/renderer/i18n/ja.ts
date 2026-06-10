@@ -680,7 +680,7 @@ const ja = {
   'setting.basic.help.description': 'タイトルの下に表示されるサブタイトル（任意・200文字以内）',
   'setting.basic.help.userName': 'エージェントがあなたを呼ぶときの名前（必須・50文字以内）',
   'setting.basic.help.language': 'KB UI の表示言語',
-  'setting.basic.footer': '保存後すぐに UI に反映されます',
+  'setting.basic.footer': '保存後、ページをリロードすると UI に反映されます',
   'setting.basic.button.save': '保存',
   'setting.basic.button.saving': '保存中...',
   'setting.basic.button.reset': '変更をリセット',
