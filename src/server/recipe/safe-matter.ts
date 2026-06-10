@@ -222,7 +222,16 @@ const yamlEngine = {
     return result as object
   },
   stringify: (data: object): string =>
-    yaml.dump(data, { schema: yaml.CORE_SCHEMA }),
+    // `lineWidth: -1` disables js-yaml's default 80-column line
+    // folding so long scalar values stay on a single line. The
+    // default folding rewrites a long `description:` into a
+    // multi-line folded block scalar (`>-` plus indented
+    // continuation lines), which the single-line frontmatter
+    // regexes in `agent-reader.parseAgentDefinition` cannot read
+    // back — the field silently round-trips to an empty value.
+    // Keeping scalars unfolded preserves the writer/reader
+    // round-trip without changing the parsed YAML semantics.
+    yaml.dump(data, { schema: yaml.CORE_SCHEMA, lineWidth: -1 }),
 }
 
 /**
