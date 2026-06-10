@@ -17,8 +17,9 @@ export function createTemplateRouter(fs: FileAccessLayer): Router {
   const router = Router()
 
   // GET /api/templates/agents
-  router.get('/', (_req, res) => {
-    const templates = listAgentTemplates(fs)
+  router.get('/', (req, res) => {
+    const locale = (req.query.locale as 'ja' | 'en') || 'ja'
+    const templates = listAgentTemplates(fs, locale)
     res.json(templates)
   })
 

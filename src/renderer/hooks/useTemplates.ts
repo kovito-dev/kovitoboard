@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { kbFetch } from '../lib/kbFetch'
+import { getLocale } from '../i18n'
 
 /** Template summary (same structure as server-side AgentTemplateSummary) */
 export interface TemplateSummary {
@@ -34,7 +35,10 @@ export function useTemplates(): UseTemplatesResult {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await kbFetch('/api/templates/agents')
+      // Use the same locale source as the create path (AgentCreatePage).
+      // The KB locale switch reloads the app (locale-bootstrap), so reading
+      // getLocale() at fetch time is sufficient; no re-fetch on locale change.
+      const res = await kbFetch(`/api/templates/agents?locale=${getLocale()}`)
       if (!res.ok) {
         throw new Error(`Failed to fetch templates (${res.status})`)
       }
