@@ -1,27 +1,109 @@
 [English](README.md) | [日本語](README.ja.md)
 
+<div align="center">
+
 # KovitoBoard
 
-KovitoBoard is a local web application platform that makes Claude Code operable from your browser.
+### Build and grow your own AI team — right in your browser.
 
-It reads the Claude Code definitions of the project it is installed in, letting
-you manage agents, monitor sessions, and develop and run apps — all from your
-browser, without ever touching the terminal.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](./LICENSE)
+[![Runtime: Claude Code](https://img.shields.io/badge/Runtime-Claude%20Code-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![Cost: No extra fees](https://img.shields.io/badge/Cost-No%20extra%20fees-success.svg)](#requirements)
+[![GitHub stars](https://img.shields.io/github/stars/kovito-dev/kovitoboard?style=social)](https://github.com/kovito-dev/kovitoboard)
 
-<!-- A demo GIF will be added in a future release. -->
+**🌐 [kovito.ai](https://kovito.ai)** · [Quick Start](#quick-start) · [Why KovitoBoard](#why-kovitoboard) · [License](#license)
+
+</div>
+
+---
+
+KovitoBoard is an open-source web UI that runs locally on your own Claude Code.
+
+Split your work into screens — research, writing, coding — and station a dedicated
+agent on each. Consult them while looking at the screen, step in when needed: **you
+stay in command.** No terminal needed for everyday use.
+
+It reads the Claude Code definitions of the project it is installed in, letting you
+manage agents, monitor sessions, and develop and run apps — all from your browser.
+
+## See it in action
+
+|  |  |
+|---|---|
+| ![See your whole team — agents with their own personalities and roles, all at a glance on the dashboard.](docs/assets/lp-ss-l-en-1.png) | ![Talk with agents in your browser — pick any agent and chat with it right in your browser, sharing images and files.](docs/assets/lp-ss-l-en-2.png) |
+| **See your whole team** — agents with their own personalities and roles, all at a glance. | **Talk with agents in your browser** — pick any agent and chat, sharing images and files. |
+| ![Create your own apps — just ask an agent, and you can freely build the original app you want.](docs/assets/lp-ss-l-en-3.png) | ![Work together on the app — work alongside an agent while sharing the app screen you've built.](docs/assets/lp-ss-l-en-4.png) |
+| **Create your own apps** — just ask an agent, and build the original app you want. | **Work together on the app** — work alongside an agent while sharing the screen. |
+
+> See the full tour at **[kovito.ai](https://kovito.ai)**.
+
+## What makes it different
+
+Not a SaaS you just consume — **a tool you grow as your own.** So it bends all the
+way to the shape of your work.
+
+- 🧑‍🤝‍🧑 **Agents with a face and a role** line up on screen — see your whole team at a glance.
+- 🎛️ **Direct autonomous agents** with approvals and interruptions — you stay the conductor.
+- 🌱 **Your team and screens stay in your hands**, ready to grow over time.
+
+## Why KovitoBoard
+
+Using Claude, but still stuck at one-off tasks? Claude's agents show more of their
+power the more you run them as a team with defined roles. KovitoBoard is the
+foundation to build, direct, and grow that team — with your own hands.
+
+| | With Claude Code alone | With KovitoBoard |
+|---|---|---|
+| **See your team** | Agents have no visible personality or face | Agents with personalities and roles line up on screen — you see who does what |
+| **You lead** | Hand off fixed tasks wholesale; the how and the outcome left to the AI | Weave in your judgment and taste while working with the team |
+| **Stays and grows** | What you make ends as a one-off and slips away inside chat | Conversations, the team, and apps you build remain as your own system — evolving day by day |
+
+It doesn't replace Claude Code / Claude Desktop. You use it alongside them, as the
+**next step**.
+
+## Features
+
+### Agent Dashboard
+Browse and inspect agent definitions — view details, metadata, and the raw Markdown
+definition. Create agents from templates or from scratch, and edit their structured
+fields (personality, tone, extra instructions) directly in the browser.
+
+### Session Monitor
+Watch active Claude Code sessions in real time. JSONL session files are monitored via
+chokidar and updates are pushed to the browser over WebSocket.
+
+### App Extensions
+Place custom pages, API routes, and styles in the `app/` directory to extend
+KovitoBoard without modifying the core source. See `app.example/` for a working example.
+
+### Recipe System
+Import, inspect, and export agent recipes — portable bundles that package agent
+definitions with page components and API extensions. (New recipe installation is
+re-enabled in v0.3.0 alongside KovitoHub — see [Recipe distribution model](#recipe-distribution-model).)
+
+### Trust Prompt Relay
+When Claude Code displays a trust prompt in a tmux session (e.g., "Do you want to
+create this file?"), KovitoBoard detects it via `capture-pane` polling and relays it to
+the browser UI. You can approve or reject directly from the dashboard.
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`@stable` channel recommended — see below)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`@stable` channel recommended — see [Supported Claude Code Versions](#supported-claude-code-versions))
 - Node.js 20 or later
 - tmux 3.4 or later
 - npm 9+
+- A modern web browser
+
+> **OS:** macOS / Ubuntu / Debian / WSL2. Windows is not supported natively on its own — please use it via WSL2.
+
+> The software itself is free (AGPL v3). Conversations with your agents use Claude Code,
+> so a **Claude Code subscription** is required separately. Adding KovitoBoard creates no
+> extra cost on top of that.
 
 ### Installing tmux
 
-`tmux` is a separate OS-level program (not an npm package) that KovitoBoard
-uses to drive Claude Code. macOS ships an older version, so install or
-upgrade via Homebrew:
+`tmux` is a separate OS-level program (not an npm package) that KovitoBoard uses to
+drive Claude Code. macOS ships an older version, so install or upgrade via Homebrew:
 
 ```bash
 # macOS (Homebrew)
@@ -41,7 +123,26 @@ tmux -V   # → tmux 3.4 or higher
 
 ## Quick Start
 
-### Starting from an existing Claude Code project directory
+There are two ways to get started. Pick **Path A** if you usually only use Claude
+Desktop; pick **Path B** if you're comfortable with the terminal.
+
+### Path A: Claude Desktop (recommended · no terminal)
+
+Just send Claude Desktop's code-execution feature a short prompt that includes the
+repository URL. Claude handles clone, install, and launch, and KovitoBoard opens in
+your browser.
+
+```text
+Clone https://github.com/kovito-dev/kovitoboard from GitHub, then set up and launch
+KovitoBoard. After npm install finishes, start it against this project and tell me
+the address to open in my browser.
+```
+
+Requires a **Claude Code subscription**. No extra fees.
+
+### Path B: CLI
+
+Clone and launch directly from the terminal.
 
 ```bash
 # 1) Clone KovitoBoard inside your Claude Code project directory
@@ -61,49 +162,42 @@ npm start -- --project-root ..
 #    line from the supervisor.
 ```
 
-### Starting from a new directory
+#### Starting from a new directory
 
-Don't have a Claude Code project yet? You can still start by installing
-KovitoBoard into a freshly created empty directory. The agent list starts
-empty, and you grow your team by adding `.claude/agents/*.md` files.
+Don't have a Claude Code project yet? You can still start by installing KovitoBoard into
+a freshly created empty directory. The agent list starts empty, and you grow your team by
+adding `.claude/agents/*.md` files.
 
 ```bash
-# 1) Create a new working directory and clone KovitoBoard inside it
 mkdir my-workspace
 cd my-workspace
 git clone https://github.com/kovito-dev/kovitoboard.git
 cd kovitoboard
 npm install
-
-# 2) Launch
 npm start -- --project-root ..
-
-# 3) Open the URL printed at the end of `npm start`'s output in your browser
 ```
 
-> **Note:** KovitoBoard runs in development mode by default. This enables
-> hot-reload for user extensions placed under your project's `app/`
-> directory (e.g., via recipe apply). You don't need to rebuild or restart
-> the server when files change there.
+> **Note:** KovitoBoard runs in development mode by default. This enables hot-reload for
+> user extensions placed under your project's `app/` directory (e.g., via recipe apply).
+> You don't need to rebuild or restart the server when files change there.
 >
-> **Tip:** Add `kovitoboard/` to your project's `.gitignore` to avoid
-> tracking KovitoBoard as a nested git repo.
+> **Tip:** Add `kovitoboard/` to your project's `.gitignore` to avoid tracking
+> KovitoBoard as a nested git repo.
 
-> **Note:** KovitoBoard is **not** a Claude Code project itself. It is a
-> regular program that reads an existing Claude Code project's
-> `.claude/agents/` directory and JSONL session files.
+> **Note:** KovitoBoard is **not** a Claude Code project itself. It is a regular program
+> that reads an existing Claude Code project's `.claude/agents/` directory and JSONL
+> session files.
 
 ### What you can target with `--project-root`
 
 You can point `--project-root` at any of the following:
 
-1. **An existing Claude Code project** (`.claude/agents/` present) — full
-   feature set.
+1. **An existing Claude Code project** (`.claude/agents/` present) — full feature set.
 2. **A brand-new empty directory** — the agent list starts empty. Create
    `.claude/agents/*.md` under the directory to grow the team.
-3. **A directory that previously hosted a Claude Code project** — past
-   session logs will be visible. Claude Code stores session logs by absolute
-   path, so re-using the same directory resurfaces prior history.
+3. **A directory that previously hosted a Claude Code project** — past session logs will
+   be visible. Claude Code stores session logs by absolute path, so re-using the same
+   directory resurfaces prior history.
 
 ### Advanced launch methods
 
@@ -111,59 +205,54 @@ You can point `--project-root` at any of the following:
 - **Environment variable:** `KOVITOBOARD_PROJECT_ROOT=/path npm start`
 - **Contributor / production mode (static build):** See [CONTRIBUTING.md](./CONTRIBUTING.md). Not required for end users.
 - **Persisted setting:** After completing onboarding, `.kovitoboard/setting.json`
-  remembers the project path. Subsequent launches can omit `--project-root`
-  when started from the same directory.
-- **Background launch (detach):** `npm run start:detach`, `npm start -- --detach`,
-  or `KOVITOBOARD_DETACH=1 npm start` re-execs the supervisor in the
-  background and returns control to the shell immediately. The
-  resolved supervisor PID is printed; stop it later with `kill <pid>`.
-  Logs continue to be written to `.kovitoboard/logs/` (tail
-  `current.log` to follow activity). Foreground launch is still the
-  default — passing no flag keeps the current behaviour.
-- **Ports:** the Vite dev server defaults to **5173** and the backend API
-  defaults to **3001**. The supervisor (`tools/kb-start.mjs`) probes both
-  ports on launch and falls back to the next free one (`5174`, `5175`, …
-  / `3002`, `3003`, …) when the default is in use. Always open the
-  URL printed in the `[kb-start] Frontend: http://localhost:<port>` line.
+  remembers the project path. Subsequent launches can omit `--project-root` when started
+  from the same directory.
+- **Background launch (detach):** `npm run start:detach`, `npm start -- --detach`, or
+  `KOVITOBOARD_DETACH=1 npm start` re-execs the supervisor in the background and returns
+  control to the shell immediately. The resolved supervisor PID is printed; stop it later
+  with `kill <pid>`. Logs continue to be written to `.kovitoboard/logs/` (tail
+  `current.log` to follow activity). Foreground launch is still the default — passing no
+  flag keeps the current behaviour.
+- **Ports:** the Vite dev server defaults to **5173** and the backend API defaults to
+  **3001**. The supervisor (`tools/kb-start.mjs`) probes both ports on launch and falls
+  back to the next free one (`5174`, `5175`, … / `3002`, `3003`, …) when the default is in
+  use. Always open the URL printed in the `[kb-start] Frontend: http://localhost:<port>` line.
 
-  To pin specific ports (and have the launcher fail loudly when they are
-  busy instead of falling back):
+  To pin specific ports (and have the launcher fail loudly when they are busy instead of
+  falling back):
 
   ```bash
   # CLI flags
   npm start -- --port=8080 --vite-port=8000
 
-  # Environment variables (legacy, same precedence as CLI flags after
-  # CLI parsing)
+  # Environment variables (legacy, same precedence as CLI flags after CLI parsing)
   PORT=8080 VITE_PORT=8000 npm start
   ```
 
   CLI flags take precedence over env vars; both override the auto-probe.
 
 Priority order (higher wins):
-`--project-root` → `KOVITOBOARD_PROJECT_ROOT` → `.kovitoboard/setting.json` →
-`process.cwd()`.
+`--project-root` → `KOVITOBOARD_PROJECT_ROOT` → `.kovitoboard/setting.json` → `process.cwd()`.
 
-On startup, the resolved project root and its source are printed to the
-server log, so you can verify the resolution took the expected path:
+On startup, the resolved project root and its source are printed to the server log, so you
+can verify the resolution took the expected path:
 
 ```
 [kovitoboard] Project root: /path/to/project (source: cli-arg)
 ```
 
-### Logs and Troubleshooting
+## Logs and Troubleshooting
 
-KovitoBoard writes structured logs to `.kovitoboard/logs/` as JSON Lines
-with daily rotation and a default 7-day retention. The latest active
-file is exposed via a `current.log` symlink:
+KovitoBoard writes structured logs to `.kovitoboard/logs/` as JSON Lines with daily
+rotation and a default 7-day retention. The latest active file is exposed via a
+`current.log` symlink:
 
 ```
 .kovitoboard/logs/current.log              -> latest rotated file
 .kovitoboard/logs/server.YYYY-MM-DD.<n>.log
 ```
 
-Override retention or log level via environment variables or
-`.kovitoboard/setting.json`:
+Override retention or log level via environment variables or `.kovitoboard/setting.json`:
 
 ```bash
 KOVITOBOARD_DEBUG=1                  # debug-level logging
@@ -183,56 +272,68 @@ When reporting an issue, generate a diagnostic report:
 npm run diagnose > diag.md
 ```
 
-`diag.md` bundles KovitoBoard / Node / OS / Claude Code / tmux versions,
-the onboarding state from `setting.json`, and the last 100 lines of the
-active server log. Home directory paths are masked as `~`, but please
-review the contents (especially log lines) before posting to GitHub
-Issues — other potentially sensitive information may remain.
+`diag.md` bundles KovitoBoard / Node / OS / Claude Code / tmux versions, the onboarding
+state from `setting.json`, and the last 100 lines of the active server log. Home directory
+paths are masked as `~`, but please review the contents (especially log lines) before
+posting to GitHub Issues — other potentially sensitive information may remain.
+
+For deeper guidance, see the agent reference under [`docs/agent-ref/`](./docs/agent-ref/).
 
 ## Recipe distribution model
 
-KovitoBoard distinguishes the **application body** (this OSS, AGPL-3.0 licensed) from **recipe distribution** (a two-tier model designed for safety):
+KovitoBoard distinguishes the **application body** (this OSS, AGPL-3.0 licensed) from
+**recipe distribution** (a two-tier model designed for safety):
 
 - **KovitoHub signed publisher (recommended, from v0.3.0):**
-  Recipes are distributed via KovitoHub, a central marketplace. Publishers register, are reviewed, and cryptographically sign their recipes. This is the recommended path for general users and for anyone wanting to share their recipes with others.
+  Recipes are distributed via KovitoHub, a central marketplace. Publishers register, are
+  reviewed, and cryptographically sign their recipes. This is the recommended path for
+  general users and for anyone wanting to share their recipes with others.
 
 - **Developer sideload mode (opt-in, from v0.3.0):**
-  For local testing and development, set `KB_DEVELOPER_MODE=1` before launching KovitoBoard to enable sideload mode. Sideloaded recipes show strict warnings and cannot be redistributed to other users.
+  For local testing and development, set `KB_DEVELOPER_MODE=1` before launching
+  KovitoBoard to enable sideload mode. Sideloaded recipes show strict warnings and cannot
+  be redistributed to other users.
 
 ### Current state (v0.2.x)
 
-Recipe install via `/api/recipes/install` is **temporarily disabled in v0.2.0 / v0.2.1**. The install flow will be re-enabled in **v0.3.0** alongside KovitoHub integration.
+Recipe install via `/api/recipes/install` is **temporarily disabled in v0.2.x**. The
+install flow will be re-enabled in **v0.3.0** alongside KovitoHub integration.
 
-- **Existing recipes** (installed in v0.1.x, or in v0.2.0 before the install disable took effect) continue to work unchanged (grandfathered, see `docs/specs/recipe-system.md` for grandfather contract). Display, uninstall, and export flows are preserved.
+- **Existing recipes** (installed in v0.1.x, or in v0.2.0 before the install disable took
+  effect) continue to work unchanged (grandfathered, see `docs/specs/recipe-system.md` for
+  grandfather contract). Display, uninstall, and export flows are preserved.
+- **Bundled sample recipes** can be enabled directly from the Apps screen's Sample Apps tab.
 - **New recipe installation** is unavailable until v0.3.0.
 
-For deeper background (OSS philosophy + signed-only distribution + developer sideload), see `docs/specs/prompt-injection-threat-model.md` (planned).
+For deeper background (OSS philosophy + signed-only distribution + developer sideload), see
+`docs/specs/prompt-injection-threat-model.md` (planned).
 
-**Note:** The exact KB version that introduces the prompt-injection-threat-model spec will be finalized in the v0.3.0 release plan.
+**Note:** The exact KB version that introduces the prompt-injection-threat-model spec will
+be finalized in the v0.3.0 release plan.
 
 ## Data Handling
 
 KovitoBoard runs agents through Claude Code. Please be aware:
 
-- **Information shown in KB is forwarded to Claude (the model)** when you ask an
-  agent about it. This includes screen content via the Ambient Session Sidebar,
-  files opened in apps like Document Viewer, and information loaded through recipes.
-- **Anthropic's data handling settings apply.** Claude Pro/Max accounts have
-  "do not train on my data" enabled by default — you can verify this in your Claude
-  account settings.
-- **For applications handling sensitive data, we strongly recommend implementing
-  masking at the data ingestion layer** (e.g., redact secrets when loading files,
-  hide sensitive fields before they reach the screen). KovitoBoard provides no
-  built-in masking; application authors and recipe authors are encouraged to design
-  data flow with this in mind.
+- **Information shown in KB is forwarded to Claude (the model)** when you ask an agent
+  about it. This includes screen content via the Ambient Session Sidebar, files opened in
+  apps like Document Viewer, and information loaded through recipes.
+- **Anthropic's data handling settings apply.** Claude Pro/Max accounts have "do not train
+  on my data" enabled by default — you can verify this in your Claude account settings.
+- **For applications handling sensitive data, we strongly recommend implementing masking at
+  the data ingestion layer** (e.g., redact secrets when loading files, hide sensitive fields
+  before they reach the screen). KovitoBoard provides no built-in masking; application
+  authors and recipe authors are encouraged to design data flow with this in mind.
 
-For details, see [docs/agent-ref/09-data-handling.md](./docs/agent-ref/09-data-handling.md).
+KovitoBoard itself does not upload your code or conversations to any external party — your
+data stays on your machine (it only makes an anonymous version-check request, which you can
+disable). For details, see [docs/agent-ref/09-data-handling.md](./docs/agent-ref/09-data-handling.md).
 
 ## Supported Claude Code Versions
 
-KovitoBoard tracks the **`@stable`** release channel of Claude Code.
-Trust-prompt detection patterns are calibrated against a specific version,
-and best-effort support is provided for a range of nearby releases.
+KovitoBoard tracks the **`@stable`** release channel of Claude Code. Trust-prompt detection
+patterns are calibrated against a specific version, and best-effort support is provided for a
+range of nearby releases.
 
 | | Version |
 |---|---|
@@ -247,8 +348,8 @@ Install (or pin) the stable channel:
 npm install -g @anthropic-ai/claude-code@stable
 ```
 
-Or, if you use Claude Code's built-in auto-update, set the channel in your
-Claude Code settings (`~/.claude/settings.json`):
+Or, if you use Claude Code's built-in auto-update, set the channel in your Claude Code
+settings (`~/.claude/settings.json`):
 
 ```json
 {
@@ -258,10 +359,9 @@ Claude Code settings (`~/.claude/settings.json`):
 
 ### Startup version check
 
-When KovitoBoard starts, it runs `claude --version` and compares the
-result with the primary tested version. If they differ you will see a
-warning in the server log — KovitoBoard still starts normally, but
-trust-prompt detection may behave unexpectedly.
+When KovitoBoard starts, it runs `claude --version` and compares the result with the primary
+tested version. If they differ you will see a warning in the server log — KovitoBoard still
+starts normally, but trust-prompt detection may behave unexpectedly.
 
 ### Troubleshooting
 
@@ -269,8 +369,8 @@ trust-prompt detection may behave unexpectedly.
 2. Switch to the stable channel: `npm install -g @anthropic-ai/claude-code@stable`
 3. Restart KovitoBoard (`npm start`)
 4. If trust-prompt detection still fails, please
-   [open an issue](https://github.com/kovito-dev/kovitoboard/issues) with
-   the output of `claude --version` and the server log.
+   [open an issue](https://github.com/kovito-dev/kovitoboard/issues) with the output of
+   `claude --version` and the server log.
 
 ## Agent Definition
 
@@ -306,38 +406,6 @@ System prompt and instructions go here.
 | `color` | `gray` | Theme color for the agent card |
 | `summary` | — | One-line summary shown in lists |
 
-## Features
-
-### Agent Dashboard
-Browse and inspect agent definitions — view details, metadata, and the
-raw Markdown definition. Create agents from templates or from scratch,
-and edit their structured fields (personality, tone, extra instructions)
-directly in the browser.
-
-### Session Monitor
-Watch active Claude Code sessions in real time. JSONL session files are
-monitored via chokidar and updates are pushed to the browser over WebSocket.
-
-### Recipe System
-Import, inspect, and export agent recipes — portable bundles that package
-agent definitions with page components and API extensions.
-
-- **Import:** Parse recipe files (YAML directory or single Markdown) with
-  security inspection (path traversal, dangerous patterns, size limits)
-- **History:** Track previously applied recipes
-- **Export:** Generate recipes from existing agent configurations
-
-### Trust Prompt Relay
-When Claude Code displays a trust prompt in a tmux session (e.g., "Do you
-want to create this file?"), KovitoBoard detects it via `capture-pane`
-polling and relays it to the browser UI. You can approve or reject
-directly from the dashboard.
-
-### App Extensions
-Place custom pages, API routes, and styles in the `app/` directory to
-extend KovitoBoard without modifying the core source. See `app.example/`
-for a working example.
-
 ## Architecture
 
 ```
@@ -362,7 +430,7 @@ tests/
   e2e/          Playwright E2E tests
   unit/         Vitest unit tests
 app.example/    Example app extension (menu, page, API, styles)
-docs/           Specifications and known issues
+docs/           Specifications, agent reference, and assets
 ```
 
 ## Contributing
@@ -372,6 +440,11 @@ For development setup (HMR via `npm run dev`, running tests, etc.), see
 
 ## License
 
-KovitoBoard is licensed under the **GNU Affero General Public License v3 or later (AGPL-3.0-or-later)**. See [LICENSE](LICENSE) for the full license text.
+KovitoBoard is licensed under the **GNU Affero General Public License v3 or later
+(AGPL-3.0-or-later)**. See [LICENSE](LICENSE) for the full license text.
+
+You can read the source, fork it, and extend it to fit how you work; commercial use is
+allowed. Because of AGPL's nature, if you offer a modified version to others as a service,
+you are obligated to publish that modified source.
 
 Copyright (C) 2026 Anode LLC.
