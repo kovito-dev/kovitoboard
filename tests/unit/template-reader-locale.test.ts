@@ -102,4 +102,17 @@ describe('listAgentTemplates locale resolution', () => {
     const templates = listAgentTemplates(fs, 'en')
     expect(templates.map(t => t.id)).toEqual(['alpha'])
   })
+
+  it('falls back per field to .md when .en.md omits a field', () => {
+    // .en.md defines only `name`; `description` is absent and must inherit
+    // from the base .md rather than blanking out.
+    const partialEn = `---\nname: alpha-en\n---\nbody\n`
+    const fs = makeFs({
+      'alpha.md': jaMd('alpha', 'ja-desc'),
+      'alpha.en.md': partialEn,
+    })
+    const [tpl] = listAgentTemplates(fs, 'en')
+    expect(tpl.name).toBe('alpha-en')
+    expect(tpl.description).toBe('ja-desc')
+  })
 })
