@@ -684,7 +684,7 @@ const en: Record<MessageKey, string> = {
   'setting.basic.help.description': 'Subtitle shown beneath the title (optional, up to 200 characters)',
   'setting.basic.help.userName': 'How agents address you (required, up to 50 characters)',
   'setting.basic.help.language': 'KB UI language',
-  'setting.basic.footer': 'Changes take effect immediately after saving',
+  'setting.basic.footer': 'Changes take effect after reloading the page',
   'setting.basic.button.save': 'Save',
   'setting.basic.button.saving': 'Saving...',
   'setting.basic.button.reset': 'Reset changes',
