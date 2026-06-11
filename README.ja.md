@@ -231,8 +231,10 @@ npm run start:detach   # バックグラウンドで起動し、supervisor の P
   ディレクトリで `npm run start:detach` を実行する `launchd` ユーザーエージェントを作成します。
 - **Linux / WSL2:** `~/.config/systemd/user/` に `npm run start:detach` を実行する systemd
   **ユーザー** サービスを作成し、`systemctl --user enable --now kovitoboard` で有効化します。
-  WSL2 では先に `/etc/wsl.conf` で systemd を有効化するか、シェルのプロファイルにコマンドを
-  追記してください。
+  WSL2 では先に `/etc/wsl.conf` で systemd を有効化してください。`npm run start:detach` を
+  シェルのプロファイルに書くのは避けてください。プロファイルはログイン時に一度ではなく
+  ターミナルを開くたびに実行されるため、複数のシェルを開くと supervisor が重複して起動し、
+  ポートを奪い合います。
 
 > KovitoBoard は起動元の `PATH` に `tmux` と `claude` が必要なため、システム全体のサービスより
 > ログインスコープの仕組み（ログイン項目 / systemd **ユーザー** サービス）を推奨します。

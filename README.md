@@ -233,8 +233,10 @@ Logs keep flowing to `.kovitoboard/logs/current.log`, and you can stop it any ti
   a `launchd` user agent that runs `npm run start:detach` in the KovitoBoard directory.
 - **Linux / WSL2:** create a systemd **user** service under `~/.config/systemd/user/` that
   runs `npm run start:detach`, then enable it with `systemctl --user enable --now
-  kovitoboard`. On WSL2, enable systemd in `/etc/wsl.conf` first, or simply add the command
-  to your shell profile.
+  kovitoboard`. On WSL2, enable systemd in `/etc/wsl.conf` first. Avoid putting
+  `npm run start:detach` in your shell profile: it runs on every new terminal, not once per
+  login, so opening several shells would spawn duplicate supervisors and fight over the
+  port.
 
 > KovitoBoard needs `tmux` and `claude` on the `PATH` of whatever starts it, so prefer a
 > login-scoped mechanism (Login Items / a systemd **user** service) over a system-wide
