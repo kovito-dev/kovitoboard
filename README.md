@@ -24,7 +24,7 @@ agent on each. Consult them while looking at the screen, step in when needed: **
 stay in command.** No terminal needed for everyday use.
 
 It reads the Claude Code definitions of the project it is installed in, letting you
-manage agents, monitor sessions, and develop and run apps — all from your browser.
+manage agents, work in live sessions, and develop and run apps — all from your browser.
 
 ## See it in action
 
@@ -68,9 +68,11 @@ Browse and inspect agent definitions — view details, metadata, and the raw Mar
 definition. Create agents from templates or from scratch, and edit their structured
 fields (personality, tone, extra instructions) directly in the browser.
 
-### Session Monitor
-Watch active Claude Code sessions in real time. JSONL session files are monitored via
-chokidar and updates are pushed to the browser over WebSocket.
+### Live Sessions
+Chat with running Claude Code sessions right from your browser — send messages, share
+images and files, and resume or continue a session. Updates stream live: JSONL session
+files are watched via chokidar and pushed to the browser over WebSocket, so you both
+follow and drive the conversation in real time.
 
 ### App Extensions
 Place custom pages, API routes, and styles in the `app/` directory to extend
@@ -126,7 +128,7 @@ tmux -V   # → tmux 3.4 or higher
 There are two ways to get started. Pick **Path A** if you usually only use Claude
 Desktop; pick **Path B** if you're comfortable with the terminal.
 
-### Path A: Claude Desktop (recommended · no terminal)
+### Path A: Claude Desktop (no terminal needed)
 
 Just send Claude Desktop's code-execution feature a short prompt that includes the
 repository URL. Claude handles clone, install, and launch, and KovitoBoard opens in
@@ -187,6 +189,58 @@ npm start -- --project-root ..
 > **Note:** KovitoBoard is **not** a Claude Code project itself. It is a regular program
 > that reads an existing Claude Code project's `.claude/agents/` directory and JSONL
 > session files.
+
+### Restarting KovitoBoard (next day, after stopping, or after a reboot)
+
+You only clone and `npm install` **once**. After onboarding, KovitoBoard remembers your
+project path in `.kovitoboard/setting.json`, so to bring it back up — the next morning,
+after you stopped it, or after rebooting your PC — just launch it again from the same
+directory:
+
+```bash
+cd /path/to/kovitoboard   # the directory you cloned into
+npm start                 # --project-root can be omitted after onboarding
+```
+
+Then open the `Frontend: http://localhost:<port>` line printed in the output.
+
+**Using Claude Desktop (Path A)?** Send a short prompt that points at your existing clone
+instead of cloning again:
+
+```text
+Start KovitoBoard from the existing clone at /path/to/kovitoboard, then tell me the
+address to open in my browser.
+```
+
+**To stop it:** press `Ctrl+C` in the terminal running it, or run `npm run kb:stop` from
+the KovitoBoard directory (use `kb:stop` when you started it in the background).
+
+### Starting automatically on boot (optional)
+
+If you'd like KovitoBoard to come up on its own whenever you turn on your PC, start it in
+the background and have your OS run that command at login. First confirm the background
+launch works:
+
+```bash
+cd /path/to/kovitoboard
+npm run start:detach   # launches in the background and prints the supervisor PID
+```
+
+Logs keep flowing to `.kovitoboard/logs/current.log`, and you can stop it any time with
+`npm run kb:stop`. Then register that command with your OS:
+
+- **macOS:** add it as a *Login Item* (System Settings → General → Login Items), or create
+  a `launchd` user agent that runs `npm run start:detach` in the KovitoBoard directory.
+- **Linux / WSL2:** create a systemd **user** service under `~/.config/systemd/user/` that
+  runs `npm run start:detach`, then enable it with `systemctl --user enable --now
+  kovitoboard`. On WSL2, enable systemd in `/etc/wsl.conf` first. Avoid putting
+  `npm run start:detach` in your shell profile: it runs on every new terminal, not once per
+  login, so opening several shells would spawn duplicate supervisors and fight over the
+  port.
+
+> KovitoBoard needs `tmux` and `claude` on the `PATH` of whatever starts it, so prefer a
+> login-scoped mechanism (Login Items / a systemd **user** service) over a system-wide
+> service.
 
 ### What you can target with `--project-root`
 
@@ -337,7 +391,7 @@ range of nearby releases.
 
 | | Version |
 |---|---|
-| **Primary tested** | 2.1.104 (`@stable` channel) |
+| **Primary tested** | 2.1.153 (`@stable` channel) |
 | **Best-effort** | 2.1.x / 2.2.x |
 
 ### Recommended setup

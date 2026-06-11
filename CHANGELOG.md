@@ -7,6 +7,22 @@ All notable changes to KovitoBoard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Primary tested Claude Code version raised to 2.1.153 (`@stable`
+  channel), following Anthropic's `@stable` dist-tag.
+
+### Documentation
+
+- Renamed the "Session Monitor" feature to "Live Sessions" and clarified
+  that it is interactive — you can chat with running sessions, share
+  images and files, and resume or continue them, not just watch.
+- Added guidance for restarting KovitoBoard (next day, after stopping, or
+  after a reboot) and for starting it automatically on boot.
+- Updated the Path A heading wording to "no terminal needed".
+
 ## [0.2.3] - 2026-06-07
 
 A maintenance patch: a localization fix and a security dependency update.
