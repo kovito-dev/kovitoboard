@@ -42,9 +42,19 @@ function getTemplatesDir(fs: FileAccessLayer): string {
 
 /**
  * Scan templates/agents/*.md and return the template list.
- * `.en.md` files are excluded (locale-specific retrieval is handled by getAgentTemplateContent).
+ *
+ * `.en.md` files are not enumerated as separate entries; they are excluded
+ * from id enumeration and consulted only for locale resolution.
+ *
+ * `id` / `model` come from `{id}.md` (locale-independent SSOT). When
+ * `locale === 'en'`, `name` / `description` are resolved from `{id}.en.md`
+ * if present, falling back to `{id}.md` otherwise. This mirrors the
+ * selection policy of `getAgentTemplateContent`.
  */
-export function listAgentTemplates(fs: FileAccessLayer): AgentTemplateSummary[] {
+export function listAgentTemplates(
+  fs: FileAccessLayer,
+  locale: 'ja' | 'en' = 'ja',
+): AgentTemplateSummary[] {
   const dir = getTemplatesDir(fs)
   if (!fs.existsSync(dir)) return []
 
@@ -61,9 +71,33 @@ export function listAgentTemplates(fs: FileAccessLayer): AgentTemplateSummary[] 
         const { data } = matter(raw)
 
         const id = basename(file, '.md')
-        const name = typeof data.name === 'string' ? data.name : id
-        const description = typeof data.description === 'string' ? data.description : ''
         const model = typeof data.model === 'string' ? data.model : 'default'
+
+        // name / description follow the requested locale; id / model do not.
+        // For locale 'en', the `.en.md` overlay is resolved per field: a
+        // localized field is used when present, otherwise it falls back to the
+        // base `.md` value (so a partial `.en.md` overlay never blanks a field).
+        let localized = data
+        if (locale === 'en') {
+          const enPath = join(dir, `${id}.en.md`)
+          if (fs.existsSync(enPath)) {
+            try {
+              localized = matter(fs.readFileSync(enPath, 'utf-8')).data
+            } catch (err) {
+              serverLogger.error({ err }, `[template-reader] Failed to parse template ${id}.en.md:`)
+              // Keep the `.md` frontmatter as fallback.
+            }
+          }
+        }
+
+        const pick = (key: 'name' | 'description'): string | undefined => {
+          if (typeof localized[key] === 'string') return localized[key]
+          if (typeof data[key] === 'string') return data[key]
+          return undefined
+        }
+
+        const name = pick('name') ?? id
+        const description = pick('description') ?? ''
 
         templates.push({ id, name, description, model })
       } catch (err) {

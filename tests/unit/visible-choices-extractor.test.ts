@@ -29,6 +29,10 @@ const FIXTURE_DIR_2_1_97 = join(
   __dirname,
   '../fixtures/trust-prompts/claude-2.1.97',
 )
+const FIXTURE_DIR_2_1_153 = join(
+  __dirname,
+  '../fixtures/trust-prompts/claude-2.1.153',
+)
 
 function loadFixture(dir: string, name: string): string {
   return readFileSync(join(dir, name), 'utf-8')
@@ -46,6 +50,24 @@ describe('extractVisibleChoices', () => {
 
   it('parses the 2-row bash prompt that 2.1.126 ships for variable expansion commands', () => {
     const capture = loadFixture(FIXTURE_DIR_2_1_126, 'bash-command-two-choices.txt')
+    const choices = extractVisibleChoices(capture)
+    expect(choices).toEqual([
+      { num: 1, label: 'Yes' },
+      { num: 2, label: 'No' },
+    ])
+  })
+
+  it('parses the 2-row folder-trust menu on the 2.1.153 capture (layout unchanged)', () => {
+    const capture = loadFixture(FIXTURE_DIR_2_1_153, 'folder-trust-initial.txt')
+    const choices = extractVisibleChoices(capture)
+    expect(choices).toEqual([
+      { num: 1, label: 'Yes, I trust this folder' },
+      { num: 2, label: 'No, exit' },
+    ])
+  })
+
+  it('parses the 2-row bash prompt on the 2.1.153 capture (per-session row still dropped)', () => {
+    const capture = loadFixture(FIXTURE_DIR_2_1_153, 'bash-command-two-choices.txt')
     const choices = extractVisibleChoices(capture)
     expect(choices).toEqual([
       { num: 1, label: 'Yes' },
@@ -167,6 +189,14 @@ describe('resolveVisibleChoices', () => {
     // `yes` must now correspond to `1\n`, not the `1\n` we statically
     // declared in JSON — the rewrite is what protects us from future
     // reorders.
+    expect(resolved.find((c) => c.id === 'yes')!.keys).toBe('1\n')
+    expect(resolved.find((c) => c.id === 'no')!.keys).toBe('2\n')
+  })
+
+  it('drops yes-session and binds keys correctly on the 2.1.153 bash capture', () => {
+    const capture = loadFixture(FIXTURE_DIR_2_1_153, 'bash-command-two-choices.txt')
+    const resolved = resolveVisibleChoices(bashChoices, capture)
+    expect(resolved.map((c) => c.id)).toEqual(['yes', 'no'])
     expect(resolved.find((c) => c.id === 'yes')!.keys).toBe('1\n')
     expect(resolved.find((c) => c.id === 'no')!.keys).toBe('2\n')
   })

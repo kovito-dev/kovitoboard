@@ -68,11 +68,13 @@ describe('loadTrustPatterns 正常系', () => {
   it('DEC-015: primaryTestedVersion / bestEffortVersions を読む', () => {
     const fs = new DirectFsLayer()
     const config = loadTrustPatterns(fs, PATTERNS_JSON)
-    // Bumped to 2.1.126 on 2026-05-03 because 2.1.126 dropped the
-    // per-session row from `bash-command`. The detector's labelPattern
-    // resolution was added at the same time so KB tracks Anthropic's
-    // live menu instead of trusting a static keys mapping.
-    expect(config.primaryTestedVersion).toBe('2.1.126')
+    // Tracks Anthropic's @stable dist-tag. Bumped to 2.1.153 on
+    // 2026-06-11 following the @stable tag; the maintainer manually
+    // verified that 2.1.153 keeps the same trust-prompt behavior as
+    // 2.1.126 (which had dropped the per-session row from `bash-command`,
+    // prompting the detector's labelPattern resolution so KB tracks
+    // Anthropic's live menu instead of a static keys mapping).
+    expect(config.primaryTestedVersion).toBe('2.1.153')
     expect(config.primaryTestedChannel).toBe('stable')
     expect(config.bestEffortVersions).toEqual(['2.1.x', '2.2.x'])
   })

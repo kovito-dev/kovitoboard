@@ -1,7 +1,7 @@
 # 02. Agent Management
 
-**Target KB version:** v0.2.2
-**Last updated:** 2026-05-31
+**Target KB version:** v0.2.4
+**Last updated:** 2026-06-11
 **Authoritative source:** [`../02-agents.md`](../02-agents.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.

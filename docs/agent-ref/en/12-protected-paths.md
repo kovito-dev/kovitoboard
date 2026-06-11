@@ -1,7 +1,7 @@
 # 12. Protected Paths
 
-**Target KB version:** v0.2.2
-**Last updated:** 2026-05-31
+**Target KB version:** v0.2.4
+**Last updated:** 2026-06-11
 **Authoritative source:** [`../12-protected-paths.md`](../12-protected-paths.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
@@ -24,7 +24,7 @@ KovitoBoard manages a set of files, runtime state, and external preconditions th
 
 ## English-specific notes
 
-_None at v0.2.2. This section is reserved for English-locale-specific guidance that does not belong in the authoritative Japanese source._
+_None at v0.2.4. This section is reserved for English-locale-specific guidance that does not belong in the authoritative Japanese source._
 
 ---
 
