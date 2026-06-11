@@ -1,5 +1,5 @@
 {
-  "version": "2026-05-03",
+  "version": "2026-06-11",
   "primaryTestedVersion": "2.1.153",
   "primaryTestedChannel": "stable",
   "bestEffortVersions": ["2.1.x", "2.2.x"],
