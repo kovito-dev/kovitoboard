@@ -9,10 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-11
+
+A maintenance patch with localization and display fixes, a browser
+favicon, and documentation updates.
+
+### Added
+
+- A browser favicon, so KovitoBoard is recognizable in browser tabs and
+  bookmarks.
+
 ### Changed
 
 - Primary tested Claude Code version raised to 2.1.153 (`@stable`
   channel), following Anthropic's `@stable` dist-tag.
+
+### Fixed
+
+- The "Add Agent" template picker now shows template descriptions in the
+  active display language. Previously, in English mode, it displayed
+  Japanese descriptions.
+- Agent descriptions are no longer lost from the agent list after
+  creating an agent from a template.
+- The Settings "Basic" tab footer now correctly states that changes take
+  effect after reloading the page (it previously said changes apply
+  immediately after saving).
 
 ### Documentation
 
