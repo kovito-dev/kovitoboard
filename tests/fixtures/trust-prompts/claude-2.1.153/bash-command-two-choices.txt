@@ -1,0 +1,16 @@
+● Bash(echo "KB_PORT: $KB_PORT" && env | grep -i kb 2>/dev/null || true)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   echo "KB_PORT: $KB_PORT" && env | grep -i kb 2>/dev/null || true
+   Print KB_PORT and KB-related env vars
+
+ Contains simple_expansion
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain

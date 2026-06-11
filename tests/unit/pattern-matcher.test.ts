@@ -194,6 +194,39 @@ describe('PatternMatcher 2.1.126', () => {
 })
 
 // =========================
+// Claude Code 2.1.153 fixtures
+// =========================
+//
+// Backs the trust-patterns.json primaryTestedVersion bump 2.1.126 -> 2.1.153.
+// 2.1.153 renders both prompts with the same layout as 2.1.126, so the same
+// assertions must hold against the live 2.1.153 captures with no pattern edits.
+
+describe('PatternMatcher 2.1.153', () => {
+  const FIXTURE_DIR_2_1_153 = join(__dirname, '../fixtures/trust-prompts/claude-2.1.153')
+  const load = (name: string) => readFileSync(join(FIXTURE_DIR_2_1_153, name), 'utf-8')
+
+  it('matches the 2-choice bash prompt and exposes labelPattern on every choice', () => {
+    const capture = load('bash-command-two-choices.txt')
+    const result = matcher.match(capture)
+    expect(result).not.toBeNull()
+    expect(result!.pattern.id).toBe('bash-command')
+    for (const c of result!.pattern.choices) {
+      expect(c.labelPattern, `choice "${c.id}" missing labelPattern`).toBeDefined()
+    }
+  })
+
+  it('matches the unchanged folder-trust layout', () => {
+    const capture = load('folder-trust-initial.txt')
+    const result = matcher.match(capture)
+    expect(result).not.toBeNull()
+    expect(result!.pattern.id).toBe('folder-trust-initial')
+    expect(result!.pattern.kind).toBe('folder-trust')
+    expect(result!.degenerate).toBe(false)
+    expect(result!.extracted.workspace).toMatch(/kb-test-example/)
+  })
+})
+
+// =========================
 // Negative match tests
 // =========================
 
