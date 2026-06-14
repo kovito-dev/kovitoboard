@@ -772,12 +772,23 @@ export function AmbientSidebar({
                 data-testid="ambient-sidebar-pin-button"
                 onClick={handlePin}
                 disabled={pinning || settingsLoading || appId === null || isPinnedToCurrent}
+                // `title` restores a native, persistent affordance for
+                // touch and assistive-tech users that the icon-only
+                // button would otherwise lose; the CSS tooltip below is a
+                // pointer-only visual enhancement. `aria-label` carries
+                // the accessible name. No `aria-pressed`: this is a
+                // one-way "pin current app" action, not a toggle, so
+                // pressed-state semantics would be misleading.
+                title={
+                  isPinnedToCurrent
+                    ? t('ambientSidebar.pin.alreadyPinned')
+                    : t('ambientSidebar.pin.button')
+                }
                 aria-label={
                   isPinnedToCurrent
                     ? t('ambientSidebar.pin.alreadyPinned')
                     : t('ambientSidebar.pin.button')
                 }
-                aria-pressed={isPinnedToCurrent}
                 className="
                   flex items-center justify-center w-8 h-8 rounded
                   bg-[var(--bg-elevated)] text-[var(--text-secondary)]
@@ -805,7 +816,7 @@ export function AmbientSidebar({
                 </svg>
               </button>
               <span
-                role="tooltip"
+                aria-hidden="true"
                 className="
                   absolute right-full mr-1 top-1/2 -translate-y-1/2 z-30
                   whitespace-nowrap pointer-events-none
