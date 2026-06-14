@@ -65,6 +65,223 @@ function resolveTmuxSessionName(fs: FileAccessLayer): string {
   return `kovitoboard-${sanitized}`
 }
 
+// =========================
+// Input-prompt readiness detection (waitForPrompt)
+// =========================
+
+/**
+ * Number of trailing non-empty lines sampled from `capture-pane` for
+ * prompt-readiness detection.
+ *
+ * Claude Code >= 2.1.x renders extra chrome below the input box (an
+ * agent status line `🤖 … | ⏱ … | …` plus a multi-agent footer
+ * `⏵⏵ … · ← for agents`). The legacy 3-line window pushed the `❯`
+ * caret line out of view, so detection always timed out. An 8-line
+ * window absorbs that chrome height and keeps the caret in view.
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.1.
+ */
+export const PROMPT_SAMPLE_LINES = 8
+
+/** Capture range (`capture-pane -S`) wide enough to fill the 8-line window. */
+export const PROMPT_CAPTURE_START = -8
+
+/**
+ * Box-drawing characters that make up the input-box borders. A line
+ * composed solely of these (plus whitespace) is treated as a border.
+ */
+const BOX_CHARS = '│╭╮╯╰─━┃┌┐└┘├┤┬┴┼'
+
+/**
+ * Footer wording shown beneath a live (ready) input prompt. Kept
+ * permissive to absorb minor UI wording changes across Claude Code
+ * releases. `⏵` covers the 2.1.x multi-agent permission footer
+ * (`⏵⏵ bypass permissions on … · ← for agents`).
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.3.
+ */
+export const PROMPT_FOOTER_MARKER =
+  /( for shortcuts|⏵|Ctrl[+-]C|Enter to|Tab to|Esc to)/
+
+/**
+ * Markers that mean the pane is busy generating a response — when any
+ * is present the prompt is NOT ready.
+ *
+ * Claude Code >= 2.1.x uses a randomized-gerund spinner anchored by the
+ * `✻` / `✢` glyph (`✻ Hyperspacing… (1m 26s)`, `✻ Sautéed for 9s`,
+ * `✢ Transfiguring… (thinking)`), usually paired with an
+ * `esc to interrupt` hint. The spinner glyph is the unambiguous anchor:
+ * we deliberately do NOT key on a bare `esc to interrupt`, because the
+ * ready-state footer can also surface `Esc to interrupt`, which would
+ * make readiness impossible to declare.
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.3.
+ */
+export const PROMPT_PROCESSING_MARKER =
+  /[✻✢]|Running…|thinking\)|\(streaming/
+
+/**
+ * The Claude Code agent status line, whose live token/elapsed-time
+ * fields (`🤖 … | ⏱ 6m26s | …`) change every frame. Used ONLY to strip
+ * the volatile line before the stability comparison — never for caret /
+ * footer / processing / trust matching.
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.2.
+ */
+const VOLATILE_STATUS_LINE = /🤖.*⏱/
+
+/**
+ * Reduce a `capture-pane` output to the trailing non-empty sample
+ * window (empty lines removed, last `PROMPT_SAMPLE_LINES` kept).
+ */
+export function sampleWindow(capture: string): string[] {
+  const lines = capture.split('\n').filter((l) => l.trim())
+  return lines.slice(-PROMPT_SAMPLE_LINES)
+}
+
+/** A line made up of box-drawing characters / whitespace only. */
+function isBorderLine(line: string): boolean {
+  const stripped = line.trim()
+  if (stripped.length === 0) return false
+  for (const ch of stripped) {
+    if (ch === ' ') continue
+    if (!BOX_CHARS.includes(ch)) return false
+  }
+  return true
+}
+
+/**
+ * A line that delimits the top of the input box. This is either a pure
+ * border line OR a labelled border such as `──────── chief ──`, where
+ * the centre carries the agent name. We accept the labelled form by
+ * requiring the line to (a) contain a box-drawing run and (b) consist
+ * only of box chars, whitespace, and word characters (the label) — so a
+ * caret/menu/activity line never qualifies.
+ */
+function isInputBoxBoundaryLine(line: string): boolean {
+  const stripped = line.trim()
+  if (stripped.length === 0) return false
+  if (isBorderLine(line)) return true
+  let hasBox = false
+  for (const ch of stripped) {
+    if (BOX_CHARS.includes(ch)) {
+      hasBox = true
+      continue
+    }
+    // Allow the label run: spaces and word characters only.
+    if (ch === ' ' || /[\w]/.test(ch)) continue
+    return false
+  }
+  return hasBox
+}
+
+/**
+ * A live input-box caret line: a lone `❯` accompanied only by
+ * whitespace or box characters (e.g. `❯` or `│ ❯ │`). Excludes menu
+ * cursors / activity lines that merely contain `❯` amid other text.
+ */
+function isCaretLine(line: string): boolean {
+  if (!line.includes('❯')) return false
+  const stripped = line.trim()
+  for (const ch of stripped) {
+    if (ch === '❯' || ch === ' ' || BOX_CHARS.includes(ch)) continue
+    return false
+  }
+  return true
+}
+
+/**
+ * True when the sample window contains an input-box caret line — a lone
+ * `❯` line bounded by an input-box boundary line (a border, or a
+ * labelled border such as `── chief ──`) on at least one adjacent side.
+ *
+ * This per-line check replaces the legacy `joinedTail.includes('❯')`
+ * substring test, which false-matched trust-prompt menu cursors and
+ * activity lines.
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.1.
+ */
+export function hasInputBoxCaret(window: string[]): boolean {
+  for (let i = 0; i < window.length; i++) {
+    if (!isCaretLine(window[i])) continue
+    const above = i > 0 ? isInputBoxBoundaryLine(window[i - 1]) : false
+    const below =
+      i < window.length - 1 ? isInputBoxBoundaryLine(window[i + 1]) : false
+    if (above || below) return true
+  }
+  return false
+}
+
+/**
+ * Build the stability-comparison string: the sample window with the
+ * volatile status line (`🤖 … ⏱ …`) removed, so the per-second elapsed
+ * timer does not prevent the "no change for STABILITY_MS" condition
+ * from ever holding.
+ *
+ * IMPORTANT: this normalization is for the stability comparison ONLY.
+ * Caret / footer / processing / trust matching all run against the raw
+ * capture window (volatile line included).
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.2.
+ */
+export function stabilityString(window: string[]): string {
+  return window.filter((l) => !VOLATILE_STATUS_LINE.test(l)).join('\n')
+}
+
+export type PromptDecision =
+  | { ready: true; via: 'primary' | 'stability' }
+  | { ready: false; reason: 'no-caret' | 'trust' | 'processing' | 'unstable' }
+
+/**
+ * Decide whether a single captured frame represents a ready input
+ * prompt. Pure — given the raw capture window and whether the
+ * volatile-stripped stability string has held still long enough, it
+ * returns the readiness verdict and the reason/path.
+ *
+ * Matching surfaces (per spec §7.2.1/§7.2.2 design separation):
+ *   - caret / footer / processing / trust → raw window (volatile-included)
+ *   - stability                            → caller passes `stableHeld`,
+ *     computed from `stabilityString` (volatile-stripped)
+ *
+ * Spec SSOT: session-management.md v1.5 §7.2.1–§7.2.3.
+ */
+export function evaluatePromptFrame(
+  window: string[],
+  stableHeld: boolean,
+): PromptDecision {
+  const joined = window.join('\n')
+
+  if (!hasInputBoxCaret(window)) {
+    return { ready: false, reason: 'no-caret' }
+  }
+  // Trust-prompt dialogs (folder-trust, auto-mode, edit/write/bash/read,
+  // sandbox-network, etc.) share enough surface markers with the live
+  // input prompt that the loose footer marker would false-positive on
+  // them. If we mistook one for a ready prompt, the caller would send
+  // the initial message straight into the dialog, which silently
+  // consumes the keystrokes and fires Enter to accept the default
+  // option (e.g. "Yes, I trust this folder"), losing the message and
+  // skipping the trust-prompt modal handshake. Treat any trust-prompt
+  // footer as "not ready" so we keep waiting until the modal relay
+  // clears the dialog and the live prompt actually appears.
+  if (TRUST_FOOTER_PATTERNS.some((re) => re.test(joined))) {
+    return { ready: false, reason: 'trust' }
+  }
+  if (PROMPT_PROCESSING_MARKER.test(joined)) {
+    return { ready: false, reason: 'processing' }
+  }
+  // Primary: caret + known footer.
+  if (PROMPT_FOOTER_MARKER.test(joined)) {
+    return { ready: true, via: 'primary' }
+  }
+  // Stability fallback: caret + volatile-stripped window unchanged for
+  // STABILITY_MS (footer wording shifted but the prompt has settled).
+  if (stableHeld) {
+    return { ready: true, via: 'stability' }
+  }
+  return { ready: false, reason: 'unstable' }
+}
+
 export interface TmuxWindow {
   /** Window index */
   index: number
@@ -319,81 +536,61 @@ export class TmuxBridge {
    * DEC-014 v1.3 Phase 1: Reduce dependence on specific footer text.
    *
    * Detection strategy:
-   *   Primary  : "❯" caret + any known footer marker (expanded list).
-   *   Fallback : "❯" caret + pane stable (no change) for STABILITY_MS,
-   *              excluding known "processing" markers.
+   *   Primary  : input-box caret line + known footer marker.
+   *   Fallback : input-box caret line + volatile-stripped window stable
+   *              (no change) for STABILITY_MS.
    *
    * The fallback path absorbs Claude Code UI chrome changes where the
    * footer wording has shifted but the caret and stability properties
-   * still hold.
+   * still hold. The frame verdict is delegated to the pure
+   * `evaluatePromptFrame`; this method only owns the poll loop and
+   * stability timer.
+   *
+   * Spec SSOT: session-management.md v1.5 §7.2.
    */
   private async waitForPrompt(tmuxTarget: string, timeoutMs: number): Promise<boolean> {
     const startTime = Date.now()
     const pollInterval = 500
     const STABILITY_MS = 1500 // caret visible + no change for 1.5s
 
-    // Expanded footer markers — more variants to absorb minor UI tweaks.
-    const footerMarker = /( for shortcuts|Esc to interrupt|⏵|Ctrl[+-]C|Enter to|Tab to|Esc to)/
-    // Processing markers — must NOT be present to declare "ready"
-    const processingMarker = /(Running…|thinking\)|\(streaming)/
-
-    let lastSample = ''
+    // Stability is tracked against the volatile-stripped window only
+    // (see `stabilityString`); the per-second status timer must not
+    // reset it. Caret / footer / processing / trust matching all run
+    // against the raw window inside `evaluatePromptFrame`.
+    let lastStabilityString = ''
     let lastChangeAt = Date.now()
     let lastSampledLines: string[] = []
 
     while (Date.now() - startTime < timeoutMs) {
       try {
         const output = execFileSync('tmux', [
-          'capture-pane', '-t', tmuxTarget, '-p', '-S', '-5',
+          'capture-pane', '-t', tmuxTarget, '-p', '-S', String(PROMPT_CAPTURE_START),
         ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-        const lines = output.split('\n').filter((l) => l.trim())
-        lastSampledLines = lines.slice(-3)
-        const lastLines = lastSampledLines.join(' ')
+        const window = sampleWindow(output)
+        lastSampledLines = window
 
-        // Track stability
-        if (lastLines !== lastSample) {
-          lastSample = lastLines
+        // Track stability on the volatile-stripped string.
+        const stability = stabilityString(window)
+        if (stability !== lastStabilityString) {
+          lastStabilityString = stability
           lastChangeAt = Date.now()
         }
+        const stableHeld = Date.now() - lastChangeAt >= STABILITY_MS
 
-        // Trust-prompt dialogs (folder-trust, auto-mode, edit/write/bash/read,
-        // sandbox-network, etc.) share enough surface markers with the live
-        // input prompt that the loose `footerMarker` would false-positive
-        // on them — both contain "❯" (menu cursor / option indicator) and
-        // a footer like "Enter to confirm" / "Esc to cancel" / "Tab to amend".
-        // When that happens, the caller proceeds to send the initial message
-        // straight into the dialog, which silently consumes the keystrokes
-        // and fires Enter to accept the default option (e.g. "Yes, I trust
-        // this folder"), losing the message and skipping the trust-prompt
-        // modal handshake. Treat any trust-prompt footer as "not ready" so
-        // we keep waiting until the user (via the modal relay) clears the
-        // dialog and the live prompt actually appears.
-        const isTrustPrompt = TRUST_FOOTER_PATTERNS.some((re) => re.test(lastLines))
-
-        if (lastLines.includes('❯') && !isTrustPrompt) {
-          // Primary: caret + known footer
-          if (footerMarker.test(lastLines) && !processingMarker.test(lastLines)) {
-            tmuxLogger.info(
-              { tmuxTarget, elapsedMs: Date.now() - startTime },
-              'Prompt detected (primary)',
-            )
-            return true
-          }
-          // Fallback: caret + stable for STABILITY_MS + not processing
-          if (
-            Date.now() - lastChangeAt >= STABILITY_MS &&
-            !processingMarker.test(lastLines)
-          ) {
-            tmuxLogger.info(
-              {
-                tmuxTarget,
-                elapsedMs: Date.now() - startTime,
-                stableMs: Date.now() - lastChangeAt,
-              },
-              'Prompt detected (stability fallback)',
-            )
-            return true
-          }
+        const decision = evaluatePromptFrame(window, stableHeld)
+        if (decision.ready) {
+          tmuxLogger.info(
+            {
+              tmuxTarget,
+              elapsedMs: Date.now() - startTime,
+              via: decision.via,
+              ...(decision.via === 'stability'
+                ? { stableMs: Date.now() - lastChangeAt }
+                : {}),
+            },
+            `Prompt detected (${decision.via})`,
+          )
+          return true
         }
       } catch {
         // Ignore capture-pane failures and continue
