@@ -26,6 +26,7 @@ import {
   hasProcessingMarker,
   evaluatePromptFrame,
   PROMPT_SAMPLE_LINES,
+  PROMPT_CAPTURE_START,
 } from '../../src/server/tmux-bridge'
 
 // A ready 2.1.177 idle prompt: labelled top border, caret, bottom
@@ -82,6 +83,34 @@ describe('sampleWindow', () => {
   it('keeps the 2.1.177 caret line inside the window (regression)', () => {
     const w = sampleWindow(READY_2_1_177)
     expect(hasInputBoxCaret(w)).toBe(true)
+  })
+
+  it('captures wider than the logical window to absorb blank rows', () => {
+    // `capture-pane -S` must grab more *physical* rows than the
+    // logical sample window, so blank spacer rows below the input box
+    // cannot shrink the non-empty window below PROMPT_SAMPLE_LINES and
+    // push the caret out of view (codex review attempt 3 regression).
+    expect(PROMPT_CAPTURE_START).toBeLessThanOrEqual(-(PROMPT_SAMPLE_LINES * 2))
+  })
+
+  it('keeps the caret in view despite blank spacer rows below the box', () => {
+    // Simulate a `capture-pane -S -16` window where the chrome below the
+    // input box interleaves blank spacer rows. After dropping blanks,
+    // the trailing PROMPT_SAMPLE_LINES window must still hold the
+    // caret/border pair.
+    const physical = [
+      'older scrollback line a',
+      'older scrollback line b',
+      '',
+      '─────────────── chief ──',
+      '❯',
+      '────────────────────────',
+      '',
+      '  🤖 kovito-concierge | Sonnet 4.6 | ⏱ 0m40s | ⏳ 5h …',
+      '',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(hasInputBoxCaret(sampleWindow(physical))).toBe(true)
   })
 })
 

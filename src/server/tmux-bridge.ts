@@ -83,8 +83,15 @@ function resolveTmuxSessionName(fs: FileAccessLayer): string {
  */
 export const PROMPT_SAMPLE_LINES = 8
 
-/** Capture range (`capture-pane -S`) wide enough to fill the 8-line window. */
-export const PROMPT_CAPTURE_START = -8
+/**
+ * Capture range (`capture-pane -S`) — wider than the logical sample
+ * window so that `sampleWindow` can drop blank spacer rows and still
+ * yield a full `PROMPT_SAMPLE_LINES`-line window. `-S -8` would capture
+ * only 8 *physical* rows; a single blank chrome row would then shrink
+ * the non-empty window below 8 and could push the caret back out of
+ * view. Capturing 2× the logical window absorbs blank rows.
+ */
+export const PROMPT_CAPTURE_START = -(PROMPT_SAMPLE_LINES * 2)
 
 /**
  * Box-drawing characters that make up the input-box borders. A line
