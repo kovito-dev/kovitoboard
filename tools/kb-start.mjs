@@ -117,6 +117,39 @@ function parsePortFlag(argv, name) {
   return n
 }
 
+/**
+ * Returns `true` when `key` is one of Claude Code's nested-instance
+ * detection signal vars that must be stripped before launching children
+ * that (transitively) spawn `claude`.
+ *
+ * Canonical definition lives in `src/server/nested-detection-env.ts`
+ * (spec SSOT: `session-management.md` §8.9.1). The supervisor is a
+ * separate `node` runtime that cannot import that TypeScript module
+ * without a build step, so this is a kept-in-sync inline copy.
+ */
+function isNestedDetectionKey(key) {
+  return key === 'CLAUDECODE' || key === 'AI_AGENT' || key.startsWith('CLAUDE_CODE_')
+}
+
+/**
+ * Launch step b' (supervisor-startup.md v1.4 §5.2 / §6.3.1): return a
+ * shallow copy of `env` with every nested-detection key removed before
+ * it is injected into the child processes (server / vite). When KB is
+ * launched from inside a Claude Code session those children would
+ * otherwise inherit the signal vars and pass them on to the `claude`
+ * processes the server spawns / launches via tmux. `ANTHROPIC_*` auth
+ * vars are preserved (the predicate does not match them).
+ */
+function scrubNestedDetectionEnv(env) {
+  const scrubbed = {}
+  for (const key of Object.keys(env)) {
+    if (!isNestedDetectionKey(key)) {
+      scrubbed[key] = env[key]
+    }
+  }
+  return scrubbed
+}
+
 function parseEnvPort(name) {
   const raw = process.env[name]
   if (raw === undefined || raw === '') return null
@@ -756,7 +789,7 @@ async function launch() {
   const internalToken = randomBytes(16).toString('hex')
 
   const env = {
-    ...process.env,
+    ...scrubNestedDetectionEnv(process.env),
     NODE_ENV: 'development',
     KOVITOBOARD_PROJECT_ROOT: projectRoot ?? '',
     PORT: String(backendPort),

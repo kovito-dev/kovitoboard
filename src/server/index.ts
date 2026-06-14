@@ -13,6 +13,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { randomUUID } from 'crypto'
 import { DirectFsLayer } from './fs-layer'
+import { isNestedDetectionKey } from './nested-detection-env'
 import { loadConfig, resolveProjectRoot, resolveProjectRootWithSource } from './config'
 import { ensureKovitoboardDir, ensureLogsDir, getUploadDir } from './paths'
 import {
@@ -159,6 +160,22 @@ import { kvDeleteHandler } from './handlers/categoryA/kvDelete'
 import { notifyHandler } from './handlers/categoryA/notify'
 import { exportFileHandler } from './handlers/categoryA/exportFile'
 import { getKovitoboardDir } from './paths'
+
+// Startup step 0 (supervisor-startup.md v1.4 §5.3 / session-management.md
+// §8.9): scrub Claude Code's nested-detection signal vars from this
+// server process's own `process.env` before anything else runs. When KB
+// is launched from inside a Claude Code session the supervisor already
+// strips them, but `npm run dev` (and any non-supervisor launch) bypasses
+// kb-start, and the server itself spawns one-shot `claude` children and
+// launches the tmux server — both of which inherit `process.env`. This
+// in-place delete keeps the baseline clean idempotently regardless of
+// launch path. `ANTHROPIC_*` auth vars are preserved (the predicate does
+// not match them).
+for (const key of Object.keys(process.env)) {
+  if (isNestedDetectionKey(key)) {
+    delete process.env[key]
+  }
+}
 
 const PORT = Number(process.env.PORT) || 3001
 const serverStartTime = Date.now()

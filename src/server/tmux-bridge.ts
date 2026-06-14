@@ -13,6 +13,7 @@ import { TRUST_FOOTER_PATTERNS } from './trust-prompt-detector'
 import { tmuxLogger } from './logger'
 import { validateCwd } from './cwdValidator'
 import { ensureWorkRootMetadata } from './cwd-precheck'
+import { isNestedDetectionKey } from './nested-detection-env'
 
 /**
  * Run the cwd allow-list gate for a `cwd` argument passed to one of
@@ -52,6 +53,36 @@ const VALID_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
 
 export function isValidTmuxName(name: string): boolean {
   return VALID_NAME_PATTERN.test(name)
+}
+
+/**
+ * Parse the raw (default, non-`-s`) output of `tmux show-environment`
+ * into the set of variable keys it enumerates.
+ *
+ * Spec SSOT: `session-management.md` §7.1.4.1. Each non-empty line is
+ * normalized as one of:
+ *   - a removed-marker entry `-NAME` → strip the single leading `-`
+ *   - a normal entry `NAME=value`   → key is the substring before the
+ *     first `=` (values may themselves contain `=`)
+ *   - an entry with no `=`          → the whole line is the key
+ *
+ * `-h` (hidden) entries are not produced by the default output and are
+ * intentionally not handled here.
+ */
+export function parseShowEnvironmentKeys(output: string): string[] {
+  const keys: string[] = []
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trimEnd()
+    if (line.length === 0) continue
+    if (line.startsWith('-')) {
+      // removed-marker entry: `-NAME`
+      keys.push(line.slice(1))
+      continue
+    }
+    const eq = line.indexOf('=')
+    keys.push(eq === -1 ? line : line.slice(0, eq))
+  }
+  return keys
 }
 
 /**
@@ -714,13 +745,109 @@ export class TmuxBridge {
    * Create the KovitoBoard session if it does not exist.
    */
   ensureSession(): void {
-    if (this.hasSession()) return
+    if (this.hasSession()) {
+      // Existing session: re-apply the scrub. The operator may have
+      // brought new nested-detection env into the tmux server after KB
+      // started, and `set-environment -r` is idempotent.
+      this.scrubNestedDetectionSessionEnv()
+      return
+    }
 
     const projectRoot = resolveProjectRoot(this.fs)
     execFileSync('tmux', [
       'new-session', '-d', '-s', this.sessionName, '-n', 'main', '-c', projectRoot,
     ], { stdio: 'pipe' })
     tmuxLogger.info({ sessionName: this.sessionName, cwd: projectRoot }, 'Session created')
+
+    // New session: strip nested-detection env so `new-window` children
+    // (`claude --agent ...`) do not inherit the signal vars and skip
+    // writing their transcript.
+    this.scrubNestedDetectionSessionEnv()
+  }
+
+  /**
+   * Strip Claude Code's nested-detection signal vars from this KB
+   * session's tmux environment so `claude` children launched via
+   * `new-window` do not mistake themselves for a nested instance and
+   * skip writing their transcript (silent failure).
+   *
+   * Spec SSOT: `session-management.md` §7.1.4 / §7.1.4.1 / §8.9.
+   *
+   * tmux composes a `new-window` child's env from the merge of the
+   * server global environment (inherited when the tmux server started)
+   * and the session environment. `set-environment -u <KEY>` only
+   * deletes the session entry — it does NOT mask a same-named var still
+   * present in the server global env, so a child would still inherit
+   * the global `CLAUDECODE` etc. when the tmux server itself started
+   * from a polluted env. `set-environment -t <session> -r <KEY>` instead
+   * sets a session-scoped remove marker that masks the global var from
+   * the child (verified on tmux 3.4). `ANTHROPIC_*` is never matched, so
+   * it keeps flowing through.
+   *
+   * Scope is limited to this KB-owned session (`-t <session>`); we never
+   * write the tmux server global env (`-g`) to avoid side effects on the
+   * operator's other sessions.
+   *
+   * Failure handling (§7.1.4.1): the two enumeration sources (global /
+   * session) fail independently — a non-zero exit on one warns once and
+   * processing continues with the other; both failing skips the scrub
+   * with a warning. A `set-environment -r` failure for one key warns and
+   * continues with the remaining keys (per-key isolation). Promoting
+   * scrub failure to a startup failure (fail-loud) is out of scope
+   * (BL tracked separately).
+   */
+  private scrubNestedDetectionSessionEnv(): void {
+    const keys = new Set<string>()
+    let anyEnumerationSucceeded = false
+
+    // Enumerate the server global env and the session env. `-h` (hidden
+    // vars) are intentionally not enumerated: tmux 3.4 does not pass
+    // hidden vars to `new-window` children, so they need no remove marker.
+    const sources: Array<{ args: string[]; label: string }> = [
+      { args: ['show-environment', '-g'], label: 'global' },
+      { args: ['show-environment', '-t', this.sessionName], label: 'session' },
+    ]
+    for (const source of sources) {
+      try {
+        const output = execFileSync('tmux', source.args, { stdio: 'pipe' })
+          .toString()
+        anyEnumerationSucceeded = true
+        for (const key of parseShowEnvironmentKeys(output)) {
+          keys.add(key)
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        tmuxLogger.warn(
+          { sessionName: this.sessionName, source: source.label, errorMsg },
+          'Failed to enumerate tmux environment for nested-detection scrub',
+        )
+      }
+    }
+
+    if (!anyEnumerationSucceeded) {
+      tmuxLogger.warn(
+        { sessionName: this.sessionName },
+        'Skipping nested-detection scrub: both env enumeration sources failed',
+      )
+      return
+    }
+
+    for (const key of keys) {
+      if (!isNestedDetectionKey(key)) continue
+      try {
+        execFileSync(
+          'tmux',
+          ['set-environment', '-t', this.sessionName, '-r', key],
+          { stdio: 'pipe' },
+        )
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        tmuxLogger.warn(
+          { sessionName: this.sessionName, key, errorMsg },
+          'Failed to set nested-detection remove marker',
+        )
+      }
+    }
   }
 
   /**
