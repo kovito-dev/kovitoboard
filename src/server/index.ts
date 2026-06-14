@@ -696,6 +696,18 @@ app.post('/api/sessions/:id/send', async (req, res) => {
   if (agentId) {
     const tmuxAgent = await ensureTmuxAgent(agentId)
     if (tmuxAgent) {
+      if (tmuxAgent.justStarted) {
+        // Just auto-started (e.g. right after a KB restart): wait for the
+        // TUI prompt before sending, otherwise the paste lands in the
+        // not-yet-ready input box and the Enter keypress is swallowed.
+        const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
+        if (!ready) {
+          apiLogger.warn(
+            { agentId, timeoutMs: 45000, endpoint: req.path },
+            'Prompt wait timeout for agent',
+          )
+        }
+      }
       const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
       if (result.success) {
         res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
