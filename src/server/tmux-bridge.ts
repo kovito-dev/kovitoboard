@@ -110,15 +110,33 @@ export const PROMPT_FOOTER_MARKER =
  * Claude Code >= 2.1.x uses a randomized-gerund spinner anchored by the
  * `✻` / `✢` glyph (`✻ Hyperspacing… (1m 26s)`, `✻ Sautéed for 9s`,
  * `✢ Transfiguring… (thinking)`), usually paired with an
- * `esc to interrupt` hint. The spinner glyph is the unambiguous anchor:
- * we deliberately do NOT key on a bare `esc to interrupt`, because the
- * ready-state footer can also surface `Esc to interrupt`, which would
- * make readiness impossible to declare.
+ * `esc to interrupt` hint.
+ *
+ * We require the spinner glyph AND a *live-rendering* signal on the same
+ * line — an ellipsis (`…`, the gerund is still animating) or an
+ * `esc to interrupt` hint (only shown while the turn is interruptible).
+ * A bare glyph is not enough, and neither is a settled past-tense line:
+ * a completed activity line such as `✻ Brewed for 7s` can linger in the
+ * sampled window after the turn ends, and treating it as "busy" would
+ * wrongly keep the prompt "processing" until it scrolls out (a
+ * false-negative / timeout path). We also deliberately do NOT key on a
+ * bare `esc to interrupt`, because the ready-state footer can surface
+ * `Esc to interrupt` too without the spinner glyph, which would make
+ * readiness impossible to declare.
  *
  * Spec SSOT: session-management.md v1.5 §7.2.3.
  */
-export const PROMPT_PROCESSING_MARKER =
-  /[✻✢]|Running…|thinking\)|\(streaming/
+const SPINNER_LINE = /[✻✢][^\n]*(…|esc to interrupt)/i
+const LEGACY_PROCESSING_LINE = /Running…|thinking\)|\(streaming/
+
+/**
+ * True when any line in the window is a live spinner / processing line.
+ */
+export function hasProcessingMarker(window: string[]): boolean {
+  return window.some(
+    (l) => SPINNER_LINE.test(l) || LEGACY_PROCESSING_LINE.test(l),
+  )
+}
 
 /**
  * The Claude Code agent status line, whose live token/elapsed-time
@@ -155,9 +173,14 @@ function isBorderLine(line: string): boolean {
  * border line OR a labelled border such as `──────── chief ──`, where
  * the centre carries the agent name. We accept the labelled form by
  * requiring the line to (a) contain a box-drawing run and (b) consist
- * only of box chars, whitespace, and word characters (the label) — so a
+ * only of box chars, whitespace, and agent-label characters — so a
  * caret/menu/activity line never qualifies.
+ *
+ * The label charset mirrors the validated tmux window / agent ID set
+ * (`VALID_NAME_PATTERN` = `[a-zA-Z0-9_-]`), so a hyphenated agent name
+ * such as `── kovito-concierge ──` is recognised as a boundary line.
  */
+const LABEL_CHAR = /[a-zA-Z0-9_-]/
 function isInputBoxBoundaryLine(line: string): boolean {
   const stripped = line.trim()
   if (stripped.length === 0) return false
@@ -168,8 +191,8 @@ function isInputBoxBoundaryLine(line: string): boolean {
       hasBox = true
       continue
     }
-    // Allow the label run: spaces and word characters only.
-    if (ch === ' ' || /[\w]/.test(ch)) continue
+    // Allow the label run: spaces and agent-label characters only.
+    if (ch === ' ' || LABEL_CHAR.test(ch)) continue
     return false
   }
   return hasBox
@@ -267,7 +290,7 @@ export function evaluatePromptFrame(
   if (TRUST_FOOTER_PATTERNS.some((re) => re.test(joined))) {
     return { ready: false, reason: 'trust' }
   }
-  if (PROMPT_PROCESSING_MARKER.test(joined)) {
+  if (hasProcessingMarker(window)) {
     return { ready: false, reason: 'processing' }
   }
   // Primary: caret + known footer.

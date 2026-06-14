@@ -23,6 +23,7 @@ import {
   sampleWindow,
   stabilityString,
   hasInputBoxCaret,
+  hasProcessingMarker,
   evaluatePromptFrame,
   PROMPT_SAMPLE_LINES,
 } from '../../src/server/tmux-bridge'
@@ -93,6 +94,18 @@ describe('hasInputBoxCaret', () => {
     expect(hasInputBoxCaret(['╭───╮', '│ ❯ │', '╰───╯'])).toBe(true)
   })
 
+  it('accepts a labelled border with a hyphenated agent name', () => {
+    // Agent IDs validate as [a-zA-Z0-9_-]; the hyphen must not break the
+    // labelled-border recognition (e.g. `── kovito-concierge ──`).
+    expect(
+      hasInputBoxCaret([
+        '────── kovito-concierge ──',
+        '❯',
+        '──────────────────────────',
+      ]),
+    ).toBe(true)
+  })
+
   it('rejects a `❯` that is a trust-menu cursor (not a lone caret)', () => {
     expect(hasInputBoxCaret(sampleWindow(TRUST_PROMPT))).toBe(false)
   })
@@ -120,6 +133,34 @@ describe('stabilityString', () => {
     expect(stabilityString(sampleWindow(READY_2_1_177))).toBe(
       stabilityString(sampleWindow(READY_2_1_177_TICK)),
     )
+  })
+})
+
+describe('hasProcessingMarker', () => {
+  it('matches a live spinner line (glyph + ellipsis)', () => {
+    expect(hasProcessingMarker(['✻ Hyperspacing… (1m 26s)'])).toBe(true)
+    expect(hasProcessingMarker(['✢ Transfiguring… (thinking)'])).toBe(true)
+  })
+
+  it('matches a live spinner line (glyph + esc to interrupt)', () => {
+    expect(
+      hasProcessingMarker(['✻ Hyperspacing (1m 26s · esc to interrupt)']),
+    ).toBe(true)
+  })
+
+  it('matches the legacy processing markers', () => {
+    expect(hasProcessingMarker(['Running…'])).toBe(true)
+    expect(hasProcessingMarker(['(streaming response)'])).toBe(true)
+  })
+
+  it('does NOT match a settled past-tense activity line (no live signal)', () => {
+    // `✻ Brewed for 7s` / `✻ Sautéed for 9s` can linger in the sampled
+    // window after the turn ends. With no ellipsis and no interrupt hint
+    // these are settled lines, NOT live spinners — matching them would
+    // wrongly keep a ready prompt "processing" until they scroll out.
+    expect(hasProcessingMarker(['✻ Brewed for 7s'])).toBe(false)
+    expect(hasProcessingMarker(['✻ Sautéed for 9s'])).toBe(false)
+    expect(hasProcessingMarker(['plain text with ✻ glyph inline'])).toBe(false)
   })
 })
 
@@ -161,6 +202,22 @@ describe('evaluatePromptFrame', () => {
     expect(evaluatePromptFrame(w, true)).toEqual({
       ready: false,
       reason: 'no-caret',
+    })
+  })
+
+  it('ready prompt with a lingering settled activity line stays ready', () => {
+    // A completed `✻ Brewed for 7s` line can remain above the input box;
+    // it must not block readiness (over-broad processing regression).
+    const w = [
+      '✻ Brewed for 7s',
+      '─────────────── chief ──',
+      '❯',
+      '────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ]
+    expect(evaluatePromptFrame(w, false)).toEqual({
+      ready: true,
+      via: 'primary',
     })
   })
 
