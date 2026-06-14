@@ -1,6 +1,6 @@
 # 01. KovitoBoard Overview
 
-**Target KB version:** v0.2.4
+**Target KB version:** v0.2.5
 **Last updated:** 2026-06-11
 **Authoritative source:** [`../01-overview.md`](../01-overview.md) (Japanese)
 

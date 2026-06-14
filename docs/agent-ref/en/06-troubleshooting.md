@@ -1,6 +1,6 @@
 # 06. Troubleshooting
 
-**Target KB version:** v0.2.4
+**Target KB version:** v0.2.5
 **Last updated:** 2026-06-11
 **Authoritative source:** [`../06-troubleshooting.md`](../06-troubleshooting.md) (Japanese)
 

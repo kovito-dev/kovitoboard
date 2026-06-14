@@ -1,6 +1,6 @@
 # 10. Upgrading KovitoBoard
 
-**Target KB version:** v0.2.4
+**Target KB version:** v0.2.5
 **Last updated:** 2026-06-11
 **Authoritative source:** [`../10-upgrade.md`](../10-upgrade.md) (Japanese)
 

@@ -391,7 +391,7 @@ range of nearby releases.
 
 | | Version |
 |---|---|
-| **Primary tested** | 2.1.153 (`@stable` channel) |
+| **Primary tested** | 2.1.177 (`@stable` channel) |
 | **Best-effort** | 2.1.x / 2.2.x |
 
 ### Recommended setup
