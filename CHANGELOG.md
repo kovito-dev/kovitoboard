@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The ambient sidebar now uses its width more efficiently: the session
+  label moved into the header, and the pin control became a compact icon
+  next to the agent picker, leaving more room for the conversation.
+- The ambient sidebar's message composer now bottom-aligns its controls
+  with the input field, removing the slight vertical offset between them.
+
 ## [0.2.4] - 2026-06-11
 
 A maintenance patch with localization and display fixes, a browser

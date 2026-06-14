@@ -664,9 +664,19 @@ export function AmbientSidebar({
               </div>
             )
           })()}
-          {/* AS-1: heading row removed — it duplicated the picker
-              label below it, and the toggle button on the right
-              already conveys "this is the sidebar". */}
+          {/* v0.2.5 layout: the picker's label moved up here so the
+              picker row below can host the agent picker and the pin
+              icon side by side, leaving more room for the conversation.
+              `truncate` + the parent `min-w-0` keep it from pushing the
+              open/toggle buttons on the right out of the header. */}
+          {isOpen && (
+            <label
+              htmlFor="ambient-sidebar-agent-picker"
+              className="truncate text-[11px] font-medium text-[var(--text-muted)]"
+            >
+              {t('ambientSidebar.picker.label')}
+            </label>
+          )}
         </div>
         <div className="ml-auto flex items-center gap-0.5">
           {/* AS-6 / Q8: open the current sidebar session in the
@@ -738,45 +748,90 @@ export function AmbientSidebar({
       {/* Body — Phase 2-B: agent picker + pin. Chat surface arrives in 2-C. */}
       {isOpen && (
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Picker row */}
-          <div className="px-3 pt-3 pb-2 border-b border-[var(--border)] flex flex-col gap-2">
-            <label
-              htmlFor="ambient-sidebar-agent-picker"
-              className="text-[11px] font-medium text-[var(--text-muted)]"
-            >
-              {t('ambientSidebar.picker.label')}
-            </label>
-            <AgentPicker
-              id="ambient-sidebar-agent-picker"
-              selectedAgentId={selectedAgentId}
-              agents={agents}
-              disabled={settingsLoading || agents.length === 0}
-              onChange={setSelectedAgentId}
-              theme={theme}
-            />
-            <button
-              type="button"
-              data-testid="ambient-sidebar-pin-button"
-              onClick={handlePin}
-              disabled={pinning || settingsLoading || appId === null || isPinnedToCurrent}
-              title={
-                isPinnedToCurrent
+          {/* Picker row — v0.2.5: the agent picker and the pin control
+              sit on one line. The label moved into the header above, so
+              the picker takes the free width and the pin collapses to a
+              compact icon on the right. */}
+          <div className="px-3 pt-3 pb-2 border-b border-[var(--border)] flex flex-row items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <AgentPicker
+                id="ambient-sidebar-agent-picker"
+                selectedAgentId={selectedAgentId}
+                agents={agents}
+                disabled={settingsLoading || agents.length === 0}
+                onChange={setSelectedAgentId}
+                theme={theme}
+              />
+            </div>
+            {/* Pin control — icon button. The tooltip expands leftward
+                because the button hugs the sidebar's right edge, where a
+                default right-expanding caption would clip. */}
+            <div className="group relative shrink-0">
+              <button
+                type="button"
+                data-testid="ambient-sidebar-pin-button"
+                onClick={handlePin}
+                disabled={pinning || settingsLoading || appId === null || isPinnedToCurrent}
+                // `title` restores a native, persistent affordance for
+                // touch and assistive-tech users that the icon-only
+                // button would otherwise lose; the CSS tooltip below is a
+                // pointer-only visual enhancement. `aria-label` carries
+                // the accessible name. No `aria-pressed`: this is a
+                // one-way "pin current app" action, not a toggle, so
+                // pressed-state semantics would be misleading.
+                title={
+                  isPinnedToCurrent
+                    ? t('ambientSidebar.pin.alreadyPinned')
+                    : t('ambientSidebar.pin.button')
+                }
+                aria-label={
+                  isPinnedToCurrent
+                    ? t('ambientSidebar.pin.alreadyPinned')
+                    : t('ambientSidebar.pin.button')
+                }
+                className="
+                  flex items-center justify-center w-8 h-8 rounded
+                  bg-[var(--bg-elevated)] text-[var(--text-secondary)]
+                  border border-[var(--border)]
+                  hover:bg-[var(--accent-bg)] hover:text-[var(--accent-text)]
+                  disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--bg-elevated)]
+                  transition-colors
+                "
+              >
+                {/* pushpin (Lucide "Pin"): filled when pinned to the
+                    current app, outline otherwise. */}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill={isPinnedToCurrent ? 'currentColor' : 'none'}
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 17v5" />
+                  <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+                </svg>
+              </button>
+              <span
+                aria-hidden="true"
+                className="
+                  absolute right-full mr-1 top-1/2 -translate-y-1/2 z-30
+                  whitespace-nowrap pointer-events-none
+                  opacity-0 group-hover:opacity-100 group-focus-within:opacity-100
+                  transition-opacity
+                  rounded px-1.5 py-0.5 text-[10px]
+                  bg-[var(--bg-elevated)] text-[var(--text-secondary)]
+                  border border-[var(--border)]
+                "
+              >
+                {isPinnedToCurrent
                   ? t('ambientSidebar.pin.alreadyPinned')
-                  : t('ambientSidebar.pin.button')
-              }
-              className="
-                self-start text-xs px-2 py-1 rounded
-                bg-[var(--bg-elevated)] text-[var(--text-secondary)]
-                border border-[var(--border)]
-                hover:bg-[var(--accent-bg)] hover:text-[var(--accent-text)]
-                disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--bg-elevated)]
-                transition-colors
-              "
-            >
-              {isPinnedToCurrent
-                ? t('ambientSidebar.pin.alreadyPinned')
-                : t('ambientSidebar.pin.button')}
-            </button>
+                  : t('ambientSidebar.pin.button')}
+              </span>
+            </div>
           </div>
 
           {/* Chat surface — Phase 2-C minimal implementation. A
