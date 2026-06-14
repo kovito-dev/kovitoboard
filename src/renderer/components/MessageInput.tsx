@@ -616,7 +616,7 @@ export function MessageInput({
   const buttonSizeClass = compact ? 'w-8 h-8' : REGULAR_CONTROL_CLASS
   const textareaClass = compact
     ? `
-        w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
+        block w-full resize-none overflow-y-auto rounded-lg px-2.5 py-2 pr-3
         bg-[var(--bg-base)] border border-[var(--border)]
         text-xs text-[var(--text-secondary)] placeholder-gray-600
         focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent-ring)]
