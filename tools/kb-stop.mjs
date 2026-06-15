@@ -1110,8 +1110,20 @@ function reportResidue(pidEntry, lineageSnapshot) {
     if (typeof port !== 'number') continue
     const owner = findPortListener(port)
     if (!owner) continue // released
+    if (snapshotUnavailable) {
+      // Without a lineage snapshot we cannot establish provenance, so we
+      // must NOT claim the owner is "unrelated" (that could downgrade a
+      // real leaked KB child from exit 4 to a false success). Report it as
+      // ownership-unknown. We do not exit 4 (lineage is unproven, §9.1.1),
+      // but the operator is told the diagnostics were degraded.
+      advisories.push({
+        label: 'port held; ownership unknown',
+        line: `port ${port} (${label}) is still bound by pid=${owner.pid}${owner.cmd ? ` (${owner.cmd})` : ''}; lineage snapshot unavailable, KB-ownership could not be determined`,
+      })
+      continue
+    }
     // Is the owner a lineage-proven KB descendant?
-    const snapEntry = lineageSnapshot ? lineageSnapshot.get(owner.pid) : null
+    const snapEntry = lineageSnapshot.get(owner.pid)
     const proven =
       snapEntry != null &&
       identityMatches(snapEntry.identity, readProcessIdentity(owner.pid))

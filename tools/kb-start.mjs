@@ -544,16 +544,34 @@ function resolveTmuxSessionName() {
  * `tmux ls | grep` host-wide enumeration). The base name is
  * `kovitoboard-<basename(projectRoot)>`, so a different projectRoot with
  * the same basename collides; refusing is the fail-safe side (better than
- * silently double-launching). If `tmux` is unavailable the check is a
- * no-op (continue).
+ * silently double-launching).
+ *
+ * `tmux has-session` exits 0 when the session exists and 1 when it does
+ * not; tmux being absent (ENOENT) means there is no session to conflict
+ * with. Both are spec "no conflict, continue" cases (§6.6.2). Any OTHER
+ * failure (tmux present but a socket / permission error) means the
+ * pre-flight could not actually verify exclusivity — we stay fail-open
+ * (best-effort, §6.6 complements the PID-file refuse) but WARN loudly so
+ * the operator knows the check did not run.
  */
 function checkTmuxSessionConflict(sessionName) {
   try {
     execFileSync('tmux', ['has-session', '-t', sessionName], {
       stdio: 'ignore',
     })
-  } catch {
-    // Non-zero exit (session not found) or tmux missing → no conflict.
+  } catch (err) {
+    const code = err && err.code
+    const status = err && typeof err.status === 'number' ? err.status : null
+    if (code === 'ENOENT') return // tmux not installed → no session, continue
+    if (status === 1) return // session does not exist → continue
+    // tmux present but the invocation failed for another reason (e.g. a
+    // dead server socket or permission error). Continue (fail-open) but
+    // make the un-verified pre-flight visible.
+    console.warn(
+      `[kb-start] WARN: tmux pre-flight could not verify session ` +
+        `"${sessionName}" (${(err && err.message) || code || 'unknown error'}); ` +
+        `continuing without the tmux conflict check.`,
+    )
     return
   }
   // exit 0 → the session exists → refuse.
