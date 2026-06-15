@@ -1364,11 +1364,22 @@ async function main() {
     let snapshotRoots = supervisors
     if (pidFromFile != null && !args.all) {
       const kind = classifySupervisorRoot(pidFromFile)
-      if (kind === 'mismatch' || kind === 'dead') {
+      // Only an 'ok' (verified live supervisor of this clone) root may
+      // anchor lineage + force-kill. 'mismatch' / 'dead' / 'unknown' are
+      // all untrusted: 'unknown' means we could not read the root's argv /
+      // cwd to apply the fence (e.g. a /proc-less platform), so trusting it
+      // would expand the --force kill scope back onto an unverified root —
+      // exactly what the fence prevents. Degrade in every non-ok case.
+      if (kind !== 'ok') {
+        const reason =
+          kind === 'dead'
+            ? 'no longer alive'
+            : kind === 'mismatch'
+              ? 'not a supervisor of this clone'
+              : 'not verifiable as a supervisor of this clone on this platform'
         console.warn(
-          `[kb-stop] WARN: PID-file root pid ${pidFromFile} is ${
-            kind === 'dead' ? 'no longer alive' : 'not a supervisor of this clone'
-          }; skipping lineage-anchored orphan/zombie/force diagnostics ` +
+          `[kb-stop] WARN: PID-file root pid ${pidFromFile} is ${reason}; ` +
+            `skipping lineage-anchored orphan/zombie/force diagnostics ` +
             `(provenance cannot be established).`,
         )
         snapshotRoots = []

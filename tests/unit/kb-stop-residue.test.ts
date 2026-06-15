@@ -21,7 +21,7 @@
  * recorded port) and assert the exit code / advisory behaviour.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -33,6 +33,31 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const REPO_ROOT = resolve(__dirname, '..', '..')
 const KB_STOP = resolve(REPO_ROOT, 'tools', 'kb-stop.mjs')
+
+/**
+ * Capability probe: this suite needs to create detached subprocesses (the
+ * decoy supervisors are re-parented to init). On restricted / sandboxed
+ * runners `detached: true` can fail with EPERM, so probe it once and skip
+ * the suite cleanly rather than failing every test before the assertions.
+ */
+function detachedSpawnCapable(): boolean {
+  try {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], {
+      stdio: 'ignore',
+      detached: true,
+    })
+    if (child.pid == null) return false
+    child.unref()
+    try {
+      process.kill(child.pid, 'SIGKILL')
+    } catch {
+      // already exited
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 let workDir: string
 const decoyPids: number[] = []
@@ -132,7 +157,9 @@ function runKbStop(extraArgs: string[] = []) {
   })
 }
 
-describe('tools/kb-stop.mjs — §9 residual diagnostics', () => {
+const describeResidue = detachedSpawnCapable() ? describe : describe.skip
+
+describeResidue('tools/kb-stop.mjs — §9 residual diagnostics', () => {
   it('exits 0 with no residue when the supervisor stops cleanly and ports are free', () => {
     const pid = spawnDecoySupervisor()
     writePidFile({
