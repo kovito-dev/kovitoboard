@@ -24,7 +24,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -142,6 +149,16 @@ function writePidFile(entry: Record<string, unknown>): void {
   writeFileSync(PID_FILE(), JSON.stringify(entry), 'utf-8')
 }
 
+/** True when `pid` is still alive (signal-0 probe). */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Occupy a TCP port with an unrelated listener and resolve its port. */
 async function occupyPort(): Promise<number> {
   const server = createServer()
@@ -172,39 +189,28 @@ function runKbStop(extraArgs: string[] = []) {
 const describeResidue = detachedSpawnCapable() ? describe : describe.skip
 
 describeResidue('tools/kb-stop.mjs — §9 residual diagnostics', () => {
-  it('exits 0 with no residue when the supervisor stops cleanly and ports are free', () => {
-    const pid = spawnDecoySupervisor()
-    writePidFile({
-      pid,
-      startedAt: new Date().toISOString(),
-      projectRoot: workDir,
-      projectRootSource: 'cli-arg',
-      ports: { backend: 39201, vite: 39202 }, // not bound by anyone
-      tmux: { sessionName: `kovitoboard-${Date.now()}-absent` },
-    })
-
-    const r = runKbStop()
-    expect(r.status).toBe(0)
-    expect(r.stdout).toContain('[kb-stop] Done')
-    expect(r.stderr ?? '').not.toContain('lineage-proven KB residual')
-  })
-
-  // Provenance gate (§9.1.0 root trust): the lineage / force-kill anchor
-  // is only trusted when the PID-file root is a LIVE supervisor of THIS
-  // clone (argv realpath-resolves to tools/kb-start.mjs). A decoy / unrelated
-  // process is NOT a valid root, so diagnostics degrade: a process holding a
-  // recorded port is reported as ownership-unknown (NOT "unrelated") and the
-  // stop stays exit 0 without claiming the listener is outside KB lineage.
+  // v1.8 signal-front gate (process-lifecycle.md §7.3 step 3.5(a) / §7.5 /
+  // §9.1.0, BL-2026-244): the root-PID trust gate (`classifySupervisorRoot`)
+  // is now applied BEFORE the first signal. Only a LIVE supervisor of THIS
+  // clone (argv realpath-resolves to tools/kb-start.mjs = kind 'ok') reaches
+  // the stop flow; a decoy `node -e` (kind 'mismatch') is refused with exit 2
+  // and NO signal, and a dead root (kind 'dead') joins the §7.4 stale path
+  // (PID file cleared, exit 0).
   //
-  // NOTE on lineage-PROVEN coverage: a root that passes the provenance fence
-  // is a real `node tools/kb-start.mjs` supervisor, which cannot be spawned
-  // in a unit test without booting the KB supervisor (ports / tmux / vite).
-  // The lineage-proven exit-4 (orphan + bound port) and `--force` release
+  // NOTE on the lineage 'ok' path: a root that passes the fence is a real
+  // `node tools/kb-start.mjs` supervisor, which cannot be spawned in a unit
+  // test without booting the KB supervisor (ports / tmux / vite). The clean
+  // stop, lineage-proven exit-4 (orphan + bound port) and `--force` release
   // (exit 0) paths are therefore exercised end-to-end against a real
-  // supervisor outside the unit suite; this suite covers the degraded /
-  // provenance branches that the decoy can reach deterministically. This
+  // supervisor outside the unit suite; this suite covers the gate's
+  // refuse / stale branches that a decoy can reach deterministically. This
   // mirrors the negative-only strategy documented in kb-stop-all-mode.test.ts.
-  it('degrades to ownership-unknown when the PID-file root is not a supervisor of this clone (mismatch)', async () => {
+  it('refuses with exit 2 (no signal) when the PID-file root is not a supervisor of this clone (mismatch)', async () => {
+    // A PID file pointing at a live process that is NOT a supervisor of this
+    // clone must be refused BEFORE any signal — the file may be stale /
+    // tampered and the PID could belong to a different same-user process.
+    // exit 2 = "cannot safely stop, do not touch" (same contract as EPERM).
+    // The held port is never examined because we refuse before the stop flow.
     const pid = spawnDecoySupervisor() // node -e ..., not tools/kb-start.mjs
     const heldPort = await occupyPort()
     writePidFile({
@@ -217,19 +223,24 @@ describeResidue('tools/kb-stop.mjs — §9 residual diagnostics', () => {
     })
 
     const r = runKbStop()
-    expect(r.status).toBe(0)
-    // Provenance could not be established → degrade, do NOT claim residue.
-    expect(r.stderr ?? '').toContain('not a supervisor of this clone')
+    expect(r.status).toBe(2)
+    expect(r.stderr ?? '').toContain('is not a KovitoBoard supervisor of this clone')
+    expect(r.stderr ?? '').toContain('Refusing to send any signal')
+    // The decoy must still be alive — the gate fired before any signal.
+    expect(isAlive(pid)).toBe(true)
+    // No residue diagnostics ran (we refused before the stop flow), so the
+    // held port was never examined / mislabeled.
     expect(r.stderr ?? '').not.toContain('lineage-proven KB residual')
-    // The held port must NOT be mislabeled as a definite "unrelated process".
-    expect(r.stderr ?? '').not.toContain('unrelated process')
+    expect(r.stderr ?? '').not.toContain('now held by an unrelated process')
+    // The decoy must not have been signalled into removing the PID file.
+    expect(existsSync(PID_FILE())).toBe(true)
   })
 
-  it('degrades (no exit 4, no force-kill) when the PID-file root is already dead', { timeout: 20000 }, async () => {
-    // A PID-file root that has already exited (and may have left a
-    // reparented child / bound port) cannot anchor lineage; the stop must
-    // not mislabel the leak as unrelated, nor exit 4, nor force-kill an
-    // unrelated tree (CodeX attempt 6 — stale PID residue / scope).
+  it('clears the stale PID file and exits 0 when the PID-file root is already dead', { timeout: 20000 }, async () => {
+    // v1.8 signal-front gate (process-lifecycle.md §7.3 step 3.5(a) / §7.5):
+    // a dead PID-file root joins the §7.4 stale path — remove the PID file
+    // and exit 0 (nothing alive to stop, no signal, no residue diagnostics,
+    // no force-kill of an unrelated tree).
     const pid = spawnDecoySupervisor()
     process.kill(pid, 'SIGKILL') // kill the root before kb-stop runs
     await new Promise((r) => setTimeout(r, 200))
@@ -244,8 +255,16 @@ describeResidue('tools/kb-stop.mjs — §9 residual diagnostics', () => {
     })
 
     const r = runKbStop(['--force'])
+    expect(r.status).toBe(0)
+    expect(r.stdout ?? '').toContain('stale PID file cleared')
+    // The stale PID file was removed. This also exercises the TOCTOU
+    // re-read guard's pass-through: the recheck reads the SAME dead pid, so
+    // removal proceeds. (The concurrent-rewrite branch — recheck sees a new
+    // pid and leaves the file — is a narrow race covered by inspection; a
+    // deterministic mid-run rewrite cannot be injected hermetically here.)
+    expect(existsSync(PID_FILE())).toBe(false)
     expect(r.status).not.toBe(4)
     expect(r.stderr ?? '').not.toContain('lineage-proven KB residual')
-    expect(r.stderr ?? '').not.toContain('unrelated process')
+    expect(r.stderr ?? '').not.toContain('now held by an unrelated process')
   })
 })
