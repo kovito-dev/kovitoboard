@@ -1418,11 +1418,23 @@ async function main() {
       // delete the FRESH file for the live supervisor Y, leaving it running
       // untracked — re-opening the single-supervisor tracking window the
       // PID file guards. So re-read immediately before unlinking and only
-      // remove the file while it still records the same dead pid we
+      // remove the file while it still records the EXACT stale record we
       // classified. If it changed concurrently, leave it for the new owner
       // and report rather than clobber it.
+      //
+      // Identity is `pid` + `startedAt`, not `pid` alone: a concurrent
+      // rewrite that reuses the same numeric pid (quick PID reuse, or a
+      // rewrite that keeps `pid` but is a different launch) would slip past
+      // a pid-only check. `startedAt` is minted fresh per launch
+      // (`kb-start.mjs writePidFile` → `new Date().toISOString()`), so the
+      // pair distinguishes our classified-dead record from any new launch.
       const recheck = readPidFile()
-      if (recheck && !recheck.broken && recheck.pid !== pidFromFile) {
+      const sameStaleRecord =
+        recheck != null &&
+        !recheck.broken &&
+        recheck.pid === pidFromFile &&
+        recheck.startedAt === pidEntry?.startedAt
+      if (recheck != null && !recheck.broken && !sameStaleRecord) {
         console.warn(
           `[kb-stop] WARN: the PID file changed concurrently ` +
             `(was stale pid ${pidFromFile}, now records pid ${recheck.pid}); ` +
