@@ -474,6 +474,17 @@ export class Watcher {
         // the offset is already past the committed lines, so a retry
         // (next change / reconcile tick) replays only the failed line
         // onward — committed lines are not re-emitted.
+        //
+        // Granularity contract (§7.3.4 / §8.10 R1, by design): the atomic
+        // retry unit is "one completed line's addEvents call", NOT the
+        // individual events parseLine fans the line into. addEvents emits
+        // those events sequentially, so a listener that throws partway
+        // leaves the line's earlier events applied while the offset is
+        // still before this line — the retry re-applies the whole line
+        // (at-least-once for the failing line only). Completed lines stay
+        // exactly-once. Full event-granularity exactly-once would require
+        // a downstream dedupe key and is intentionally out of scope for
+        // this fix (§8.10 R1).
         this.filePositions.set(filePath, lineEndOffset)
       }
     } catch (err) {
