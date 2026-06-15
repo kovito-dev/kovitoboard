@@ -44,7 +44,12 @@
  *   1  Argument parsing error
  *   2  Permission denied (e.g. supervisor owned by another user)
  *   3  Graceful shutdown timed out (suggest --force)
- *   4  Partial success (children gone but tmux / port residue remains)
+ *   4  Partial success: the supervisor is gone but lineage-proven KB
+ *      residue remains — an un-torn-down tmux session, a live orphan
+ *      child, or a KB-assigned port still bound by a lineage-proven
+ *      descendant (process-lifecycle.md §7.5 / §9). Zombies and ports
+ *      held by unrelated / rebound processes are advisory only and do
+ *      NOT trigger exit 4 (§9.1.1 / §9.1.2).
  */
 
 import { execFileSync, spawnSync } from 'child_process'
@@ -312,6 +317,265 @@ function readCwdFromProc(pid) {
   } catch {
     return null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Lineage snapshot + process identity (process-lifecycle.md §9.1.0,
+// BL-2026-237).
+//
+// The residual diagnostics (§9) anchor on a snapshot of the supervisor's
+// descendant PID closure, taken BEFORE any signal / tmux cleanup (§7.3
+// step 3.5), plus a per-PID identity tuple (start-time + comm). After
+// cleanup, a candidate PID counts as a lineage-proven KB descendant only
+// when it is in the snapshot AND its identity tuple still matches — so a
+// reused numeric PID (same number, different start-time) is never treated
+// as KB residue. Reading the full process table with `ps` once is a
+// read-only operation; it is NOT a host-wide kill/sweep (§3.4 boundary):
+// kill targets stay restricted to the snapshot closure + identity match.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a process's identity tuple. Linux primary: `/proc/<pid>/stat`
+ * field 22 (starttime, clock-tick precision) + comm. macOS / non-procfs
+ * fallback: `ps -o lstart= -o comm=` (second precision). Returns `null`
+ * when the process is gone or cannot be read.
+ *
+ * `(pid, starttime)` is an OS-stable key the kernel does not reuse, so it
+ * distinguishes a surviving KB child from an unrelated process that later
+ * reused the same numeric PID.
+ */
+function readProcessIdentity(pid) {
+  // Linux: parse /proc/<pid>/stat. comm is in parens and may itself
+  // contain spaces / parens, so split on the LAST ')' to find the fields
+  // after comm. starttime is field 22 (1-indexed) in the proc(5) layout,
+  // i.e. index 19 of the post-comm field list (state is the first).
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+    const lastParen = raw.lastIndexOf(')')
+    if (lastParen !== -1) {
+      const firstParen = raw.indexOf('(')
+      const comm =
+        firstParen !== -1 && lastParen > firstParen
+          ? raw.slice(firstParen + 1, lastParen)
+          : null
+      const after = raw.slice(lastParen + 2).trim().split(/\s+/)
+      // after[0] = state, ... starttime is field 22 overall = after[19].
+      const starttime = after[19] ?? null
+      if (starttime != null) {
+        return { pid, starttime: `tick:${starttime}`, comm }
+      }
+    }
+  } catch {
+    // fall through to ps
+  }
+  // macOS / non-procfs fallback (second precision; the residual
+  // same-second PID-reuse edge is out of scope per §9.1.0).
+  try {
+    const out = execFileSync(
+      'ps',
+      ['-o', 'lstart=', '-o', 'comm=', '-p', String(pid)],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    if (out) {
+      // lstart is a fixed 24-char date; comm follows.
+      const lstart = out.slice(0, 24).trim()
+      const comm = out.slice(24).trim() || null
+      return { pid, starttime: `lstart:${lstart}`, comm }
+    }
+  } catch {
+    // unavailable
+  }
+  return null
+}
+
+/** True when two identity tuples refer to the same process incarnation. */
+function identityMatches(a, b) {
+  if (!a || !b) return false
+  return a.starttime === b.starttime && a.comm === b.comm
+}
+
+/**
+ * List every process as `{ pid, ppid, stat, comm }` via a single
+ * read-only `ps -eo pid=,ppid=,stat=,comm=`. Returns `null` when `ps` is
+ * unavailable so callers degrade gracefully.
+ */
+function listAllProcesses() {
+  try {
+    const out = execFileSync(
+      'ps',
+      ['-eo', 'pid=,ppid=,stat=,comm='],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    const rows = []
+    for (const line of out.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const m = trimmed.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/)
+      if (!m) continue
+      rows.push({
+        pid: Number(m[1]),
+        ppid: Number(m[2]),
+        stat: m[3],
+        comm: m[4].trim(),
+      })
+    }
+    return rows
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Verify that `pid` is a live supervisor of THIS clone — i.e. a node
+ * runtime whose entry script realpath-resolves to this clone's
+ * `tools/kb-start.mjs` — using the same argv / realpath fence as
+ * `pgrepSupervisorPids()`. Used before trusting a PID-file root as the
+ * lineage root + force-kill anchor, so a stale / tampered PID file cannot
+ * broaden the kill scope onto an unrelated same-user process tree.
+ *
+ * Returns:
+ *   'ok'        — verified live supervisor of this clone
+ *   'dead'      — the PID is not alive (ESRCH)
+ *   'mismatch'  — alive, but not a kb-start.mjs supervisor of this clone
+ *   'unknown'   — alive, but argv / cwd could not be read to decide
+ *                 (e.g. /proc-less platform with a relative entry script)
+ */
+function classifySupervisorRoot(pid) {
+  if (!isPidAlive(pid)) return 'dead'
+  // argv source priority: /proc (lossless) > `ps -o command=` (lossy
+  // whitespace split, the only option on /proc-less platforms like macOS).
+  // Without the ps fallback the gate would return 'unknown' for every
+  // PID-file stop on macOS, disabling lineage / --force entirely there.
+  let argv = readArgvFromProc(pid)
+  if (!argv) {
+    try {
+      const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (out) argv = out.split(/\s+/).filter(Boolean)
+    } catch {
+      // ps unavailable / not permitted
+    }
+  }
+  // Without any argv source we cannot apply the fence; do not silently trust.
+  if (!argv || argv.length < 2) return 'unknown'
+  if (!isNodeRuntime(argv[0])) return 'mismatch'
+  const scriptIdx = findEntryScriptIndex(argv)
+  if (scriptIdx === -1) return 'mismatch'
+  const scriptArg = argv[scriptIdx]
+  let scriptAbs
+  if (isAbsolute(scriptArg)) {
+    scriptAbs = scriptArg
+  } else {
+    const supCwd = readCwdFromProc(pid)
+    if (!supCwd) return 'unknown' // cannot resolve a relative script safely
+    scriptAbs = resolve(supCwd, scriptArg)
+  }
+  let scriptResolved
+  try {
+    scriptResolved = realpathSync(scriptAbs)
+  } catch {
+    scriptResolved = scriptAbs
+  }
+  let expected
+  try {
+    expected = realpathSync(resolve(repoRoot, 'tools', 'kb-start.mjs'))
+  } catch {
+    expected = resolve(repoRoot, 'tools', 'kb-start.mjs')
+  }
+  return scriptResolved === expected ? 'ok' : 'mismatch'
+}
+
+/**
+ * Build the descendant PID closure rooted at `rootPid` plus an identity
+ * tuple per PID (§9.1.0). Returns `null` when the process table cannot be
+ * read (callers then skip orphan/zombie detection + WARN, but the
+ * PID-file `ports` post-flight still runs since it needs no snapshot).
+ */
+function buildLineageSnapshot(rootPid) {
+  const all = listAllProcesses()
+  if (!all) return null
+  // childrenOf: ppid → [pid...]
+  const childrenOf = new Map()
+  for (const row of all) {
+    if (!childrenOf.has(row.ppid)) childrenOf.set(row.ppid, [])
+    childrenOf.get(row.ppid).push(row.pid)
+  }
+  const byPid = new Map(all.map((r) => [r.pid, r]))
+  const closure = new Map()
+  const stack = [rootPid]
+  while (stack.length > 0) {
+    const pid = stack.pop()
+    if (closure.has(pid)) continue
+    const row = byPid.get(pid)
+    // Record identity now (start-time + comm) so a later PID-reuse can be
+    // detected even after the original process exits.
+    const identity = readProcessIdentity(pid)
+    closure.set(pid, {
+      pid,
+      ppid: row ? row.ppid : null,
+      comm: row ? row.comm : identity ? identity.comm : null,
+      identity,
+    })
+    for (const child of childrenOf.get(pid) ?? []) stack.push(child)
+  }
+  return closure
+}
+
+/**
+ * Build a merged descendant snapshot covering every root in `roots`
+ * (used in `--all` mode where pgrep may discover multiple supervisors, so
+ * orphan/zombie detection is not limited to the first one). Returns `null`
+ * only when the process table cannot be read at all.
+ */
+function buildLineageSnapshotForRoots(roots) {
+  let merged = null
+  for (const root of roots) {
+    const snap = buildLineageSnapshot(root)
+    if (snap == null) return null // ps unavailable → degrade entirely
+    if (merged == null) merged = new Map()
+    for (const [pid, entry] of snap) {
+      if (!merged.has(pid)) merged.set(pid, entry)
+    }
+  }
+  return merged
+}
+
+/**
+ * Best-effort: return the listening process for `port` as
+ * `{ pid, cmd }`, or `null` when nothing is listening / lookup is not
+ * permitted (§9.1.1 / §11.5). lsof primary, ss fallback. Never signals
+ * the owner.
+ */
+function findPortListener(port) {
+  try {
+    const out = execFileSync(
+      'lsof',
+      ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    let pid = null
+    let cmd = null
+    for (const line of out.split('\n')) {
+      if (line.startsWith('p')) pid = Number(line.slice(1).trim())
+      else if (line.startsWith('c')) cmd = line.slice(1).trim()
+    }
+    if (pid) return { pid, cmd }
+  } catch {
+    // fall through to ss
+  }
+  try {
+    const out = execFileSync('ss', ['-ltnp', `( sport = :${port} )`], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const m = out.match(/users:\(\("([^"]+)",pid=(\d+)/)
+    if (m) return { pid: Number(m[2]), cmd: m[1] }
+  } catch {
+    // unavailable
+  }
+  return null
 }
 
 /**
@@ -835,27 +1099,156 @@ function selfTmuxSessionName() {
   }
 }
 
-function reportResidue(pidEntry) {
-  // Scope: only check artifacts that we can tie back to the supervisor
-  // we just stopped. The previous host-wide `pgrep -af tsx /
-  // node_modules/.bin/vite / claude.*--agent` sweep would catch
-  // unrelated processes from other workspaces (or from the operator's
-  // unrelated dev work) and falsely return exit 4 on a clean stop,
-  // echoing those unrelated command lines to stderr.
-  //
-  // Target-scoped check: did the tmux session recorded in the
-  // supervisor's PID file survive shutdown? That session is the only
-  // thing we have a direct anchor on after the supervisor PID is gone
-  // (children inherit the session, so a leaked claude/tmux pane shows
-  // up as the session not getting torn down).
-  if (!pidEntry?.tmux?.sessionName) return []
-  if (!listTmuxSessions().includes(pidEntry.tmux.sessionName)) return []
-  return [
-    {
-      label: 'tmux session not torn down',
-      line: `tmux session "${pidEntry.tmux.sessionName}" is still active after supervisor stop`,
-    },
-  ]
+/**
+ * Residual diagnostics after the supervisor is confirmed gone
+ * (process-lifecycle.md §9). Anchors only on (a) the lineage snapshot
+ * taken before cleanup (§9.1.0), (b) the PID-file `tmux.sessionName`, and
+ * (c) the PID-file `ports`. Never starts from a host-wide pgrep / port
+ * scan (§3.4 boundary).
+ *
+ * Returns:
+ *   exitResidue  — lineage-proven KB residue that warrants exit 4
+ *                  (live orphans / tmux session / lineage-proven port).
+ *   advisories   — informational only, do NOT affect the exit code
+ *                  (zombies = OS/init reaps; unrelated/rebound port owner).
+ *   killable     — lineage-proven live orphan PIDs that `--force` may
+ *                  SIGKILL (zombies and unrelated processes excluded).
+ *   snapshotUnavailable — true when the lineage snapshot could not be
+ *                  taken; orphan/zombie detection was skipped.
+ */
+function reportResidue(pidEntry, lineageSnapshot, supervisorRoots = new Set()) {
+  const exitResidue = []
+  const advisories = []
+  const killable = []
+  const snapshotUnavailable = lineageSnapshot == null
+
+  // --- tmux session not torn down (PID-file anchor, exact match) ---
+  if (pidEntry?.tmux?.sessionName) {
+    if (listTmuxSessions().includes(pidEntry.tmux.sessionName)) {
+      exitResidue.push({
+        label: 'tmux session not torn down',
+        line: `tmux session "${pidEntry.tmux.sessionName}" is still active after supervisor stop`,
+      })
+    }
+  }
+
+  // --- live orphans + zombies (lineage snapshot anchor, §9.1 / §9.1.2) ---
+  if (lineageSnapshot) {
+    for (const entry of lineageSnapshot.values()) {
+      // The supervisor roots are the stop targets, not orphans. On a
+      // --force SIGKILL they may briefly linger (dying / zombie) before
+      // the kernel reaps them, so excluding them here keeps the residue
+      // diagnostic from reporting a successfully-killed supervisor as
+      // residue and making the exit code timing-dependent.
+      if (supervisorRoots.has(entry.pid)) continue
+      // The supervisor PID itself is expected to be gone by now; a PID
+      // that exited is not residue.
+      if (!isPidAlive(entry.pid)) continue
+      // PID reuse guard: the numeric PID is alive, but if its identity
+      // tuple no longer matches the snapshot it is a different process
+      // that reused the number — not KB residue (§9.1.0).
+      const now = readProcessIdentity(entry.pid)
+      if (!identityMatches(entry.identity, now)) continue
+
+      const stat = now && now.comm != null ? readStatField(entry.pid) : null
+      const isZombie = stat ? stat.includes('Z') : false
+      if (isZombie) {
+        // §9.1.2: report only, never reap; not an exit-code factor.
+        advisories.push({
+          label: 'zombie',
+          line: `pid=${entry.pid} <defunct> ppid=${entry.ppid ?? '?'} (zombie — OS/init will reap; not killed)`,
+        })
+        continue
+      }
+      // Live orphan (§9.1): lineage-proven KB descendant still running.
+      exitResidue.push({
+        label: 'orphan',
+        line: `pid=${entry.pid} cmd=${entry.comm ?? '?'} (orphan, lineage proven)`,
+      })
+      // `--force` may only SIGKILL an orphan whose identity rests on a
+      // NON-REUSABLE kernel key (Linux `/proc/<pid>/stat` starttime,
+      // recorded as `tick:`). The macOS / non-procfs `ps -o lstart`
+      // fallback is second-precision, so a same-second PID reuse of
+      // another process with the same comm could pass identityMatches();
+      // killing by PID on that evidence risks signalling an unrelated
+      // process. Such orphans are still reported (exit 4) but excluded
+      // from the force-kill set, fail-safe toward not mis-killing.
+      const strongIdentity =
+        typeof now?.starttime === 'string' && now.starttime.startsWith('tick:')
+      if (strongIdentity) {
+        killable.push(entry.pid)
+      } else {
+        advisories.push({
+          label: 'orphan not force-killable',
+          line: `pid=${entry.pid} identity is second-precision (non-procfs); --force will not SIGKILL it to avoid mis-targeting a reused PID`,
+        })
+      }
+    }
+  }
+
+  // --- port release post-flight (PID-file `ports` anchor, §9.1.1) ---
+  const ports = pidEntry?.ports
+  for (const [label, port] of [
+    ['backend', ports?.backend],
+    ['vite', ports?.vite],
+  ]) {
+    if (typeof port !== 'number') continue
+    const owner = findPortListener(port)
+    if (!owner) continue // released
+    if (snapshotUnavailable) {
+      // Without a lineage snapshot we cannot establish provenance, so we
+      // must NOT claim the owner is "unrelated" (that could downgrade a
+      // real leaked KB child from exit 4 to a false success). Report it as
+      // ownership-unknown. We do not exit 4 (lineage is unproven, §9.1.1),
+      // but the operator is told the diagnostics were degraded.
+      advisories.push({
+        label: 'port held; ownership unknown',
+        line: `port ${port} (${label}) is still bound by pid=${owner.pid}${owner.cmd ? ` (${owner.cmd})` : ''}; lineage snapshot unavailable, KB-ownership could not be determined`,
+      })
+      continue
+    }
+    // Is the owner a lineage-proven KB descendant?
+    const snapEntry = lineageSnapshot.get(owner.pid)
+    const proven =
+      snapEntry != null &&
+      identityMatches(snapEntry.identity, readProcessIdentity(owner.pid))
+    if (proven) {
+      exitResidue.push({
+        label: 'port still bound',
+        line: `port ${port} (${label}) still bound by pid=${owner.pid} (lineage proven KB descendant)`,
+      })
+    } else {
+      // PID reuse / external rebind: advisory only, exit 0 (§9.1.1).
+      advisories.push({
+        label: 'port held by unrelated process',
+        line: `port ${port} (${label}) is now held by an unrelated process (pid=${owner.pid}${owner.cmd ? ` ${owner.cmd}` : ''}); not a KB residual`,
+      })
+    }
+  }
+
+  return { exitResidue, advisories, killable, snapshotUnavailable }
+}
+
+/** Read the `stat` (state) field for a live pid, or `null`. */
+function readStatField(pid) {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+    const lastParen = raw.lastIndexOf(')')
+    if (lastParen === -1) return null
+    const after = raw.slice(lastParen + 2).trim().split(/\s+/)
+    return after[0] ?? null // state char (R/S/D/Z/T/...)
+  } catch {
+    // macOS / non-procfs fallback
+    try {
+      const out = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      return out || null
+    } catch {
+      return null
+    }
+  }
 }
 
 function killByPid(pid, signal) {
@@ -962,6 +1355,61 @@ async function main() {
     process.exit(1)
   }
 
+  // Lineage snapshot (§7.3 step 3.5 / §9.1.0): capture the supervisor's
+  // descendant PID closure + identity tuples BEFORE any signal or tmux
+  // cleanup, so post-cleanup orphan/zombie detection can anchor on it
+  // (the tmux session is torn down later, which would make the pane PID
+  // tree unrecoverable without a host-wide scan). Covers EVERY targeted
+  // supervisor — in --all / pgrep mode pgrep may discover more than one,
+  // so orphan/zombie detection is not limited to the first.
+  //
+  // Provenance gate (CodeX attempt 6): a PID-file root is only trusted as
+  // a lineage / force-kill anchor when it is a LIVE supervisor of this
+  // clone (`classifySupervisorRoot`). A stale / tampered PID file (the
+  // recorded PID is dead, reused, or now an unrelated process) must not
+  // let us snapshot + force-kill an unrelated process tree, and a dead
+  // root yields a useless single-node snapshot that would mislabel a
+  // reparented child's port as "unrelated". In those cases we leave
+  // `lineageSnapshot` null so reportResidue degrades to ownership-unknown
+  // (no exit-4, no kill). `--all` roots come from `pgrepSupervisorPids()`,
+  // which already applies the same argv/realpath fence, so they are
+  // pre-validated and skip the re-check here.
+  let lineageSnapshot = null
+  if (!args.dryRun && supervisors.length > 0) {
+    let snapshotRoots = supervisors
+    if (pidFromFile != null && !args.all) {
+      const kind = classifySupervisorRoot(pidFromFile)
+      // Only an 'ok' (verified live supervisor of this clone) root may
+      // anchor lineage + force-kill. 'mismatch' / 'dead' / 'unknown' are
+      // all untrusted: 'unknown' means we could not read the root's argv /
+      // cwd to apply the fence (e.g. a /proc-less platform), so trusting it
+      // would expand the --force kill scope back onto an unverified root —
+      // exactly what the fence prevents. Degrade in every non-ok case.
+      if (kind !== 'ok') {
+        const reason =
+          kind === 'dead'
+            ? 'no longer alive'
+            : kind === 'mismatch'
+              ? 'not a supervisor of this clone'
+              : 'not verifiable as a supervisor of this clone on this platform'
+        console.warn(
+          `[kb-stop] WARN: PID-file root pid ${pidFromFile} is ${reason}; ` +
+            `skipping lineage-anchored orphan/zombie/force diagnostics ` +
+            `(provenance cannot be established).`,
+        )
+        snapshotRoots = []
+      }
+    }
+    if (snapshotRoots.length > 0) {
+      lineageSnapshot = buildLineageSnapshotForRoots(snapshotRoots)
+      if (lineageSnapshot == null) {
+        console.warn(
+          `[kb-stop] WARN: lineage snapshot unavailable; skipping orphan/zombie diagnostics`,
+        )
+      }
+    }
+  }
+
   for (const pid of supervisors) {
     if (!isPidAlive(pid)) {
       planLog(`pid ${pid} is already dead; skipping signal`)
@@ -1043,24 +1491,97 @@ async function main() {
     }
   }
 
-  // Residual diagnostic — informational only, scoped to artifacts
-  // we can tie back to the supervisor we just stopped (currently the
-  // tmux session recorded in the PID file). The previous host-wide
-  // pgrep sweep would catch unrelated dev servers and report exit 4
-  // on a clean stop; the session-anchored check here only fires when
-  // the supervisor's own tmux session survived shutdown, which is a
-  // genuine "something inside our scope leaked" signal.
-  const residue = reportResidue(pidEntry)
-  if (residue.length > 0) {
-    console.warn(`[kb-stop] WARN: KB-scoped residual artifacts detected:`)
-    for (const r of residue) {
+  // Residual diagnostic (§9). Anchored on the lineage snapshot + PID-file
+  // tmux session + PID-file ports — never a host-wide sweep. Splits into:
+  //   - exitResidue: lineage-proven KB residue → exit 4 (§7.5)
+  //   - advisories:  zombies (OS/init reaps) + unrelated port owners →
+  //                  reported but do NOT affect the exit code (§9.1.1/§9.1.2)
+  //
+  // In --all mode there is no per-project PID-file anchor, so the
+  // tmux-session / port post-flight cannot run (orphan/zombie detection
+  // still works off the lineage snapshot). This is the accepted
+  // degradation of the host-wide opt-in path (§7.4 / §9.1); make it
+  // visible so a clean exit is not mistaken for a full residue check.
+  if (pidEntry == null && supervisors.length > 0) {
+    console.warn(
+      `[kb-stop] WARN: --all mode has no PID-file anchor; tmux-session / ` +
+        `port residue checks are skipped (orphan/zombie diagnostics still ` +
+        `run). Use the normal PID-file stop for full residue diagnostics.`,
+    )
+  }
+  const supervisorRootSet = new Set(supervisors)
+  let { exitResidue, advisories, killable, snapshotUnavailable } =
+    reportResidue(pidEntry, lineageSnapshot, supervisorRootSet)
+
+  // --force: SIGKILL only lineage-proven live orphans. Zombies are never
+  // reaped (OS/init responsibility, §9.1.2); unrelated / rebound port
+  // owners are never signalled (lineage unproven, §9.1.1 / §9.2).
+  if (args.force && killable.length > 0) {
+    for (const pid of killable) {
+      if (isPidAlive(pid)) {
+        console.warn(`[kb-stop] --force: SIGKILL → lineage-proven orphan pid ${pid}`)
+        killByPid(pid, 'SIGKILL')
+      }
+    }
+    // SIGKILL delivery is asynchronous: a just-killed orphan can briefly
+    // still appear alive and still hold its listening socket. Wait (bounded,
+    // 2s / 50ms poll) for every killed PID to actually disappear before
+    // re-evaluating, so a successful --force does not produce a spurious
+    // exit 4 / "manual cleanup needed" report on the lingering window.
+    const killDeadline = Date.now() + 2000
+    while (Date.now() < killDeadline && killable.some((p) => isPidAlive(p))) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    // Re-run the full diagnostic after the kill pass so EVERY derived
+    // residue reflects the post-kill state — not just orphan entries. A
+    // killed orphan that was the port owner releases its port, so the
+    // "port still bound" entry must be re-evaluated too; otherwise
+    // `--force` could exit 4 on stale pre-kill data even though the
+    // residue is gone. (The killable set was lineage-proven before the
+    // kill; we keep it from the pre-kill snapshot since the snapshot is
+    // immutable, and the re-run anchors live/port state freshly.)
+    ;({ exitResidue, advisories, snapshotUnavailable } = reportResidue(
+      pidEntry,
+      lineageSnapshot,
+      supervisorRootSet,
+    ))
+  }
+
+  for (const a of advisories) {
+    console.warn(`[kb-stop]   (${a.label}) ${a.line}`)
+  }
+
+  if (exitResidue.length > 0) {
+    console.warn(
+      `[kb-stop] WARN: lineage-proven KB residual artifacts detected:`,
+    )
+    for (const r of exitResidue) {
       console.warn(`[kb-stop]   (${r.label}) ${r.line}`)
     }
+    // The lineage anchor (§9.1.0) is held only in this kb-stop process's
+    // memory and is consumed when the supervisor terminates, so a `--force`
+    // RERUN after this exit-4 run cannot re-acquire it to target these
+    // orphans. `--force` must be supplied on the SAME invocation that
+    // performs the shutdown (process-lifecycle.md §9.2). Advertise that,
+    // plus manual termination of the listed pids as the certain fallback.
     console.warn(
-      `[kb-stop] Review and terminate manually if needed:\n` +
-        `[kb-stop]   tmux kill-session -t <name>`,
+      `[kb-stop] These were detected after shutdown; the lineage anchor for ` +
+        `this run is now gone, so a \`--force\` rerun cannot target them.\n` +
+        `[kb-stop] To have KB terminate lineage-proven live processes ` +
+        `automatically, re-run from a clean state with --force on the first ` +
+        `invocation (\`npm run kb:stop -- --force\`).\n` +
+        `[kb-stop] Otherwise, terminate the listed pids manually (e.g. ` +
+        `\`kill <pid>\`). Zombies are reaped by the OS/init; unrelated ` +
+        `processes are never touched.`,
     )
     process.exit(4)
+  }
+
+  if (snapshotUnavailable && advisories.length === 0) {
+    // Diagnostics degraded but nothing actionable surfaced; still a
+    // successful stop.
+    console.log('[kb-stop] Done (orphan/zombie diagnostics skipped).')
+    process.exit(0)
   }
 
   console.log('[kb-stop] Done.')

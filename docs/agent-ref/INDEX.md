@@ -88,6 +88,7 @@
 - 多重起動エラーが出ている → [`11-lifecycle.md`](./11-lifecycle.md) §4
 - KB の中のエージェント（コビー / 開発者 / 秘書）が KB を停止して良いか → [`11-lifecycle.md`](./11-lifecycle.md) §5
 - `kb-stop` の挙動・終了コードを知りたい → [`11-lifecycle.md`](./11-lifecycle.md) §6
+- 再起動後に様子がおかしい / 残骸・ゾンビ・ポート占有を検証したい → [`11-lifecycle.md`](./11-lifecycle.md) §8
 
 ---
 

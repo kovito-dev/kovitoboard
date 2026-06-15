@@ -21,6 +21,7 @@ KovitoBoard's start / stop story is intentionally narrow: every supported entry 
 - §5 Agents living inside KB must not stop KB → [`../11-lifecycle.md`](../11-lifecycle.md) §5
 - §6 What `kb-stop` does and does not do → [`../11-lifecycle.md`](../11-lifecycle.md) §6
 - §7 Common questions → [`../11-lifecycle.md`](../11-lifecycle.md) §7
+- §8 Process-hygiene checklist (pre-flight / post-stop) → [`../11-lifecycle.md`](../11-lifecycle.md) §8
 
 ## English-specific notes
 
