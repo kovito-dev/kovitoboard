@@ -18,67 +18,104 @@
  *
  * Public API:
  *
- * - `escapeForLog(s)` — hex-escape control bytes for terminal/log safety.
+ * - `escapeForLog(s)` — escape control / line / bidi characters for
+ *   terminal/log safety.
  * - `shellQuote(s)` — POSIX single-quote for shell-paste safety.
- * - `hasControlBytes(s)` — true when a string contains C0 controls / DEL.
+ * - `hasControlBytes(s)` — true when a string contains an unsafe-for-log char.
  * - `removalHint(path, indent)` — render a copy-paste-safe removal
- *   instruction for `path`: a byte-accurate `rm -- '<path>'` when the path
- *   is control-free, or a display-safe manual-removal block when it is not
- *   (so the printed command is never both unsafe AND wrong).
+ *   instruction for `path`: a byte-accurate `rm -- '<path>'` when the path is
+ *   safe, or a display-safe manual-removal block when it is not (so the
+ *   printed command is never both unsafe AND wrong).
  */
 
-// eslint-disable-next-line no-control-regex
-const CONTROL_BYTES = /[\x00-\x1f\x7f]/
+// Characters that are unsafe to print verbatim into a single-line log /
+// terminal message. The class is built from explicit numeric code points (no
+// literal invisible characters in this source, which could themselves reorder
+// or break it):
+//   - 0x00-0x1f + 0x7f: ASCII C0 controls + DEL (newline / CR / tab / ANSI).
+//   - 0x85 NEL, 0x2028 LINE SEPARATOR, 0x2029 PARAGRAPH SEPARATOR: treated as
+//     line breaks by some terminals / JS contexts, so they forge an extra log
+//     line just like \n.
+//   - 0x200e/0x200f (LRM/RLM) + 0x202a-0x202e + 0x2066-0x2069 (bidi embedding
+//     / override / isolate, the "Trojan Source" class): can reorder the
+//     displayed text to make a path look like something it is not.
+const UNSAFE_RANGES = [
+  [0x00, 0x1f],
+  [0x7f, 0x7f],
+  [0x85, 0x85],
+  [0x200e, 0x200f],
+  [0x2028, 0x2029],
+  [0x202a, 0x202e],
+  [0x2066, 0x2069],
+]
+
+function isUnsafeLogChar(code) {
+  for (const [lo, hi] of UNSAFE_RANGES) {
+    if (code >= lo && code <= hi) return true
+  }
+  return false
+}
 
 /**
- * Escape control characters (newlines, carriage returns, ANSI escapes, other
- * C0 controls + DEL) before printing an operator-supplied string into a
- * log / error line. Replaces each control byte with its `\xHH` hex escape,
- * keeping the message single-line and inert. Use this for the raw `Path:` /
+ * Escape unsafe characters before printing an operator-supplied string into a
+ * log / error line. Covers ASCII C0 controls + DEL and the Unicode line /
+ * paragraph separators + bidi/format controls (see `UNSAFE_RANGES`). Each
+ * unsafe code point is replaced with `\xHH` (<= 0xff) or `\uHHHH`, keeping the
+ * message single-line and visually inert. Use this for the raw `Path:` /
  * `PID file:` lines where byte-accuracy is not required (the operator reads,
  * does not paste, them).
  */
 export function escapeForLog(s) {
-  return String(s).replace(
-    // eslint-disable-next-line no-control-regex
-    /[\x00-\x1f\x7f]/g,
-    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
-  )
+  let out = ''
+  for (const ch of String(s)) {
+    const code = ch.codePointAt(0)
+    if (isUnsafeLogChar(code)) {
+      out +=
+        code <= 0xff
+          ? `\\x${code.toString(16).padStart(2, '0')}`
+          : `\\u${code.toString(16).padStart(4, '0')}`
+    } else {
+      out += ch
+    }
+  }
+  return out
 }
 
 /**
  * POSIX single-quote a string for safe inclusion in a shell command. Wrapping
  * in single quotes neutralizes every shell metacharacter (`$()`, backticks,
  * `;`, spaces); an embedded single quote is escaped as `'\''` (close-quote,
- * literal quote, re-open). Note this does NOT neutralize raw control bytes
- * (newline / CR / ANSI) for terminal display — pair it with `escapeForLog`
- * or gate on `hasControlBytes` for that.
+ * literal quote, re-open). Note this does NOT neutralize unsafe-for-log
+ * characters (newline / CR / ANSI / bidi) for terminal display — pair it with
+ * `escapeForLog` or gate on `hasControlBytes` for that.
  */
 export function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
 
-/** True when `s` contains any C0 control byte or DEL. */
+/** True when `s` contains any character unsafe to print verbatim in a log line. */
 export function hasControlBytes(s) {
-  return CONTROL_BYTES.test(String(s))
+  for (const ch of String(s)) {
+    if (isUnsafeLogChar(ch.codePointAt(0))) return true
+  }
+  return false
 }
 
 /**
  * Render an operator-facing removal instruction for `path`.
  *
  * The tension: a copy-paste `rm -- '<path>'` must be BOTH byte-accurate (so
- * the operator can actually remove the file) AND terminal-safe (so control
- * bytes in the path cannot forge log lines). Those two goals conflict only
- * when the path contains control bytes:
+ * the operator can actually remove the file) AND terminal-safe (so unsafe
+ * characters in the path cannot forge log lines or reorder the display).
+ * Those two goals conflict only when the path contains unsafe characters:
  *
- * - control-free path (the normal case): emit the byte-accurate, shell-safe
- *   `rm -- '<path>'`. `escapeForLog` is a no-op here, so the command pastes
- *   correctly.
- * - path with control bytes (pathological): do NOT emit a copy-paste command
- *   that would be either unsafe (raw bytes) or wrong (escaped, names a
+ * - safe path (the normal case): emit the byte-accurate, shell-safe
+ *   `rm -- '<path>'`. The path pastes correctly.
+ * - path with unsafe characters (pathological): do NOT emit a copy-paste
+ *   command that would be either unsafe (raw bytes) or wrong (escaped, names a
  *   different file). Print a display-safe rendering of the path plus a
  *   byte-accurate Node one-liner that reconstructs the real pathname from its
- *   escaped form, so the operator still has a working removal path.
+ *   hex bytes, so the operator still has a working removal path.
  *
  * `indent` is the leading whitespace applied to each rendered line so the
  * block aligns with the caller's `[kb-start]` / `[kb-stop]` prefix style.

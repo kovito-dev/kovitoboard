@@ -11,6 +11,10 @@
  * is rendered into logs and suggested shell commands), so the escaping rules
  * are pinned here once for both entrypoints rather than re-asserted through
  * each tool's spawn-based tests.
+ *
+ * Note: unsafe Unicode characters are built via `String.fromCodePoint` so this
+ * source carries no literal invisible / bidi characters (which would
+ * themselves reorder or break the file).
  */
 import { describe, expect, it } from 'vitest'
 
@@ -50,6 +54,21 @@ describe('escapeForLog', () => {
     expect(escapeForLog('a\x7fb')).toBe('a\\x7fb')
     expect(escapeForLog('a\x1b[31mb')).toBe('a\\x1b[31mb')
   })
+
+  it('escapes Unicode line/paragraph separators and bidi/format controls', () => {
+    // Built via fromCodePoint so this source carries no literal invisible
+    // characters.
+    const u = (cp: number) => `a${String.fromCodePoint(cp)}b`
+    expect(escapeForLog(u(0x85))).toBe('a\\x85b') // NEL (single byte)
+    expect(escapeForLog(u(0x2028))).toBe('a\\u2028b') // LINE SEPARATOR
+    expect(escapeForLog(u(0x2029))).toBe('a\\u2029b') // PARAGRAPH SEPARATOR
+    expect(escapeForLog(u(0x200e))).toBe('a\\u200eb') // LRM
+    expect(escapeForLog(u(0x202e))).toBe('a\\u202eb') // RTL OVERRIDE
+    expect(escapeForLog(u(0x2066))).toBe('a\\u2066b') // LTR ISOLATE
+    // A normal multi-byte Unicode letter (é) is left untouched.
+    const cafe = `caf${String.fromCodePoint(0xe9)}`
+    expect(escapeForLog(cafe)).toBe(cafe)
+  })
 })
 
 describe('hasControlBytes', () => {
@@ -64,6 +83,13 @@ describe('hasControlBytes', () => {
     ['a\x7f', true],
   ] as Array<[string, boolean]>)('%j → %s', (input, expected) => {
     expect(hasControlBytes(input)).toBe(expected)
+  })
+
+  it('flags Unicode separators / bidi controls too', () => {
+    expect(hasControlBytes(`a${String.fromCodePoint(0x2028)}`)).toBe(true)
+    expect(hasControlBytes(`a${String.fromCodePoint(0x202e)}`)).toBe(true)
+    expect(hasControlBytes(`a${String.fromCodePoint(0x85)}`)).toBe(true)
+    expect(hasControlBytes(`caf${String.fromCodePoint(0xe9)}`)).toBe(false)
   })
 })
 
@@ -95,6 +121,14 @@ describe('removalHint', () => {
     const hex = Buffer.from(evil, 'utf-8').toString('hex')
     expect(out).toContain(hex)
     expect(out).toContain("Buffer.from('" + hex + "','hex')")
+  })
+
+  it('routes a path with a Unicode bidi override to the safe fallback', () => {
+    const tricky = `/tmp/a${String.fromCodePoint(0x202e)}b/supervisor.pid`
+    const out = removalHint(tricky)
+    expect(out).toContain('contains control characters')
+    expect(out).toContain('\\u202e')
+    expect(out).not.toContain("rm -- '")
   })
 
   it('applies the caller-supplied indent to every line', () => {
