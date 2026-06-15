@@ -449,18 +449,32 @@ export class Watcher {
       // offset (the line is completed on a later change / reconcile tick).
       const lastNewline = buffer.lastIndexOf(0x0a) // '\n'
       if (lastNewline === -1) {
-        // No complete line in this chunk. If we read a full chunk that
-        // still has no newline, a single line exceeds the chunk cap
-        // (pathological). Skip it by advancing past the chunk so we do
-        // not stall forever re-reading the same bytes; warn for
-        // visibility. Otherwise (short read, line still being appended)
-        // hold the offset and wait for the line to complete.
+        // No complete line in this chunk. Two sub-cases:
+        // (a) short read (readLength < cap): the line is still being
+        //     appended — hold the offset and read it next tick.
+        // (b) full-chunk read with no newline: a single line exceeds the
+        //     chunk cap (pathological — normal Claude Code JSONL lines are
+        //     tiny). To avoid both a permanent stall AND corrupting the
+        //     stream, skip the ENTIRE oversized line cleanly: scan forward
+        //     for its terminating newline and advance the offset to just
+        //     past it (dropping exactly that one line). We must NOT advance
+        //     by a fixed chunk into the middle of the line, which would
+        //     leave an invalid-JSON tail that strands the session.
         if (readLength >= HANDLE_FILE_READ_CHUNK_BYTES) {
+          const lineEnd = this.findOversizedLineEnd(filePath, previousPosition, currentSize)
+          if (lineEnd === null) {
+            // The terminating newline has not been written yet; the
+            // oversized line is still in flight. Hold the offset and wait
+            // for it to complete (it will be skipped once the newline
+            // arrives). Do not advance — no corruption, no stall beyond
+            // the line's own completion.
+            return
+          }
           watcherLogger.warn(
-            { filePath, chunkBytes: HANDLE_FILE_READ_CHUNK_BYTES },
-            'Single JSONL line exceeds the read-chunk cap; skipping the oversized fragment',
+            { filePath, droppedBytes: lineEnd - previousPosition },
+            'Single JSONL line exceeds the read-chunk cap; dropping the oversized line',
           )
-          this.filePositions.set(filePath, previousPosition + readLength)
+          this.filePositions.set(filePath, lineEnd)
         }
         return
       }
@@ -536,6 +550,31 @@ export class Watcher {
         watcherLogger.error({ err, filePath }, 'File processing error')
       }
     }
+  }
+
+  /**
+   * Scan forward from `start` in bounded chunks to find the byte offset
+   * just past the terminating newline of an oversized line (one longer
+   * than HANDLE_FILE_READ_CHUNK_BYTES). Returns that offset, or null if no
+   * newline exists up to `fileSize` (the line is still being appended).
+   * Memory stays bounded because each read is capped to the chunk size.
+   */
+  private findOversizedLineEnd(
+    filePath: string,
+    start: number,
+    fileSize: number,
+  ): number | null {
+    let scanPos = start
+    while (scanPos < fileSize) {
+      const len = Math.min(fileSize - scanPos, HANDLE_FILE_READ_CHUNK_BYTES)
+      const chunk = this.fs.readBytesSync(filePath, scanPos, len)
+      const nl = chunk.indexOf(0x0a) // '\n'
+      if (nl !== -1) {
+        return scanPos + nl + 1 // just past the newline
+      }
+      scanPos += len
+    }
+    return null
   }
 
   // --- Startup self-verify (§8.6.1, fail-loud observability) ---
