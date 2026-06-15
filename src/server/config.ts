@@ -3,7 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import { join, resolve, dirname } from 'path'
+import { join, resolve, dirname, isAbsolute } from 'path'
 import { fileURLToPath } from 'node:url'
 import type { FileAccessLayer } from './fs-layer'
 import type { ViewerConfig } from './types'
@@ -142,7 +142,17 @@ function readPersistedProjectRoot(fs: FileAccessLayer, cwd: string): string | nu
     const raw = fs.readFileSync(settingPath, 'utf-8')
     const data = JSON.parse(raw) as { project?: { path?: string } }
     const path = data.project?.path
-    if (typeof path === 'string' && path.length > 0) return resolve(path)
+    // `project.path` must be an absolute path. This minimal parser is the
+    // setting-json stage of the project-root resolution chain and does NOT
+    // go through `validateSetting()`, so the absolute-path invariant
+    // (`data-persistence.md` §6.1.1) is enforced here, at the read site.
+    // A relative value would be resolved by `resolve(path)` against the
+    // launch cwd, retargeting the project root (and every derived side
+    // effect: PID/log dirs, app symlink, tmux session) at the wrong
+    // directory. Reject it fail-loud (return null → re-onboarding).
+    if (typeof path === 'string' && path.length > 0 && isAbsolute(path)) {
+      return resolve(path)
+    }
     return null
   } catch {
     return null
