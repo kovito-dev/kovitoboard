@@ -242,16 +242,19 @@ function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
     )
   }
 
-  // pollInterval: finite number > 0.
+  // pollInterval: finite number >= 1 (after flooring). A fractional
+  // value in (0, 1) floors to 0, which would create a zero-interval
+  // watcher — reject it the same as a non-positive value rather than
+  // silently producing 0.
   let pollInterval = defaults.pollInterval
   if (src.pollInterval !== undefined) {
     const v = src.pollInterval
-    if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0 && Math.floor(v) >= 1) {
       pollInterval = Math.floor(v)
     } else {
       cfgLog.warn(
         { received: v },
-        '[config] watcher.pollInterval is not a positive finite number; using default (1500).',
+        '[config] watcher.pollInterval is not a positive finite number (>= 1ms); using default (1500).',
       )
     }
   }
@@ -261,9 +264,21 @@ function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
   if (src.reconcileInterval !== undefined) {
     const v = src.reconcileInterval
     if (typeof v === 'number' && Number.isFinite(v)) {
-      // Negative values are equivalent to 0 (disabled). Non-disable
-      // values are floored to integer ms.
-      reconcileInterval = v <= 0 ? 0 : Math.floor(v)
+      if (v <= 0) {
+        // Explicit disable opt-out (negative is normalized to 0).
+        reconcileInterval = 0
+      } else if (Math.floor(v) >= 1) {
+        reconcileInterval = Math.floor(v)
+      } else {
+        // Positive but rounds to 0 (e.g. 0.5). The operator did not
+        // intend to disable reconciliation, so fall back to the default
+        // rather than silently disabling the safety net.
+        cfgLog.warn(
+          { received: v },
+          '[config] watcher.reconcileInterval rounds to 0 but is positive; ' +
+            'using default (10000) instead of silently disabling reconciliation.',
+        )
+      }
     } else {
       cfgLog.warn(
         { received: v },

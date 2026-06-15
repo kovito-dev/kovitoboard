@@ -37,6 +37,19 @@ const RECONCILE_FIRST_READ_MAX_BYTES = 64 * 1024 * 1024 // 64 MiB
 /** Timeout (ms) for the startup self-verify marker round-trip (§8.6.1). */
 const SELF_VERIFY_TIMEOUT_MS = 5000
 
+/**
+ * Upper bound (bytes) on a single incremental read in handleFile
+ * (session-management.md §7.3.2.2 / §8.10 R3). The live watcher and the
+ * reconciliation scan both call handleFile; if a registered session
+ * missed `change` events and then grows by a very large delta before the
+ * next read, reading the whole delta into one Buffer could exhaust
+ * memory. We read at most this many bytes per call; because filePositions
+ * only advances to the last committed line, the remaining bytes are
+ * picked up on the next live `change` / reconcile tick. Normal Claude
+ * Code JSONL deltas are far smaller than this cap.
+ */
+const HANDLE_FILE_READ_CHUNK_BYTES = 16 * 1024 * 1024 // 16 MiB
+
 export class Watcher {
   private watchHandle: WatchHandle | null = null
   // Read byte position per file
@@ -62,6 +75,8 @@ export class Watcher {
   private selfVerifyDone = false
   /** Active self-verify marker observer; resolves on the marker's raw add. */
   private selfVerifyObserver: ((path: string) => void) | null = null
+  /** Pending self-verify timeout, cleared on stop() to avoid a post-shutdown false error. */
+  private selfVerifyTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(config: ViewerConfig, sessionManager: SessionManager, fs: FileAccessLayer) {
     this.claudeDir = config.claudeDir
@@ -232,6 +247,12 @@ export class Watcher {
       clearInterval(this.reconcileTimer)
       this.reconcileTimer = null
     }
+    // Clear any pending self-verify timeout so it cannot log a false
+    // "add subscription may be dead" error after shutdown.
+    if (this.selfVerifyTimer) {
+      clearTimeout(this.selfVerifyTimer)
+      this.selfVerifyTimer = null
+    }
     this.selfVerifyObserver = null
   }
 
@@ -386,12 +407,16 @@ export class Watcher {
 
       this.sessionManager.ensureSession(sessionId, projectPath, filePath)
 
-      // Incremental read (via fs-layer)
-      const buffer = this.fs.readBytesSync(
-        filePath,
-        previousPosition,
-        currentSize - previousPosition
-      )
+      // Incremental read (via fs-layer), bounded per call so a large
+      // unread delta (e.g. a registered session that missed `change`
+      // events and grew a lot before the next read) does not allocate the
+      // whole tail at once (§7.3.2.2 / §8.10 R3). Reading a chunk is safe:
+      // per-line commit only advances the offset to the last complete
+      // line within the chunk, so the remaining bytes are read on the
+      // next live `change` / reconcile tick.
+      const delta = currentSize - previousPosition
+      const readLength = Math.min(delta, HANDLE_FILE_READ_CHUNK_BYTES)
+      const buffer = this.fs.readBytesSync(filePath, previousPosition, readLength)
 
       // §7.3.4 fragment-buffering: Claude Code appends JSONL while
       // writing, so the incremental delta can end mid-line (trailing
@@ -401,7 +426,22 @@ export class Watcher {
       // it). If the delta has no newline at all, emit nothing and hold the
       // offset (the line is completed on a later change / reconcile tick).
       const lastNewline = buffer.lastIndexOf(0x0a) // '\n'
-      if (lastNewline === -1) return
+      if (lastNewline === -1) {
+        // No complete line in this chunk. If we read a full chunk that
+        // still has no newline, a single line exceeds the chunk cap
+        // (pathological). Skip it by advancing past the chunk so we do
+        // not stall forever re-reading the same bytes; warn for
+        // visibility. Otherwise (short read, line still being appended)
+        // hold the offset and wait for the line to complete.
+        if (readLength >= HANDLE_FILE_READ_CHUNK_BYTES) {
+          watcherLogger.warn(
+            { filePath, chunkBytes: HANDLE_FILE_READ_CHUNK_BYTES },
+            'Single JSONL line exceeds the read-chunk cap; skipping the oversized fragment',
+          )
+          this.filePositions.set(filePath, previousPosition + readLength)
+        }
+        return
+      }
 
       // Work on the byte buffer directly so the offset cursor stays exact
       // even with multi-byte UTF-8 content. `lineStartByte` is the byte
@@ -487,6 +527,10 @@ export class Watcher {
     let settled = false
     const cleanup = () => {
       this.selfVerifyObserver = null
+      if (this.selfVerifyTimer) {
+        clearTimeout(this.selfVerifyTimer)
+        this.selfVerifyTimer = null
+      }
       try {
         this.fs.unlinkSync(markerPath)
       } catch {
@@ -494,7 +538,7 @@ export class Watcher {
       }
     }
 
-    const timer = setTimeout(() => {
+    this.selfVerifyTimer = setTimeout(() => {
       if (settled) return
       settled = true
       // fail-loud: error level. The add subscription may be dead; the
@@ -506,13 +550,12 @@ export class Watcher {
       )
       cleanup()
     }, SELF_VERIFY_TIMEOUT_MS)
-    timer.unref?.()
+    this.selfVerifyTimer.unref?.()
 
     this.selfVerifyObserver = (addedPath: string) => {
       if (settled) return
       if (addedPath !== markerPath) return
       settled = true
-      clearTimeout(timer)
       watcherLogger.info('Self-verify passed: watcher add subscription is alive')
       cleanup()
     }

@@ -128,4 +128,14 @@ describe('loadConfig watcher deep-merge (§7.3.3)', () => {
     expect(cfg.watcher.pollInterval).toBe(1500)
     expect(cfg.watcher.reconcileInterval).toBe(9999)
   })
+
+  it('fractional pollInterval in (0,1) does not floor to a zero-interval watcher', () => {
+    const cfg = loadConfig(createMockFs(JSON.stringify({ watcher: { pollInterval: 0.5 } })))
+    expect(cfg.watcher.pollInterval).toBe(1500) // falls back, not 0
+  })
+
+  it('positive reconcileInterval that rounds to 0 falls back to default (does NOT silently disable)', () => {
+    const cfg = loadConfig(createMockFs(JSON.stringify({ watcher: { reconcileInterval: 0.5 } })))
+    expect(cfg.watcher.reconcileInterval).toBe(10000) // default, not 0 (disable)
+  })
 })
