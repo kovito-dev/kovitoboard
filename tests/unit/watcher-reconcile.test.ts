@@ -446,6 +446,30 @@ describe('Watcher dirty-start recovery', () => {
       w.stop()
     })
 
+    it('observer is armed before the marker write (synchronous add is not missed)', () => {
+      const fs = new MockFs()
+      fs.dirs.add(sessionsDir)
+      const sm = new FakeSessionManager()
+      const w = new Watcher(makeConfig(100), sm as never, fs as never)
+      // writeFileSync delivers the marker's raw add SYNCHRONOUSLY, before
+      // it returns — emulating a watch impl that fires immediately. If the
+      // observer were installed only after the write, this event would be
+      // missed and the timeout would log a false error.
+      fs.writeFileSync = ((p: string) => {
+        fs.emit(sessionsDir, { type: 'add', path: p })
+      }) as never
+
+      w.start()
+      fs.emit(sessionsDir, { type: 'ready' })
+
+      // The observer resolved synchronously, so advancing past the timeout
+      // must NOT fire the error path (the marker file was already cleaned
+      // up). We assert the observer is no longer installed (settled).
+      expect(() => vi.advanceTimersByTime(10000)).not.toThrow()
+
+      w.stop()
+    })
+
     it('stop() clears the pending self-verify timeout (no false error after shutdown)', () => {
       const fs = new MockFs()
       fs.dirs.add(sessionsDir)

@@ -24,16 +24,6 @@ function projectPathToClaudeDirName(projectRoot: string): string {
 /** Default reconciliation scan period when config omits it (session-management.md §7.3.3). */
 const DEFAULT_RECONCILE_INTERVAL = 10000
 
-/**
- * Upper bound (bytes) on a single first-read of an unregistered file in
- * the reconciliation scan (session-management.md §7.3.2.2). Normal Claude
- * Code JSONL files are far smaller; an over-sized file is skipped this
- * tick (with a warn) and re-evaluated next tick rather than read whole
- * into memory. The live-watch path is unaffected (it reads small
- * incremental deltas).
- */
-const RECONCILE_FIRST_READ_MAX_BYTES = 64 * 1024 * 1024 // 64 MiB
-
 /** Timeout (ms) for the startup self-verify marker round-trip (§8.6.1). */
 const SELF_VERIFY_TIMEOUT_MS = 5000
 
@@ -337,20 +327,12 @@ export class Watcher {
         // Recover only: unregistered (live watcher dropped the `add`) or
         // grown past the recorded offset (dropped `change`). handleFile is
         // idempotent (§7.3.4 commit boundary), so double-processing with
-        // the live watch is safe.
-        if (recorded === undefined) {
-          // First read of an unregistered file. Bound the read so an
-          // anomalously huge file does not exhaust memory (§7.3.2.2);
-          // skip this tick and re-evaluate next tick.
-          if (currentSize > RECONCILE_FIRST_READ_MAX_BYTES) {
-            watcherLogger.warn(
-              { filePath, size: currentSize, max: RECONCILE_FIRST_READ_MAX_BYTES },
-              'Reconcile: unregistered file exceeds first-read cap; deferring',
-            )
-            continue
-          }
-          this.handleFile(filePath)
-        } else if (currentSize > recorded) {
+        // the live watch is safe. handleFile bounds its own read to a
+        // fixed chunk and advances filePositions per committed line
+        // (§7.3.2.2 / §8.10 R3), so even an anomalously large unregistered
+        // file makes forward progress across ticks instead of stalling —
+        // no per-tick deferral / log spam here.
+        if (recorded === undefined || currentSize > recorded) {
           this.handleFile(filePath)
         }
       } catch (err) {
@@ -523,16 +505,6 @@ export class Watcher {
 
     const markerPath = join(watchDir, `.kovitoboard-watch-selftest-${randomUUID()}`)
 
-    // Exclusive create (O_CREAT | O_EXCL via 'wx'). EEXIST → skip with
-    // warn (do not error: this is not proof of degrade). The marker has
-    // no .jsonl extension so it is never registered as a session.
-    try {
-      this.fs.writeFileSync(markerPath, '', { flag: 'wx', mode: 0o600 })
-    } catch (err) {
-      watcherLogger.warn({ err, markerPath }, 'Self-verify skipped: could not create marker file')
-      return
-    }
-
     let settled = false
     const cleanup = () => {
       this.selfVerifyObserver = null
@@ -547,6 +519,20 @@ export class Watcher {
       }
     }
 
+    // Install the observer and arm the timeout BEFORE creating the marker
+    // file. If the watch implementation delivers the marker's `add`
+    // synchronously (or otherwise before the write call returns), arming
+    // the observer first ensures the event is not missed and a false
+    // "subscription may be dead" error is not logged. The observer matches
+    // by exact path, so installing it early cannot spuriously match
+    // another file's add.
+    this.selfVerifyObserver = (addedPath: string) => {
+      if (settled) return
+      if (addedPath !== markerPath) return
+      settled = true
+      watcherLogger.info('Self-verify passed: watcher add subscription is alive')
+      cleanup()
+    }
     this.selfVerifyTimer = setTimeout(() => {
       if (settled) return
       settled = true
@@ -561,12 +547,17 @@ export class Watcher {
     }, SELF_VERIFY_TIMEOUT_MS)
     this.selfVerifyTimer.unref?.()
 
-    this.selfVerifyObserver = (addedPath: string) => {
-      if (settled) return
-      if (addedPath !== markerPath) return
+    // Exclusive create (O_CREAT | O_EXCL via 'wx'). EEXIST → skip with
+    // warn (do not error: this is not proof of degrade). The marker has
+    // no .jsonl extension so it is never registered as a session. On
+    // failure, tear down the observer/timer we armed above.
+    try {
+      this.fs.writeFileSync(markerPath, '', { flag: 'wx', mode: 0o600 })
+    } catch (err) {
+      watcherLogger.warn({ err, markerPath }, 'Self-verify skipped: could not create marker file')
       settled = true
-      watcherLogger.info('Self-verify passed: watcher add subscription is alive')
       cleanup()
+      return
     }
   }
 }
