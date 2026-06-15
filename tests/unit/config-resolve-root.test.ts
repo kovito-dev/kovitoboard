@@ -104,6 +104,26 @@ describe('resolveProjectRoot (DEC-009)', () => {
     expect(resolveProjectRoot(fs)).toBe(originalCwd)
   })
 
+  // `readPersistedProjectRoot` does not go through `validateSetting()`, so
+  // the absolute-path invariant (`data-persistence.md` §6.1.1) is enforced
+  // at this read site. A relative `project.path` must be rejected
+  // fail-loud (return null → fall through to cwd-fallback) instead of being
+  // resolved against the launch cwd, which would retarget the project root.
+  it('ケース3c: setting.json の project.path が相対パスならスキップ（絶対パス強制）', () => {
+    const settingPath = `${originalCwd}/.kovitoboard/setting.json`
+    for (const relPath of ['relative/folder', './dot', '../parent']) {
+      _resetProjectRootCache()
+      const fs = createMockFs({
+        [settingPath]: JSON.stringify({
+          version: '1.1',
+          project: { name: 'test', description: '', path: relPath },
+        }),
+      })
+      // Falls through to cwd-fallback rather than resolve(relPath) against cwd.
+      expect(resolveProjectRoot(fs)).toBe(originalCwd)
+    }
+  })
+
   it('ケース4: すべて無ければ process.cwd()', () => {
     const fs = createMockFs()
     expect(resolveProjectRoot(fs)).toBe(originalCwd)

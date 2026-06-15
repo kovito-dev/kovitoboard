@@ -63,7 +63,7 @@
 
 import { spawn } from 'child_process'
 import { createServer as createNetServer } from 'net'
-import { resolve, dirname, sep as pathSep } from 'path'
+import { resolve, dirname, sep as pathSep, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import {
@@ -218,7 +218,17 @@ function readPersistedProjectRoot(baseDir) {
   try {
     const data = JSON.parse(raw)
     const path = data && data.project && data.project.path
-    if (typeof path === 'string' && path.length > 0) return resolve(path)
+    // `project.path` must be an absolute path. This minimal parser is the
+    // literal inline copy of `config.ts:readPersistedProjectRoot` (the
+    // "exact-match" supervisor/server contract) and does NOT go through
+    // `validateSetting()`, so the absolute-path invariant
+    // (`data-persistence.md` §6.1.1) is enforced here. A relative value
+    // would be resolved against the launch cwd, retargeting the project
+    // root and every derived side effect (PID/log dirs, app symlink, tmux
+    // session) at the wrong directory. Reject it fail-loud (return null).
+    if (typeof path === 'string' && path.length > 0 && isAbsolute(path)) {
+      return resolve(path)
+    }
     return null
   } catch {
     return null

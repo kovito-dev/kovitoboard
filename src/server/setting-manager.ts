@@ -571,6 +571,21 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   if (typeof project.description !== 'string') return false
   if (typeof project.path !== 'string') return false
   if (project.path.length === 0) return false
+  // `project.path` MUST be an absolute path. Symmetry with the
+  // `additionalWorkRoots` / `workRootsMetadata` read-time absolute-path
+  // enforcement above (`data-persistence.md` §6.1.1).
+  //
+  // Note: the project-root resolution chain
+  // (`config.ts:readPersistedProjectRoot` / the supervisor's inline copy
+  // in `kb-start.mjs`) does NOT go through `validateSetting()` — it uses
+  // its own minimal parser — so those resolvers enforce the absolute-path
+  // invariant directly at their own read site. This check is the
+  // defense-in-depth layer for the validated read path (`readSetting()`,
+  // used by config-routes and other write-time consumers): a relative
+  // value here is fail-loud (read returns null → re-onboarding, no data
+  // loss). Onboarding always records an absolute cwd, so this only
+  // rejects hand-edited / malformed files.
+  if (!isAbsolute(project.path)) return false
 
   // locale
   if (obj.locale !== 'ja' && obj.locale !== 'en') return false
