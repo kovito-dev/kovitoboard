@@ -283,6 +283,18 @@ function escapeForLog(s) {
 }
 
 /**
+ * Render a path for a suggested shell command that is BOTH shell-safe and
+ * terminal-safe: single-quote it (neutralizes shell metacharacters) then
+ * hex-escape any remaining control bytes (neutralizes log/terminal
+ * injection). For the normal control-free path this is exactly `'<path>'`
+ * and pastes correctly; a pathological path with control bytes renders inert
+ * `\xHH` instead of a raw newline / ANSI sequence.
+ */
+function shellAndLogSafe(s) {
+  return escapeForLog(shellQuote(s))
+}
+
+/**
  * Block until either the PID file disappears (graceful shutdown
  * confirmation) or `timeoutMs` elapses. Returns true on disappear,
  * false on timeout.
@@ -1494,7 +1506,7 @@ async function main() {
           `[kb-stop]        Refusing to send any signal: the PID file may be stale or\n` +
           `[kb-stop]        tampered and this PID could belong to a different process.\n` +
           `[kb-stop]        Inspect the PID file and remove it if no supervisor is running\n` +
-          `[kb-stop]        (rm -- ${shellQuote(PID_FILE_PATH)}), or use --all to opt into the\n` +
+          `[kb-stop]        (rm -- ${shellAndLogSafe(PID_FILE_PATH)}), or use --all to opt into the\n` +
           `[kb-stop]        host-wide supervisor sweep.`,
       )
       process.exit(2)

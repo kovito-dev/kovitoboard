@@ -418,6 +418,19 @@ function escapeForLog(s) {
 }
 
 /**
+ * Render a path for a suggested shell command that is BOTH shell-safe and
+ * terminal-safe: single-quote it (neutralizes shell metacharacters) then
+ * hex-escape any remaining control bytes (neutralizes log/terminal
+ * injection). For the normal control-free path this is exactly
+ * `'<path>'` and pastes correctly; a pathological path containing control
+ * bytes renders inert `\xHH` instead of a raw newline / ANSI sequence (the
+ * operator is told to inspect and remove the file manually in that case).
+ */
+function shellAndLogSafe(s) {
+  return escapeForLog(shellQuote(s))
+}
+
+/**
  * Examine an existing PID file and either bail out (alive supervisor or
  * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
  * PID file). Spec process-lifecycle §6.4.
@@ -457,7 +470,7 @@ function checkExistingSupervisor() {
         `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
         `[kb-start]        against the same project.\n` +
         `[kb-start]        Inspect it, confirm no supervisor is running, then remove it:\n` +
-        `[kb-start]          rm -- ${shellQuote(PID_FILE_PATH)}\n` +
+        `[kb-start]          rm -- ${shellAndLogSafe(PID_FILE_PATH)}\n` +
         `[kb-start]        and re-run the start command.`,
     )
     process.exit(1)
