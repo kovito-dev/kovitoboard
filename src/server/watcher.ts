@@ -115,32 +115,45 @@ export class Watcher {
     if (!this.fs.existsSync(projectSessionsDir)) {
       watcherLogger.info('Session directory not yet created. Watching parent directory and waiting.')
       const projectsDir = join(this.claudeDir, 'projects')
-      // Watch the parent directory and switch when the target directory appears
-      this.watchHandle = this.fs.watch(
-        projectsDir,
-        (event: WatchEvent) => {
-          if (event.type === 'addDir') {
-            if (basename(event.path) === claudeDirName) {
-              watcherLogger.info({ path: event.path }, 'Session directory detected')
-              this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
+      // Watch the parent directory and switch when the target directory
+      // appears. Guard the attach: a synchronous fs.watch() throw (e.g.
+      // EMFILE / EPERM) must NOT escape start() and crash the server
+      // (start() is called directly from index.ts). On failure we warn and
+      // fall through to the reconcile scan, which was already started above
+      // and polls existsSync for the sessions dir to appear (absent-dir
+      // mode §7.3.2.1), then transitions to live watching itself.
+      try {
+        this.watchHandle = this.fs.watch(
+          projectsDir,
+          (event: WatchEvent) => {
+            if (event.type === 'addDir') {
+              if (basename(event.path) === claudeDirName) {
+                watcherLogger.info({ path: event.path }, 'Session directory detected')
+                this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
+              }
+            } else if (event.type === 'ready') {
+              // Re-check if the directory exists at ready time
+              if (this.fs.existsSync(projectSessionsDir)) {
+                this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
+              } else {
+                watcherLogger.info('Initial scan complete (no sessions)')
+                this.sessionManager.setInitialized()
+              }
             }
-          } else if (event.type === 'ready') {
-            // Re-check if the directory exists at ready time
-            if (this.fs.existsSync(projectSessionsDir)) {
-              this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
-            } else {
-              watcherLogger.info('Initial scan complete (no sessions)')
-              this.sessionManager.setInitialized()
-            }
+          },
+          {
+            usePolling,
+            pollInterval,
+            ignoreInitial: false,
+            depth: 0,
           }
-        },
-        {
-          usePolling,
-          pollInterval,
-          ignoreInitial: false,
-          depth: 0,
-        }
-      )
+        )
+      } catch (err) {
+        watcherLogger.warn(
+          { err, projectsDir },
+          'Failed to attach parent-directory watch; reconcile scan will poll for the sessions dir',
+        )
+      }
       return
     }
 

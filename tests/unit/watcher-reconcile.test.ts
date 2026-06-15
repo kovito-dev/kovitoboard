@@ -336,6 +336,31 @@ describe('Watcher dirty-start recovery', () => {
     w.stop()
   })
 
+  it('synchronous fs.watch failure in absent-dir mode does not crash start(); reconcile recovers', () => {
+    const fs = new MockFs()
+    // sessions dir absent → start() watches the parent projects dir.
+    const projectsDir = join('/home/test/.claude', 'projects')
+    const sm = new FakeSessionManager()
+
+    const origWatch = fs.watch.bind(fs)
+    fs.watch = ((p: string, h: (e: WatchEvent) => void, o?: WatchOptions) => {
+      if (p === projectsDir) throw new Error('EMFILE: too many open files')
+      return origWatch(p, h, o)
+    }) as never
+
+    const w = new Watcher(makeConfig(100), sm as never, fs as never)
+    // Must NOT throw out of start() (start() is called directly at startup).
+    expect(() => w.start()).not.toThrow()
+
+    // The reconcile scan still recovers: when the sessions dir appears, it
+    // transitions to live watching.
+    fs.dirs.add(sessionsDir)
+    vi.advanceTimersByTime(100)
+    expect(fs.handlers.has(sessionsDir)).toBe(true)
+
+    w.stop()
+  })
+
   it('synchronous fs.watch failure does not latch the watcher inert; reconcile retries', () => {
     const fs = new MockFs()
     fs.dirs.add(sessionsDir)
