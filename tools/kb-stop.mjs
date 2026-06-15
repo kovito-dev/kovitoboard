@@ -1054,7 +1054,7 @@ function selfTmuxSessionName() {
  *   snapshotUnavailable — true when the lineage snapshot could not be
  *                  taken; orphan/zombie detection was skipped.
  */
-function reportResidue(pidEntry, lineageSnapshot) {
+function reportResidue(pidEntry, lineageSnapshot, supervisorRoots = new Set()) {
   const exitResidue = []
   const advisories = []
   const killable = []
@@ -1073,6 +1073,12 @@ function reportResidue(pidEntry, lineageSnapshot) {
   // --- live orphans + zombies (lineage snapshot anchor, §9.1 / §9.1.2) ---
   if (lineageSnapshot) {
     for (const entry of lineageSnapshot.values()) {
+      // The supervisor roots are the stop targets, not orphans. On a
+      // --force SIGKILL they may briefly linger (dying / zombie) before
+      // the kernel reaps them, so excluding them here keeps the residue
+      // diagnostic from reporting a successfully-killed supervisor as
+      // residue and making the exit code timing-dependent.
+      if (supervisorRoots.has(entry.pid)) continue
       // The supervisor PID itself is expected to be gone by now; a PID
       // that exited is not residue.
       if (!isPidAlive(entry.pid)) continue
@@ -1405,8 +1411,9 @@ async function main() {
         `run). Use the normal PID-file stop for full residue diagnostics.`,
     )
   }
+  const supervisorRootSet = new Set(supervisors)
   let { exitResidue, advisories, killable, snapshotUnavailable } =
-    reportResidue(pidEntry, lineageSnapshot)
+    reportResidue(pidEntry, lineageSnapshot, supervisorRootSet)
 
   // --force: SIGKILL only lineage-proven live orphans. Zombies are never
   // reaped (OS/init responsibility, §9.1.2); unrelated / rebound port
@@ -1429,6 +1436,7 @@ async function main() {
     ;({ exitResidue, advisories, snapshotUnavailable } = reportResidue(
       pidEntry,
       lineageSnapshot,
+      supervisorRootSet,
     ))
   }
 
