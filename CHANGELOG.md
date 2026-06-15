@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-15
+
+### Fixed
+
+- When you reopen KovitoBoard and send the first message to an existing
+  session, the message is now delivered as soon as the agent is ready,
+  instead of sitting unsent in the input box until you press Enter
+  manually.
+- Agents spawned by KovitoBoard now keep a persistent transcript when
+  KovitoBoard itself is launched from inside a Claude Code session.
+  Previously, inherited `CLAUDE_CODE_*` environment variables prevented
+  the transcript from being written, leaving the session view silently
+  blank.
+- A plain `npm start` after onboarding (without `--project-root`) now
+  finds and uses your `.kovitoboard/setting.json` instead of failing to
+  resolve the project root. KovitoBoard also fails loudly, rather than
+  starting in a broken state, when the resolved configuration points at
+  the KovitoBoard clone itself or reaches it through a symlinked alias.
+- The header no longer shows a false "degraded" warning immediately after
+  startup when no session has been opened yet. A missing tmux is now
+  treated as healthy while there are no active sessions, and the warning
+  appears only when tmux actually goes down.
+
 ## [0.2.5] - 2026-06-15
 
 ### Changed

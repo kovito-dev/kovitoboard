@@ -7,6 +7,7 @@ import { tmuxLogger, redactSensitiveTokens } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
+import { scrubNestedDetectionEnv } from './nested-detection-env'
 
 interface ManagedProcess {
   id: string
@@ -127,13 +128,11 @@ export class ClaudeBridge extends EventEmitter {
       `[claude-bridge] Starting: claude ${safeArgs} <message:${args[args.length - 1].length}chars>`,
     )
 
-    // Remove Claude Code related env vars to avoid nested instance detection
-    const env = { ...process.env }
-    for (const key of Object.keys(env)) {
-      if (key.startsWith('CLAUDE') || key.startsWith('ANTHROPIC')) {
-        delete env[key]
-      }
-    }
+    // Strip Claude Code's nested-detection signal vars so the child
+    // `claude` does not mistake itself for a nested instance and skip
+    // writing its transcript. `ANTHROPIC_*` auth vars are preserved —
+    // see `session-management.md` §8.9 (SSOT) and the shared predicate.
+    const env = scrubNestedDetectionEnv(process.env)
 
     const child = spawn('claude', args, {
       cwd,
