@@ -426,6 +426,53 @@ function listAllProcesses() {
 }
 
 /**
+ * Verify that `pid` is a live supervisor of THIS clone — i.e. a node
+ * runtime whose entry script realpath-resolves to this clone's
+ * `tools/kb-start.mjs` — using the same argv / realpath fence as
+ * `pgrepSupervisorPids()`. Used before trusting a PID-file root as the
+ * lineage root + force-kill anchor, so a stale / tampered PID file cannot
+ * broaden the kill scope onto an unrelated same-user process tree.
+ *
+ * Returns:
+ *   'ok'        — verified live supervisor of this clone
+ *   'dead'      — the PID is not alive (ESRCH)
+ *   'mismatch'  — alive, but not a kb-start.mjs supervisor of this clone
+ *   'unknown'   — alive, but argv / cwd could not be read to decide
+ *                 (e.g. /proc-less platform with a relative entry script)
+ */
+function classifySupervisorRoot(pid) {
+  if (!isPidAlive(pid)) return 'dead'
+  const argv = readArgvFromProc(pid)
+  // Without /proc argv we cannot apply the fence; do not silently trust.
+  if (!argv || argv.length < 2) return 'unknown'
+  if (!isNodeRuntime(argv[0])) return 'mismatch'
+  const scriptIdx = findEntryScriptIndex(argv)
+  if (scriptIdx === -1) return 'mismatch'
+  const scriptArg = argv[scriptIdx]
+  let scriptAbs
+  if (isAbsolute(scriptArg)) {
+    scriptAbs = scriptArg
+  } else {
+    const supCwd = readCwdFromProc(pid)
+    if (!supCwd) return 'unknown' // cannot resolve a relative script safely
+    scriptAbs = resolve(supCwd, scriptArg)
+  }
+  let scriptResolved
+  try {
+    scriptResolved = realpathSync(scriptAbs)
+  } catch {
+    scriptResolved = scriptAbs
+  }
+  let expected
+  try {
+    expected = realpathSync(resolve(repoRoot, 'tools', 'kb-start.mjs'))
+  } catch {
+    expected = resolve(repoRoot, 'tools', 'kb-start.mjs')
+  }
+  return scriptResolved === expected ? 'ok' : 'mismatch'
+}
+
+/**
  * Build the descendant PID closure rooted at `rootPid` plus an identity
  * tuple per PID (§9.1.0). Returns `null` when the process table cannot be
  * read (callers then skip orphan/zombie detection + WARN, but the
@@ -1299,16 +1346,41 @@ async function main() {
   // (the tmux session is torn down later, which would make the pane PID
   // tree unrecoverable without a host-wide scan). Covers EVERY targeted
   // supervisor — in --all / pgrep mode pgrep may discover more than one,
-  // so orphan/zombie detection is not limited to the first. Failure
-  // degrades to skip orphan/zombie detection with a WARN, but the
-  // PID-file `ports` post-flight still runs.
+  // so orphan/zombie detection is not limited to the first.
+  //
+  // Provenance gate (CodeX attempt 6): a PID-file root is only trusted as
+  // a lineage / force-kill anchor when it is a LIVE supervisor of this
+  // clone (`classifySupervisorRoot`). A stale / tampered PID file (the
+  // recorded PID is dead, reused, or now an unrelated process) must not
+  // let us snapshot + force-kill an unrelated process tree, and a dead
+  // root yields a useless single-node snapshot that would mislabel a
+  // reparented child's port as "unrelated". In those cases we leave
+  // `lineageSnapshot` null so reportResidue degrades to ownership-unknown
+  // (no exit-4, no kill). `--all` roots come from `pgrepSupervisorPids()`,
+  // which already applies the same argv/realpath fence, so they are
+  // pre-validated and skip the re-check here.
   let lineageSnapshot = null
   if (!args.dryRun && supervisors.length > 0) {
-    lineageSnapshot = buildLineageSnapshotForRoots(supervisors)
-    if (lineageSnapshot == null) {
-      console.warn(
-        `[kb-stop] WARN: lineage snapshot unavailable; skipping orphan/zombie diagnostics`,
-      )
+    let snapshotRoots = supervisors
+    if (pidFromFile != null && !args.all) {
+      const kind = classifySupervisorRoot(pidFromFile)
+      if (kind === 'mismatch' || kind === 'dead') {
+        console.warn(
+          `[kb-stop] WARN: PID-file root pid ${pidFromFile} is ${
+            kind === 'dead' ? 'no longer alive' : 'not a supervisor of this clone'
+          }; skipping lineage-anchored orphan/zombie/force diagnostics ` +
+            `(provenance cannot be established).`,
+        )
+        snapshotRoots = []
+      }
+    }
+    if (snapshotRoots.length > 0) {
+      lineageSnapshot = buildLineageSnapshotForRoots(snapshotRoots)
+      if (lineageSnapshot == null) {
+        console.warn(
+          `[kb-stop] WARN: lineage snapshot unavailable; skipping orphan/zombie diagnostics`,
+        )
+      }
     }
   }
 
