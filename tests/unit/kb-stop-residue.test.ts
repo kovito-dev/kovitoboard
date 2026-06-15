@@ -21,7 +21,7 @@
  * recorded port) and assert the exit code / advisory behaviour.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -35,21 +35,33 @@ const REPO_ROOT = resolve(__dirname, '..', '..')
 const KB_STOP = resolve(REPO_ROOT, 'tools', 'kb-stop.mjs')
 
 /**
- * Capability probe: this suite needs to create detached subprocesses (the
- * decoy supervisors are re-parented to init). On restricted / sandboxed
- * runners `detached: true` can fail with EPERM, so probe it once and skip
- * the suite cleanly rather than failing every test before the assertions.
+ * Capability probe: this suite needs the exact launcher pattern the decoy
+ * uses — an `execFileSync(node -e <launcher>)` that itself performs a
+ * `spawn(..., { detached: true })`. On restricted / sandboxed runners that
+ * nested detached spawn can fail with EPERM. Probe the SAME path (outer
+ * execFileSync + inner detached spawn that reports the child pid) so the
+ * probe cannot pass while the real setup fails; skip the suite cleanly
+ * otherwise.
  */
 function detachedSpawnCapable(): boolean {
-  try {
-    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], {
+  const launcher = `
+    const { spawn } = require('child_process');
+    const c = spawn(process.execPath, ['-e', 'process.exit(0)'], {
       stdio: 'ignore',
       detached: true,
-    })
-    if (child.pid == null) return false
-    child.unref()
+    });
+    process.stdout.write(String(c.pid == null ? '' : c.pid));
+    c.unref();
+  `
+  try {
+    const out = execFileSync(process.execPath, ['-e', launcher], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const pid = Number(out)
+    if (!Number.isInteger(pid) || pid <= 0) return false
     try {
-      process.kill(child.pid, 'SIGKILL')
+      process.kill(pid, 'SIGKILL')
     } catch {
       // already exited
     }
