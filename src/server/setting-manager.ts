@@ -571,6 +571,18 @@ export function validateSetting(data: unknown): data is KovitoboardSetting {
   if (typeof project.description !== 'string') return false
   if (typeof project.path !== 'string') return false
   if (project.path.length === 0) return false
+  // `project.path` MUST be an absolute path. Symmetry with the
+  // `additionalWorkRoots` / `workRootsMetadata` read-time absolute-path
+  // enforcement above: a relative `project.path` is resolved by the
+  // downstream `readPersistedProjectRoot()` (`config.ts`) and the
+  // supervisor via `resolve(path)` (single arg = server process cwd),
+  // which would make the project root — and every derived side effect
+  // (PID/log dirs, app symlink, tmux session) — depend on the launch
+  // cwd and potentially point at the wrong project. Onboarding always
+  // records an absolute cwd, so this only rejects hand-edited /
+  // malformed files (fail-loud: read returns null and triggers
+  // re-onboarding, no data loss).
+  if (!isAbsolute(project.path)) return false
 
   // locale
   if (obj.locale !== 'ja' && obj.locale !== 'en') return false
