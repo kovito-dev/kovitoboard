@@ -1392,6 +1392,19 @@ async function main() {
   //   - exitResidue: lineage-proven KB residue → exit 4 (§7.5)
   //   - advisories:  zombies (OS/init reaps) + unrelated port owners →
   //                  reported but do NOT affect the exit code (§9.1.1/§9.1.2)
+  //
+  // In --all mode there is no per-project PID-file anchor, so the
+  // tmux-session / port post-flight cannot run (orphan/zombie detection
+  // still works off the lineage snapshot). This is the accepted
+  // degradation of the host-wide opt-in path (§7.4 / §9.1); make it
+  // visible so a clean exit is not mistaken for a full residue check.
+  if (pidEntry == null && supervisors.length > 0) {
+    console.warn(
+      `[kb-stop] WARN: --all mode has no PID-file anchor; tmux-session / ` +
+        `port residue checks are skipped (orphan/zombie diagnostics still ` +
+        `run). Use the normal PID-file stop for full residue diagnostics.`,
+    )
+  }
   let { exitResidue, advisories, killable, snapshotUnavailable } =
     reportResidue(pidEntry, lineageSnapshot)
 
@@ -1430,10 +1443,21 @@ async function main() {
     for (const r of exitResidue) {
       console.warn(`[kb-stop]   (${r.label}) ${r.line}`)
     }
+    // The lineage anchor (§9.1.0) is held only in this kb-stop process's
+    // memory and is consumed when the supervisor terminates, so a `--force`
+    // RERUN after this exit-4 run cannot re-acquire it to target these
+    // orphans. `--force` must be supplied on the SAME invocation that
+    // performs the shutdown (process-lifecycle.md §9.2). Advertise that,
+    // plus manual termination of the listed pids as the certain fallback.
     console.warn(
-      `[kb-stop] Re-run \`npm run kb:stop -- --force\` to terminate ` +
-        `lineage-proven KB live processes\n` +
-        `[kb-stop] (zombies and unrelated processes are left as-is).`,
+      `[kb-stop] These were detected after shutdown; the lineage anchor for ` +
+        `this run is now gone, so a \`--force\` rerun cannot target them.\n` +
+        `[kb-stop] To have KB terminate lineage-proven live processes ` +
+        `automatically, re-run from a clean state with --force on the first ` +
+        `invocation (\`npm run kb:stop -- --force\`).\n` +
+        `[kb-stop] Otherwise, terminate the listed pids manually (e.g. ` +
+        `\`kill <pid>\`). Zombies are reaped by the OS/init; unrelated ` +
+        `processes are never touched.`,
     )
     process.exit(4)
   }
