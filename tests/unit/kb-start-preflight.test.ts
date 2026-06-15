@@ -47,13 +47,25 @@ function cleanRepoAppSymlink(): void {
   }
 }
 
-function tmuxAvailable(): boolean {
+/**
+ * Capability probe: the suite needs `new-session` / `kill-session`
+ * permission, not just a tmux binary. `tmux -V` can succeed on sandboxed
+ * runners where session creation is denied, so actually create and remove
+ * a throwaway session and skip the suite if that is not permitted.
+ */
+function tmuxSessionCapable(): boolean {
+  const probe = `kb-preflight-probe-${process.pid}-${Date.now()}`
   try {
-    execFileSync('tmux', ['-V'], { stdio: 'ignore' })
-    return true
+    execFileSync('tmux', ['new-session', '-d', '-s', probe], { stdio: 'ignore' })
   } catch {
     return false
   }
+  try {
+    execFileSync('tmux', ['kill-session', '-t', probe], { stdio: 'ignore' })
+  } catch {
+    // created but could not clean up — still capable; best-effort cleanup.
+  }
+  return true
 }
 
 function sessionNameFor(projectRoot: string): string {
@@ -82,12 +94,17 @@ function runKbStart(projectRoot: string, extraArgs: string[] = []) {
         ...process.env,
         // Avoid the test runner's own env shadowing resolution.
         KOVITOBOARD_PROJECT_ROOT: '',
+        // The production tmux-name resolution is gated on these E2E vars;
+        // a polluted runner env could otherwise make kb-start check a
+        // different session name than `sessionNameFor(workDir)`.
+        KB_E2E_MODE: '',
+        KOVITOBOARD_E2E_TMUX_SESSION: '',
       },
     },
   )
 }
 
-const describeTmux = tmuxAvailable() ? describe : describe.skip
+const describeTmux = tmuxSessionCapable() ? describe : describe.skip
 
 describeTmux('tools/kb-start.mjs — §6.6.2 tmux session pre-flight', () => {
   let workDir: string

@@ -1097,7 +1097,24 @@ function reportResidue(pidEntry, lineageSnapshot) {
         label: 'orphan',
         line: `pid=${entry.pid} cmd=${entry.comm ?? '?'} (orphan, lineage proven)`,
       })
-      killable.push(entry.pid)
+      // `--force` may only SIGKILL an orphan whose identity rests on a
+      // NON-REUSABLE kernel key (Linux `/proc/<pid>/stat` starttime,
+      // recorded as `tick:`). The macOS / non-procfs `ps -o lstart`
+      // fallback is second-precision, so a same-second PID reuse of
+      // another process with the same comm could pass identityMatches();
+      // killing by PID on that evidence risks signalling an unrelated
+      // process. Such orphans are still reported (exit 4) but excluded
+      // from the force-kill set, fail-safe toward not mis-killing.
+      const strongIdentity =
+        typeof now?.starttime === 'string' && now.starttime.startsWith('tick:')
+      if (strongIdentity) {
+        killable.push(entry.pid)
+      } else {
+        advisories.push({
+          label: 'orphan not force-killable',
+          line: `pid=${entry.pid} identity is second-precision (non-procfs); --force will not SIGKILL it to avoid mis-targeting a reused PID`,
+        })
+      }
     }
   }
 
