@@ -51,6 +51,21 @@ export function createConfigRouter(
   // PUT /api/config/setting
   router.put('/setting', async (req, res) => {
     const body = req.body
+    // SECURITY + contract: overwrite the client-supplied `project.path`
+    // with the supervisor-trusted (absolute) `projectRoot` BEFORE
+    // validation. `validateSetting` now requires `project.path` to be
+    // absolute (`data-persistence.md` §6.1.1), but for this route the
+    // field is server-overwritten anyway — legitimate clients echo back
+    // the trusted root they read from `GET /api/config/project-root`, and
+    // a crafted PUT must not be able to persist an attacker-controlled
+    // path. Normalizing first keeps the request-body lenient about
+    // `project.path` (no 400 for a relative/placeholder value that we are
+    // about to discard) while guaranteeing the persisted value is the
+    // trusted absolute root. See the prior inline note that used to sit
+    // just before the write.
+    if (body && typeof body === 'object' && body.project && typeof body.project === 'object') {
+      body.project = { ...body.project, path: projectRoot }
+    }
     if (!validateSetting(body)) {
       res.status(400).json({ error: 'Invalid setting data' })
       return
@@ -106,19 +121,14 @@ export function createConfigRouter(
         }
       }
 
-      // SECURITY: overwrite the client-supplied `project.path` with
-      // the supervisor-trusted `projectRoot` before persisting.
-      // `validateSetting` only checks the type and non-emptiness,
-      // not the location, so a crafted PUT could otherwise persist
-      // an attacker-controlled path into `.kovitoboard/setting.json`
-      // and influence later code that reads `setting.project.path`
-      // (notably `config.ts` `resolveProjectRootWithSource`
-      // priority-3 when CLI / env are unset). Since the wizard
-      // reads its displayed value from `GET /api/config/project-root`
-      // (which already returns the supervisor-trusted root),
-      // legitimate clients send the same value we are about to
-      // overwrite — this normalization is a no-op for them and a
-      // defense-in-depth strip for everything else.
+      // SECURITY: `project.path` has already been overwritten with the
+      // supervisor-trusted `projectRoot` at the top of this handler
+      // (before validation), so a crafted PUT can never persist an
+      // attacker-controlled path into `.kovitoboard/setting.json` and
+      // influence later code that reads `setting.project.path` (notably
+      // `config.ts` `resolveProjectRootWithSource` priority-3 when CLI /
+      // env are unset). Re-assert it here defensively in case any of the
+      // merge steps above replaced `body.project`.
       body.project = { ...body.project, path: projectRoot }
 
       // Persist the new setting first so the onboarding-completion
