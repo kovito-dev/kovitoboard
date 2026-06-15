@@ -61,9 +61,9 @@
  * @see DEC-016 (dev-mode canonical)
  */
 
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import { createServer as createNetServer } from 'net'
-import { resolve, dirname, sep as pathSep } from 'path'
+import { resolve, dirname, sep as pathSep, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import {
@@ -85,6 +85,7 @@ import {
   decideDetach,
   buildDetachedSpawnArgs,
 } from './kb-detach-helpers.mjs'
+import { escapeForLog, removalHint } from './kb-path-safety.mjs'
 
 const RESTART_EXIT_CODE = 42
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -218,7 +219,17 @@ function readPersistedProjectRoot(baseDir) {
   try {
     const data = JSON.parse(raw)
     const path = data && data.project && data.project.path
-    if (typeof path === 'string' && path.length > 0) return resolve(path)
+    // `project.path` must be an absolute path. This minimal parser is the
+    // literal inline copy of `config.ts:readPersistedProjectRoot` (the
+    // "exact-match" supervisor/server contract) and does NOT go through
+    // `validateSetting()`, so the absolute-path invariant
+    // (`data-persistence.md` §6.1.1) is enforced here. A relative value
+    // would be resolved against the launch cwd, retargeting the project
+    // root and every derived side effect (PID/log dirs, app symlink, tmux
+    // session) at the wrong directory. Reject it fail-loud (return null).
+    if (typeof path === 'string' && path.length > 0 && isAbsolute(path)) {
+      return resolve(path)
+    }
     return null
   } catch {
     return null
@@ -379,18 +390,49 @@ function removePidFile() {
 }
 
 /**
- * Examine an existing PID file and either bail out (alive supervisor),
- * warn + overwrite (stale / corrupt PID file), or do nothing (no PID
- * file). Spec process-lifecycle §6.4.
+ * Examine an existing PID file and either bail out (alive supervisor or
+ * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
+ * PID file). Spec process-lifecycle §6.4.
  */
 function checkExistingSupervisor() {
   const existing = readPidFile()
   if (!existing) return
   if (existing.broken) {
-    console.warn(
-      `[kb-start] WARN: ${existing.broken === 'parse-failed' ? 'corrupt' : 'unreadable'} PID file at ${PID_FILE_PATH}; overwriting`,
+    // Corrupt / unreadable / schema-invalid PID file: fail-loud (ERROR +
+    // exit 1) instead of overwriting (process-lifecycle.md v1.8 §6.4,
+    // BL-2026-244). A corrupt PID file can hide a still-alive supervisor
+    // whose pid we cannot parse, so the multi-launch refuse (§6.4 alive
+    // branch) cannot fire — overwriting would open a single-supervisor
+    // window where a second supervisor starts against the same
+    // projectRoot. We refuse and tell the operator exactly which file to
+    // remove. This exits 1, joining the existing refuse series (alive-pid
+    // multi-launch §6.4 / tmux pre-flight §6.6.2); no dedicated code is
+    // minted because the actionable signal is the message body (the path
+    // to delete), not the code.
+    //
+    // Unlike the stale (dead-pid) branch below, corrupt files are NOT
+    // overwritten: stale files record a parseable-but-dead pid (no
+    // single-supervisor window), whereas a corrupt file's liveness is
+    // unknowable. The atomic temp-file + rename write (`writePidFile`)
+    // means a corrupt file only arises from disk corruption / external
+    // tampering / an asymmetric crash, so this fail-loud cost is bounded.
+    const category =
+      existing.broken === 'parse-failed'
+        ? 'corrupt (JSON parse failed)'
+        : existing.broken === 'read-failed'
+          ? 'unreadable (read failed)'
+          : 'invalid (schema mismatch)'
+    console.error(
+      `[kb-start] ERROR: the KovitoBoard supervisor PID file is ${category}.\n` +
+        `[kb-start]        Path: ${escapeForLog(PID_FILE_PATH)}\n` +
+        `[kb-start]        Refusing to start: a corrupt PID file may hide a still-running\n` +
+        `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
+        `[kb-start]        against the same project.\n` +
+        `[kb-start]        Inspect it, confirm no supervisor is running, then remove it.\n` +
+        removalHint(PID_FILE_PATH, '[kb-start]        ') +
+        `\n[kb-start]        Then re-run the start command.`,
     )
-    return
+    process.exit(1)
   }
   if (isPidAlive(existing.pid)) {
     const url =
@@ -486,6 +528,142 @@ function refuseKbCloneSelfManagement(resolvedProjectRoot, source) {
 }
 
 // ---------------------------------------------------------------------------
+// kb-start pre-flight: KB-scoped resource conflict detection
+// (process-lifecycle.md §6.6, BL-2026-237)
+//
+// Runs after the PID-file multi-launch refuse (§6.4) and the M-1
+// resolved-after evaluation (§3.7.2), before any child is spawned. Only
+// KB-scoped conflicts are refused; external / other-project resources
+// keep the existing auto-probe behaviour so concurrent KB instances are
+// not broken. All judgements anchor on the PID file / projectRoot-derived
+// tmux session name / KB-assigned default ports — never a host-wide
+// pgrep or port scan (§3.4 safety boundary).
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the tmux session name the same way the server does
+ * (`tmux-bridge.ts:resolveTmuxSessionName` / its `sessionName` getter,
+ * process-lifecycle.md §8.1 / §8.2 SSOT).
+ *
+ * `KOVITOBOARD_E2E_TMUX_SESSION` is only honoured when `KB_E2E_MODE === '1'`
+ * is set at the same time. A leftover env var without the gate (e.g. a
+ * shared shell) is ignored with a WARN and the projectRoot-derived name is
+ * used, matching the server gate so the name is never resolved two ways.
+ */
+function resolveTmuxSessionName() {
+  const rawE2eSession = process.env.KOVITOBOARD_E2E_TMUX_SESSION
+  const e2eModeEnabled = process.env.KB_E2E_MODE === '1'
+  if (rawE2eSession && !e2eModeEnabled) {
+    console.warn(
+      `[kb-start] WARN: ignoring KOVITOBOARD_E2E_TMUX_SESSION because ` +
+        `KB_E2E_MODE is not set; using the project-derived session name.`,
+    )
+  }
+  const e2eSession = e2eModeEnabled ? rawE2eSession : undefined
+  if (e2eSession) return e2eSession
+  const base = projectRoot.split('/').pop() ?? 'unknown'
+  return `kovitoboard-${base}`.replace(/[.:]/g, '-')
+}
+
+/**
+ * Pre-flight: refuse to start if a KB tmux session for this project
+ * already exists (process-lifecycle.md §6.6.2). Complements the PID-file
+ * multi-launch refuse (§6.4) with an OR relationship — it catches the
+ * case where the PID file is gone / stale but a leftover tmux session
+ * still lingers after an abnormal exit.
+ *
+ * Exact-match `tmux has-session` only (no prefix match, no
+ * `tmux ls | grep` host-wide enumeration). The base name is
+ * `kovitoboard-<basename(projectRoot)>`, so a different projectRoot with
+ * the same basename collides; refusing is the fail-safe side (better than
+ * silently double-launching).
+ *
+ * `tmux has-session` exits 0 when the session exists and 1 when it does
+ * not; tmux being absent (ENOENT) means there is no session to conflict
+ * with. Both are spec "no conflict, continue" cases (§6.6.2). Any OTHER
+ * failure (tmux present but a socket / permission error) means the
+ * pre-flight could not actually verify exclusivity — we stay fail-open
+ * (best-effort, §6.6 complements the PID-file refuse) but WARN loudly so
+ * the operator knows the check did not run.
+ */
+function checkTmuxSessionConflict(sessionName) {
+  try {
+    // `=` forces an EXACT target-name match. Plain `-t <name>` accepts a
+    // unique prefix, so without `=` an existing `kovitoboard-foo-extra`
+    // would make us falsely refuse `kovitoboard-foo` (tmux target
+    // resolution, see tmux(1) "exact match" / `=` prefix).
+    execFileSync('tmux', ['has-session', '-t', `=${sessionName}`], {
+      stdio: 'ignore',
+    })
+  } catch (err) {
+    const code = err && err.code
+    const status = err && typeof err.status === 'number' ? err.status : null
+    if (code === 'ENOENT') return // tmux not installed → no session, continue
+    if (status === 1) return // session does not exist → continue
+    // tmux present but the invocation failed for another reason (e.g. a
+    // dead server socket or permission error). Continue (fail-open) but
+    // make the un-verified pre-flight visible.
+    console.warn(
+      `[kb-start] WARN: tmux pre-flight could not verify session ` +
+        `"${sessionName}" (${(err && err.message) || code || 'unknown error'}); ` +
+        `continuing without the tmux conflict check.`,
+    )
+    return
+  }
+  // exit 0 → the session exists → refuse.
+  console.error(
+    `[kb-start] ERROR: a KB tmux session for this project already exists ` +
+      `(session=${sessionName}).\n` +
+      `[kb-start]        Another KB may be running, or a previous run left ` +
+      `it behind.\n` +
+      `[kb-start]        Stop it with \`cd ${repoRoot} && npm run kb:stop\`, ` +
+      `or inspect it with \`tmux attach -t ${sessionName}\`.`,
+  )
+  process.exit(1)
+}
+
+/**
+ * Best-effort: describe the process currently holding `port` as
+ * `pid=<N> (<cmd>)` for a WARN message (process-lifecycle.md §6.6.3 /
+ * §11.5). Tries `lsof` first, then `ss`. Returns null when neither is
+ * available or permission is insufficient — the caller then reports the
+ * port number only. Never sends a signal to the owner.
+ */
+function describePortOwner(port) {
+  // lsof: `-t` would give only the pid; we want pid + command, so parse
+  // the default output. `-nP` avoids slow DNS / port-name lookups.
+  try {
+    const out = execFileSync(
+      'lsof',
+      ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    // -F output: lines like `p<pid>` and `c<command>`.
+    let pid = null
+    let cmd = null
+    for (const line of out.split('\n')) {
+      if (line.startsWith('p')) pid = line.slice(1).trim()
+      else if (line.startsWith('c')) cmd = line.slice(1).trim()
+    }
+    if (pid) return `pid=${pid}${cmd ? ` (${cmd})` : ''}`
+  } catch {
+    // fall through to ss
+  }
+  try {
+    const out = execFileSync('ss', ['-ltnp', `( sport = :${port} )`], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    // ss -p appends `users:(("<cmd>",pid=<N>,fd=<M>))`.
+    const m = out.match(/users:\(\("([^"]+)",pid=(\d+)/)
+    if (m) return `pid=${m[2]} (${m[1]})`
+  } catch {
+    // neither tool available / permitted
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Detach branch: re-exec self in the background, then exit
 //
 // When the user invokes `--detach` (or sets `KOVITOBOARD_DETACH=1`), we
@@ -519,6 +697,15 @@ refuseKbCloneSelfManagement(projectRoot, projectRootSource)
 // re-runs the same check from `launch()` to catch anything that
 // changed during the spawn window.
 checkExistingSupervisor()
+
+// kb-start pre-flight: KB-scoped tmux session conflict (§6.6.2). Runs in
+// the parent (like checkExistingSupervisor) so a refusal lands in the
+// operator's terminal rather than the detached stderr log, and covers
+// both foreground and detached invocations. The resolved name is reused
+// for the PID-file `tmux.sessionName` so the pre-flight and the recorded
+// name never diverge (single resolution via resolveTmuxSessionName).
+const tmuxSessionName = resolveTmuxSessionName()
+checkTmuxSessionConflict(tmuxSessionName)
 
 if (decideDetach(process.argv.slice(2), process.env)) {
   const { childArgs, childEnv } = buildDetachedSpawnArgs(
@@ -751,8 +938,17 @@ async function resolvePort({
     const candidate = defaultStart + i
     if (await isPortAvailable(candidate)) {
       if (i > 0) {
-        console.log(
-          `[kb-start] ${label} default port ${defaultStart} unavailable; using ${candidate}.`,
+        // §6.6.3: the default port is held by an external / other-project
+        // process. We do NOT refuse (auto-probe keeps concurrent KB
+        // instances working) and we NEVER signal the owner, but we
+        // surface the fallback with the occupier identity so the operator
+        // knows we started on an unexpected port (replaces the old silent
+        // 5174-style fallback). Owner lookup is best-effort (§11.5).
+        const owner = describePortOwner(defaultStart)
+        console.warn(
+          `[kb-start] WARN: default ${label} port ${defaultStart} is in use` +
+            `${owner ? ` by ${owner}` : ''}; falling back to ${candidate}. ` +
+            `(Run \`npm run kb:stop\` if this is a stale KB instance.)`,
         )
       }
       return candidate
@@ -940,9 +1136,9 @@ async function launch() {
   // launch / delete at shutdown). The write happens AFTER spawn so
   // we know the children survived the fork; if a port collision
   // killed us mid-resolvePort() above, no PID file gets created.
-  const tmuxSessionName =
-    process.env.KOVITOBOARD_E2E_TMUX_SESSION ??
-    `kovitoboard-${projectRoot.split('/').pop() ?? 'unknown'}`.replace(/[.:]/g, '-')
+  // Reuse the session name resolved by the pre-flight above
+  // (resolveTmuxSessionName, §8.2-gated) so the recorded name matches the
+  // name the pre-flight checked and the server derives.
   writePidFile({
     pid: process.pid,
     startedAt: new Date().toISOString(),

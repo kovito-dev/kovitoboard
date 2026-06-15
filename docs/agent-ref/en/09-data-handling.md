@@ -1,6 +1,6 @@
 # 09. Data Handling and Notes (Navigation)
 
-**Target KB version:** v0.2.6
+**Target KB version:** v0.2.7
 **Role:** Navigation layer. Detailed content lives in the Japanese authoritative source at [`../09-data-handling.md`](../09-data-handling.md).
 
 ---

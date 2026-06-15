@@ -1,6 +1,6 @@
 {
   "name": "@kovito/kovitoboard",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "KovitoBoard - Self-extending AI agent team system on Claude Code",
   "license": "AGPL-3.0-or-later",
   "author": "Anode LLC",
@@ -61,7 +61,7 @@
     "jsdom": "^29.1.0",
     "lefthook": "^2.1.6",
     "tailwindcss": "^4.2.1",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.4"
   },

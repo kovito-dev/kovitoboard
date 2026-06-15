@@ -268,6 +268,32 @@ describe('validateSetting (post-migration v1.2)', () => {
     expect(validateSetting(empty)).toBe(false)
   })
 
+  // `project.path` must be an absolute path, mirroring the
+  // `additionalWorkRoots` absolute-path enforcement. A relative value
+  // gets resolved against the launch cwd by
+  // `readPersistedProjectRoot()` / the supervisor, which would point
+  // the project root (and its side effects) at the wrong directory.
+  it('rejects relative project.path', () => {
+    expect(
+      validateSetting({
+        ...validSetting,
+        project: { name: 'test', description: '', path: 'relative/folder' },
+      }),
+    ).toBe(false)
+    expect(
+      validateSetting({
+        ...validSetting,
+        project: { name: 'test', description: '', path: './dot' },
+      }),
+    ).toBe(false)
+    expect(
+      validateSetting({
+        ...validSetting,
+        project: { name: 'test', description: '', path: '../parent' },
+      }),
+    ).toBe(false)
+  })
+
   it('accepts user.avatar as string', () => {
     expect(
       validateSetting({

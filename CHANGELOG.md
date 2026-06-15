@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-15
+
+### Security
+
+- Updated the development-time `esbuild` dependency to 0.28.1 or later
+  (via `tsx` 4.22.0), resolving two advisories that affected the local
+  development server only. The shipped application runtime was never
+  exposed.
+
+### Changed
+
+- A corrupt or unreadable supervisor PID file is no longer overwritten
+  automatically on start. KovitoBoard now stops with a clear error that
+  prints the path of the broken PID file and how to remove it, rather
+  than silently starting a second supervisor. If you encounter this,
+  delete the reported PID file and start again.
+
+### Fixed
+
+- `project.path` in your `.kovitoboard/setting.json` must now be an
+  absolute path and is validated when the file is read (matching how
+  `additionalWorkRoots` already behaved). Previously a relative value
+  could resolve differently depending on the current working directory.
+- Start and stop now handle leftover processes more carefully. Startup
+  refuses to launch a second supervisor when a tmux session for the same
+  project already exists, and when a port is occupied by an unrelated
+  process it warns and probes for the next available one instead of
+  failing. Stop reports leftover (defunct) processes instead of
+  force-reaping them, and only cleans up processes anchored to its own
+  project — never anything host-wide.
+
 ## [0.2.6] - 2026-06-15
 
 ### Fixed
