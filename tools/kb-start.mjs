@@ -389,6 +389,19 @@ function removePidFile() {
 }
 
 /**
+ * POSIX single-quote a path for safe inclusion in a suggested shell command
+ * (e.g. the `rm` hint in the corrupt-PID error). The projectRoot — and thus
+ * PID_FILE_PATH — is operator-supplied, so a path with spaces or shell
+ * metacharacters (`$()`, backticks, `;`) printed verbatim into `rm <path>`
+ * could be copy-pasted into something other than the intended removal.
+ * Wrapping in single quotes neutralizes every metacharacter; an embedded
+ * single quote is escaped as `'\''` (close-quote, literal quote, re-open).
+ */
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+/**
  * Examine an existing PID file and either bail out (alive supervisor or
  * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
  * PID file). Spec process-lifecycle §6.4.
@@ -428,7 +441,7 @@ function checkExistingSupervisor() {
         `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
         `[kb-start]        against the same project.\n` +
         `[kb-start]        Inspect it, confirm no supervisor is running, then remove it:\n` +
-        `[kb-start]          rm ${PID_FILE_PATH}\n` +
+        `[kb-start]          rm -- ${shellQuote(PID_FILE_PATH)}\n` +
         `[kb-start]        and re-run the start command.`,
     )
     process.exit(1)

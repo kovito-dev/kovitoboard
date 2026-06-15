@@ -254,6 +254,19 @@ function removePidFile() {
 }
 
 /**
+ * POSIX single-quote a path for safe inclusion in a suggested shell command
+ * (e.g. the `rm` hint in the root-PID trust-gate refusal). PID_FILE_PATH is
+ * derived from the operator-supplied projectRoot, so a path with spaces or
+ * shell metacharacters (`$()`, backticks, `;`) printed verbatim into
+ * `rm <path>` could be copy-pasted into something other than the intended
+ * removal. Single-quoting neutralizes every metacharacter; an embedded
+ * single quote becomes `'\''` (close-quote, literal quote, re-open).
+ */
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+/**
  * Block until either the PID file disappears (graceful shutdown
  * confirmation) or `timeoutMs` elapses. Returns true on disappear,
  * false on timeout.
@@ -1419,8 +1432,8 @@ async function main() {
           `[kb-stop]        Refusing to send any signal: the PID file may be stale or\n` +
           `[kb-stop]        tampered and this PID could belong to a different process.\n` +
           `[kb-stop]        Inspect the PID file and remove it if no supervisor is running\n` +
-          `[kb-stop]        (rm ${PID_FILE_PATH}), or use --all to opt into the host-wide\n` +
-          `[kb-stop]        supervisor sweep.`,
+          `[kb-stop]        (rm -- ${shellQuote(PID_FILE_PATH)}), or use --all to opt into the\n` +
+          `[kb-stop]        host-wide supervisor sweep.`,
       )
       process.exit(2)
     }

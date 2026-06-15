@@ -208,7 +208,8 @@ describe('tools/kb-start.mjs — corrupt PID file fail-loud (§6.4, BL-2026-244)
       // The actionable signal is the message body: the absolute path to
       // remove and the explicit delete command.
       expect(r.stderr).toContain(pidFilePath(projectRoot))
-      expect(r.stderr).toContain(`rm ${pidFilePath(projectRoot)}`)
+      // The remediation command shell-quotes the path (safe copy/paste).
+      expect(r.stderr).toContain(`rm -- '${pidFilePath(projectRoot)}'`)
       // Exit 1 (the refuse) is itself the proof that the file was NOT
       // silently overwritten the way v1.0–v1.7 did; the PID file is left
       // untouched for the operator to inspect.
