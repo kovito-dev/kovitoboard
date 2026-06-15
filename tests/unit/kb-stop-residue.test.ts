@@ -257,7 +257,11 @@ describeResidue('tools/kb-stop.mjs — §9 residual diagnostics', () => {
     const r = runKbStop(['--force'])
     expect(r.status).toBe(0)
     expect(r.stdout ?? '').toContain('stale PID file cleared')
-    // The stale PID file was removed.
+    // The stale PID file was removed. This also exercises the TOCTOU
+    // re-read guard's pass-through: the recheck reads the SAME dead pid, so
+    // removal proceeds. (The concurrent-rewrite branch — recheck sees a new
+    // pid and leaves the file — is a narrow race covered by inspection; a
+    // deterministic mid-run rewrite cannot be injected hermetically here.)
     expect(existsSync(PID_FILE())).toBe(false)
     expect(r.status).not.toBe(4)
     expect(r.stderr ?? '').not.toContain('lineage-proven KB residual')

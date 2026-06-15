@@ -1410,6 +1410,28 @@ async function main() {
     if (pidFromFileKind === 'dead') {
       // Stale PID file: the recorded supervisor is gone. Clear the file
       // and report success (§7.4 stale path). Nothing to signal.
+      //
+      // TOCTOU guard: a fresh `kb-start` could overwrite the PID file in
+      // the window between our read/classify and this unlink (its own §6.4
+      // stale branch would overwrite the same dead-pid file and launch a
+      // new supervisor pid Y). Removing the file unconditionally would then
+      // delete the FRESH file for the live supervisor Y, leaving it running
+      // untracked — re-opening the single-supervisor tracking window the
+      // PID file guards. So re-read immediately before unlinking and only
+      // remove the file while it still records the same dead pid we
+      // classified. If it changed concurrently, leave it for the new owner
+      // and report rather than clobber it.
+      const recheck = readPidFile()
+      if (recheck && !recheck.broken && recheck.pid !== pidFromFile) {
+        console.warn(
+          `[kb-stop] WARN: the PID file changed concurrently ` +
+            `(was stale pid ${pidFromFile}, now records pid ${recheck.pid}); ` +
+            `leaving it in place. A new supervisor may have just started — ` +
+            `re-run kb-stop to act on it.`,
+        )
+        console.log('[kb-stop] Done (stale PID file superseded by a new owner; not removed).')
+        process.exit(0)
+      }
       console.warn(
         `[kb-stop] WARN: PID-file root pid ${pidFromFile} is no longer alive ` +
           `(stale PID file); removing ${PID_FILE_PATH} and exiting.`,
