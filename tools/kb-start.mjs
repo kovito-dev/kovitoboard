@@ -536,8 +536,7 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   // (e.g. recipe install scripts). The stderr file is intentionally
   // narrow: it captures bootstrap-time crashes, not the steady-state
   // process output.
-  const logBase = projectRoot ?? repoRoot
-  const logDir = resolve(logBase, '.kovitoboard', 'logs')
+  const logDir = resolve(projectRoot, '.kovitoboard', 'logs')
   let logFd
   let logPath
   try {
@@ -770,13 +769,9 @@ async function resolvePort({
 // ---------------------------------------------------------------------------
 
 function ensureAppSymlink() {
-  if (!projectRoot) {
-    console.warn(
-      '[kb-start] projectRoot not specified; skipping app/ symlink setup',
-    )
-    return
-  }
-
+  // projectRoot is always resolved (the 4-stage chain never returns
+  // null and the M-1 guard has already rejected any path inside the
+  // clone), so there is no "projectRoot unspecified" branch here.
   const target = resolve(projectRoot, 'app')
   const linkPath = resolve(repoRoot, 'app')
 
@@ -907,7 +902,7 @@ async function launch() {
   const env = {
     ...scrubNestedDetectionEnv(process.env),
     NODE_ENV: 'development',
-    KOVITOBOARD_PROJECT_ROOT: projectRoot ?? '',
+    KOVITOBOARD_PROJECT_ROOT: projectRoot,
     PORT: String(backendPort),
     VITE_PORT: String(vitePort),
     // Expose the supervisor pid so the server's restart endpoint can
@@ -947,7 +942,7 @@ async function launch() {
   // killed us mid-resolvePort() above, no PID file gets created.
   const tmuxSessionName =
     process.env.KOVITOBOARD_E2E_TMUX_SESSION ??
-    `kovitoboard-${(projectRoot ? projectRoot.split('/').pop() : repoRoot.split('/').pop()) ?? 'unknown'}`.replace(/[.:]/g, '-')
+    `kovitoboard-${projectRoot.split('/').pop() ?? 'unknown'}`.replace(/[.:]/g, '-')
   writePidFile({
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -1133,9 +1128,7 @@ process.on('SIGUSR2', () => triggerRestart())
 // ---------------------------------------------------------------------------
 
 console.log('[kb-start] KovitoBoard Supervisor starting...')
-if (projectRoot) {
-  console.log(`[kb-start] Project root: ${projectRoot}`)
-}
+console.log(`[kb-start] Project root: ${projectRoot} (source: ${projectRootSource})`)
 
 ensureAppSymlink()
 launch().catch((err) => {
