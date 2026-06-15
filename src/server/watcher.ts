@@ -389,7 +389,16 @@ export class Watcher {
 
   private handleFile(filePath: string): void {
     try {
-      const stat = this.fs.statSync(filePath)
+      // Use lstat (not stat) at the read site too, mirroring the
+      // reconcile kind-gate (§7.3.2.2). This narrows the readdir→read
+      // TOCTOU window: if the entry was swapped for a symlink / FIFO /
+      // device / directory between the reconcile lstat and this read, the
+      // read path rejects it here instead of following the link or
+      // blocking on a special file. (The same-UID entry-swap race itself
+      // is an accepted same-user condition per the spec's per-entry
+      // skip-and-continue contract; this re-check shrinks the window.)
+      const stat = this.fs.lstatSync(filePath)
+      if (!stat.isFile || stat.isSymbolicLink) return
       const currentSize = stat.size
       const previousPosition = this.filePositions.get(filePath) || 0
 

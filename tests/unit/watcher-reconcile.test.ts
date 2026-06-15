@@ -279,6 +279,27 @@ describe('Watcher dirty-start recovery', () => {
     w.stop()
   })
 
+  it('read site re-checks lstat: an entry swapped to a symlink is not read (TOCTOU narrowing)', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new FakeSessionManager()
+    const w = new Watcher(makeConfig(100), sm as never, fs as never)
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+
+    // A live `add` arrives for a path that is now a symlink (simulating an
+    // entry swapped between detection and the handleFile read). handleFile
+    // must reject it via the read-site lstat gate.
+    const file = join(sessionsDir, 'swapped.jsonl')
+    fs.addFile(file, userLine('payload'), { isSymbolicLink: true })
+    fs.emit(sessionsDir, { type: 'add', path: file })
+
+    expect(sm.ensured).toHaveLength(0)
+    expect(sm.events).toHaveLength(0)
+
+    w.stop()
+  })
+
   it('reconcileInterval <= 0 disables the scan (§7.3.3 opt-out)', () => {
     const fs = new MockFs()
     fs.dirs.add(sessionsDir)
