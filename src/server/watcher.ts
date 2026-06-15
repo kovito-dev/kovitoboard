@@ -65,7 +65,6 @@ export class Watcher {
   private watchingStarted = false
   /** Resolved at start(); used by the reconcile scan for readdir/existsSync. */
   private projectSessionsDir: string | null = null
-  private claudeDirName: string | null = null
   private usePolling = true
   private pollInterval = 1500
 
@@ -96,7 +95,6 @@ export class Watcher {
     const pollInterval = this.config.pollInterval
 
     this.projectSessionsDir = projectSessionsDir
-    this.claudeDirName = claudeDirName
     this.usePolling = usePolling
     this.pollInterval = pollInterval
 
@@ -453,28 +451,22 @@ export class Watcher {
         // (a) short read (readLength < cap): the line is still being
         //     appended — hold the offset and read it next tick.
         // (b) full-chunk read with no newline: a single line exceeds the
-        //     chunk cap (pathological — normal Claude Code JSONL lines are
-        //     tiny). To avoid both a permanent stall AND corrupting the
-        //     stream, skip the ENTIRE oversized line cleanly: scan forward
-        //     for its terminating newline and advance the offset to just
-        //     past it (dropping exactly that one line). We must NOT advance
-        //     by a fixed chunk into the middle of the line, which would
-        //     leave an invalid-JSON tail that strands the session.
+        //     chunk cap. This is pathological — real Claude Code JSONL
+        //     lines are tiny, and §8.10 R3 explicitly leaves oversized
+        //     handling to implementation judgment. We advance the offset
+        //     by exactly one chunk and warn. This keeps each tick's work
+        //     and memory strictly bounded (no synchronous scan-to-EOF that
+        //     could block the event loop) at the cost of dropping a single
+        //     >16 MiB line as unparseable fragments. We deliberately
+        //     prefer bounded progress over either a permanent stall or an
+        //     unbounded full-file scan; a genuinely huge single line is
+        //     outside the normal session-JSONL contract.
         if (readLength >= HANDLE_FILE_READ_CHUNK_BYTES) {
-          const lineEnd = this.findOversizedLineEnd(filePath, previousPosition, currentSize)
-          if (lineEnd === null) {
-            // The terminating newline has not been written yet; the
-            // oversized line is still in flight. Hold the offset and wait
-            // for it to complete (it will be skipped once the newline
-            // arrives). Do not advance — no corruption, no stall beyond
-            // the line's own completion.
-            return
-          }
           watcherLogger.warn(
-            { filePath, droppedBytes: lineEnd - previousPosition },
-            'Single JSONL line exceeds the read-chunk cap; dropping the oversized line',
+            { filePath, chunkBytes: HANDLE_FILE_READ_CHUNK_BYTES },
+            'Single JSONL line exceeds the read-chunk cap; advancing one chunk (oversized line, §8.10 R3)',
           )
-          this.filePositions.set(filePath, lineEnd)
+          this.filePositions.set(filePath, previousPosition + readLength)
         }
         return
       }
@@ -550,31 +542,6 @@ export class Watcher {
         watcherLogger.error({ err, filePath }, 'File processing error')
       }
     }
-  }
-
-  /**
-   * Scan forward from `start` in bounded chunks to find the byte offset
-   * just past the terminating newline of an oversized line (one longer
-   * than HANDLE_FILE_READ_CHUNK_BYTES). Returns that offset, or null if no
-   * newline exists up to `fileSize` (the line is still being appended).
-   * Memory stays bounded because each read is capped to the chunk size.
-   */
-  private findOversizedLineEnd(
-    filePath: string,
-    start: number,
-    fileSize: number,
-  ): number | null {
-    let scanPos = start
-    while (scanPos < fileSize) {
-      const len = Math.min(fileSize - scanPos, HANDLE_FILE_READ_CHUNK_BYTES)
-      const chunk = this.fs.readBytesSync(filePath, scanPos, len)
-      const nl = chunk.indexOf(0x0a) // '\n'
-      if (nl !== -1) {
-        return scanPos + nl + 1 // just past the newline
-      }
-      scanPos += len
-    }
-    return null
   }
 
   // --- Startup self-verify (§8.6.1, fail-loud observability) ---
