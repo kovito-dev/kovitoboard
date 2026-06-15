@@ -10,10 +10,29 @@
 [![Runtime: Claude Code](https://img.shields.io/badge/Runtime-Claude%20Code-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Cost: No extra fees](https://img.shields.io/badge/Cost-No%20extra%20fees-success.svg)](#動作要件)
 [![GitHub stars](https://img.shields.io/github/stars/kovito-dev/kovitoboard?style=social)](https://github.com/kovito-dev/kovitoboard)
+[![ステータス: 早期開発段階 (pre-1.0)](https://img.shields.io/badge/status-早期開発段階%20(pre--1.0)-orange.svg)](#ステータス-早期開発段階-pre-10)
 
 **🌐 [kovito.ai](https://kovito.ai)** · [クイックスタート](#クイックスタート) · [なぜ KovitoBoard か](#なぜ-kovitoboard-か) · [ライセンス](#ライセンス)
 
 </div>
+
+---
+
+## ステータス: 早期開発段階 (Pre-1.0)
+
+KovitoBoard はいま早期開発段階（Pre-1.0）です。活発に改善を続けていて、あなたの
+フィードバックで一緒に育てていける段階にあります。
+
+- 🌱 **活発に開発中** — 発展途上のため、機能がまだ足りない部分や、不具合に出会う
+  ことがあります。気づいた問題は素早く直していて、1.0 までは設定や挙動にも変更
+  （破壊的変更を含む）が入ることがあります（変更点は [CHANGELOG](./CHANGELOG.ja.md) に記載します）。
+- 🪴 **まずは個人・小さなチームで** — 大切なデータはバックアップをおすすめします。
+  いまは個人での利用や実験、小さなチームでの利用にちょうどよい段階です。
+- 🌿 **フィードバック歓迎** — 気づいたことや困りごとは、
+  [GitHub Issue](https://github.com/kovito-dev/kovitoboard/issues) で歓迎します。
+  あなたの声が、次のバージョンに活きていきます。
+
+[最新の変更は GitHub Releases で →](https://github.com/kovito-dev/kovitoboard/releases)
 
 ---
 

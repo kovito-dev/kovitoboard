@@ -10,10 +10,31 @@
 [![Runtime: Claude Code](https://img.shields.io/badge/Runtime-Claude%20Code-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Cost: No extra fees](https://img.shields.io/badge/Cost-No%20extra%20fees-success.svg)](#requirements)
 [![GitHub stars](https://img.shields.io/github/stars/kovito-dev/kovitoboard?style=social)](https://github.com/kovito-dev/kovitoboard)
+[![Status: Early development (pre-1.0)](https://img.shields.io/badge/status-early%20development%20(pre--1.0)-orange.svg)](#status-early-development-pre-10)
 
 **🌐 [kovito.ai](https://kovito.ai)** · [Quick Start](#quick-start) · [Why KovitoBoard](#why-kovitoboard) · [License](#license)
 
 </div>
+
+---
+
+## Status: Early development (pre-1.0)
+
+KovitoBoard is in early development (pre-1.0). We're improving it actively, and
+it's at a stage where your feedback helps shape it.
+
+- 🌱 **Actively developed** — As a young project, some features are still missing
+  and you may run into bugs. We fix issues quickly, and before 1.0 there may be
+  changes to configuration and behavior (including breaking changes). All changes
+  are recorded in the [CHANGELOG](./CHANGELOG.md).
+- 🪴 **Best for individuals and small teams** — We recommend backing up anything
+  important. Right now it's a good fit for personal use, experimentation, and
+  small teams.
+- 🌿 **Feedback welcome** — Share what you notice or run into via
+  [GitHub Issues](https://github.com/kovito-dev/kovitoboard/issues). Your voice
+  shapes the next version.
+
+[Latest changes in GitHub Releases →](https://github.com/kovito-dev/kovitoboard/releases)
 
 ---
 
