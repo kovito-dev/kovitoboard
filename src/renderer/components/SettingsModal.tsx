@@ -543,7 +543,7 @@ function SettingRow({ label, value, helpText, highlight }: {
     <div className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0">
       <span className="text-xs text-[var(--text-dim)]">{label}</span>
       <div className="flex items-center">
-        <span className={`text-sm ${highlight ? 'text-yellow-400/70' : 'text-[var(--text-tertiary)]'}`}>
+        <span className={`text-sm ${highlight ? 'text-[var(--warning-text)]' : 'text-[var(--text-tertiary)]'}`}>
           {value}
         </span>
         <HelpTip text={helpText} />

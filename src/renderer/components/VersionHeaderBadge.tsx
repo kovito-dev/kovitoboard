@@ -60,8 +60,8 @@ export function VersionHeaderBadge({ versionInfo, onClick }: VersionHeaderBadgeP
       title={label}
       className="
         flex items-center gap-1 px-2 py-1 rounded-md
-        bg-amber-500/20 text-amber-200 border border-amber-400/30
-        hover:bg-amber-500/30 transition-colors
+        bg-[var(--warning-bg)] text-[var(--warning-text)] border border-[var(--warning-border)]
+        hover:bg-[var(--warning-bg-hover)] transition-colors
         text-[11px] font-medium max-w-[200px] md:max-w-[260px]
       "
     >
