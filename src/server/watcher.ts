@@ -44,6 +44,14 @@ export class Watcher {
   private watchHandle: WatchHandle | null = null
   // Read byte position per file
   private filePositions = new Map<string, number>()
+  /**
+   * Files whose handleFile currently fails (stat / read error). Tracked so
+   * the reconcile scan logs the error once per file at `error` level and
+   * then suppresses it to `debug` on subsequent ticks, avoiding unbounded
+   * log growth from a single persistently-broken `.jsonl`. Cleared for a
+   * file once it processes successfully (or on stop()).
+   */
+  private failedFiles = new Set<string>()
   private claudeDir: string
   private fullConfig: ViewerConfig
   private config: ViewerConfig['watcher']
@@ -244,6 +252,16 @@ export class Watcher {
       this.selfVerifyTimer = null
     }
     this.selfVerifyObserver = null
+
+    // Reset the lifecycle latches so a later start() on the same instance
+    // attaches a fresh watch and re-runs self-verify, instead of returning
+    // inert because watchingStarted / selfVerifyDone are still set from the
+    // previous run. filePositions is intentionally NOT cleared: a restart
+    // should resume from the last committed offsets rather than replay
+    // every existing session from the start.
+    this.watchingStarted = false
+    this.selfVerifyDone = false
+    this.failedFiles.clear()
   }
 
   // --- Reconciliation scan (§7.3.2, safety net) ---
@@ -487,8 +505,23 @@ export class Watcher {
         // this fix (§8.10 R1).
         this.filePositions.set(filePath, lineEndOffset)
       }
+
+      // Processed without throwing: clear any prior failure marker so a
+      // file that recovers logs its next failure (if any) at error level
+      // again.
+      this.failedFiles.delete(filePath)
     } catch (err) {
-      watcherLogger.error({ err, filePath }, 'File processing error')
+      // Log the first failure for a given file at error level, then
+      // suppress repeats to debug. The reconcile scan revisits a file
+      // every tick while it stays unread / grown, so a persistently
+      // broken `.jsonl` would otherwise emit the same error forever
+      // (unbounded log growth from one bad entry).
+      if (this.failedFiles.has(filePath)) {
+        watcherLogger.debug({ err, filePath }, 'File processing error (repeated, suppressed)')
+      } else {
+        this.failedFiles.add(filePath)
+        watcherLogger.error({ err, filePath }, 'File processing error')
+      }
     }
   }
 

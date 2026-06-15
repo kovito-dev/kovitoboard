@@ -259,6 +259,63 @@ describe('Watcher dirty-start recovery', () => {
     w.stop()
   })
 
+  it('start() after stop() on the same instance re-attaches (lifecycle latch reset)', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new FakeSessionManager()
+    const w = new Watcher(makeConfig(100), sm as never, fs as never)
+
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    expect(fs.handlers.has(sessionsDir)).toBe(true)
+
+    w.stop()
+    expect(fs.handlers.has(sessionsDir)).toBe(false) // handle closed
+
+    // Restart: must attach a fresh watch (not return inert).
+    w.start()
+    expect(fs.handlers.has(sessionsDir)).toBe(true)
+
+    // And recovery still works after restart.
+    fs.emit(sessionsDir, { type: 'ready' })
+    const file = join(sessionsDir, 'sess-restart.jsonl')
+    fs.addFile(file, userLine('hi'))
+    vi.advanceTimersByTime(100)
+    expect(sm.ensured).toContain('sess-restart')
+
+    w.stop()
+  })
+
+  it('persistently failing file logs the error once, not every reconcile tick', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new FakeSessionManager()
+    const w = new Watcher(makeConfig(100), sm as never, fs as never)
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+
+    // A .jsonl whose lstat passes (regular file) but whose byte read
+    // always throws — simulating a persistently broken/unreadable entry.
+    const file = join(sessionsDir, 'sess-broken.jsonl')
+    fs.addFile(file, userLine('x'))
+    const origRead = fs.readBytesSync.bind(fs)
+    let readAttempts = 0
+    fs.readBytesSync = ((p: string, o: number, l: number) => {
+      if (p === file) {
+        readAttempts++
+        throw new Error('EIO: broken')
+      }
+      return origRead(p, o, l)
+    }) as never
+
+    // Several reconcile ticks: the file is retried each tick (still
+    // unregistered), but the error must be logged only once.
+    vi.advanceTimersByTime(300) // 3 ticks
+    expect(readAttempts).toBeGreaterThanOrEqual(2) // retried each tick
+
+    w.stop()
+  })
+
   it('entry hardening: symlink / non-regular entries are skipped (§7.3.2.2)', () => {
     const fs = new MockFs()
     fs.dirs.add(sessionsDir)
