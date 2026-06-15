@@ -187,6 +187,16 @@ export interface ViewerConfig {
   watcher: {
     usePolling: boolean
     pollInterval: number
+    /**
+     * Period (ms) of the reconciliation scan that recovers JSONL
+     * add/change events the live watcher dropped (session-management.md
+     * §7.3.2). Optional and additive: existing `viewer.config.json` files
+     * without this field deep-merge to the default (10000). A value `<= 0`
+     * disables the reconciliation scan (operator opt-out, §7.3.3) — not
+     * recommended, since the scan is the primary safety net against the
+     * dirty-start silent degrade (§7.3.1).
+     */
+    reconcileInterval?: number
   }
   agents: Record<string, AgentConfig>
   user: AgentConfig

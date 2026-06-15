@@ -18,7 +18,8 @@ const DEFAULT_CONFIG: ViewerConfig = {
   claudeDir: join(process.env.HOME || '', '.claude'),
   watcher: {
     usePolling: true,
-    pollInterval: 1500
+    pollInterval: 1500,
+    reconcileInterval: 10000
   },
   agents: {
     default: { name: 'Default', color: '#A67B5B' }
@@ -178,8 +179,112 @@ export function loadConfig(fs: FileAccessLayer): ViewerConfig {
       fileConfig.claudeDir = fileConfig.claudeDir.replace('~', process.env.HOME || '')
     }
 
-    return { ...DEFAULT_CONFIG, ...fileConfig }
+    // Deep-merge the `watcher` block field-by-field. A shallow merge
+    // (`{ ...DEFAULT_CONFIG, ...fileConfig }`) replaces the whole
+    // `watcher` object when `viewer.config.json` specifies it partially,
+    // dropping the `usePolling` / `reconcileInterval` defaults to
+    // `undefined` (falsy). Losing `usePolling: true` flips the watcher to
+    // inotify/fsevents mode, which is the leading root-cause of the
+    // dirty-start silent degrade where new-session `add` events are
+    // dropped (session-management.md §7.3.1 / §7.3.3).
+    const merged = { ...DEFAULT_CONFIG, ...fileConfig }
+    merged.watcher = resolveWatcherConfig(fileConfig.watcher)
+    return merged
   } catch {
     return DEFAULT_CONFIG
   }
+}
+
+/**
+ * Resolve the `watcher` config block from `viewer.config.json` against
+ * the defaults, with shape validation and per-field fallback
+ * (session-management.md §7.3.3). Deep-merges field-by-field so a
+ * partial `{ watcher: { pollInterval: 3000 } }` keeps the `usePolling`
+ * and `reconcileInterval` defaults rather than dropping them to
+ * `undefined`.
+ *
+ * Validation / fallback rules (normative §7.3.3):
+ * - `watcher` not a plain object → fall back to the whole default block, warn once.
+ * - `usePolling` not boolean → default `true`, warn.
+ * - `pollInterval` not finite, or `<= 0` → default `1500`, warn.
+ * - `reconcileInterval` not finite → default `10000`, warn.
+ *   `<= 0` is a valid "disable" opt-out and is preserved (normalized to 0).
+ * - Non-integer values are floored to integer ms.
+ *
+ * Also raises the §7.3.3.1 unsafe-combination error when the resolved
+ * config disables reconciliation (`reconcileInterval <= 0`) AND uses
+ * inotify (`usePolling: false`) — both safety nets off, which can
+ * re-trigger the original High bug.
+ */
+function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
+  const defaults = DEFAULT_CONFIG.watcher
+
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      cfgLog.warn(
+        { received: raw },
+        '[config] watcher config is not an object; falling back to defaults.',
+      )
+    }
+    return { ...defaults }
+  }
+
+  const src = raw as Record<string, unknown>
+
+  // usePolling: boolean only.
+  let usePolling = defaults.usePolling
+  if (typeof src.usePolling === 'boolean') {
+    usePolling = src.usePolling
+  } else if (src.usePolling !== undefined) {
+    cfgLog.warn(
+      { received: src.usePolling },
+      '[config] watcher.usePolling is not a boolean; using default (true).',
+    )
+  }
+
+  // pollInterval: finite number > 0.
+  let pollInterval = defaults.pollInterval
+  if (src.pollInterval !== undefined) {
+    const v = src.pollInterval
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+      pollInterval = Math.floor(v)
+    } else {
+      cfgLog.warn(
+        { received: v },
+        '[config] watcher.pollInterval is not a positive finite number; using default (1500).',
+      )
+    }
+  }
+
+  // reconcileInterval: finite number. `<= 0` is a valid disable opt-out.
+  let reconcileInterval = defaults.reconcileInterval ?? 10000
+  if (src.reconcileInterval !== undefined) {
+    const v = src.reconcileInterval
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      // Negative values are equivalent to 0 (disabled). Non-disable
+      // values are floored to integer ms.
+      reconcileInterval = v <= 0 ? 0 : Math.floor(v)
+    } else {
+      cfgLog.warn(
+        { received: v },
+        '[config] watcher.reconcileInterval is not a finite number; using default (10000).',
+      )
+    }
+  }
+
+  // §7.3.3.1 unsafe-combination: reconciliation disabled AND inotify mode
+  // removes both safety nets against the dirty-start silent degrade.
+  // Surface it loudly (error) but do NOT refuse to start (§8.6
+  // non-destructive route) — the operator's explicit choice is honored,
+  // the risk is just made visible.
+  if (reconcileInterval <= 0 && !usePolling) {
+    cfgLog.error(
+      { usePolling, reconcileInterval },
+      '[config] Unsafe watcher config: reconciliation disabled (reconcileInterval <= 0) ' +
+        'AND usePolling=false. Under a dirty start, new sessions may go undetected ' +
+        '(both safety nets are off). See session-management.md §7.3.3.1.',
+    )
+  }
+
+  return { usePolling, pollInterval, reconcileInterval }
 }

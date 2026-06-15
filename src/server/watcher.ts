@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 import { basename, dirname, join } from 'path'
+import { randomUUID } from 'crypto'
 import { parseLine } from './parser'
 import { loadSessionAgentRecords, buildSessionAgentMap } from './agent-reader'
 import { resolveProjectRoot } from './config'
@@ -20,6 +21,22 @@ function projectPathToClaudeDirName(projectRoot: string): string {
   return projectRoot.replace(/\//g, '-')
 }
 
+/** Default reconciliation scan period when config omits it (session-management.md §7.3.3). */
+const DEFAULT_RECONCILE_INTERVAL = 10000
+
+/**
+ * Upper bound (bytes) on a single first-read of an unregistered file in
+ * the reconciliation scan (session-management.md §7.3.2.2). Normal Claude
+ * Code JSONL files are far smaller; an over-sized file is skipped this
+ * tick (with a warn) and re-evaluated next tick rather than read whole
+ * into memory. The live-watch path is unaffected (it reads small
+ * incremental deltas).
+ */
+const RECONCILE_FIRST_READ_MAX_BYTES = 64 * 1024 * 1024 // 64 MiB
+
+/** Timeout (ms) for the startup self-verify marker round-trip (§8.6.1). */
+const SELF_VERIFY_TIMEOUT_MS = 5000
+
 export class Watcher {
   private watchHandle: WatchHandle | null = null
   // Read byte position per file
@@ -30,12 +47,30 @@ export class Watcher {
   private sessionManager: SessionManager
   private fs: FileAccessLayer
 
+  // Reconciliation scan state (§7.3.2)
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null
+  private reconcileInterval: number
+  /** Set once startWatching() has attached to the real sessions dir. */
+  private watchingStarted = false
+  /** Resolved at start(); used by the reconcile scan for readdir/existsSync. */
+  private projectSessionsDir: string | null = null
+  private claudeDirName: string | null = null
+  private usePolling = true
+  private pollInterval = 1500
+
+  // Self-verify state (§8.6.1)
+  private selfVerifyDone = false
+  /** Active self-verify marker observer; resolves on the marker's raw add. */
+  private selfVerifyObserver: ((path: string) => void) | null = null
+
   constructor(config: ViewerConfig, sessionManager: SessionManager, fs: FileAccessLayer) {
     this.claudeDir = config.claudeDir
     this.fullConfig = config
     this.config = config.watcher
     this.sessionManager = sessionManager
     this.fs = fs
+    const ri = config.watcher.reconcileInterval
+    this.reconcileInterval = typeof ri === 'number' ? ri : DEFAULT_RECONCILE_INTERVAL
   }
 
   start(): void {
@@ -47,12 +82,23 @@ export class Watcher {
     const usePolling = this.config.usePolling
     const pollInterval = this.config.pollInterval
 
+    this.projectSessionsDir = projectSessionsDir
+    this.claudeDirName = claudeDirName
+    this.usePolling = usePolling
+    this.pollInterval = pollInterval
+
     watcherLogger.info({ projectRoot }, 'Project root')
     watcherLogger.info({ path: projectSessionsDir }, 'Watching')
     watcherLogger.info(
       { mode: usePolling ? 'polling' : 'inotify', pollInterval: usePolling ? pollInterval : null },
       'Watch mode',
     )
+
+    // Start the reconciliation scan independently of the live watcher
+    // (§7.3.2). It is a universal safety net: in absent-dir startup it
+    // polls for the sessions dir to appear; once present it recovers any
+    // add/change events the live watcher dropped (silent degrade §7.3.1).
+    this.startReconciliationScan()
 
     // If the directory does not exist (no sessions yet), wait for it to be created
     if (!this.fs.existsSync(projectSessionsDir)) {
@@ -65,16 +111,12 @@ export class Watcher {
           if (event.type === 'addDir') {
             if (basename(event.path) === claudeDirName) {
               watcherLogger.info({ path: event.path }, 'Session directory detected')
-              this.watchHandle?.close()
-              this.watchHandle = null
-              this.startWatching(projectSessionsDir, usePolling, pollInterval)
+              this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
             }
           } else if (event.type === 'ready') {
             // Re-check if the directory exists at ready time
             if (this.fs.existsSync(projectSessionsDir)) {
-              this.watchHandle?.close()
-              this.watchHandle = null
-              this.startWatching(projectSessionsDir, usePolling, pollInterval)
+              this.transitionToWatching(projectSessionsDir, usePolling, pollInterval)
             } else {
               watcherLogger.info('Initial scan complete (no sessions)')
               this.sessionManager.setInitialized()
@@ -109,16 +151,45 @@ export class Watcher {
     this.startWatching(projectSessionsDir, usePolling, pollInterval)
   }
 
+  /**
+   * Idempotently switch from the absent-dir parent watch to watching the
+   * real sessions dir. Guards against the live `addDir` event and the
+   * reconcile scan's existsSync probe both firing the transition
+   * (§7.3.2.1).
+   */
+  private transitionToWatching(
+    projectSessionsDir: string,
+    usePolling: boolean,
+    pollInterval: number,
+  ): void {
+    if (this.watchingStarted) return
+    this.watchHandle?.close()
+    this.watchHandle = null
+    this.startWatching(projectSessionsDir, usePolling, pollInterval)
+  }
+
   private startWatching(watchDir: string, usePolling: boolean, pollInterval: number): void {
+    if (this.watchingStarted) return
+    this.watchingStarted = true
     this.watchHandle = this.fs.watch(
       watchDir,
       (event: WatchEvent) => {
         if (event.type === 'add' || event.type === 'change') {
+          // Feed the raw add stream to the self-verify observer BEFORE the
+          // .jsonl filter so the (non-.jsonl) marker file is observable
+          // (§8.6.1). The marker has no .jsonl extension and so never
+          // reaches handleFile / session registration.
+          if (event.type === 'add' && this.selfVerifyObserver) {
+            this.selfVerifyObserver(event.path)
+          }
           if (event.path.endsWith('.jsonl')) this.handleFile(event.path)
         } else if (event.type === 'ready') {
           watcherLogger.info('Initial scan complete')
           this.applyFallbackAgentMapping()
           this.sessionManager.setInitialized()
+          // Run the startup self-verify after the live watch is attached
+          // and the initial scan is done (§8.6.1). Non-blocking.
+          this.runSelfVerify(watchDir)
         } else if (event.type === 'error') {
           watcherLogger.error({ err: event.error }, 'Watch error')
           // Fall back to polling on inotify error
@@ -129,6 +200,9 @@ export class Watcher {
               watchDir,
               (ev: WatchEvent) => {
                 if (ev.type === 'add' || ev.type === 'change') {
+                  if (ev.type === 'add' && this.selfVerifyObserver) {
+                    this.selfVerifyObserver(ev.path)
+                  }
                   if (ev.path.endsWith('.jsonl')) this.handleFile(ev.path)
                 } else if (ev.type === 'error') {
                   watcherLogger.error({ err: ev.error }, 'Fallback watch error')
@@ -154,6 +228,118 @@ export class Watcher {
   stop(): void {
     this.watchHandle?.close()
     this.watchHandle = null
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer)
+      this.reconcileTimer = null
+    }
+    this.selfVerifyObserver = null
+  }
+
+  // --- Reconciliation scan (§7.3.2, safety net) ---
+
+  /**
+   * Start the periodic reconciliation scan (§7.3.2). Independent of the
+   * live watcher's survival, it recovers dropped add/change events by
+   * periodically reading the sessions dir. When the dir does not yet
+   * exist it acts as an existsSync poll (absent-dir mode §7.3.2.1) and
+   * transitions to live watching when the dir appears — recovering the
+   * first session even if the parent dir watch went stale on dirty start.
+   *
+   * `reconcileInterval <= 0` disables the scan (operator opt-out §7.3.3).
+   */
+  private startReconciliationScan(): void {
+    if (this.reconcileInterval <= 0) {
+      watcherLogger.info('Reconciliation scan disabled (reconcileInterval <= 0)')
+      return
+    }
+    if (this.reconcileTimer) return
+    this.reconcileTimer = setInterval(() => {
+      try {
+        this.reconcileTick()
+      } catch (err) {
+        // A scan failure must never crash the process; warn and continue
+        // on the next tick (§8.7 observability).
+        watcherLogger.warn({ err }, 'Reconciliation scan tick failed')
+      }
+    }, this.reconcileInterval)
+    // Do not keep the event loop alive solely for the scan timer.
+    this.reconcileTimer.unref?.()
+  }
+
+  /** One reconciliation scan tick (§7.3.2 algorithm). */
+  private reconcileTick(): void {
+    const dir = this.projectSessionsDir
+    if (!dir) return
+
+    // Step 0: absent-dir mode (§7.3.2.1). If the sessions dir does not
+    // yet exist, poll for it; when it appears, transition to live
+    // watching (which performs the initial scan + recovers existing
+    // .jsonl). Then return — present-dir scan runs on the next tick.
+    if (!this.fs.existsSync(dir)) {
+      watcherLogger.debug('Reconcile: sessions dir not yet present')
+      return
+    }
+    if (!this.watchingStarted) {
+      watcherLogger.info(
+        { path: dir },
+        'Reconcile: sessions dir appeared; transitioning to live watching',
+      )
+      this.transitionToWatching(dir, this.usePolling, this.pollInterval)
+      return
+    }
+
+    // Step 1: list current .jsonl files. A dir-level failure (readdir
+    // throws / ENOENT) skips this tick with one warn (§8.7); next tick
+    // continues.
+    let entries: string[]
+    try {
+      entries = this.fs.readdirSync(dir)
+    } catch (err) {
+      watcherLogger.warn({ err, path: dir }, 'Reconcile: readdir failed; skipping this tick')
+      return
+    }
+
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue
+      const filePath = join(dir, name)
+      try {
+        // §7.3.2.2 entry hardening: kind-gate via lstatSync (does NOT
+        // follow symlinks). Only regular files are read. symlink / FIFO /
+        // device / directory are skipped. The kind gate MUST use lstat,
+        // not stat, to avoid re-introducing symlink-follow / special-file
+        // exposure.
+        const lst = this.fs.lstatSync(filePath)
+        if (!lst.isFile || lst.isSymbolicLink) continue
+
+        const currentSize = lst.size
+        const recorded = this.filePositions.get(filePath)
+        // Recover only: unregistered (live watcher dropped the `add`) or
+        // grown past the recorded offset (dropped `change`). handleFile is
+        // idempotent (§7.3.4 commit boundary), so double-processing with
+        // the live watch is safe.
+        if (recorded === undefined) {
+          // First read of an unregistered file. Bound the read so an
+          // anomalously huge file does not exhaust memory (§7.3.2.2);
+          // skip this tick and re-evaluate next tick.
+          if (currentSize > RECONCILE_FIRST_READ_MAX_BYTES) {
+            watcherLogger.warn(
+              { filePath, size: currentSize, max: RECONCILE_FIRST_READ_MAX_BYTES },
+              'Reconcile: unregistered file exceeds first-read cap; deferring',
+            )
+            continue
+          }
+          this.handleFile(filePath)
+        } else if (currentSize > recorded) {
+          this.handleFile(filePath)
+        }
+      } catch (err) {
+        // Per-entry failure (e.g. file vanished between readdir and lstat,
+        // or an individual read error) skips only this entry and continues
+        // the tick (§7.3.2 step 2 / §8.7). It must not starve other
+        // sessions' detection.
+        watcherLogger.warn({ err, filePath }, 'Reconcile: per-entry failure; skipping entry')
+      }
+    }
   }
 
   /**
@@ -186,6 +372,8 @@ export class Watcher {
       const currentSize = stat.size
       const previousPosition = this.filePositions.get(filePath) || 0
 
+      // Idempotent: no new bytes since the last commit (§7.3.4). Safe to
+      // re-enter from both live watch and the reconcile scan.
       if (currentSize <= previousPosition) return
 
       // Session ID: filename without extension
@@ -205,10 +393,38 @@ export class Watcher {
         currentSize - previousPosition
       )
 
-      const newContent = buffer.toString('utf-8')
-      const lines = newContent.split('\n').filter((l: string) => l.trim())
+      // §7.3.4 fragment-buffering: Claude Code appends JSONL while
+      // writing, so the incremental delta can end mid-line (trailing
+      // partial line). Process only up to the LAST newline, and never
+      // advance filePositions past a partial line — otherwise the partial
+      // line is lost forever once it completes (the next read starts past
+      // it). If the delta has no newline at all, emit nothing and hold the
+      // offset (the line is completed on a later change / reconcile tick).
+      const lastNewline = buffer.lastIndexOf(0x0a) // '\n'
+      if (lastNewline === -1) return
 
-      for (const line of lines) {
+      // Work on the byte buffer directly so the offset cursor stays exact
+      // even with multi-byte UTF-8 content. `lineStartByte` is the byte
+      // offset (relative to the start of this delta) of the current line's
+      // first byte; `cursor` (absolute) advances to the end of each
+      // committed line.
+      let lineStartByte = 0
+      for (let i = 0; i <= lastNewline; i++) {
+        if (buffer[i] !== 0x0a) continue
+        // Line bytes are [lineStartByte, i); the '\n' at i is consumed
+        // into the committed offset.
+        const lineBuf = buffer.subarray(lineStartByte, i)
+        const lineEndOffset = previousPosition + i + 1
+        lineStartByte = i + 1
+
+        const line = lineBuf.toString('utf-8').trim()
+        if (!line) {
+          // Empty line: nothing to emit, but commit the offset so we do
+          // not re-scan it.
+          this.filePositions.set(filePath, lineEndOffset)
+          continue
+        }
+
         // Extract agent ID from agent-setting event
         try {
           const raw = JSON.parse(line)
@@ -221,11 +437,84 @@ export class Watcher {
         if (events.length > 0) {
           this.sessionManager.addEvents(sessionId, events)
         }
-      }
 
-      this.filePositions.set(filePath, currentSize)
+        // §7.3.4 per-line commit boundary: advance the offset only after
+        // addEvents has completed for this line. If a later line throws,
+        // the offset is already past the committed lines, so a retry
+        // (next change / reconcile tick) replays only the failed line
+        // onward — committed lines are not re-emitted.
+        this.filePositions.set(filePath, lineEndOffset)
+      }
     } catch (err) {
       watcherLogger.error({ err, filePath }, 'File processing error')
+    }
+  }
+
+  // --- Startup self-verify (§8.6.1, fail-loud observability) ---
+
+  /**
+   * After the live watch reaches `ready`, actively verify that the raw
+   * `add` subscription is alive by exclusively creating a non-.jsonl
+   * marker file in the sessions dir and waiting for its add event
+   * (§8.6.1). Non-blocking: the result is logged only and never blocks or
+   * refuses startup (§8.6 non-destructive route). Only verifies "the
+   * subscription was alive at startup" — continuous coverage is the
+   * reconciliation scan's job.
+   */
+  private runSelfVerify(watchDir: string): void {
+    if (this.selfVerifyDone) return
+    this.selfVerifyDone = true
+
+    // Only when the sessions dir exists (§8.6.1 timing). In absent-dir
+    // startup the dir may not be dug yet at ready time; defer/skip.
+    if (!this.fs.existsSync(watchDir)) {
+      watcherLogger.debug('Self-verify deferred: sessions dir not present at ready')
+      return
+    }
+
+    const markerPath = join(watchDir, `.kovitoboard-watch-selftest-${randomUUID()}`)
+
+    // Exclusive create (O_CREAT | O_EXCL via 'wx'). EEXIST → skip with
+    // warn (do not error: this is not proof of degrade). The marker has
+    // no .jsonl extension so it is never registered as a session.
+    try {
+      this.fs.writeFileSync(markerPath, '', { flag: 'wx', mode: 0o600 })
+    } catch (err) {
+      watcherLogger.warn({ err, markerPath }, 'Self-verify skipped: could not create marker file')
+      return
+    }
+
+    let settled = false
+    const cleanup = () => {
+      this.selfVerifyObserver = null
+      try {
+        this.fs.unlinkSync(markerPath)
+      } catch {
+        // swallow: already removed / race
+      }
+    }
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      // fail-loud: error level. The add subscription may be dead; the
+      // reconciliation scan remains as a net (§8.6.1.2).
+      watcherLogger.error(
+        { markerPath },
+        'Self-verify timed out: watcher add subscription may be dead. ' +
+          'Reconciliation scan remains active as a safety net.',
+      )
+      cleanup()
+    }, SELF_VERIFY_TIMEOUT_MS)
+    timer.unref?.()
+
+    this.selfVerifyObserver = (addedPath: string) => {
+      if (settled) return
+      if (addedPath !== markerPath) return
+      settled = true
+      clearTimeout(timer)
+      watcherLogger.info('Self-verify passed: watcher add subscription is alive')
+      cleanup()
     }
   }
 }
