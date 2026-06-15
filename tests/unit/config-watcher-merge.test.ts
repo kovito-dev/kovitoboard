@@ -138,4 +138,13 @@ describe('loadConfig watcher deep-merge (§7.3.3)', () => {
     const cfg = loadConfig(createMockFs(JSON.stringify({ watcher: { reconcileInterval: 0.5 } })))
     expect(cfg.watcher.reconcileInterval).toBe(10000) // default, not 0 (disable)
   })
+
+  it('over-large intervals are clamped to the Node timer max (no 1ms hot loop)', () => {
+    const MAX = 2_147_483_647
+    const cfg = loadConfig(
+      createMockFs(JSON.stringify({ watcher: { pollInterval: 999999999999, reconcileInterval: 999999999999 } })),
+    )
+    expect(cfg.watcher.pollInterval).toBe(MAX)
+    expect(cfg.watcher.reconcileInterval).toBe(MAX)
+  })
 })

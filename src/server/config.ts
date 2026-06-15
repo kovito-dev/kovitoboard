@@ -216,6 +216,29 @@ export function loadConfig(fs: FileAccessLayer): ViewerConfig {
  * inotify (`usePolling: false`) — both safety nets off, which can
  * re-trigger the original High bug.
  */
+/**
+ * Maximum delay (ms) accepted by Node's timer functions. A `setTimeout`
+ * / `setInterval` delay above this is silently clamped back to `1`,
+ * which would turn an over-large interval typo into a near-hot loop. We
+ * clamp to this ceiling instead.
+ */
+const NODE_TIMER_MAX_MS = 2_147_483_647 // 2^31 - 1
+
+/**
+ * Clamp a positive integer interval to the Node timer ceiling so an
+ * over-large value does not wrap to a 1ms hot loop.
+ */
+function clampTimerMs(floored: number, original: number, field: string): number {
+  if (floored > NODE_TIMER_MAX_MS) {
+    cfgLog.warn(
+      { received: original, clampedTo: NODE_TIMER_MAX_MS },
+      `[config] watcher.${field} exceeds the Node timer max; clamping to ${NODE_TIMER_MAX_MS}ms.`,
+    )
+    return NODE_TIMER_MAX_MS
+  }
+  return floored
+}
+
 function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
   const defaults = DEFAULT_CONFIG.watcher
 
@@ -245,12 +268,14 @@ function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
   // pollInterval: finite number >= 1 (after flooring). A fractional
   // value in (0, 1) floors to 0, which would create a zero-interval
   // watcher — reject it the same as a non-positive value rather than
-  // silently producing 0.
+  // silently producing 0. Values above the Node timer max are clamped:
+  // Node clamps a delay > 2^31-1 ms back to 1ms (turning a typo like
+  // 999999999999 into a hot loop), so clamp to the max instead.
   let pollInterval = defaults.pollInterval
   if (src.pollInterval !== undefined) {
     const v = src.pollInterval
     if (typeof v === 'number' && Number.isFinite(v) && v > 0 && Math.floor(v) >= 1) {
-      pollInterval = Math.floor(v)
+      pollInterval = clampTimerMs(Math.floor(v), v, 'pollInterval')
     } else {
       cfgLog.warn(
         { received: v },
@@ -268,7 +293,7 @@ function resolveWatcherConfig(raw: unknown): ViewerConfig['watcher'] {
         // Explicit disable opt-out (negative is normalized to 0).
         reconcileInterval = 0
       } else if (Math.floor(v) >= 1) {
-        reconcileInterval = Math.floor(v)
+        reconcileInterval = clampTimerMs(Math.floor(v), v, 'reconcileInterval')
       } else {
         // Positive but rounds to 0 (e.g. 0.5). The operator did not
         // intend to disable reconciliation, so fall back to the default
