@@ -1,6 +1,6 @@
 # 07. Advanced
 
-**Target KB version:** v0.2.7
+**Target KB version:** v0.2.8
 **Last updated:** 2026-06-15
 **Authoritative source:** [`../07-advanced.md`](../07-advanced.md) (Japanese)
 
