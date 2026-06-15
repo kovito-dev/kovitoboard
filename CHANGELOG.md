@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-16
+
+### Added
+
+- Added a project status section to the README, clarifying that KovitoBoard is
+  in early development (pre-1.0): some features may still be missing, breaking
+  changes can occur before 1.0 (all recorded in this CHANGELOG), important data
+  should be backed up, and feedback is welcome via GitHub Issues.
+
 ## [0.2.8] - 2026-06-15
 
 ### Fixed
