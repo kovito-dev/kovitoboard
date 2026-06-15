@@ -154,17 +154,23 @@ describeTmux('tools/kb-start.mjs — §6.6.2 tmux session pre-flight', () => {
     expect(r.stderr).toContain(session)
   })
 
-  it('does not emit the conflict error when no matching session exists', async () => {
+  it('passes the pre-flight and reaches port resolution when no matching session exists', async () => {
     // No session is pre-created, so the pre-flight must pass. To avoid
     // actually launching a supervisor (slow / leaves a process), we hand
     // kb-start an explicit `--port` that is already busy so it exits fast
-    // during port resolution. The only assertion that matters is that the
-    // tmux pre-flight did NOT refuse — kb-start got far enough to reach
-    // app-symlink / port resolution (both run after the pre-flight).
+    // during port resolution.
     const busyPort = await occupyPort()
     const r = runKbStart(workDir, ['--port', String(busyPort)])
+    // (a) the tmux pre-flight did NOT refuse, and
     expect(r.stderr ?? '').not.toContain(
       'a KB tmux session for this project already exists',
     )
+    // (b) execution advanced PAST the pre-flight into port resolution —
+    // proven by the busy-port error and exit 1 — so a "pass" cannot be a
+    // false positive caused by an earlier unrelated failure / timeout.
+    expect(r.signal).toBeNull() // not killed by the spawn timeout
+    expect(r.status).toBe(1)
+    expect(r.stderr ?? '').toContain(`port ${busyPort}`)
+    expect(r.stderr ?? '').toContain('already in use')
   })
 })

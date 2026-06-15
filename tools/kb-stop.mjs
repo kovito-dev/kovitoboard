@@ -442,8 +442,23 @@ function listAllProcesses() {
  */
 function classifySupervisorRoot(pid) {
   if (!isPidAlive(pid)) return 'dead'
-  const argv = readArgvFromProc(pid)
-  // Without /proc argv we cannot apply the fence; do not silently trust.
+  // argv source priority: /proc (lossless) > `ps -o command=` (lossy
+  // whitespace split, the only option on /proc-less platforms like macOS).
+  // Without the ps fallback the gate would return 'unknown' for every
+  // PID-file stop on macOS, disabling lineage / --force entirely there.
+  let argv = readArgvFromProc(pid)
+  if (!argv) {
+    try {
+      const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (out) argv = out.split(/\s+/).filter(Boolean)
+    } catch {
+      // ps unavailable / not permitted
+    }
+  }
+  // Without any argv source we cannot apply the fence; do not silently trust.
   if (!argv || argv.length < 2) return 'unknown'
   if (!isNodeRuntime(argv[0])) return 'mismatch'
   const scriptIdx = findEntryScriptIndex(argv)
@@ -1507,6 +1522,15 @@ async function main() {
         console.warn(`[kb-stop] --force: SIGKILL → lineage-proven orphan pid ${pid}`)
         killByPid(pid, 'SIGKILL')
       }
+    }
+    // SIGKILL delivery is asynchronous: a just-killed orphan can briefly
+    // still appear alive and still hold its listening socket. Wait (bounded,
+    // 2s / 50ms poll) for every killed PID to actually disappear before
+    // re-evaluating, so a successful --force does not produce a spurious
+    // exit 4 / "manual cleanup needed" report on the lingering window.
+    const killDeadline = Date.now() + 2000
+    while (Date.now() < killDeadline && killable.some((p) => isPidAlive(p))) {
+      await new Promise((r) => setTimeout(r, 50))
     }
     // Re-run the full diagnostic after the kill pass so EVERY derived
     // residue reflects the post-kill state — not just orphan entries. A
