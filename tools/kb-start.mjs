@@ -85,6 +85,7 @@ import {
   decideDetach,
   buildDetachedSpawnArgs,
 } from './kb-detach-helpers.mjs'
+import { escapeForLog, removalHint } from './kb-path-safety.mjs'
 
 const RESTART_EXIT_CODE = 42
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -389,48 +390,6 @@ function removePidFile() {
 }
 
 /**
- * POSIX single-quote a path for safe inclusion in a suggested shell command
- * (e.g. the `rm` hint in the corrupt-PID error). The projectRoot — and thus
- * PID_FILE_PATH — is operator-supplied, so a path with spaces or shell
- * metacharacters (`$()`, backticks, `;`) printed verbatim into `rm <path>`
- * could be copy-pasted into something other than the intended removal.
- * Wrapping in single quotes neutralizes every metacharacter; an embedded
- * single quote is escaped as `'\''` (close-quote, literal quote, re-open).
- */
-function shellQuote(s) {
-  return `'${String(s).replace(/'/g, `'\\''`)}'`
-}
-
-/**
- * Escape control characters (newlines, carriage returns, ANSI escapes, other
- * C0 controls + DEL) before printing an operator-supplied path into a log /
- * error line. PID_FILE_PATH derives from the projectRoot, so a path with an
- * embedded newline or `\x1b[` sequence could otherwise forge extra log lines
- * or manipulate the terminal. Replaces each control byte with its `\xHH`
- * hex escape, keeping the message single-line and inert.
- */
-function escapeForLog(s) {
-  // eslint-disable-next-line no-control-regex
-  return String(s).replace(
-    /[\x00-\x1f\x7f]/g,
-    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
-  )
-}
-
-/**
- * Render a path for a suggested shell command that is BOTH shell-safe and
- * terminal-safe: single-quote it (neutralizes shell metacharacters) then
- * hex-escape any remaining control bytes (neutralizes log/terminal
- * injection). For the normal control-free path this is exactly
- * `'<path>'` and pastes correctly; a pathological path containing control
- * bytes renders inert `\xHH` instead of a raw newline / ANSI sequence (the
- * operator is told to inspect and remove the file manually in that case).
- */
-function shellAndLogSafe(s) {
-  return escapeForLog(shellQuote(s))
-}
-
-/**
  * Examine an existing PID file and either bail out (alive supervisor or
  * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
  * PID file). Spec process-lifecycle §6.4.
@@ -469,9 +428,9 @@ function checkExistingSupervisor() {
         `[kb-start]        Refusing to start: a corrupt PID file may hide a still-running\n` +
         `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
         `[kb-start]        against the same project.\n` +
-        `[kb-start]        Inspect it, confirm no supervisor is running, then remove it:\n` +
-        `[kb-start]          rm -- ${shellAndLogSafe(PID_FILE_PATH)}\n` +
-        `[kb-start]        and re-run the start command.`,
+        `[kb-start]        Inspect it, confirm no supervisor is running, then remove it.\n` +
+        removalHint(PID_FILE_PATH, '[kb-start]        ') +
+        `\n[kb-start]        Then re-run the start command.`,
     )
     process.exit(1)
   }

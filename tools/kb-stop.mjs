@@ -62,6 +62,7 @@ import {
 } from 'fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
+import { escapeForLog, removalHint } from './kb-path-safety.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -251,47 +252,6 @@ function removePidFile() {
     // ENOENT is the expected case after a graceful shutdown; nothing
     // to recover.
   }
-}
-
-/**
- * POSIX single-quote a path for safe inclusion in a suggested shell command
- * (e.g. the `rm` hint in the root-PID trust-gate refusal). PID_FILE_PATH is
- * derived from the operator-supplied projectRoot, so a path with spaces or
- * shell metacharacters (`$()`, backticks, `;`) printed verbatim into
- * `rm <path>` could be copy-pasted into something other than the intended
- * removal. Single-quoting neutralizes every metacharacter; an embedded
- * single quote becomes `'\''` (close-quote, literal quote, re-open).
- */
-function shellQuote(s) {
-  return `'${String(s).replace(/'/g, `'\\''`)}'`
-}
-
-/**
- * Escape control characters (newlines, carriage returns, ANSI escapes, other
- * C0 controls + DEL) before printing an operator-supplied path into a log /
- * error line. PID_FILE_PATH derives from the projectRoot, so a path with an
- * embedded newline or `\x1b[` sequence could otherwise forge extra log lines
- * or manipulate the terminal. Replaces each control byte with its `\xHH`
- * hex escape, keeping the message single-line and inert.
- */
-function escapeForLog(s) {
-  // eslint-disable-next-line no-control-regex
-  return String(s).replace(
-    /[\x00-\x1f\x7f]/g,
-    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
-  )
-}
-
-/**
- * Render a path for a suggested shell command that is BOTH shell-safe and
- * terminal-safe: single-quote it (neutralizes shell metacharacters) then
- * hex-escape any remaining control bytes (neutralizes log/terminal
- * injection). For the normal control-free path this is exactly `'<path>'`
- * and pastes correctly; a pathological path with control bytes renders inert
- * `\xHH` instead of a raw newline / ANSI sequence.
- */
-function shellAndLogSafe(s) {
-  return escapeForLog(shellQuote(s))
 }
 
 /**
@@ -1505,9 +1465,9 @@ async function main() {
           `[kb-stop]        PID file: ${escapeForLog(PID_FILE_PATH)}\n` +
           `[kb-stop]        Refusing to send any signal: the PID file may be stale or\n` +
           `[kb-stop]        tampered and this PID could belong to a different process.\n` +
-          `[kb-stop]        Inspect the PID file and remove it if no supervisor is running\n` +
-          `[kb-stop]        (rm -- ${shellAndLogSafe(PID_FILE_PATH)}), or use --all to opt into the\n` +
-          `[kb-stop]        host-wide supervisor sweep.`,
+          `[kb-stop]        Inspect the PID file and remove it if no supervisor is running,\n` +
+          `[kb-stop]        or use --all to opt into the host-wide supervisor sweep.\n` +
+          removalHint(PID_FILE_PATH, '[kb-stop]        '),
       )
       process.exit(2)
     }
