@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-06-15
+
+### Fixed
+
+- KovitoBoard now recovers session files that appear while the app is
+  starting up. Previously, if a new session's log file was created
+  during a narrow startup timing window, the backend could miss the
+  file-creation event and the session would not show up in the UI until
+  the next restart. The backend now reconciles the session directory so
+  these sessions are picked up reliably.
+- Warning and status text is now readable in light mode. Several warning
+  messages — including the "update available" header badge — used colors
+  tuned only for dark mode and were hard to read on light backgrounds.
+  They now use the theme's warning color tokens, which adapt to both
+  light and dark themes.
+
 ## [0.2.7] - 2026-06-15
 
 ### Security

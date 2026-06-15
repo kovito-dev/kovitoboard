@@ -96,7 +96,7 @@ export function CaptureApprovalSection({
       <div
         data-testid="capture-trust-warning"
         role="alert"
-        className="flex items-start gap-2 border border-amber-400 bg-amber-50 text-amber-900 rounded px-3 py-2"
+        className="flex items-start gap-2 border border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-text)] rounded px-3 py-2"
       >
         <span aria-hidden="true" className="text-base leading-5">⚠</span>
         <p className="text-xs leading-5">

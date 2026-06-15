@@ -45,6 +45,7 @@
   /* Warning (amber family) — used for trust-prompt advisories */
   --warning-text: #fde68a;                       /* amber-200 */
   --warning-bg: rgba(245, 158, 11, 0.10);        /* amber-500/10 */
+  --warning-bg-hover: rgba(245, 158, 11, 0.18);  /* amber-500/18: hover-only bg bump, leaves text contrast intact */
   --warning-border: rgba(245, 158, 11, 0.40);    /* amber-500/40 */
 
   /* Onboarding accent (OB-4): the global `--accent` blue read as too
@@ -134,6 +135,7 @@
      boosted to keep the banner visible. */
   --warning-text: #92400e;                       /* amber-800 */
   --warning-bg: rgba(245, 158, 11, 0.15);        /* amber-500/15 */
+  --warning-bg-hover: rgba(245, 158, 11, 0.25);  /* amber-500/25: hover-only bg bump, keeps amber-800 text readable */
   --warning-border: rgba(180, 83, 9, 0.45);      /* amber-700/45 */
 
   /* Onboarding accent (OB-4): light variant. Kept slightly darker
