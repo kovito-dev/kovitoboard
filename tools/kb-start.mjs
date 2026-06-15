@@ -402,6 +402,22 @@ function shellQuote(s) {
 }
 
 /**
+ * Escape control characters (newlines, carriage returns, ANSI escapes, other
+ * C0 controls + DEL) before printing an operator-supplied path into a log /
+ * error line. PID_FILE_PATH derives from the projectRoot, so a path with an
+ * embedded newline or `\x1b[` sequence could otherwise forge extra log lines
+ * or manipulate the terminal. Replaces each control byte with its `\xHH`
+ * hex escape, keeping the message single-line and inert.
+ */
+function escapeForLog(s) {
+  // eslint-disable-next-line no-control-regex
+  return String(s).replace(
+    /[\x00-\x1f\x7f]/g,
+    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  )
+}
+
+/**
  * Examine an existing PID file and either bail out (alive supervisor or
  * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
  * PID file). Spec process-lifecycle §6.4.
@@ -436,7 +452,7 @@ function checkExistingSupervisor() {
           : 'invalid (schema mismatch)'
     console.error(
       `[kb-start] ERROR: the KovitoBoard supervisor PID file is ${category}.\n` +
-        `[kb-start]        Path: ${PID_FILE_PATH}\n` +
+        `[kb-start]        Path: ${escapeForLog(PID_FILE_PATH)}\n` +
         `[kb-start]        Refusing to start: a corrupt PID file may hide a still-running\n` +
         `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
         `[kb-start]        against the same project.\n` +

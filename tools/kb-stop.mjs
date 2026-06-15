@@ -267,6 +267,22 @@ function shellQuote(s) {
 }
 
 /**
+ * Escape control characters (newlines, carriage returns, ANSI escapes, other
+ * C0 controls + DEL) before printing an operator-supplied path into a log /
+ * error line. PID_FILE_PATH derives from the projectRoot, so a path with an
+ * embedded newline or `\x1b[` sequence could otherwise forge extra log lines
+ * or manipulate the terminal. Replaces each control byte with its `\xHH`
+ * hex escape, keeping the message single-line and inert.
+ */
+function escapeForLog(s) {
+  // eslint-disable-next-line no-control-regex
+  return String(s).replace(
+    /[\x00-\x1f\x7f]/g,
+    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  )
+}
+
+/**
  * Block until either the PID file disappears (graceful shutdown
  * confirmation) or `timeoutMs` elapses. Returns true on disappear,
  * false on timeout.
@@ -1434,19 +1450,31 @@ async function main() {
         !recheck.broken &&
         recheck.pid === pidFromFile &&
         recheck.startedAt === pidEntry?.startedAt
-      if (recheck != null && !recheck.broken && !sameStaleRecord) {
+      // Unlink ONLY when the file is still the exact stale record we
+      // classified. Every other re-read outcome means the file is no longer
+      // ours to remove: a different non-broken record (concurrent restart),
+      // a broken/unreadable entry (a rewrite in progress, or a new corrupt
+      // file we must not silently clobber — that is kb-start's §6.4
+      // fail-loud territory), or null (already removed by someone else).
+      // In all those cases, leave the file and report rather than delete a
+      // file we no longer own.
+      if (!sameStaleRecord) {
+        const detail =
+          recheck == null
+            ? 'the PID file was removed concurrently'
+            : recheck.broken
+              ? `the PID file became unreadable concurrently (${recheck.broken})`
+              : `the PID file now records pid ${recheck.pid}`
         console.warn(
-          `[kb-stop] WARN: the PID file changed concurrently ` +
-            `(was stale pid ${pidFromFile}, now records pid ${recheck.pid}); ` +
-            `leaving it in place. A new supervisor may have just started — ` +
-            `re-run kb-stop to act on it.`,
+          `[kb-stop] WARN: not removing the stale PID file — ${detail}. ` +
+            `A new supervisor may have just started; re-run kb-stop to act on it.`,
         )
-        console.log('[kb-stop] Done (stale PID file superseded by a new owner; not removed).')
+        console.log('[kb-stop] Done (stale PID file changed concurrently; left in place).')
         process.exit(0)
       }
       console.warn(
         `[kb-stop] WARN: PID-file root pid ${pidFromFile} is no longer alive ` +
-          `(stale PID file); removing ${PID_FILE_PATH} and exiting.`,
+          `(stale PID file); removing ${escapeForLog(PID_FILE_PATH)} and exiting.`,
       )
       removePidFile()
       console.log('[kb-stop] Done (stale PID file cleared; nothing was running).')
@@ -1462,7 +1490,7 @@ async function main() {
       // stop, so do not touch" contract as EPERM (§7.5, BL-2026-244).
       console.error(
         `[kb-stop] ERROR: the recorded supervisor PID ${pidFromFile} ${reason}.\n` +
-          `[kb-stop]        PID file: ${PID_FILE_PATH}\n` +
+          `[kb-stop]        PID file: ${escapeForLog(PID_FILE_PATH)}\n` +
           `[kb-stop]        Refusing to send any signal: the PID file may be stale or\n` +
           `[kb-stop]        tampered and this PID could belong to a different process.\n` +
           `[kb-stop]        Inspect the PID file and remove it if no supervisor is running\n` +
