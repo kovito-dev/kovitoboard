@@ -63,7 +63,7 @@
 
 import { spawn } from 'child_process'
 import { createServer as createNetServer } from 'net'
-import { resolve, dirname, relative, isAbsolute } from 'path'
+import { resolve, dirname, sep as pathSep } from 'path'
 import { fileURLToPath } from 'url'
 import { randomBytes } from 'crypto'
 import {
@@ -78,6 +78,7 @@ import {
   writeFileSync,
   renameSync,
   unlinkSync,
+  realpathSync,
   constants as fsConstants,
 } from 'fs'
 import {
@@ -191,12 +192,88 @@ Examples:
   process.exit(0)
 }
 
-const projectRoot =
-  (parseStringFlag(process.argv, '--project-root')
-    ? resolve(parseStringFlag(process.argv, '--project-root'))
-    : null) ||
-  process.env.KOVITOBOARD_PROJECT_ROOT ||
-  null
+/**
+ * Read `project.path` from `<baseDir>/.kovitoboard/setting.json` (the
+ * value onboarding persists). Returns an absolute path or null when the
+ * file is missing / unreadable / does not contain a usable path.
+ *
+ * Kept-in-sync inline copy of `readPersistedProjectRoot` in
+ * `src/server/config.ts` (the supervisor is a separate `node` runtime
+ * that cannot import the TypeScript module without a build step). The
+ * base anchor here is `repoRoot` (the KB clone) rather than
+ * `process.cwd()`: in the embedded layout a restart runs
+ * `cd <project>/kovitoboard && npm start`, so cwd === repoRoot and the
+ * two anchors coincide. Spec SSOT: `process-lifecycle.md` v1.5 §3.7
+ * stage 3.
+ */
+function readPersistedProjectRoot(baseDir) {
+  const settingPath = resolve(baseDir, '.kovitoboard', 'setting.json')
+  if (!existsSync(settingPath)) return null
+  let raw
+  try {
+    raw = readFileSync(settingPath, 'utf-8')
+  } catch {
+    return null
+  }
+  try {
+    const data = JSON.parse(raw)
+    const path = data && data.project && data.project.path
+    if (typeof path === 'string' && path.length > 0) return resolve(path)
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolve the project root with the same 4-stage priority chain the
+ * server uses (`resolveProjectRootWithSource` in `src/server/config.ts`,
+ * spec SSOT: `process-lifecycle.md` v1.5 §3.7 / `data-persistence.md`
+ * v1.6 §5.3). Aligning the supervisor with the server removes the
+ * 3-way resolution drift between supervisor / server / README and
+ * honours the README L289 contract ("--project-root may be omitted
+ * after onboarding").
+ *
+ *   1. --project-root CLI argument                 → 'cli-arg'
+ *   2. KOVITOBOARD_PROJECT_ROOT env var            → 'env'
+ *   3. project.path from <repoRoot>/.kovitoboard/setting.json → 'setting-json'
+ *   4. process.cwd() fallback                      → 'cwd-fallback'
+ *
+ * Unlike the server this never returns null: the cwd-fallback always
+ * yields a value. The self-management guard (M-1) below evaluates the
+ * resolved path regardless of source.
+ */
+function resolveProjectRootWithSource() {
+  const argRoot = parseStringFlag(process.argv, '--project-root')
+  if (argRoot) {
+    return { path: resolve(argRoot), source: 'cli-arg' }
+  }
+  const envRoot = process.env.KOVITOBOARD_PROJECT_ROOT
+  if (envRoot && envRoot.trim().length > 0) {
+    return { path: resolve(envRoot), source: 'env' }
+  }
+  const persisted = readPersistedProjectRoot(repoRoot)
+  if (persisted) {
+    return { path: persisted, source: 'setting-json' }
+  }
+  // cwd-fallback (spec process-lifecycle.md v1.5 §3.7 stage 4): the
+  // embedded model expects --project-root / KOVITOBOARD_PROJECT_ROOT or
+  // an onboarded setting.json, so reaching here in production is a
+  // misconfiguration. Emit a single WARN (mirroring the server's
+  // config.ts cwd-fallback WARN) and continue; the M-1 guard still
+  // refuses if the cwd happens to be inside the clone.
+  const cwd = process.cwd()
+  console.warn(
+    `[kb-start] WARN: project root resolved via cwd-fallback (${cwd}). ` +
+      `Embedded mode expects an explicit --project-root or ` +
+      `KOVITOBOARD_PROJECT_ROOT, or an onboarded ` +
+      `.kovitoboard/setting.json. See process-lifecycle.md §3.7.`,
+  )
+  return { path: cwd, source: 'cwd-fallback' }
+}
+
+const { path: projectRoot, source: projectRootSource } =
+  resolveProjectRootWithSource()
 
 // ---------------------------------------------------------------------------
 // PID file + multi-launch refuse (process-lifecycle.md v1.2 §6 / §10)
@@ -207,18 +284,18 @@ const projectRoot =
 // same projectRoot bails out instead of silently launching a parallel
 // supervisor.
 //
-// Path anchoring: when projectRoot is unresolved (no --project-root,
-// no env var, and the cwd is outside the KB clone), we fall back to
-// the KB clone root for the same reason the detach branch does — the
-// PID file goes somewhere predictable so `kb-stop` can still find it.
-// In the embedded model (the only supported deployment per
-// kovitoboard-master-spec §2.2 / process-lifecycle §1) projectRoot is
-// always set, so the fallback only matters for contributor / test
-// usage from inside the clone.
+// Path anchoring: the 4-stage resolution above always yields a
+// projectRoot (the cwd-fallback stage never returns null), and the M-1
+// guard refuses any resolution that lands inside the KB clone, so the
+// PID file is always anchored under a real target project root. In the
+// embedded model (the only supported deployment per
+// kovitoboard-master-spec §2.2 / process-lifecycle §1) that root is the
+// onboarded project; the cwd-fallback only matters for contributor /
+// test usage from outside the clone.
 // ---------------------------------------------------------------------------
 
 const PID_FILE_PATH = resolve(
-  projectRoot ?? repoRoot,
+  projectRoot,
   '.kovitoboard',
   'run',
   'supervisor.pid',
@@ -341,31 +418,68 @@ function checkExistingSupervisor() {
 }
 
 /**
- * Refuse to start when the cwd lives inside the KB clone and the user
- * did not point us at a target project (M-1, spec
- * `shared-installation-prevention-request.md` §M-1). The embedded
- * model expects `cd <project>/kovitoboard && npm start -- --project-root ..`,
- * which sets projectRoot via --project-root and bypasses this branch.
+ * Equality-inclusive containment check: returns true when `absPath`
+ * equals `scopeRoot` or lives under it. A trailing separator is appended
+ * to the root before prefix matching so a sibling like `/foo/barBaz`
+ * does not masquerade as being inside `/foo/bar`.
  *
- * The check is bounded by `projectRoot == null` so any explicit
- * --project-root or KOVITOBOARD_PROJECT_ROOT immediately satisfies
- * the requirement, even if the operator happens to be running from
- * inside a checkout for development reasons.
+ * Kept-in-sync inline copy of `isWithin` in `src/server/pathResolver.ts`
+ * (the supervisor cannot import the TypeScript module). Spec SSOT:
+ * `process-lifecycle.md` v1.5 §3.7.2, `data-persistence.md` v1.6 §5.4.
  */
-function refuseKbCloneSelfManagement() {
-  if (projectRoot) return
-  const rel = relative(repoRoot, process.cwd())
-  // `relative` returns '' when paths match, '..' / '../...' when cwd
-  // is outside repoRoot, and an in-tree relative path (no leading
-  // '..', not absolute) when cwd is inside.
-  const cwdInsideClone =
-    rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-  if (!cwdInsideClone) return
+function isWithin(absPath, scopeRoot) {
+  const root = scopeRoot.endsWith(pathSep) ? scopeRoot : scopeRoot + pathSep
+  return absPath === scopeRoot || absPath.startsWith(root)
+}
+
+/**
+ * Refuse to start when the *resolved* projectRoot points at the KB clone
+ * (`repoRoot`) itself or anything inside it — the M-1 self-management
+ * guard (spec `shared-installation-prevention-request.md` v1.3 §M-1 /
+ * `process-lifecycle.md` v1.5 §3.7.2).
+ *
+ * This is a resolved-after evaluation: the check runs once, immediately
+ * after the 4-stage resolution, and refuses regardless of the source
+ * (cli-arg / env / setting-json / cwd-fallback). A setting.json that
+ * records the clone
+ * itself (the embedded-onboarding pollution case) is therefore rejected
+ * fail-loud rather than silently auto-corrected.
+ *
+ * Both paths are fully canonicalized with `fs.realpathSync` before the
+ * containment check so a symlink alias or non-canonical path that points
+ * at the clone physically (but reads as outside lexically) is still
+ * caught. Canonicalization failure is treated as fail-loud: we refuse
+ * rather than start with an unverifiable path.
+ */
+function refuseKbCloneSelfManagement(resolvedProjectRoot, source) {
+  let canonicalResolved
+  let canonicalRepoRoot
+  try {
+    canonicalResolved = realpathSync(resolvedProjectRoot)
+    canonicalRepoRoot = realpathSync(repoRoot)
+  } catch (err) {
+    console.error(
+      `[kb-start] ERROR: cannot verify the project root path.\n` +
+        `[kb-start]        Resolved projectRoot: ${resolvedProjectRoot} (source: ${source})\n` +
+        `[kb-start]        Canonicalization failed: ${err && err.message}\n` +
+        `[kb-start]        The path must exist and be resolvable. ` +
+        `Specify a valid --project-root or KOVITOBOARD_PROJECT_ROOT.`,
+    )
+    process.exit(1)
+  }
+
+  if (!isWithin(canonicalResolved, canonicalRepoRoot)) return
+
   console.error(
     `[kb-start] ERROR: KovitoBoard cannot manage itself as a project.\n` +
+      `[kb-start]        Resolved projectRoot points inside the KB clone:\n` +
+      `[kb-start]          ${canonicalResolved}\n` +
+      `[kb-start]        (clone: ${canonicalRepoRoot}, source: ${source})\n` +
       `[kb-start]        Specify the target project explicitly:\n` +
       `[kb-start]          npm start -- --project-root <path-to-project>\n` +
       `[kb-start]        Or set KOVITOBOARD_PROJECT_ROOT=<path>.\n` +
+      `[kb-start]        If a stale .kovitoboard/setting.json records the clone, ` +
+      `re-run onboarding after restarting with the correct --project-root.\n` +
       `[kb-start]        See README.md "Starting the server" for the embedded deployment model.`,
   )
   process.exit(1)
@@ -391,11 +505,13 @@ function refuseKbCloneSelfManagement() {
 // message will mention `npm run kb:stop` as the preferred command.
 // ---------------------------------------------------------------------------
 
-// M-1 must run BEFORE the detach branch so a stray
-// `cd <kb-clone> && npm start -- --detach` does not silently
-// background a self-managing supervisor; the refuse covers both
-// foreground and detached invocations.
-refuseKbCloneSelfManagement()
+// M-1 (resolved-after evaluation) runs immediately after the 4-stage
+// projectRoot resolution and BEFORE the detach branch, so a stray
+// `cd <kb-clone> && npm start -- --detach` (or a setting.json that
+// records the clone itself) does not silently background a
+// self-managing supervisor; the refuse covers both foreground and
+// detached invocations.
+refuseKbCloneSelfManagement(projectRoot, projectRootSource)
 
 // Multi-launch detection runs in the parent here so a misfire (an
 // already-running supervisor) is reported in the operator's terminal
@@ -420,8 +536,7 @@ if (decideDetach(process.argv.slice(2), process.env)) {
   // (e.g. recipe install scripts). The stderr file is intentionally
   // narrow: it captures bootstrap-time crashes, not the steady-state
   // process output.
-  const logBase = projectRoot ?? repoRoot
-  const logDir = resolve(logBase, '.kovitoboard', 'logs')
+  const logDir = resolve(projectRoot, '.kovitoboard', 'logs')
   let logFd
   let logPath
   try {
@@ -654,13 +769,9 @@ async function resolvePort({
 // ---------------------------------------------------------------------------
 
 function ensureAppSymlink() {
-  if (!projectRoot) {
-    console.warn(
-      '[kb-start] projectRoot not specified; skipping app/ symlink setup',
-    )
-    return
-  }
-
+  // projectRoot is always resolved (the 4-stage chain never returns
+  // null and the M-1 guard has already rejected any path inside the
+  // clone), so there is no "projectRoot unspecified" branch here.
   const target = resolve(projectRoot, 'app')
   const linkPath = resolve(repoRoot, 'app')
 
@@ -791,7 +902,7 @@ async function launch() {
   const env = {
     ...scrubNestedDetectionEnv(process.env),
     NODE_ENV: 'development',
-    KOVITOBOARD_PROJECT_ROOT: projectRoot ?? '',
+    KOVITOBOARD_PROJECT_ROOT: projectRoot,
     PORT: String(backendPort),
     VITE_PORT: String(vitePort),
     // Expose the supervisor pid so the server's restart endpoint can
@@ -831,16 +942,16 @@ async function launch() {
   // killed us mid-resolvePort() above, no PID file gets created.
   const tmuxSessionName =
     process.env.KOVITOBOARD_E2E_TMUX_SESSION ??
-    `kovitoboard-${(projectRoot ? projectRoot.split('/').pop() : repoRoot.split('/').pop()) ?? 'unknown'}`.replace(/[.:]/g, '-')
+    `kovitoboard-${projectRoot.split('/').pop() ?? 'unknown'}`.replace(/[.:]/g, '-')
   writePidFile({
     pid: process.pid,
     startedAt: new Date().toISOString(),
-    projectRoot: projectRoot ?? repoRoot,
-    projectRootSource: projectRoot
-      ? parseStringFlag(process.argv, '--project-root')
-        ? 'cli-arg'
-        : 'env'
-      : 'cwd-fallback',
+    projectRoot,
+    // 4-value ProjectRootSource enum, kept in sync with server
+    // `ProjectRootSource` in src/server/config.ts (enum SSOT) and spec
+    // process-lifecycle.md v1.5 §6.2: cli-arg / env / setting-json /
+    // cwd-fallback.
+    projectRootSource,
     ports: { backend: backendPort, vite: vitePort },
     tmux: { sessionName: tmuxSessionName },
   })
@@ -854,7 +965,7 @@ async function launch() {
   // these ports.
   console.log('')
   console.log('[kb-start] KovitoBoard ready')
-  console.log(`[kb-start]   Project:  ${projectRoot ?? '(cwd fallback) ' + repoRoot}`)
+  console.log(`[kb-start]   Project:  ${projectRoot} (source: ${projectRootSource})`)
   console.log(`[kb-start]   Backend:  http://localhost:${backendPort}`)
   console.log(
     `[kb-start]   Frontend: http://localhost:${vitePort}  ← open this in your browser`,
@@ -1017,9 +1128,7 @@ process.on('SIGUSR2', () => triggerRestart())
 // ---------------------------------------------------------------------------
 
 console.log('[kb-start] KovitoBoard Supervisor starting...')
-if (projectRoot) {
-  console.log(`[kb-start] Project root: ${projectRoot}`)
-}
+console.log(`[kb-start] Project root: ${projectRoot} (source: ${projectRootSource})`)
 
 ensureAppSymlink()
 launch().catch((err) => {
