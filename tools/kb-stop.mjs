@@ -462,6 +462,25 @@ function buildLineageSnapshot(rootPid) {
 }
 
 /**
+ * Build a merged descendant snapshot covering every root in `roots`
+ * (used in `--all` mode where pgrep may discover multiple supervisors, so
+ * orphan/zombie detection is not limited to the first one). Returns `null`
+ * only when the process table cannot be read at all.
+ */
+function buildLineageSnapshotForRoots(roots) {
+  let merged = null
+  for (const root of roots) {
+    const snap = buildLineageSnapshot(root)
+    if (snap == null) return null // ps unavailable → degrade entirely
+    if (merged == null) merged = new Map()
+    for (const [pid, entry] of snap) {
+      if (!merged.has(pid)) merged.set(pid, entry)
+    }
+  }
+  return merged
+}
+
+/**
  * Best-effort: return the listening process for `port` as
  * `{ pid, cmd }`, or `null` when nothing is listening / lookup is not
  * permitted (§9.1.1 / §11.5). lsof primary, ss fallback. Never signals
@@ -1243,20 +1262,18 @@ async function main() {
   // descendant PID closure + identity tuples BEFORE any signal or tmux
   // cleanup, so post-cleanup orphan/zombie detection can anchor on it
   // (the tmux session is torn down later, which would make the pane PID
-  // tree unrecoverable without a host-wide scan). Only meaningful in the
-  // PID-file path; in --all / pgrep mode we anchor on the discovered
-  // supervisor PIDs. Failure degrades to skip orphan/zombie detection
-  // with a WARN, but the PID-file `ports` post-flight still runs.
+  // tree unrecoverable without a host-wide scan). Covers EVERY targeted
+  // supervisor — in --all / pgrep mode pgrep may discover more than one,
+  // so orphan/zombie detection is not limited to the first. Failure
+  // degrades to skip orphan/zombie detection with a WARN, but the
+  // PID-file `ports` post-flight still runs.
   let lineageSnapshot = null
-  if (!args.dryRun) {
-    const snapshotRoot = pidFromFile != null ? pidFromFile : supervisors[0]
-    if (snapshotRoot != null) {
-      lineageSnapshot = buildLineageSnapshot(snapshotRoot)
-      if (lineageSnapshot == null) {
-        console.warn(
-          `[kb-stop] WARN: lineage snapshot unavailable; skipping orphan/zombie diagnostics`,
-        )
-      }
+  if (!args.dryRun && supervisors.length > 0) {
+    lineageSnapshot = buildLineageSnapshotForRoots(supervisors)
+    if (lineageSnapshot == null) {
+      console.warn(
+        `[kb-stop] WARN: lineage snapshot unavailable; skipping orphan/zombie diagnostics`,
+      )
     }
   }
 
@@ -1346,7 +1363,7 @@ async function main() {
   //   - exitResidue: lineage-proven KB residue → exit 4 (§7.5)
   //   - advisories:  zombies (OS/init reaps) + unrelated port owners →
   //                  reported but do NOT affect the exit code (§9.1.1/§9.1.2)
-  const { exitResidue, advisories, killable, snapshotUnavailable } =
+  let { exitResidue, advisories, killable, snapshotUnavailable } =
     reportResidue(pidEntry, lineageSnapshot)
 
   // --force: SIGKILL only lineage-proven live orphans. Zombies are never
@@ -1359,14 +1376,18 @@ async function main() {
         killByPid(pid, 'SIGKILL')
       }
     }
-    // Re-evaluate which orphans survived the kill so we do not exit 4 on
-    // ones we just reaped.
-    for (let i = exitResidue.length - 1; i >= 0; i--) {
-      const r = exitResidue[i]
-      if (r.label !== 'orphan') continue
-      const m = r.line.match(/^pid=(\d+)/)
-      if (m && !isPidAlive(Number(m[1]))) exitResidue.splice(i, 1)
-    }
+    // Re-run the full diagnostic after the kill pass so EVERY derived
+    // residue reflects the post-kill state — not just orphan entries. A
+    // killed orphan that was the port owner releases its port, so the
+    // "port still bound" entry must be re-evaluated too; otherwise
+    // `--force` could exit 4 on stale pre-kill data even though the
+    // residue is gone. (The killable set was lineage-proven before the
+    // kill; we keep it from the pre-kill snapshot since the snapshot is
+    // immutable, and the re-run anchors live/port state freshly.)
+    ;({ exitResidue, advisories, snapshotUnavailable } = reportResidue(
+      pidEntry,
+      lineageSnapshot,
+    ))
   }
 
   for (const a of advisories) {
