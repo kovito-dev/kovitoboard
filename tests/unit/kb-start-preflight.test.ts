@@ -154,6 +154,26 @@ describeTmux('tools/kb-start.mjs — §6.6.2 tmux session pre-flight', () => {
     expect(r.stderr).toContain(session)
   })
 
+  it('does not refuse on a prefix-only session-name collision (exact match)', async () => {
+    // `tmux has-session -t <name>` resolves a unique PREFIX, so a longer
+    // session `<name>-extra` would falsely satisfy a plain `-t <name>`.
+    // The pre-flight uses `-t =<name>` (exact), so a prefix-only collision
+    // must NOT refuse. Create only the longer session and assert the
+    // shorter project name still passes the pre-flight.
+    const session = sessionNameFor(workDir)
+    const longer = `${session}-extra`
+    execFileSync('tmux', ['new-session', '-d', '-s', longer])
+    createdSessions.push(longer)
+
+    const busyPort = await occupyPort()
+    const r = runKbStart(workDir, ['--port', String(busyPort)])
+    expect(r.stderr ?? '').not.toContain(
+      'a KB tmux session for this project already exists',
+    )
+    // Advanced past the pre-flight into port resolution.
+    expect(r.stderr ?? '').toContain('already in use')
+  })
+
   it('passes the pre-flight and reaches port resolution when no matching session exists', async () => {
     // No session is pre-created, so the pre-flight must pass. To avoid
     // actually launching a supervisor (slow / leaves a process), we hand

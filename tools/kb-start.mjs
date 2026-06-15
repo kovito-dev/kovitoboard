@@ -556,7 +556,11 @@ function resolveTmuxSessionName() {
  */
 function checkTmuxSessionConflict(sessionName) {
   try {
-    execFileSync('tmux', ['has-session', '-t', sessionName], {
+    // `=` forces an EXACT target-name match. Plain `-t <name>` accepts a
+    // unique prefix, so without `=` an existing `kovitoboard-foo-extra`
+    // would make us falsely refuse `kovitoboard-foo` (tmux target
+    // resolution, see tmux(1) "exact match" / `=` prefix).
+    execFileSync('tmux', ['has-session', '-t', `=${sessionName}`], {
       stdio: 'ignore',
     })
   } catch (err) {
