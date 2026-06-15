@@ -217,6 +217,19 @@ export class Watcher {
                     this.selfVerifyObserver(ev.path)
                   }
                   if (ev.path.endsWith('.jsonl')) this.handleFile(ev.path)
+                } else if (ev.type === 'ready') {
+                  // The fallback (polling) watcher is now the live watch.
+                  // Drive the same ready handling so initialization /
+                  // fallback agent mapping happen even when the inotify
+                  // watcher errored before its own `ready`, and run
+                  // self-verify on this watcher — exactly the degraded
+                  // path this fix aims to make fail-loud. setInitialized
+                  // and the self-verify one-shot latch are both idempotent
+                  // if the primary watcher already reached ready.
+                  watcherLogger.info('Initial scan complete (fallback polling watcher)')
+                  this.applyFallbackAgentMapping()
+                  this.sessionManager.setInitialized()
+                  this.runSelfVerify(watchDir)
                 } else if (ev.type === 'error') {
                   watcherLogger.error({ err: ev.error }, 'Fallback watch error')
                 }
@@ -538,10 +551,13 @@ export class Watcher {
    */
   private runSelfVerify(watchDir: string): void {
     if (this.selfVerifyDone) return
-    this.selfVerifyDone = true
 
     // Only when the sessions dir exists (§8.6.1 timing). In absent-dir
-    // startup the dir may not be dug yet at ready time; defer/skip.
+    // startup the dir may not be dug yet at ready time; defer WITHOUT
+    // consuming the one-shot latch, so a later `ready` (after the
+    // absent-dir reconcile transitions to live watching) can still run
+    // self-verify once. Setting the latch here would permanently skip
+    // verification for the rest of the process even though none ran.
     if (!this.fs.existsSync(watchDir)) {
       watcherLogger.debug('Self-verify deferred: sessions dir not present at ready')
       return
@@ -594,7 +610,10 @@ export class Watcher {
     // Exclusive create (O_CREAT | O_EXCL via 'wx'). EEXIST → skip with
     // warn (do not error: this is not proof of degrade). The marker has
     // no .jsonl extension so it is never registered as a session. On
-    // failure, tear down the observer/timer we armed above.
+    // failure, tear down the observer/timer we armed above and leave the
+    // one-shot latch UNCONSUMED so a later `ready` (e.g. the
+    // fallback-polling watcher) can retry — a single transient write
+    // failure should not permanently skip verification.
     try {
       this.fs.writeFileSync(markerPath, '', { flag: 'wx', mode: 0o600 })
     } catch (err) {
@@ -603,5 +622,10 @@ export class Watcher {
       cleanup()
       return
     }
+
+    // Verification has actually started (observer armed + marker created):
+    // consume the one-shot latch so duplicate `ready` events do not start
+    // a second concurrent verification.
+    this.selfVerifyDone = true
   }
 }

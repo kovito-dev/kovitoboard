@@ -527,6 +527,59 @@ describe('Watcher dirty-start recovery', () => {
       w.stop()
     })
 
+    it('self-verify defer (dir absent at ready) does not consume the one-shot latch; a later ready runs it', () => {
+      const fs = new MockFs()
+      fs.dirs.add(sessionsDir)
+      const sm = new FakeSessionManager()
+      const writes: string[] = []
+      fs.writeFileSync = ((p: string) => {
+        writes.push(p)
+      }) as never
+      const w = new Watcher(makeConfig(100), sm as never, fs as never)
+      w.start()
+
+      // Simulate the dir being absent exactly at the first ready (e.g. it
+      // vanished after transition): self-verify must defer without writing
+      // a marker and WITHOUT consuming the latch.
+      fs.dirs.delete(sessionsDir)
+      fs.emit(sessionsDir, { type: 'ready' })
+      expect(writes).toHaveLength(0) // deferred
+
+      // Dir is present again on a later ready: self-verify now runs because
+      // the latch was not consumed by the deferred attempt.
+      fs.dirs.add(sessionsDir)
+      fs.emit(sessionsDir, { type: 'ready' })
+      expect(writes.length).toBeGreaterThanOrEqual(1)
+
+      w.stop()
+    })
+
+    it('fallback polling watcher ready runs self-verify (degraded inotify path)', () => {
+      const fs = new MockFs()
+      fs.dirs.add(sessionsDir)
+      const sm = new FakeSessionManager()
+      const writes: string[] = []
+      fs.writeFileSync = ((p: string) => {
+        writes.push(p)
+      }) as never
+      // usePolling:false so the inotify error → polling fallback path is taken.
+      const cfg = {
+        claudeDir: '/home/test/.claude',
+        watcher: { usePolling: false, pollInterval: 1500, reconcileInterval: 100 },
+      } as ViewerConfig
+      const w = new Watcher(cfg, sm as never, fs as never)
+      w.start()
+
+      // Primary inotify watcher errors before its own ready → fallback
+      // polling watcher attaches. Its ready must run self-verify.
+      fs.emit(sessionsDir, { type: 'error', error: new Error('inotify boom') })
+      fs.emit(sessionsDir, { type: 'ready' })
+      expect(sm.initialized).toBe(true)
+      expect(writes.length).toBeGreaterThanOrEqual(1) // self-verify ran on fallback watcher
+
+      w.stop()
+    })
+
     it('stop() clears the pending self-verify timeout (no false error after shutdown)', () => {
       const fs = new MockFs()
       fs.dirs.add(sessionsDir)
