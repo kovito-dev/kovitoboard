@@ -27,6 +27,7 @@ import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { Router } from 'express'
 import type { TmuxBridge } from '../tmux-bridge'
+import type { SessionManager } from '../session-manager'
 import { lazyChildLogger } from '../logger'
 
 const adminLog = lazyChildLogger('admin-routes')
@@ -86,6 +87,7 @@ function runGit(args: string[]): string | null {
 export function createAdminRouter(
   tmuxBridge: TmuxBridge,
   serverStartTime: number,
+  sessionManager: SessionManager,
 ): Router {
   const router = Router()
 
@@ -112,10 +114,27 @@ export function createAdminRouter(
         status: 'running' as const,
       }))
 
-    // Overall status
-    const status: AdminStatusResponse['status'] = !tmuxAlive
-      ? 'degraded'
-      : 'healthy'
+    // Overall status (supervisor-startup spec §6.6.1, normative).
+    //
+    // A missing tmux session is only an anomaly when work is in
+    // flight. Right after a KB restart the session is spawned lazily,
+    // so `tmux.alive === false` with no active session is the normal
+    // idle state and must NOT raise the degraded banner (false
+    // positive fix). `degraded` is reserved for "tmux gone while a
+    // session is running".
+    //
+    // Active-session source of truth: `SessionManager.getSessions()`
+    // entries whose `status !== 'idle'`. This is the exact basis the
+    // renderer uses for the TitleBar green dot (`hasActiveSession`),
+    // keeping the header's two health signals consistent. The `agents`
+    // field is NOT a usable source here: it derives from tmux windows
+    // and is always empty when `tmux.alive === false`, so it cannot
+    // tell idle apart from a true anomaly.
+    const hasActiveSession = sessionManager
+      .getSessions()
+      .some((s) => s.status !== 'idle')
+    const status: AdminStatusResponse['status'] =
+      !tmuxAlive && hasActiveSession ? 'degraded' : 'healthy'
 
     const body: AdminStatusResponse = {
       status,
