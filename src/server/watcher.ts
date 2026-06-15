@@ -181,8 +181,16 @@ export class Watcher {
 
   private startWatching(watchDir: string, usePolling: boolean, pollInterval: number): void {
     if (this.watchingStarted) return
-    this.watchingStarted = true
-    this.watchHandle = this.fs.watch(
+    // Set the latch only AFTER fs.watch() returns successfully. If it
+    // throws synchronously (the codebase treats this as possible, cf.
+    // watchSettingsFile), leaving watchingStarted=true would make the
+    // reconcile loop stop retrying the transition, permanently disabling
+    // live add/change events and self-verify until restart. On failure we
+    // warn and leave the latch false so the next reconcile tick retries
+    // the transition (the scan still recovers events meanwhile).
+    let handle: WatchHandle
+    try {
+      handle = this.fs.watch(
       watchDir,
       (event: WatchEvent) => {
         if (event.type === 'add' || event.type === 'change') {
@@ -246,7 +254,16 @@ export class Watcher {
         pollInterval,
         ignoreInitial: false,
       }
-    )
+      )
+    } catch (err) {
+      watcherLogger.warn(
+        { err, watchDir },
+        'Failed to attach live watch; reconcile scan will retry the transition',
+      )
+      return
+    }
+    this.watchHandle = handle
+    this.watchingStarted = true
   }
 
   stop(): void {
@@ -603,11 +620,19 @@ export class Watcher {
       if (settled) return
       settled = true
       // fail-loud: error level. The add subscription may be dead; the
-      // reconciliation scan remains as a net (§8.6.1.2).
+      // reconciliation scan remains as a net (§8.6.1.2) — but only if it
+      // is enabled. With reconcileInterval <= 0 the operator opted out of
+      // the scan, so the message must NOT claim a safety net that is off
+      // (misleading during incident response).
+      const reconcileActive = this.reconcileInterval > 0
       watcherLogger.error(
-        { markerPath },
-        'Self-verify timed out: watcher add subscription may be dead. ' +
-          'Reconciliation scan remains active as a safety net.',
+        { markerPath, reconcileActive },
+        reconcileActive
+          ? 'Self-verify timed out: watcher add subscription may be dead. ' +
+              'Reconciliation scan remains active as a safety net.'
+          : 'Self-verify timed out: watcher add subscription may be dead. ' +
+              'Reconciliation scan is DISABLED (reconcileInterval <= 0), so there is ' +
+              'no safety net — new sessions may go undetected.',
       )
       cleanup()
     }, SELF_VERIFY_TIMEOUT_MS)

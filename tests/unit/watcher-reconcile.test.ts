@@ -336,6 +336,34 @@ describe('Watcher dirty-start recovery', () => {
     w.stop()
   })
 
+  it('synchronous fs.watch failure does not latch the watcher inert; reconcile retries', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new FakeSessionManager()
+
+    // First watch() (the live sessions-dir watch) throws synchronously.
+    const origWatch = fs.watch.bind(fs)
+    let throwOnce = true
+    fs.watch = ((p: string, h: (e: WatchEvent) => void, o?: WatchOptions) => {
+      if (p === sessionsDir && throwOnce) {
+        throwOnce = false
+        throw new Error('EMFILE: too many open files')
+      }
+      return origWatch(p, h, o)
+    }) as never
+
+    const w = new Watcher(makeConfig(100), sm as never, fs as never)
+    w.start()
+    // The throwing watch left no handle and (critically) did not latch.
+    expect(fs.handlers.has(sessionsDir)).toBe(false)
+
+    // Next reconcile tick retries the transition; this time watch succeeds.
+    vi.advanceTimersByTime(100)
+    expect(fs.handlers.has(sessionsDir)).toBe(true)
+
+    w.stop()
+  })
+
   it('read site re-checks lstat: an entry swapped to a symlink is not read (TOCTOU narrowing)', () => {
     const fs = new MockFs()
     fs.dirs.add(sessionsDir)
