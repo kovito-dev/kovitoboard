@@ -410,7 +410,10 @@ app.use('/api/settings/user', createUserAvatarRouter(fs))
 // crossing wires. The router uses its own json() parser with a
 // higher limit so a multi-file recipe payload fits.
 app.use('/api/recipes', createRecipeUploadRouter(fs))
-app.use('/api/admin', createAdminRouter(tmuxBridge, serverStartTime))
+app.use(
+  '/api/admin',
+  createAdminRouter(tmuxBridge, serverStartTime, sessionManager),
+)
 app.use('/api/app', createAppRouter(fs, manifestStore, resolveKovitoboardInstallRoot()))
 // Apps menu-metadata routes (`PUT /api/apps/menu-order`,
 // `PATCH /api/apps/:appId/menu-label`). Mounted at the plural
