@@ -29,7 +29,14 @@ import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -120,6 +127,25 @@ describe('tools/kb-start.mjs — M-1 KB clone self-management refuse (resolved-a
     expect(r.stdout).toContain('--detach')
   })
 
+  it('--help short-circuits before the corrupt-PID fail-loud branch', () => {
+    // --help exits before resolution / PID-file inspection, so a corrupt
+    // PID file under the resolved project root never reaches the refuse.
+    const projectRoot = mkdtempSync(join(tmpdir(), 'kb-start-help-corrupt-'))
+    try {
+      mkdirSync(join(projectRoot, '.kovitoboard', 'run'), { recursive: true })
+      writeFileSync(
+        join(projectRoot, '.kovitoboard', 'run', 'supervisor.pid'),
+        '{ not json',
+      )
+      const r = run(['--help'], { env: { KOVITOBOARD_PROJECT_ROOT: projectRoot } })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('Usage:')
+      expect(r.stderr).not.toContain('PID file is')
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true })
+    }
+  })
+
   it('--help short-circuits even when KOVITOBOARD_PROJECT_ROOT is set', () => {
     // --help exits before resolution / M-1, so an external env value
     // never reaches the refuse branch. This guards the early-exit
@@ -142,4 +168,88 @@ describe('tools/kb-start.mjs — M-1 KB clone self-management refuse (resolved-a
       rmSync(tempProjectRoot, { recursive: true, force: true })
     }
   })
+})
+
+/**
+ * Corrupt / unreadable / schema-invalid PID file fail-loud
+ * (process-lifecycle.md v1.8 §6.4 / supervisor-startup.md v1.9 §5.2 step 4,
+ * BL-2026-244, owner decision #1).
+ *
+ * A corrupt PID file can hide a still-alive supervisor whose pid we cannot
+ * parse, so overwriting it would open a single-supervisor window. The
+ * supervisor now refuses with ERROR + exit 1 (joining the alive-pid /
+ * tmux pre-flight refuse series — no dedicated code) and tells the operator
+ * the absolute path to remove plus the broken category. This replaces the
+ * v1.0–v1.7 WARN + overwrite (auto-recovery) behaviour.
+ *
+ * `checkExistingSupervisor()` runs AFTER the M-1 resolved-after refuse and
+ * BEFORE the tmux pre-flight / launch, so we point the supervisor at an
+ * external (M-1-passing) tmp project root and stage a broken PID file there;
+ * the process exits 1 before forking any child.
+ */
+describe('tools/kb-start.mjs — corrupt PID file fail-loud (§6.4, BL-2026-244)', () => {
+  function withProjectRoot(): string {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'kb-start-corrupt-pid-'))
+    mkdirSync(join(projectRoot, '.kovitoboard', 'run'), { recursive: true })
+    return projectRoot
+  }
+
+  function pidFilePath(projectRoot: string): string {
+    return join(projectRoot, '.kovitoboard', 'run', 'supervisor.pid')
+  }
+
+  it('fails loud (exit 1) on an unparseable PID file and reports path + delete command', () => {
+    const projectRoot = withProjectRoot()
+    try {
+      writeFileSync(pidFilePath(projectRoot), '{ this is not json')
+      const r = run([], { env: { KOVITOBOARD_PROJECT_ROOT: projectRoot } })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('PID file is corrupt (JSON parse failed)')
+      // The actionable signal is the message body: the absolute path to
+      // remove and the explicit delete command.
+      expect(r.stderr).toContain(pidFilePath(projectRoot))
+      expect(r.stderr).toContain(`rm ${pidFilePath(projectRoot)}`)
+      // Exit 1 (the refuse) is itself the proof that the file was NOT
+      // silently overwritten the way v1.0–v1.7 did; the PID file is left
+      // untouched for the operator to inspect.
+      expect(r.stderr).toContain('Refusing to start')
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('fails loud (exit 1) on a schema-invalid PID file (valid JSON, no numeric pid)', () => {
+    const projectRoot = withProjectRoot()
+    try {
+      // Parseable JSON but missing the numeric `pid` field → readPidFile()
+      // returns { broken: 'schema' }.
+      writeFileSync(
+        pidFilePath(projectRoot),
+        JSON.stringify({ startedAt: '2026-01-01T00:00:00.000Z' }),
+      )
+      const r = run([], { env: { KOVITOBOARD_PROJECT_ROOT: projectRoot } })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('PID file is invalid (schema mismatch)')
+      expect(r.stderr).toContain(pidFilePath(projectRoot))
+      // The corrupt file must be left in place for inspection (not
+      // overwritten / removed by the refuse).
+      expect(readFileSync(pidFilePath(projectRoot), 'utf-8')).toContain(
+        'startedAt',
+      )
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true })
+    }
+  })
+
+  // NOTE on the STALE (dead-pid) branch: a well-formed PID file whose pid is
+  // dead must still be overwritten (NOT failed loud) — the corrupt fail-loud
+  // only intercepts the `broken` kinds (parse-failed / read-failed / schema),
+  // never a parseable-but-dead pid (process-lifecycle.md §6.4 "stale / alive
+  // branches unchanged"). That branch is unchanged by BL-2026-244 and would
+  // require driving kb-start past `checkExistingSupervisor` into the launch
+  // path (app symlink + port bind + child spawn), which a unit test cannot do
+  // hermetically without touching the host's real ports / clone app symlink.
+  // The stale-overwrite path is covered by kb-stop-basic.test.ts (the
+  // symmetric kb-stop dead-pid handling) and the L1 staged-clone harness; the
+  // two corrupt cases above are the ones BL-2026-244 actually changes.
 })

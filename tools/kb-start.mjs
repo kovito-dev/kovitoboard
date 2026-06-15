@@ -389,18 +389,49 @@ function removePidFile() {
 }
 
 /**
- * Examine an existing PID file and either bail out (alive supervisor),
- * warn + overwrite (stale / corrupt PID file), or do nothing (no PID
- * file). Spec process-lifecycle §6.4.
+ * Examine an existing PID file and either bail out (alive supervisor or
+ * corrupt PID file), warn + overwrite (stale PID file), or do nothing (no
+ * PID file). Spec process-lifecycle §6.4.
  */
 function checkExistingSupervisor() {
   const existing = readPidFile()
   if (!existing) return
   if (existing.broken) {
-    console.warn(
-      `[kb-start] WARN: ${existing.broken === 'parse-failed' ? 'corrupt' : 'unreadable'} PID file at ${PID_FILE_PATH}; overwriting`,
+    // Corrupt / unreadable / schema-invalid PID file: fail-loud (ERROR +
+    // exit 1) instead of overwriting (process-lifecycle.md v1.8 §6.4,
+    // BL-2026-244). A corrupt PID file can hide a still-alive supervisor
+    // whose pid we cannot parse, so the multi-launch refuse (§6.4 alive
+    // branch) cannot fire — overwriting would open a single-supervisor
+    // window where a second supervisor starts against the same
+    // projectRoot. We refuse and tell the operator exactly which file to
+    // remove. This exits 1, joining the existing refuse series (alive-pid
+    // multi-launch §6.4 / tmux pre-flight §6.6.2); no dedicated code is
+    // minted because the actionable signal is the message body (the path
+    // to delete), not the code.
+    //
+    // Unlike the stale (dead-pid) branch below, corrupt files are NOT
+    // overwritten: stale files record a parseable-but-dead pid (no
+    // single-supervisor window), whereas a corrupt file's liveness is
+    // unknowable. The atomic temp-file + rename write (`writePidFile`)
+    // means a corrupt file only arises from disk corruption / external
+    // tampering / an asymmetric crash, so this fail-loud cost is bounded.
+    const category =
+      existing.broken === 'parse-failed'
+        ? 'corrupt (JSON parse failed)'
+        : existing.broken === 'read-failed'
+          ? 'unreadable (read failed)'
+          : 'invalid (schema mismatch)'
+    console.error(
+      `[kb-start] ERROR: the KovitoBoard supervisor PID file is ${category}.\n` +
+        `[kb-start]        Path: ${PID_FILE_PATH}\n` +
+        `[kb-start]        Refusing to start: a corrupt PID file may hide a still-running\n` +
+        `[kb-start]        supervisor, so overwriting it could launch a second supervisor\n` +
+        `[kb-start]        against the same project.\n` +
+        `[kb-start]        Inspect it, confirm no supervisor is running, then remove it:\n` +
+        `[kb-start]          rm ${PID_FILE_PATH}\n` +
+        `[kb-start]        and re-run the start command.`,
     )
-    return
+    process.exit(1)
   }
   if (isPidAlive(existing.pid)) {
     const url =

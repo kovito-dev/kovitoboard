@@ -1355,50 +1355,96 @@ async function main() {
     process.exit(1)
   }
 
+  // Root PID trust gate, positioned BEFORE the first signal (§7.3 step
+  // 3.5(a) / §9.1.0, BL-2026-244). For a PID-file root in the normal
+  // (non---all) path we classify it with `classifySupervisorRoot()` (the
+  // clone-level fence: a live node runtime whose entry script realpaths to
+  // THIS clone's tools/kb-start.mjs) and branch on the result:
+  //
+  //   ok        → proceed to signal it (the only path that sends SIGTERM)
+  //   dead      → §7.4 stale path: remove the PID file, exit 0 (no signal,
+  //               nothing alive to stop)
+  //   mismatch  → exit 2: alive but NOT a supervisor of this clone — a
+  //   unknown     stale / tampered PID file pointing at an unrelated
+  //               (or unverifiable, /proc-less) process. Send NO signal;
+  //               report only. Same "cannot safely stop, so do not touch"
+  //               refuse as the EPERM (another user's supervisor) case.
+  //
+  // Before v1.8 this fence only gated the lineage snapshot / `--force`
+  // kill scope, while the first graceful SIGTERM was sent to the raw PID
+  // unconditionally. That left a window where a corrupt/tampered PID file
+  // could route a graceful SIGTERM to an unrelated same-user process.
+  // Hoisting the fence ahead of the signal closes graceful + force signal
+  // mis-delivery to out-of-clone / other-user / non-KB processes
+  // (process-lifecycle.md v1.8 §6.4 / §7.3 step 4 / §9.1.0 SSOT). The
+  // residual same-clone-other-project window (a tampered PID file pointing
+  // at a sibling project's supervisor of THIS clone) still passes `ok` and
+  // is an explicit hedged residual pending a project-identity anchor
+  // decision (process-lifecycle.md §6.4 "unresolved residual").
+  //
+  // `--all` / pgrep roots come from `pgrepSupervisorPids()`, which already
+  // applies the same argv/realpath fence, so they are pre-validated and
+  // skip this re-check.
+  let pidFromFileKind = null
+  if (pidFromFile != null && !args.all) {
+    pidFromFileKind = classifySupervisorRoot(pidFromFile)
+  }
+  if (pidFromFileKind != null && pidFromFileKind !== 'ok' && !args.dryRun) {
+    // Real-run signal-front gate. In --dry-run we never send a signal, so
+    // the planner below (the SIGTERM loop's planLog) reports the planned
+    // actions instead — the hard refuse / stale-clear exits belong to the
+    // actual stop flow (§7.3 step 3.5(a)).
+    if (pidFromFileKind === 'dead') {
+      // Stale PID file: the recorded supervisor is gone. Clear the file
+      // and report success (§7.4 stale path). Nothing to signal.
+      console.warn(
+        `[kb-stop] WARN: PID-file root pid ${pidFromFile} is no longer alive ` +
+          `(stale PID file); removing ${PID_FILE_PATH} and exiting.`,
+      )
+      removePidFile()
+      console.log('[kb-stop] Done (stale PID file cleared; nothing was running).')
+      process.exit(0)
+    }
+    if (pidFromFileKind === 'mismatch' || pidFromFileKind === 'unknown') {
+      const reason =
+        pidFromFileKind === 'mismatch'
+          ? 'is alive but is not a KovitoBoard supervisor of this clone'
+          : 'could not be verified as a supervisor of this clone on this platform'
+      // Refuse to signal: a stale / tampered PID file must not route a
+      // signal onto an unrelated process. exit 2 = same "cannot safely
+      // stop, so do not touch" contract as EPERM (§7.5, BL-2026-244).
+      console.error(
+        `[kb-stop] ERROR: the recorded supervisor PID ${pidFromFile} ${reason}.\n` +
+          `[kb-stop]        PID file: ${PID_FILE_PATH}\n` +
+          `[kb-stop]        Refusing to send any signal: the PID file may be stale or\n` +
+          `[kb-stop]        tampered and this PID could belong to a different process.\n` +
+          `[kb-stop]        Inspect the PID file and remove it if no supervisor is running\n` +
+          `[kb-stop]        (rm ${PID_FILE_PATH}), or use --all to opt into the host-wide\n` +
+          `[kb-stop]        supervisor sweep.`,
+      )
+      process.exit(2)
+    }
+  }
+
   // Lineage snapshot (§7.3 step 3.5 / §9.1.0): capture the supervisor's
   // descendant PID closure + identity tuples BEFORE any signal or tmux
-  // cleanup, so post-cleanup orphan/zombie detection can anchor on it
-  // (the tmux session is torn down later, which would make the pane PID
-  // tree unrecoverable without a host-wide scan). Covers EVERY targeted
-  // supervisor — in --all / pgrep mode pgrep may discover more than one,
-  // so orphan/zombie detection is not limited to the first.
-  //
-  // Provenance gate (CodeX attempt 6): a PID-file root is only trusted as
-  // a lineage / force-kill anchor when it is a LIVE supervisor of this
-  // clone (`classifySupervisorRoot`). A stale / tampered PID file (the
-  // recorded PID is dead, reused, or now an unrelated process) must not
-  // let us snapshot + force-kill an unrelated process tree, and a dead
-  // root yields a useless single-node snapshot that would mislabel a
-  // reparented child's port as "unrelated". In those cases we leave
-  // `lineageSnapshot` null so reportResidue degrades to ownership-unknown
-  // (no exit-4, no kill). `--all` roots come from `pgrepSupervisorPids()`,
-  // which already applies the same argv/realpath fence, so they are
-  // pre-validated and skip the re-check here.
+  // cleanup, so post-cleanup orphan/zombie detection can anchor on it (the
+  // tmux session is torn down later, which would make the pane PID tree
+  // unrecoverable without a host-wide scan). Covers EVERY targeted
+  // supervisor — in --all / pgrep mode pgrep may discover more than one, so
+  // orphan/zombie detection is not limited to the first. Only an 'ok' root
+  // anchors the snapshot; non-'ok' PID-file roots have already exited the
+  // process at the signal-front gate above, so the guard below is defensive.
   let lineageSnapshot = null
   if (!args.dryRun && supervisors.length > 0) {
     let snapshotRoots = supervisors
-    if (pidFromFile != null && !args.all) {
-      const kind = classifySupervisorRoot(pidFromFile)
-      // Only an 'ok' (verified live supervisor of this clone) root may
-      // anchor lineage + force-kill. 'mismatch' / 'dead' / 'unknown' are
-      // all untrusted: 'unknown' means we could not read the root's argv /
-      // cwd to apply the fence (e.g. a /proc-less platform), so trusting it
-      // would expand the --force kill scope back onto an unverified root —
-      // exactly what the fence prevents. Degrade in every non-ok case.
-      if (kind !== 'ok') {
-        const reason =
-          kind === 'dead'
-            ? 'no longer alive'
-            : kind === 'mismatch'
-              ? 'not a supervisor of this clone'
-              : 'not verifiable as a supervisor of this clone on this platform'
-        console.warn(
-          `[kb-stop] WARN: PID-file root pid ${pidFromFile} is ${reason}; ` +
-            `skipping lineage-anchored orphan/zombie/force diagnostics ` +
-            `(provenance cannot be established).`,
-        )
-        snapshotRoots = []
-      }
+    if (pidFromFile != null && !args.all && pidFromFileKind !== 'ok') {
+      // Unreachable in practice: the signal-front gate above exits the
+      // process for every non-'ok' PID-file kind. Kept as a defensive
+      // guard so the lineage anchor is never built on an untrusted root if
+      // the gate's branching ever changes (the §9.1.0 invariant: only an
+      // 'ok' clone supervisor may anchor lineage + force-kill).
+      snapshotRoots = []
     }
     if (snapshotRoots.length > 0) {
       lineageSnapshot = buildLineageSnapshotForRoots(snapshotRoots)
