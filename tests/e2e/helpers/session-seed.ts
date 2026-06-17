@@ -55,7 +55,7 @@ import {
   readdirSync,
   rmdirSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 
@@ -63,6 +63,16 @@ import { randomBytes } from 'node:crypto'
 function encodeProjectRoot(projectRoot: string): string {
   return projectRoot.replace(/\//g, '-')
 }
+
+/**
+ * Conservative whitelist for an explicit session id. A real Claude session
+ * id is a UUID; this allows that plus the `l1-...` test prefix shape while
+ * forbidding path separators and `..`. The id is interpolated into a path
+ * that is both written and later `rmSync`'d under the host's real
+ * `~/.claude/projects/`, so a `../../` value could escape that directory —
+ * reject it up front and additionally assert containment below.
+ */
+const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/
 
 /** Resolve the directory the Watcher scans for this project's sessions. */
 function watchedSessionsDir(projectRoot: string): string {
@@ -139,9 +149,10 @@ function assistantLine(text: string): string {
  * @param opts.agentId   when set, an `agent-setting` line is written first
  *                     so the session is bound to this agent (and the
  *                     renderer's sessionAgentMap is populated via the
- *                     `new_session` summary). Pair this with a Fake Claude
- *                     tmux window whose name equals `agentId` to make the
- *                     idle session "sendable" (MessageInput rendered).
+ *                     `new_session` summary). Pair this with a tmux window
+ *                     whose name equals `agentId` (helpers/idle-agent-window.ts)
+ *                     to make the idle session "sendable" (MessageInput
+ *                     rendered).
  * @param opts.openingUser     opening user-turn text (default a fixed string)
  * @param opts.openingAssistant opening assistant reply text that completes
  *                     the first turn so the session has visible history.
@@ -159,8 +170,22 @@ export function seedSession(
 ): SeededSession {
   const sessionId =
     opts.sessionId ?? `l1-idle-${randomBytes(6).toString('hex')}`
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(
+      `[session-seed] sessionId must match ${SESSION_ID_RE} ` +
+        `(got: ${JSON.stringify(sessionId)})`,
+    )
+  }
   const dir = watchedSessionsDir(projectRoot)
   const filePath = join(dir, `${sessionId}.jsonl`)
+  // Defence in depth: even with the charset check above, assert the
+  // resolved file path stays under the watched dir before any write/delete.
+  const resolvedDir = resolve(dir)
+  if (!resolve(filePath).startsWith(resolvedDir + sep)) {
+    throw new Error(
+      `[session-seed] refusing to seed outside the watched dir: ${filePath}`,
+    )
+  }
 
   mkdirSync(dir, { recursive: true })
 

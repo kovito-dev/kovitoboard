@@ -22,7 +22,7 @@
  * The window runs `cat` (blocks on stdin, paints nothing), so the pane
  * stays blank and matches no trust pattern.
  */
-import { execSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 
 export interface IdleAgentWindow {
   sessionName: string
@@ -31,30 +31,59 @@ export interface IdleAgentWindow {
 }
 
 /**
+ * Conservative whitelist for tmux session / window names. tmux disallows
+ * `:` and `.` in names anyway (they are target separators), and restricting
+ * to this set means no value can carry shell metacharacters even if a
+ * future change reintroduces a shell. Defence in depth: the calls below use
+ * `spawnSync` argument arrays (no shell), so interpolation injection is not
+ * possible regardless — but a hostile name would still let a caller target
+ * a different tmux entity, so we reject it up front.
+ */
+const TMUX_NAME_RE = /^[A-Za-z0-9_-]+$/
+
+function assertTmuxName(label: string, value: string): void {
+  if (!TMUX_NAME_RE.test(value)) {
+    throw new Error(
+      `[idle-agent-window] ${label} must match ${TMUX_NAME_RE} ` +
+        `(got: ${JSON.stringify(value)})`,
+    )
+  }
+}
+
+/**
  * Create a quiet tmux window named `agentId` inside `sessionName`. The
  * session is created if it does not exist (matching the Fake Claude
  * harness dimensions). The pane runs `cat`, so it stays alive and blank.
+ *
+ * All tmux invocations use `spawnSync` with an argument array (no shell),
+ * so `sessionName` / `agentId` cannot inject shell commands; they are also
+ * validated against `TMUX_NAME_RE` as defence in depth.
  */
 export function startIdleAgentWindow(
   sessionName: string,
   agentId: string,
 ): IdleAgentWindow {
+  assertTmuxName('sessionName', sessionName)
+  assertTmuxName('agentId', agentId)
+
+  const target = `${sessionName}:${agentId}`
+
   const hasSession = spawnSync('tmux', ['has-session', '-t', sessionName], {
     stdio: 'pipe',
   })
   if (hasSession.status !== 0) {
-    execSync(`tmux new-session -d -s "${sessionName}" -n main -x 200 -y 50`, {
-      stdio: 'pipe',
-    })
+    spawnSync(
+      'tmux',
+      ['new-session', '-d', '-s', sessionName, '-n', 'main', '-x', '200', '-y', '50'],
+      { stdio: 'pipe' },
+    )
   }
 
   // Idempotency: drop any stale window with the same name first.
-  spawnSync('tmux', ['kill-window', '-t', `${sessionName}:${agentId}`], {
-    stdio: 'pipe',
-  })
+  spawnSync('tmux', ['kill-window', '-t', target], { stdio: 'pipe' })
 
   // `cat` blocks on stdin and prints nothing → quiet, long-lived pane.
-  execSync(`tmux new-window -t "${sessionName}" -n "${agentId}" "cat"`, {
+  spawnSync('tmux', ['new-window', '-t', sessionName, '-n', agentId, 'cat'], {
     stdio: 'pipe',
   })
 
@@ -62,9 +91,7 @@ export function startIdleAgentWindow(
     sessionName,
     windowName: agentId,
     dispose() {
-      spawnSync('tmux', ['kill-window', '-t', `${sessionName}:${agentId}`], {
-        stdio: 'pipe',
-      })
+      spawnSync('tmux', ['kill-window', '-t', target], { stdio: 'pipe' })
     },
   }
 }
