@@ -45,6 +45,8 @@ import { test, expect } from './helpers/l1-per-test-setup'
 import {
   cleanupAppDir,
   removeAppDataDir,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 import { setLocaleOnDisk } from './helpers/locale-fixture'
 
@@ -96,7 +98,14 @@ async function fetchMenuLabels(
 }
 
 test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
+  // Enabling a sample appends an entry to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entry does not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
   test.beforeEach(async ({ request, kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     expect(
       (
         await request.post(
@@ -111,6 +120,10 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     removeAppDataDir(kbFixture.projectRoot, DOC_APP_ID)
     cleanupAppDir(kbFixture.projectRoot, TODO_APP_ID)
     removeAppDataDir(kbFixture.projectRoot, TODO_APP_ID)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('T1-a en: document-viewer nav label resolves to "Documents" (i18n.en.menu override)', async ({

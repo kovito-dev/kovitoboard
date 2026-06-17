@@ -41,6 +41,8 @@ import {
   cleanupAppDir,
   readAppManifest,
   waitForWsFrame,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -48,7 +50,14 @@ const APP_DOC = 'document-viewer'
 const APP_TODO = 'todo'
 
 test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
-  test.beforeEach(async ({ request }) => {
+  // Enabling samples appends entries to `app/menu.ts`, which lives outside
+  // the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot and
+  // restore it per-test so the appended entries do not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
+  test.beforeEach(async ({ request, kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     const r1 = await request.post(
       `${API_BASE}/api/recipes/sample/${APP_DOC}/enable`,
     )
@@ -62,6 +71,10 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_DOC)
     cleanupAppDir(kbFixture.projectRoot, APP_TODO)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('BS-T9-a: drag a row past the 4px activation threshold reorders + persists + broadcasts (BS-L6, cascade §10.2)', async ({

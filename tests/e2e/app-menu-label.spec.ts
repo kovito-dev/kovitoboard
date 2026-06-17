@@ -41,6 +41,8 @@ import {
   readAppManifest,
   readRecipeManifest,
   readServerLogLines,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -48,7 +50,14 @@ const RECIPE_ID = 'document-viewer'
 const APP_ID = 'document-viewer'
 
 test.describe('App menu-label PATCH (BS-T11) — userMenuLabel override + reset + cascade', () => {
-  test.beforeEach(async ({ request }) => {
+  // Enabling a sample appends an entry to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entry does not leak into
+  // later tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
+  test.beforeEach(async ({ request, kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     const r = await request.post(
       `${API_BASE}/api/recipes/sample/${RECIPE_ID}/enable`,
     )
@@ -57,6 +66,10 @@ test.describe('App menu-label PATCH (BS-T11) — userMenuLabel override + reset 
 
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_ID)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('BS-T11-a happy path set: 200 + AppManifest write + app_menu_changed broadcast (BS-L7)', async ({

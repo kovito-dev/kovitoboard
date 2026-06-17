@@ -53,6 +53,8 @@ import {
   cleanupAppDir,
   removeAppDataDir,
   waitForWsFrame,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -75,6 +77,16 @@ const SAMPLE_APP_ID = 'document-viewer'
 // ---------------------------------------------------------------------------
 
 test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
+  // Enable / grandfather-seed both append to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entry does not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
+  test.beforeEach(async ({ kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+  })
+
   test.afterEach(async ({ kbFixture }) => {
     // app/<appId>/ + app/data/<appId>/ live outside `.kovitoboard/` so
     // kbFixture's snapshot/restore does not undo enable's artifact
@@ -82,6 +94,10 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     // from the same blank project state.
     cleanupAppDir(kbFixture.projectRoot, SAMPLE_APP_ID)
     removeAppDataDir(kbFixture.projectRoot, SAMPLE_APP_ID)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('BS-T1: enable endpoint materialises manifest + artifacts + history (BS-L1, BS-L4)', async ({

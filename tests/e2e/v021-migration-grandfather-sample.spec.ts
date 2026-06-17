@@ -42,6 +42,8 @@ import {
   readAppManifest,
   readRecipeManifest,
   seedGrandfatherManifest,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -57,6 +59,16 @@ function seedTodoOwnData(projectRoot: string, payload: object): string {
 }
 
 test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
+  // Grandfather-seed and enable both append to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entries do not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
+  test.beforeEach(async ({ kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+  })
+
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, DOC_ID)
     cleanupAppDir(kbFixture.projectRoot, TODO_ID)
@@ -69,6 +81,10 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     // shared slug + symlink guards before the recursive delete.
     removeAppDataDir(kbFixture.projectRoot, DOC_ID)
     removeAppDataDir(kbFixture.projectRoot, TODO_ID)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('§3.2 #1: grandfather detection — seeded RecipeManifest persists with `source: "sample"` and the on-disk shape matches the v0.1.x layout', async ({

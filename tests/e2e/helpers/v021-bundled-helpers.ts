@@ -94,6 +94,26 @@ export async function waitForWsFrame(
 }
 
 /**
+ * Snapshot the current bytes of `app/menu.ts` so a test can restore
+ * them in afterEach via `restoreMenuTs`.
+ *
+ * `app/menu.ts` lives outside the `.kovitoboard/` prefix that the L1
+ * fixture (`l1-per-test-setup.ts`) snapshots and restores, so a test
+ * that enables a bundled sample (which appends an entry to `menu.ts`)
+ * would otherwise leak that entry into later tests in the same
+ * Playwright project and make them order-dependent. Unlike the removed
+ * type-annotation workaround, this pair does NOT rewrite the file — it
+ * only captures and restores the exact original bytes.
+ */
+export function snapshotMenuTs(projectRoot: string): string {
+  return readFileSync(join(projectRoot, 'app', 'menu.ts'), 'utf-8')
+}
+
+export function restoreMenuTs(projectRoot: string, snapshot: string): void {
+  writeFileSync(join(projectRoot, 'app', 'menu.ts'), snapshot)
+}
+
+/**
  * Reject ids that could escape the intended app/recipe directory via
  * path-separator or `..` segments. The destructive filesystem helpers
  * below (`cleanupAppDir`, `seedGrandfatherManifest`) join the id into a

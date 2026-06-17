@@ -25,14 +25,32 @@
  *     (the legacy 7-layer install path is gone in v0.2.x).
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import { cleanupAppDir } from './helpers/v021-bundled-helpers'
+import {
+  cleanupAppDir,
+  snapshotMenuTs,
+  restoreMenuTs,
+} from './helpers/v021-bundled-helpers'
 
 const RECIPE_ID = 'document-viewer'
 const APP_ID = 'document-viewer'
 
 test.describe('Sample apps tab — Enable toggle UI (BS-T8)', () => {
+  // Enabling a sample appends an entry to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entry does not leak into
+  // later tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
+
+  test.beforeEach(async ({ kbFixture }) => {
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+  })
+
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_ID)
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
+    }
   })
 
   test('BS-T8-a: clicking Enable on a sample card materialises the badge + surfaces the app on the Apps tab (BS-L1)', async ({
