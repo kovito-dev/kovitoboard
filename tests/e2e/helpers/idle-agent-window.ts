@@ -138,7 +138,12 @@ export function startIdleAgentWindow(
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean)
-      if (names.length <= 1) {
+      // Only tear the session down when no window OTHER than the bookkeeping
+      // `main` remains. Checking the names explicitly (rather than just the
+      // count) means that if another helper/test removed or renamed `main`
+      // and left exactly one unrelated window, we do NOT clobber it.
+      const nonMain = names.filter((n) => n !== 'main')
+      if (nonMain.length === 0) {
         tmux(['kill-session', '-t', sessionName], false)
       }
     },
