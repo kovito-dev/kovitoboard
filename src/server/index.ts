@@ -61,6 +61,7 @@ import {
 } from './middleware/internal-auth'
 import { createConfigRouter } from './routes/config-routes'
 import { createVersionRouter } from './routes/version-routes'
+import { createStartUpgradeSession } from './upgrade-session'
 import {
   detectClaudeCodeVersion,
   loadKbVersion,
@@ -514,39 +515,22 @@ app.use('/api/version', createVersionRouter({
     primaryTestedVersion: trustPatternsConfig.primaryTestedVersion,
     bestEffortVersions: trustPatternsConfig.bestEffortVersions,
   },
-  // Closure that wraps the same tmux/ClaudeBridge launch flow used by
-  // POST /api/sessions/new. The closure captures `tmuxBridge`,
-  // `claudeBridge`, etc. by reference, so even though those are
-  // declared later in this file, by request time they will have been
-  // initialized. Upgrade sessions intentionally do NOT request
-  // `origin: "sidebar"` — they live in the standard Sessions surface.
-  startUpgradeSession: async ({ agentId, message }) => {
-    const tmuxAgent = await ensureTmuxAgent(agentId)
-    if (tmuxAgent) {
-      let result: { success: boolean; error?: string }
-      if (tmuxAgent.justStarted) {
-        const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
-        if (!ready) {
-          apiLogger.warn(
-            { agentId, timeoutMs: 45000, endpoint: '/api/version/start-upgrade' },
-            'Prompt wait timeout for upgrade agent',
-          )
-        }
-        result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
-      } else {
-        result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
-      }
-      if (result.success) {
-        return { via: 'tmux', windowName: tmuxAgent.windowName }
-      }
-      apiLogger.warn(
-        { error: result.error },
-        'Upgrade tmux send failed, falling back to ClaudeBridge',
-      )
-    }
-    const processId = claudeBridge.startNewSession(message.trim(), agentId)
-    return { via: 'claude-bridge', processId }
-  },
+  // The upgrade session-start flow is extracted into a testable factory
+  // (upgrade-session.ts) that captures the bridges by reference. Upgrade
+  // sessions reserve `origin: "sessions"` (NOT "sidebar") — they are
+  // launched from the status popup, not the AmbientSidebar, so they live
+  // in the standard Sessions surface and must not pick up the
+  // sidebar-origin badge (SessionList.tsx). The reservation itself is
+  // what binds the /clear-spawned session to its agent (spec
+  // session-management.md v1.9 §7.4.1); without it the UI falls back to
+  // the "Default" agent label.
+  startUpgradeSession: createStartUpgradeSession({
+    sessionManager,
+    ensureTmuxAgent,
+    tmuxBridge,
+    claudeBridge,
+    logger: apiLogger,
+  }),
 }))
 
 // --- REST API ---

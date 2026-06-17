@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the reader only accepted double-quoted hex values, while the
   writer single-quotes `#`-prefixed values (the YAML-safe form). The
   reader now accepts single-quoted, double-quoted, and unquoted hex.
+- Version-upgrade sessions: a session started from the version-upgrade
+  request (status popup) now displays the correct agent instead of
+  "Default". The upgrade flow was the only agent-bound launch path that
+  did not reserve an origin before starting the session, so the
+  `/clear`-spawned session had no agent binding to inherit and fell back
+  to the default agent label.
 
 ## [0.2.10] - 2026-06-17
 
