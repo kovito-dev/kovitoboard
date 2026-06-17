@@ -59,6 +59,30 @@ function assertTmuxName(label: string, value: string): void {
  * so `sessionName` / `agentId` cannot inject shell commands; they are also
  * validated against `TMUX_NAME_RE` as defence in depth.
  */
+/** Bound each tmux call so a wedged invocation cannot stall the worker. */
+const TMUX_CALL_TIMEOUT_MS = 5_000
+
+/**
+ * Run a tmux subcommand with a bounded timeout. When `mustSucceed` is set, a
+ * non-zero exit / spawn error / timeout throws with the captured stderr so a
+ * missing tmux, an unhealthy server, or a rejected target surfaces here at
+ * setup time instead of as an opaque spec timeout later.
+ */
+function tmux(args: string[], mustSucceed: boolean): void {
+  const r = spawnSync('tmux', args, {
+    stdio: 'pipe',
+    timeout: TMUX_CALL_TIMEOUT_MS,
+  })
+  if (!mustSucceed) return
+  if (r.error || r.status !== 0) {
+    const stderr = (r.stderr?.toString() ?? '').trim()
+    const reason = r.error
+      ? r.error.message
+      : `exit ${r.status}${stderr ? `: ${stderr}` : ''}`
+    throw new Error(`[idle-agent-window] tmux ${args.join(' ')} failed (${reason})`)
+  }
+}
+
 export function startIdleAgentWindow(
   sessionName: string,
   agentId: string,
@@ -68,30 +92,32 @@ export function startIdleAgentWindow(
 
   const target = `${sessionName}:${agentId}`
 
+  // `has-session` legitimately returns non-zero when the session is absent,
+  // so this probe is best-effort (not mustSucceed).
   const hasSession = spawnSync('tmux', ['has-session', '-t', sessionName], {
     stdio: 'pipe',
+    timeout: TMUX_CALL_TIMEOUT_MS,
   })
   if (hasSession.status !== 0) {
-    spawnSync(
-      'tmux',
+    tmux(
       ['new-session', '-d', '-s', sessionName, '-n', 'main', '-x', '200', '-y', '50'],
-      { stdio: 'pipe' },
+      true,
     )
   }
 
-  // Idempotency: drop any stale window with the same name first.
-  spawnSync('tmux', ['kill-window', '-t', target], { stdio: 'pipe' })
+  // Idempotency: drop any stale window with the same name first. This fails
+  // when no such window exists, which is expected — best-effort.
+  tmux(['kill-window', '-t', target], false)
 
-  // `cat` blocks on stdin and prints nothing → quiet, long-lived pane.
-  spawnSync('tmux', ['new-window', '-t', sessionName, '-n', agentId, 'cat'], {
-    stdio: 'pipe',
-  })
+  // `cat` blocks on stdin and prints nothing → quiet, long-lived pane. This
+  // is the load-bearing step; surface its failure loudly.
+  tmux(['new-window', '-t', sessionName, '-n', agentId, 'cat'], true)
 
   return {
     sessionName,
     windowName: agentId,
     dispose() {
-      spawnSync('tmux', ['kill-window', '-t', target], { stdio: 'pipe' })
+      tmux(['kill-window', '-t', target], false)
     },
   }
 }
