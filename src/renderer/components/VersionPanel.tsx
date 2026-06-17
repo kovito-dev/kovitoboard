@@ -346,7 +346,7 @@ function KbStatusLine({
     <p
       data-testid="version-panel-kb-status"
       data-status="outdated"
-      className="text-amber-400"
+      className="text-[var(--warning-text)]"
     >
       {t('version.kb.outdated', { latest: kb.latest ?? '?' })}
     </p>
@@ -385,7 +385,7 @@ function ClaudeCodeStatusLine({
       <p
         data-testid="version-panel-claude-status"
         data-tier="best-effort"
-        className="text-amber-400"
+        className="text-[var(--warning-text)]"
       >
         {t('version.claudeCode.bestEffort', { primary: claudeCode.primaryTested })}
       </p>

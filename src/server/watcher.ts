@@ -52,6 +52,25 @@ export class Watcher {
    * file once it processes successfully (or on stop()).
    */
   private failedFiles = new Set<string>()
+  /**
+   * Files currently in the startup-restoration phase. A file
+   * is added on its first-ever read (offset previously undefined) and stays
+   * in the set until its first read that drains it fully to EOF on a
+   * newline boundary. While a file is in this set, its parsed events are
+   * passed to `addEvents` with `{ historical: true }`, so a pre-existing
+   * terminal `end_turn` line does not brand a non-idle `status` after the
+   * watcher's `ready` (the false-degraded root cause).
+   *
+   * Why per-file drain-to-EOF rather than "first read only": Claude Code
+   * appends JSONL mid-line, so the first read can stop at a partial line
+   * (path B). The partial completes on a later `change`, which is a SECOND
+   * read of the same file — a naive "first read only" check would
+   * mis-classify that completion line as live and flip status. Keeping the
+   * file restoring until the first full drain to EOF treats the completion
+   * line as restored (idle held), then clears so the next genuinely-live
+   * append updates status normally (INV-2).
+   */
+  private restoringFiles = new Set<string>()
   private claudeDir: string
   private fullConfig: ViewerConfig
   private config: ViewerConfig['watcher']
@@ -303,6 +322,17 @@ export class Watcher {
     this.watchingStarted = false
     this.selfVerifyDone = false
     this.failedFiles.clear()
+    // restoringFiles is intentionally NOT cleared, mirroring filePositions
+    // (see above). A file is removed from this set the moment its first read
+    // drains it to EOF, so by the time stop() runs the set holds ONLY files
+    // whose restoration is still incomplete (a partial line was held, offset
+    // < EOF). Those files must stay restoring across a restart: their
+    // retained offset makes the next start() see isFirstRead=false, so
+    // without this carry-over the held pre-existing tail would be read as a
+    // first post-restart "change" and mis-classified as live, branding a
+    // non-idle status from pre-existing content (INV-1). Fully-restored
+    // files are already absent here, so post-restart appends to them are
+    // correctly treated as live (INV-2).
   }
 
   // --- Reconciliation scan (§7.3.2, safety net) ---
@@ -441,7 +471,67 @@ export class Watcher {
       const stat = this.fs.lstatSync(filePath)
       if (!stat.isFile || stat.isSymbolicLink) return
       const currentSize = stat.size
+
+      // Truncate / replace / recreate detection. If the file is now SMALLER
+      // than our recorded offset, the path no longer refers to the bytes we
+      // committed against (Claude Code may rotate or a stale path may be
+      // reused). Drop the stale offset AND any stale restoration marker so
+      // the file is re-evaluated from scratch below. Without this, a stale
+      // `restoringFiles` entry kept across stop() (see stop()) combined with
+      // the `currentSize <= previousPosition` early return could suppress
+      // status updates for the recreated file indefinitely.
+      const recordedOffset = this.filePositions.get(filePath)
+      const isRecreate = recordedOffset !== undefined && currentSize < recordedOffset
+      if (isRecreate) {
+        this.filePositions.delete(filePath)
+        this.restoringFiles.delete(filePath)
+      }
+
+      // First-ever read of this file? Computed from the raw offset map
+      // (undefined === never read) BEFORE the `|| 0` fallback below, since
+      // a genuine offset of 0 is indistinguishable from "never read" after
+      // the fallback. On first read we mark the file as restoring so its
+      // pre-existing content does not update `status`.
+      const isFirstRead = this.filePositions.get(filePath) === undefined
+      // Mark the file as restoring only when it already has pre-existing
+      // bytes at its first observation. "Restoring" means replaying content
+      // that existed on disk before we started reading this file; an EMPTY
+      // file (size 0) has nothing to restore, so its first genuine append is
+      // live activity and must update status (INV-2).
+      //
+      // A RECREATE (shrink) is excluded: restoration is a startup-only
+      // concept for bytes that pre-date our first observation of a path. By
+      // definition a shrink means we already observed this path before, so
+      // its new (smaller) content was written after we started reading and
+      // is live activity — re-entering restoration here would extend the
+      // startup rule into normal runtime and hide genuine live status (the
+      // pre-`ready` window is already covered by SessionManager.initializing,
+      // so leaving a recreate live is harmless during startup and correct
+      // after it).
+      if (isFirstRead && currentSize > 0 && !isRecreate) this.restoringFiles.add(filePath)
+      const historical = this.restoringFiles.has(filePath)
       const previousPosition = this.filePositions.get(filePath) || 0
+
+      if (isFirstRead && currentSize === 0) {
+        // First observation of an empty pre-existing file: record offset 0 so
+        // it is no longer treated as a first read. Without this, the empty
+        // file never gets a filePositions entry, so the read that finally
+        // brings its first content is still isFirstRead=true and would be
+        // marked restoring — swallowing that genuinely-live first append's
+        // status transition (INV-2). Recording it here makes the next append
+        // read live.
+        //
+        // Also clear any stale restoring marker for this path. A marker can
+        // survive across a restart (restoringFiles is retained in stop()) for
+        // a file that stopped mid-restoration without ever committing an
+        // offset (its whole first read was a single newline-less partial). If
+        // that path is then recreated EMPTY before the next start(), the
+        // empty file has nothing to restore, so the marker must not persist
+        // and swallow the first real append's status (INV-2).
+        this.restoringFiles.delete(filePath)
+        this.filePositions.set(filePath, 0)
+        return
+      }
 
       // Idempotent: no new bytes since the last commit (§7.3.4). Safe to
       // re-enter from both live watch and the reconcile scan.
@@ -533,7 +623,10 @@ export class Watcher {
 
         const events = parseLine(line, sessionId)
         if (events.length > 0) {
-          this.sessionManager.addEvents(sessionId, events)
+          // `historical` keeps a restored (pre-existing-on-startup) line
+          // from updating `status`. Stats / new_event still
+          // run inside addEvents, so the session still surfaces in the list.
+          this.sessionManager.addEvents(sessionId, events, { historical })
         }
 
         // §7.3.4 per-line commit boundary: advance the offset only after
@@ -553,6 +646,19 @@ export class Watcher {
         // a downstream dedupe key and is intentionally out of scope for
         // this fix (§8.10 R1).
         this.filePositions.set(filePath, lineEndOffset)
+      }
+
+      // Restoration latch release: once this read has
+      // committed the offset all the way to the current EOF on a newline
+      // boundary, every byte that existed when restoration began has been
+      // replayed (as historical). The file leaves the restoring set so the
+      // NEXT append — genuinely-live activity — updates `status` normally
+      // (INV-2). If the read stopped at a held partial line (offset <
+      // currentSize, path B), the file stays restoring so the completion
+      // line on the next `change` is still treated as restored (INV-1
+      // priority: a pre-existing terminal line must not flip status).
+      if (this.filePositions.get(filePath) === currentSize) {
+        this.restoringFiles.delete(filePath)
       }
 
       // Processed without throwing: clear any prior failure marker so a

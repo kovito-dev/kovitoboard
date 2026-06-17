@@ -283,7 +283,7 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
           )}
 
           {scan && scan.artifacts.length === 0 && state !== 'done' && (
-            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-300">
+            <div className="px-3 py-2 bg-[var(--warning-bg)] border border-[var(--warning-border)] rounded-lg text-sm text-[var(--warning-text)]">
               {t('recipe.export.empty')}
               <div className="mt-1 text-xs text-[var(--text-dim)]">{t('recipe.export.emptyHint')}</div>
             </div>
