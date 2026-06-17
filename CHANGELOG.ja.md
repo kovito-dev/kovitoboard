@@ -23,11 +23,12 @@ KovitoBoard の主要な変更点を本ファイルに記録します。
 
 ### セキュリティ
 
-- 推移的依存の `vite` を 8.0.16 に更新し、GHSA-fx2h-pf6j-xcff
-  （Windows の代替パスにおける `server.fs.deny` バイパス）および
-  GHSA-v6wh-96g9-6wx3（Windows の UNC パス経由での `launch-editor`
-  NTLMv2 ハッシュ漏えい）に対処しました。いずれも Windows 限定かつ
-  開発サーバーに関する脆弱性で、本番ビルドには影響しません。
+- 推移的依存の `vite` を（`package.json` の `overrides` で）8.0.16 に
+  固定し、GHSA-fx2h-pf6j-xcff（Windows の代替パスにおける
+  `server.fs.deny` バイパス）および GHSA-v6wh-96g9-6wx3（Windows の
+  UNC パス経由での `launch-editor` NTLMv2 ハッシュ漏えい）に対処しました。
+  いずれも Windows 限定かつ開発サーバーに関する脆弱性で、本番ビルドには
+  影響しません。
 
 ## [0.2.9] - 2026-06-16
 
