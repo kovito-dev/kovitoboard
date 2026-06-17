@@ -345,6 +345,18 @@ export function useIPC() {
             }
             return [...prev, { kind: 'detected', payload: detectedPayload }]
           })
+          // A fresh broadcast / reconnect replay for this promptId means the
+          // prompt is still pending and should re-surface, even if its
+          // degrade modal was closed earlier. Clearing the non-destructive
+          // hide here honors the spec's "close re-surfaces on the next
+          // broadcast / replay" contract (trust-prompt-relay.md v1.8
+          // §10.7.2) without ever removing the item from the queue.
+          setDismissedTrustPromptIds((prev) => {
+            if (!prev.has(detectedPayload.promptId)) return prev
+            const next = new Set(prev)
+            next.delete(detectedPayload.promptId)
+            return next
+          })
         } else if (type === 'trust_prompt_fallback') {
           // Phase 5d: add unknown prompt to queue as 'fallback'
           const fallbackPayload = payload as TrustPromptFallbackPayload
@@ -691,11 +703,16 @@ export function useIPC() {
    * (BL-2026-263 Phase A, trust-prompt-relay.md v1.8 §10.7.2, plan A).
    *
    * Unlike `dismissTrustPrompt`, this does NOT remove the item from the
-   * queue — it only records the promptId so the UI stops showing it. The
-   * prompt stays pending on the server; it is dropped from the queue only
-   * when the server emits `trust_prompt_resolved` (e.g. after the user
-   * cancels with Esc or operates the form via tmux). Removing it from the
-   * queue here would leave Claude Code waiting in tmux (silent-stall).
+   * queue — it only records the promptId so the UI stops showing it *now*.
+   * The prompt stays pending on the server, so:
+   *   - it re-surfaces on the next `trust_prompt_detected` broadcast /
+   *     reconnect replay for the same promptId (that handler clears this
+   *     entry), per the spec's "close re-surfaces" contract, and
+   *   - it is finally dropped from the queue (and from this set) only when
+   *     the server emits `trust_prompt_resolved` (e.g. after Esc cancel or
+   *     operating the form via tmux).
+   * Removing it from the queue here would leave Claude Code waiting in
+   * tmux with no reminder (silent-stall).
    */
   const hideTrustPromptNonDestructive = useCallback((promptId: string) => {
     setDismissedTrustPromptIds((prev) => {
