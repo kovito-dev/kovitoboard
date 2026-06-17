@@ -1,7 +1,7 @@
 # 01. KovitoBoard Overview
 
-**Target KB version:** v0.2.9
-**Last updated:** 2026-06-15
+**Target KB version:** v0.2.10
+**Last updated:** 2026-06-17
 **Authoritative source:** [`../01-overview.md`](../01-overview.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
