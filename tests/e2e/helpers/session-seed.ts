@@ -38,14 +38,26 @@
  * per-test `.kovitoboard/` snapshot/restore, so callers MUST invoke
  * `dispose()` (or use the returned handle in a `finally`) to remove it.
  *
- * Live vs historical
- * ------------------
+ * Live vs historical (important: the OPENING turn's status is NOT
+ * deterministic)
+ * --------------------------------------------------------------------
  * The Watcher treats a file's pre-existing-on-first-observation bytes as
  * "historical" (status is held) and only genuinely-live appends update
- * `status` (watcher.ts INV-2). To make the FIRST seeded turn count as a
- * live status transition, `create()` writes the file empty first, lets
- * the Watcher record offset 0, then appends the opening turn. Every
- * subsequent `appendAssistantReply()` is likewise a live append.
+ * `status` (watcher.ts INV-2). `seedSession()` writes the file empty first
+ * so that — IF the Watcher happens to observe it at size 0 before any
+ * content is appended — the opening turn reads as a live status transition.
+ * But this is a best-effort ordering, NOT a guarantee: the empty write and
+ * the opening append happen back-to-back, so the Watcher's ~1.5s poll may
+ * first see the file only after content already exists, in which case the
+ * opening turn is historical and the session surfaces at `idle`.
+ *
+ * Therefore callers MUST NOT rely on the opening turn's status. Drive the
+ * target status explicitly AFTER the session is visible in the API (at
+ * which point the file's offset is committed and `restoringFiles` has been
+ * cleared, so EVERY further append is guaranteed live, watcher.ts INV-2):
+ *   - idle  → `POST /api/agents/<id>/deactivate-sessions` (deterministic).
+ *   - ready → `appendAssistantReply(...)` then wait for `status === 'ready'`.
+ * The idle-send spec follows exactly this pattern.
  */
 import {
   mkdirSync,
@@ -189,8 +201,12 @@ export function seedSession(
 
   mkdirSync(dir, { recursive: true })
 
-  // Write the file empty first so the Watcher records offset 0 and treats
-  // every later append as a LIVE status transition (watcher.ts INV-2).
+  // Write the file empty first so that, IF the Watcher observes it at size 0
+  // before the opening append lands, it records offset 0 and the opening
+  // turn reads as live (watcher.ts INV-2). This is best-effort, not
+  // guaranteed — see the "Live vs historical" note in the file header:
+  // callers must drive the target status explicitly after the session is
+  // visible in the API and never depend on the opening turn's status.
   writeFileSync(filePath, '')
 
   const append = (line: string) => appendFileSync(filePath, `${line}\n`)

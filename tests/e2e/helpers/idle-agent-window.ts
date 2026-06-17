@@ -98,7 +98,12 @@ export function startIdleAgentWindow(
     stdio: 'pipe',
     timeout: TMUX_CALL_TIMEOUT_MS,
   })
-  if (hasSession.status !== 0) {
+  // Remember whether WE created the session so `dispose()` can tear it down
+  // (a session the per-test fixture or another helper owns must be left
+  // alone). When we created it, leaving it running would leak the session
+  // and its `cat` pane across repeated local / CI runs.
+  const createdSession = hasSession.status !== 0
+  if (createdSession) {
     tmux(
       ['new-session', '-d', '-s', sessionName, '-n', 'main', '-x', '200', '-y', '50'],
       true,
@@ -118,6 +123,24 @@ export function startIdleAgentWindow(
     windowName: agentId,
     dispose() {
       tmux(['kill-window', '-t', target], false)
+      if (!createdSession) return
+      // We created the session: tear it down once only its bookkeeping
+      // `main` window remains (mirrors fake-claude-harness dispose). If the
+      // per-test fixture or another helper added windows in the meantime,
+      // leave the session for them and only drop our own window above.
+      const list = spawnSync(
+        'tmux',
+        ['list-windows', '-t', sessionName, '-F', '#{window_name}'],
+        { stdio: 'pipe', timeout: TMUX_CALL_TIMEOUT_MS },
+      )
+      if (list.status !== 0) return // session already gone
+      const names = (list.stdout?.toString() ?? '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      if (names.length <= 1) {
+        tmux(['kill-session', '-t', sessionName], false)
+      }
     },
   }
 }
