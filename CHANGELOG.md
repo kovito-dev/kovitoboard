@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual message instead of hiding it behind a collapsible accordion, and
   renders it on a surface background (white in light mode) with higher
   text contrast so it is easier to read.
+- Tab-style multi-question / multi-select forms (which Claude Code shows
+  for some interactive prompts) no longer leave the session silently
+  stalled. KovitoBoard now detects these forms and shows a dedicated
+  notice explaining that the form must be operated in the terminal
+  (with a copyable `tmux attach` command) and offering a Cancel (Esc)
+  button. The form's own keys are intentionally not exposed in the UI,
+  since KovitoBoard cannot drive this form type yet; the server also
+  rejects any response other than Cancel for these prompts.
 
 ### Security
 

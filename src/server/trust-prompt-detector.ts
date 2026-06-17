@@ -571,6 +571,16 @@ function resolveChoicesForUi(
   pattern: TrustPattern,
   capture: string,
 ): TrustPromptChoice[] {
+  // Known-but-unsupported prompts must never expose operable choices
+  // (trust-prompt-relay.md v1.8 §7.8.1 / §7.8.4 — `choices: []` is
+  // mandatory). The tab-style multi-question form contains its own
+  // numbered rows (e.g. a trailing "6. Chat about this"), which the
+  // dynamic extractor below would otherwise surface as buttons that send
+  // the wrong keys into a form KB cannot operate. Short-circuit to an
+  // empty list so both the live broadcast and the reconnect replay carry
+  // `choices: []`.
+  if (pattern.kind === 'multi-question-unsupported') return []
+
   const dynamic = buildDynamicChoices(capture)
   if (dynamic.length > 0) return dynamic
   const resolved = resolveVisibleChoices(pattern.choices, capture)
@@ -591,6 +601,22 @@ interface DetectorState {
   lastDetectedPromptId: string | null
   /** Choices from the last notification (used for choiceId → keys conversion) */
   lastChoices: TrustPromptChoice[]
+  /**
+   * Kind of the last pattern-matched prompt (BL-2026-263 Phase A,
+   * trust-prompt-relay.md v1.8 §7.8.5 / §10.7.6).
+   *
+   * Held per window alongside `lastChoices` so the WS gate
+   * (`handleTrustPromptRespond`) can look up the kind of the prompt being
+   * responded to and enforce the `multi-question-unsupported` response
+   * restriction (choice rejected, raw-keys limited to the canonical ESC).
+   *
+   * `null` whenever there is no pending pattern-matched prompt. This is a
+   * separate concern from the (future, not yet implemented) deny-model
+   * `lastDetectedKind: 'pattern' | 'fallback' | null` membership flag of
+   * §10.6.2 — kind lookup (enum) and membership (boolean) are kept apart so
+   * the future deny-model backfill does not collide with this field.
+   */
+  lastDetectedPromptKind: TrustPromptKind | null
 }
 
 // =========================
@@ -797,6 +823,28 @@ export class TrustPromptDetector {
   }
 
   /**
+   * Return the kind of the pending pattern-matched prompt for
+   * `(windowName, promptId)`, or `null` if there is no such pending prompt.
+   *
+   * BL-2026-263 Phase A (trust-prompt-relay.md v1.8 §7.8.5 / §10.7.6, plan A).
+   * The WS gate (`handleTrustPromptRespond`) uses this to enforce the
+   * `multi-question-unsupported` response restriction before claiming a
+   * dedup slot or dispatching to tmux. It is a pure read of per-window
+   * state with no side effects.
+   *
+   * This is intentionally a separate predicate from the (future, not yet
+   * implemented) deny-model membership API `hasPendingKnownPrompt`: kind
+   * lookup (enum) and membership (boolean) are kept apart so the deny-model
+   * backfill does not alter this contract (§10.6.2 / §10.7.6).
+   */
+  getPendingPromptKind(windowName: string, promptId: string): TrustPromptKind | null {
+    const state = this.states.get(windowName)
+    if (!state) return null
+    if (state.lastDetectedPromptId !== promptId) return null
+    return state.lastDetectedPromptKind
+  }
+
+  /**
    * Return pending (unresponded) trust prompt events for all windows.
    *
    * Called by the WebSocket connection handler to replay events to newly
@@ -820,6 +868,9 @@ export class TrustPromptDetector {
         // the original broadcast — otherwise reconnecting clients see
         // stale `keys` (see comment in `detectForWindow`).
         const choicesForUi = resolveChoicesForUi(matched.pattern, capture)
+        // Keep the retained kind in sync with the current match so the WS
+        // gate stays correct after a reconnect-driven re-resolution (§7.8.4).
+        state.lastDetectedPromptKind = matched.pattern.kind
         const payload: TrustPromptDetectedPayload = {
           promptId: state.lastDetectedPromptId,
           windowName,
@@ -886,6 +937,7 @@ export class TrustPromptDetector {
           consecutiveIdleCount: 0,
           lastDetectedPromptId: null,
           lastChoices: [],
+          lastDetectedPromptKind: null,
         })
         if (this.debug) {
           trustLogger.debug({ windowName: name }, 'state added')
@@ -961,6 +1013,7 @@ export class TrustPromptDetector {
         }
         state.lastDetectedPromptId = null
         state.lastChoices = []
+        state.lastDetectedPromptKind = null
       }
       return
     }
@@ -1009,6 +1062,9 @@ export class TrustPromptDetector {
       }
 
       state.lastChoices = choicesForUi
+      // Retain the matched kind per window so the WS gate can enforce the
+      // multi-question-unsupported response restriction (§7.8.5 / §10.7.6).
+      state.lastDetectedPromptKind = matched.pattern.kind
       const payload: TrustPromptDetectedPayload = {
         promptId,
         windowName,
@@ -1042,6 +1098,8 @@ export class TrustPromptDetector {
       const promptId = generatePromptId(windowName, 'fallback')
       state.lastDetectedPromptId = promptId
       state.lastChoices = [] // Only raw-keys responses accepted in fallback
+      // Fallback is not a pattern match — no kind to retain (§7.8.5).
+      state.lastDetectedPromptKind = null
       const payload: TrustPromptFallbackPayload = {
         promptId,
         windowName,

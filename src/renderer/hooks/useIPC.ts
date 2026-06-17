@@ -79,6 +79,19 @@ export function useIPC() {
   // discriminated union in the same queue; the modal branches by kind.
   const [trustPromptQueue, setTrustPromptQueue] = useState<TrustPromptItem[]>([])
 
+  // Non-destructive dismiss set for degrade modals (BL-2026-263 Phase A,
+  // trust-prompt-relay.md v1.8 §10.7.2, plan A). Closing a
+  // `multi-question-unsupported` degrade modal must hide it in the UI
+  // *without* removing the promptId from the queue — removing it would
+  // leave Claude Code waiting in tmux (silent-stall). We instead record
+  // the promptId here and skip dismissed items when picking the modal to
+  // show. The queue item is finally dropped only on `trust_prompt_resolved`
+  // (which also clears the matching dismissed entry). Existing detected /
+  // fallback dismiss behavior (queue removal) is unchanged.
+  const [dismissedTrustPromptIds, setDismissedTrustPromptIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+
   // Per-session draft text for the message input.
   // Without this, switching sessions destroys the unsent text in
   // <MessageInput> because it lives in component-local state.
@@ -345,6 +358,14 @@ export function useIPC() {
           // Prompt resolved on the server side -> remove the corresponding promptId from the queue
           const resolvedPayload = payload as TrustPromptResolvedPayload
           setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== resolvedPayload.promptId))
+          // Clear any non-destructive dismiss record for the resolved prompt
+          // so the set does not accumulate stale ids (Phase A, §10.7.2).
+          setDismissedTrustPromptIds((prev) => {
+            if (!prev.has(resolvedPayload.promptId)) return prev
+            const next = new Set(prev)
+            next.delete(resolvedPayload.promptId)
+            return next
+          })
         } else if (type === 'agent_restarted') {
           // Agent restarted via admin API — refresh agents and tmux status
           fetchJson<AgentInfo[]>(`${API_BASE}/agents`).then(setAgents).catch(() => {})
@@ -665,6 +686,26 @@ export function useIPC() {
     setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== promptId))
   }, [])
 
+  /**
+   * Non-destructive hide for the `multi-question-unsupported` degrade modal
+   * (BL-2026-263 Phase A, trust-prompt-relay.md v1.8 §10.7.2, plan A).
+   *
+   * Unlike `dismissTrustPrompt`, this does NOT remove the item from the
+   * queue — it only records the promptId so the UI stops showing it. The
+   * prompt stays pending on the server; it is dropped from the queue only
+   * when the server emits `trust_prompt_resolved` (e.g. after the user
+   * cancels with Esc or operates the form via tmux). Removing it from the
+   * queue here would leave Claude Code waiting in tmux (silent-stall).
+   */
+  const hideTrustPromptNonDestructive = useCallback((promptId: string) => {
+    setDismissedTrustPromptIds((prev) => {
+      if (prev.has(promptId)) return prev
+      const next = new Set(prev)
+      next.add(promptId)
+      return next
+    })
+  }, [])
+
   // Refresh tmux status
   const refreshTmuxStatus = useCallback(async () => {
     try {
@@ -675,8 +716,13 @@ export function useIPC() {
     }
   }, [])
 
-  // The first item in the queue is the one to display in the modal (Phase 5c / 5d)
-  const currentTrustPrompt = trustPromptQueue[0] ?? null
+  // The first non-dismissed item in the queue is the one to display in the
+  // modal (Phase 5c / 5d; Phase A added the non-destructive dismiss set so a
+  // closed degrade modal stays out of view while its prompt remains pending).
+  const currentTrustPrompt = useMemo(
+    () => trustPromptQueue.find((p) => !dismissedTrustPromptIds.has(p.payload.promptId)) ?? null,
+    [trustPromptQueue, dismissedTrustPromptIds],
+  )
 
   return {
     sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading,
@@ -689,6 +735,7 @@ export function useIPC() {
     agentActivities,
     // Trust prompt relay (Phase 5c / 5d)
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
+    hideTrustPromptNonDestructive,
     // WebSocket connection state (used by admin status indicator)
     wsConnected,
     // Bumped when the server reports `app_menu_changed`; use as a

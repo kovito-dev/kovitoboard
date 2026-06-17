@@ -36,16 +36,18 @@ describe('loadTrustPatterns 正常系', () => {
     }
   })
 
-  it('7 つのパターンが定義されている', () => {
+  it('8 つのパターンが定義されている', () => {
     const fs = new DirectFsLayer()
     const config = loadTrustPatterns(fs, PATTERNS_JSON)
-    expect(config.patterns).toHaveLength(7)
+    // BL-2026-263 Phase A added `multi-question-form-unsupported` (8th).
+    expect(config.patterns).toHaveLength(8)
     const ids = config.patterns.map(p => p.id).sort()
     expect(ids).toEqual([
       'auto-mode-enable',
       'bash-command',
       'edit-update-existing',
       'folder-trust-initial',
+      'multi-question-form-unsupported',
       'read-file',
       'sandbox-network-escape',
       'write-create-new',
