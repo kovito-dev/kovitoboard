@@ -246,7 +246,12 @@ function parseAgentDefinition(
   const employeeIdMatch = frontmatter.match(/^employee_id:\s*"?(.+?)"?\s*$/m)
   // Q3 / AD-3: themeColor field. Optional — when missing the parser
   // falls back to the viewer.config.json color or the default below.
-  const themeColorMatch = frontmatter.match(/^themeColor:\s*"?(#[0-9a-fA-F]{3,8})"?\s*$/m)
+  // Accept single-quoted, double-quoted, and unquoted hex values:
+  // the YAML serializer (js-yaml via gray-matter) single-quotes values
+  // that begin with `#` to avoid them being read as comments, so the
+  // reader must tolerate `'...'` in addition to `"..."` and bare hex or
+  // the saved color is silently dropped to the fallback.
+  const themeColorMatch = frontmatter.match(/^themeColor:\s*['"]?(#[0-9a-fA-F]{3,8})['"]?\s*$/m)
 
   if (!nameMatch) return null
 
