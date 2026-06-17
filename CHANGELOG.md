@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent theme color: a `themeColor` saved from the agent editor is now
+  applied to the avatar frame in the title bar, dashboard, and session
+  views. Previously the saved color was silently dropped to the default
+  because the reader only accepted double-quoted hex values, while the
+  writer single-quotes `#`-prefixed values (the YAML-safe form). The
+  reader now accepts single-quoted, double-quoted, and unquoted hex.
+
 ## [0.2.10] - 2026-06-17
 
 ### Fixed
