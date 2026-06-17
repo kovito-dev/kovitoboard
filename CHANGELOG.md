@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renders it on a surface background (white in light mode) with higher
   text contrast so it is easier to read.
 
+### Security
+
+- Bumped the transitive `vite` dependency to 8.0.16 to address
+  GHSA-fx2h-pf6j-xcff (`server.fs.deny` bypass on Windows alternate
+  paths) and GHSA-v6wh-96g9-6wx3 (`launch-editor` NTLMv2 hash disclosure
+  via UNC path on Windows). Both are Windows-only dev-server advisories
+  and do not affect production builds.
+
 ## [0.2.9] - 2026-06-16
 
 ### Added
