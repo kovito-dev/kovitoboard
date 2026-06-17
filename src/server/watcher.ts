@@ -481,7 +481,8 @@ export class Watcher {
       // the `currentSize <= previousPosition` early return could suppress
       // status updates for the recreated file indefinitely.
       const recordedOffset = this.filePositions.get(filePath)
-      if (recordedOffset !== undefined && currentSize < recordedOffset) {
+      const isRecreate = recordedOffset !== undefined && currentSize < recordedOffset
+      if (isRecreate) {
         this.filePositions.delete(filePath)
         this.restoringFiles.delete(filePath)
       }
@@ -497,7 +498,17 @@ export class Watcher {
       // that existed on disk before we started reading this file; an EMPTY
       // file (size 0) has nothing to restore, so its first genuine append is
       // live activity and must update status (INV-2).
-      if (isFirstRead && currentSize > 0) this.restoringFiles.add(filePath)
+      //
+      // A RECREATE (shrink) is excluded: restoration is a startup-only
+      // concept for bytes that pre-date our first observation of a path. By
+      // definition a shrink means we already observed this path before, so
+      // its new (smaller) content was written after we started reading and
+      // is live activity — re-entering restoration here would extend the
+      // startup rule into normal runtime and hide genuine live status (the
+      // pre-`ready` window is already covered by SessionManager.initializing,
+      // so leaving a recreate live is harmless during startup and correct
+      // after it).
+      if (isFirstRead && currentSize > 0 && !isRecreate) this.restoringFiles.add(filePath)
       const historical = this.restoringFiles.has(filePath)
       const previousPosition = this.filePositions.get(filePath) || 0
 

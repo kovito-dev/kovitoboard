@@ -454,16 +454,18 @@ describe('Watcher → SessionManager startup status restoration', () => {
     w.stop()
 
     // The path is recreated SMALLER than the retained offset (truncate /
-    // rotate / stale-path reuse). The shrink must reset the offset and any
-    // stale restoring marker so status updates are not suppressed forever.
+    // rotate / stale-path reuse) AFTER startup. The shrink must reset the
+    // offset and any stale restoring marker. Because a shrink means the path
+    // was already observed before, its new content is live activity (not
+    // startup restoration), so status must update immediately — the
+    // restoration rule must not leak into normal runtime.
     w.start()
     fs.emit(sessionsDir, { type: 'ready' })
-    // New, smaller content: a single complete user line.
     fs.setFile(file, userLine('brand new'))
     fs.emit(sessionsDir, { type: 'change', path: file })
-    // The recreated content is read fresh and drains to EOF (restoration of
-    // the new file releases the latch).
-    // A subsequent genuinely-live append must update status (not suppressed).
+    expect(statusOf(sm, 'sess-trunc')).toBe('waiting')
+
+    // And a further genuinely-live append continues to update status.
     fs.setFile(file, userLine('brand new') + endTurnLine('reply'))
     fs.emit(sessionsDir, { type: 'change', path: file })
     expect(statusOf(sm, 'sess-trunc')).toBe('ready')
