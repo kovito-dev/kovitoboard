@@ -183,7 +183,28 @@ export class SessionManager extends EventEmitter {
     return map
   }
 
-  addEvents(sessionId: string, events: ParsedEvent[]): void {
+  /**
+   * Append parsed events to a session.
+   *
+   * `opts.historical` marks the events as restored-on-startup content
+   * rather than genuinely-live activity. When set, the
+   * `status` is left untouched (the session stays `idle`), but stats are
+   * still aggregated and `new_event` / `new_session` are still emitted so
+   * the restored session appears in the list with correct counts. This is
+   * the per-file restoration signal computed by the Watcher: the same
+   * pre-existing terminal `end_turn` line that previously got "branded"
+   * onto `status` after `ready` (causing a spurious non-idle status until
+   * the 5-minute idle timer fired) is now ignored for status purposes.
+   *
+   * The decision is per-file, not a global time flag: a file is historical
+   * until its first full drain to EOF completes, after which genuinely-live
+   * appends update `status` normally (INV-2). See watcher.ts `handleFile`.
+   */
+  addEvents(
+    sessionId: string,
+    events: ParsedEvent[],
+    opts?: { historical?: boolean },
+  ): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
@@ -194,11 +215,13 @@ export class SessionManager extends EventEmitter {
       session.events.push(event)
       session.lastEventAt = event.timestamp
 
-      // Update stats
+      // Update stats (restored sessions must still appear with correct
+      // counts, so stats run even for historical events).
       this.updateStats(session.stats, event)
 
-      // Update status
-      this.updateStatus(session, event)
+      // Update status (skipped for historical events so a restored
+      // terminal line does not brand a non-idle status — INV-1).
+      this.updateStatus(session, event, opts?.historical)
 
       this.emit('new_event', sessionId, event)
     }
@@ -226,9 +249,16 @@ export class SessionManager extends EventEmitter {
     if (event.metadata.outputTokens) stats.totalOutputTokens += event.metadata.outputTokens
   }
 
-  private updateStatus(session: Session, event: ParsedEvent): void {
-    // Skip status updates during initial loading (existing sessions remain idle)
-    if (this.initializing) return
+  private updateStatus(session: Session, event: ParsedEvent, historical?: boolean): void {
+    // Skip status updates during initial loading (existing sessions remain
+    // idle) or for historical (restored-on-startup) events. `historical` is
+    // the per-file restoration signal: even after the global
+    // `initializing` flag clears at `ready`, a pre-existing JSONL whose
+    // first full read lands after `ready` must not brand its terminal
+    // `end_turn` onto `status`. The global flag alone cannot cover this
+    // because `ready` and "every existing file's initial read completed"
+    // are not the same instant (drop/reorder/partial-hold paths).
+    if (this.initializing || historical) return
 
     const oldStatus = session.status
 
