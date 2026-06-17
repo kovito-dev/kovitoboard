@@ -471,6 +471,21 @@ export class Watcher {
       const stat = this.fs.lstatSync(filePath)
       if (!stat.isFile || stat.isSymbolicLink) return
       const currentSize = stat.size
+
+      // Truncate / replace / recreate detection. If the file is now SMALLER
+      // than our recorded offset, the path no longer refers to the bytes we
+      // committed against (Claude Code may rotate or a stale path may be
+      // reused). Drop the stale offset AND any stale restoration marker so
+      // the file is re-evaluated from scratch below. Without this, a stale
+      // `restoringFiles` entry kept across stop() (see stop()) combined with
+      // the `currentSize <= previousPosition` early return could suppress
+      // status updates for the recreated file indefinitely.
+      const recordedOffset = this.filePositions.get(filePath)
+      if (recordedOffset !== undefined && currentSize < recordedOffset) {
+        this.filePositions.delete(filePath)
+        this.restoringFiles.delete(filePath)
+      }
+
       // First-ever read of this file? Computed from the raw offset map
       // (undefined === never read) BEFORE the `|| 0` fallback below, since
       // a genuine offset of 0 is indistinguishable from "never read" after

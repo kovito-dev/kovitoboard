@@ -438,6 +438,39 @@ describe('Watcher → SessionManager startup status restoration', () => {
     w.stop()
   })
 
+  it('INV-2 edge: a truncated/recreated file is not stuck restoring; later live append updates status', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new SessionManager()
+    const w = new Watcher(makeConfig(100), sm, fs as never)
+
+    // First run: restore a static session (drains to EOF, latch released),
+    // then stop with a retained offset.
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    const file = join(sessionsDir, 'sess-trunc.jsonl')
+    fs.setFile(file, staticTranscript())
+    fs.emit(sessionsDir, { type: 'add', path: file })
+    w.stop()
+
+    // The path is recreated SMALLER than the retained offset (truncate /
+    // rotate / stale-path reuse). The shrink must reset the offset and any
+    // stale restoring marker so status updates are not suppressed forever.
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    // New, smaller content: a single complete user line.
+    fs.setFile(file, userLine('brand new'))
+    fs.emit(sessionsDir, { type: 'change', path: file })
+    // The recreated content is read fresh and drains to EOF (restoration of
+    // the new file releases the latch).
+    // A subsequent genuinely-live append must update status (not suppressed).
+    fs.setFile(file, userLine('brand new') + endTurnLine('reply'))
+    fs.emit(sessionsDir, { type: 'change', path: file })
+    expect(statusOf(sm, 'sess-trunc')).toBe('ready')
+
+    w.stop()
+  })
+
   // --- End-to-end: path-E race yields healthy /api/admin/status ---
 
   it('end-to-end: path-E restore yields healthy GET /api/admin/status (no false degraded)', async () => {
