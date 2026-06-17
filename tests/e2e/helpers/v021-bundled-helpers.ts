@@ -94,41 +94,6 @@ export async function waitForWsFrame(
 }
 
 /**
- * Workaround for the fixture vs `appendMenuEntry` regex drift:
- *   - The bundled-installer's menu.ts editor (`appendMenuEntry`,
- *     `src/server/services/menu-ts-editor.ts:473`) requires the
- *     `export const menuEntries: AppMenuEntry[] = [...]` form.
- *   - `tests/fixtures/projects/blank-onboarded/app/menu.ts` omits the
- *     type annotation on purpose (its leading comment notes that the
- *     `AppMenuEntry` import path would escape the fixture project
- *     root at parse time).
- * Returns the original bytes so the caller can restore them in
- * afterEach via `restoreMenuTs`.
- */
-export function rewriteMenuTsForEnable(projectRoot: string): string {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  const original = readFileSync(menuTsPath, 'utf-8')
-  if (
-    /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.test(
-      original,
-    )
-  ) {
-    return original
-  }
-  const rewritten = original.replace(
-    /export\s+const\s+menuEntries\s*=\s*\[/,
-    'export const menuEntries: AppMenuEntry[] = [',
-  )
-  writeFileSync(menuTsPath, rewritten)
-  return original
-}
-
-export function restoreMenuTs(projectRoot: string, original: string): void {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  writeFileSync(menuTsPath, original)
-}
-
-/**
  * Reject ids that could escape the intended app/recipe directory via
  * path-separator or `..` segments. The destructive filesystem helpers
  * below (`cleanupAppDir`, `seedGrandfatherManifest`) join the id into a

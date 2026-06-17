@@ -53,8 +53,6 @@
  */
 import { test, expect, type Page } from './helpers/l1-per-test-setup'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
 } from './helpers/v021-bundled-helpers'
@@ -118,10 +116,7 @@ async function openRecipePage(page: Page, appId: string): Promise<void> {
 }
 
 test.describe('Recipe page body i18n (BL-208 T2)', () => {
-  let originalMenuTs: string | null = null
-
   test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
     for (const recipeId of [DOC_RECIPE_ID, TODO_RECIPE_ID]) {
       expect(
         (
@@ -137,10 +132,6 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
     for (const appId of [DOC_APP_ID, TODO_APP_ID]) {
       cleanupAppDir(kbFixture.projectRoot, appId)
       removeAppDataDir(kbFixture.projectRoot, appId)
-    }
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
     }
   })
 

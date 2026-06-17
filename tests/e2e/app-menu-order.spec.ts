@@ -37,8 +37,6 @@
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
   waitForWsFrame,
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   readAppManifest,
   readRecipeManifest,
@@ -49,10 +47,7 @@ const RECIPE_DOCUMENT_VIEWER = 'document-viewer'
 const RECIPE_TODO = 'todo'
 
 test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+  test.beforeEach(async ({ request }) => {
     // Enable both bundled samples so the eligible app set is fixed at
     // exactly {document-viewer, todo}. Each enable also appends an
     // entry to `app/menu.ts` so the closed-world coverage check has
@@ -70,10 +65,6 @@ test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () 
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, RECIPE_DOCUMENT_VIEWER)
     cleanupAppDir(kbFixture.projectRoot, RECIPE_TODO)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('BS-T10-a happy path: 200 OK + app_menu_changed broadcast + AppManifest menuOrder write (BS-L6)', async ({

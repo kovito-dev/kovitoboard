@@ -36,8 +36,6 @@ import { test, expect } from './helpers/l1-per-test-setup'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
   readHistoryLines,
@@ -59,12 +57,6 @@ function seedTodoOwnData(projectRoot: string, payload: object): string {
 }
 
 test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
-  })
-
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, DOC_ID)
     cleanupAppDir(kbFixture.projectRoot, TODO_ID)
@@ -77,10 +69,6 @@ test.describe('v0.1.x → v0.2.1 grandfather sample migration (§3)', () => {
     // shared slug + symlink guards before the recursive delete.
     removeAppDataDir(kbFixture.projectRoot, DOC_ID)
     removeAppDataDir(kbFixture.projectRoot, TODO_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('§3.2 #1: grandfather detection — seeded RecipeManifest persists with `source: "sample"` and the on-disk shape matches the v0.1.x layout', async ({

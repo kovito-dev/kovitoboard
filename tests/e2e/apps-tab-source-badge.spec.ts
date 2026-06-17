@@ -37,11 +37,7 @@
 import { test, expect } from './helpers/l1-per-test-setup'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
-  cleanupAppDir,
-} from './helpers/v021-bundled-helpers'
+import { cleanupAppDir } from './helpers/v021-bundled-helpers'
 
 type SourceBadge = 'self-made' | 'bundled' | 'sample' | 'import' | 'url'
 
@@ -142,10 +138,7 @@ function appendMenuTsEntries(
       )
     })
     .join('')
-  // Insert just before the closing `]` of the menuEntries array. The
-  // `rewriteMenuTsForEnable` step in beforeEach has already injected
-  // the `AppMenuEntry[]` type annotation so the regex match below
-  // matches the canonical form.
+  // Insert just before the closing `]` of the menuEntries array.
   const arrayMatch = /(\]\s*\n?)$/.exec(current)
   if (!arrayMatch) {
     throw new Error(
@@ -159,10 +152,7 @@ function appendMenuTsEntries(
 }
 
 test.describe('Apps tab — source badge rendering (BS-T13)', () => {
-  let originalMenuTs: string | null = null
-
   test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
     for (const seed of SEEDS) {
       seedAppManifest(kbFixture.projectRoot, seed)
     }
@@ -172,10 +162,6 @@ test.describe('Apps tab — source badge rendering (BS-T13)', () => {
   test.afterEach(async ({ kbFixture }) => {
     for (const seed of SEEDS) {
       cleanupAppDir(kbFixture.projectRoot, seed.appId)
-    }
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
     }
   })
 

@@ -92,8 +92,11 @@ export type MenuAppendResult =
  * it leaves comments outside the entry untouched.
  */
 export function removeMenuEntry(content: string, entryId: string): MenuRemoveResult {
-  // Locate the menuEntries array.
-  const arrayMatch = /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.exec(content)
+  // Locate the menuEntries array. The type annotation is optional so we
+  // accept both `export const menuEntries: SomeType[] = [` and the
+  // annotation-free `export const menuEntries = [` (bundled apps may ship
+  // either form).
+  const arrayMatch = /export\s+const\s+menuEntries\s*(?::\s*[A-Za-z_$][\w$]*\[\]\s*)?=\s*\[/.exec(content)
   if (!arrayMatch) {
     return {
       kind: 'parse-failed',
@@ -469,8 +472,11 @@ export function appendMenuEntry(
   // so the editor stays consistent about what counts as a parseable
   // menu.ts. (`parseMenuTs` succeeding above only means *some* entries
   // were extracted — the regex below confirms the array shape we are
-  // about to splice into.)
-  const arrayMatch = /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.exec(content)
+  // about to splice into.) The type annotation is optional so we accept
+  // both the annotated `export const menuEntries: SomeType[] = [` and the
+  // annotation-free `export const menuEntries = [` (bundled apps may ship
+  // either form).
+  const arrayMatch = /export\s+const\s+menuEntries\s*(?::\s*[A-Za-z_$][\w$]*\[\]\s*)?=\s*\[/.exec(content)
   if (!arrayMatch) {
     throw new MenuTsParseFailedError(
       'Could not locate "export const menuEntries" array in app/menu.ts',
@@ -500,10 +506,10 @@ export function appendMenuEntry(
   // valid TypeScript module regardless of how the existing array is
   // formatted:
   //
-  //   (a) Empty array (`menuEntries: AppMenuEntry[] = []` or
-  //       `[\n]`): emit a fresh multi-line body with a trailing
-  //       comma so the result matches `buildEmptyMenuTs`-style
-  //       round-trips.
+  //   (a) Empty array (`menuEntries: AppMenuEntry[] = []`, the
+  //       annotation-free `menuEntries = []`, or `[\n]`): emit a
+  //       fresh multi-line body with a trailing comma so the result
+  //       matches `buildEmptyMenuTs`-style round-trips.
   //   (b) Non-empty array whose body already ends with `,\n` (the
   //       buildMenuTs layout in the test fixtures): just append our
   //       entry + trailing comma.

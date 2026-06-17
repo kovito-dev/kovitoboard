@@ -52,8 +52,6 @@ import {
   readHistoryLines,
   cleanupAppDir,
   removeAppDataDir,
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   waitForWsFrame,
 } from './helpers/v021-bundled-helpers'
 
@@ -77,12 +75,6 @@ const SAMPLE_APP_ID = 'document-viewer'
 // ---------------------------------------------------------------------------
 
 test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
-  })
-
   test.afterEach(async ({ kbFixture }) => {
     // app/<appId>/ + app/data/<appId>/ live outside `.kovitoboard/` so
     // kbFixture's snapshot/restore does not undo enable's artifact
@@ -90,10 +82,6 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     // from the same blank project state.
     cleanupAppDir(kbFixture.projectRoot, SAMPLE_APP_ID)
     removeAppDataDir(kbFixture.projectRoot, SAMPLE_APP_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('BS-T1: enable endpoint materialises manifest + artifacts + history (BS-L1, BS-L4)', async ({

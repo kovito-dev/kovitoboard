@@ -284,3 +284,72 @@ describe('appendMenuEntry', () => {
     expect(parsed.map((e) => e.id)).toEqual(['todo', 'document-viewer'])
   })
 })
+
+// =========================================
+// Annotation-free menuEntries regression (BL-2026-259)
+// =========================================
+//
+// A `menu.ts` may declare the array without the `: AppMenuEntry[]`
+// type annotation, e.g. `export const menuEntries = [...]`. The
+// `blank-onboarded` test fixture intentionally ships this form (the
+// `AppMenuEntry` import path would escape the fixture project root at
+// parse time). Both editor paths must accept the annotation-free shape
+// so a bundled enable / disable does not 500 against such a file.
+
+describe('annotation-free menuEntries (BL-2026-259)', () => {
+  // Same canonical entry layout as `buildMenuTs`, but with the type
+  // annotation omitted from the `export const menuEntries = [` line.
+  function buildAnnotationFreeMenuTs(
+    entries: Array<{ id: string; label: string; icon: string; page: string }>,
+  ): string {
+    const items = entries
+      .map(
+        (e) =>
+          `  {\n    id: '${e.id}',\n    label: '${e.label}',\n    icon: '${e.icon}',\n    component: () => import('./${e.page}'),\n  }`,
+      )
+      .join(',\n')
+    return `${HEAD}export const menuEntries = [\n${items},\n]\n`
+  }
+
+  it('appendMenuEntry appends to an annotation-free non-empty array and round-trips', () => {
+    const src = buildAnnotationFreeMenuTs([
+      { id: 'todo', label: 'TODO', icon: 'content', page: 'todo/pages/TodoPage' },
+    ])
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'Docs',
+      icon: 'content',
+      page: 'document-viewer/pages/DocumentViewer',
+    })
+    expect(result.kind).toBe('appended')
+    if (result.kind !== 'appended') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed.map((e) => e.id)).toEqual(['todo', 'document-viewer'])
+  })
+
+  it('removeMenuEntry removes an entry from an annotation-free array', () => {
+    const src = buildAnnotationFreeMenuTs([
+      { id: 'todo', label: 'TODO', icon: 'content', page: 'todo/pages/TodoPage' },
+      { id: 'doc', label: 'Docs', icon: 'content', page: 'doc/pages/DocViewer' },
+    ])
+    const result = removeMenuEntry(src, 'todo')
+    expect(result.kind).toBe('removed')
+    if (result.kind !== 'removed') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed.map((e) => e.id)).toEqual(['doc'])
+  })
+
+  it('appendMenuEntry appends to an annotation-free empty array', () => {
+    const src = `${HEAD}export const menuEntries = []\n`
+    const result = appendMenuEntry(src, {
+      id: 'document-viewer',
+      label: 'Docs',
+      icon: 'content',
+      page: 'document-viewer/pages/DocumentViewer',
+    })
+    expect(result.kind).toBe('appended')
+    if (result.kind !== 'appended') return
+    const parsed = parseMenuTs(result.content)
+    expect(parsed.map((e) => e.id)).toEqual(['document-viewer'])
+  })
+})

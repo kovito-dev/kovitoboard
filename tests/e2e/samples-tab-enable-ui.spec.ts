@@ -23,36 +23,16 @@
  *     newly enabled app on the Apps tab.
  *   - BS-T8-b: the click does NOT fire `POST /api/recipes/install`
  *     (the legacy 7-layer install path is gone in v0.2.x).
- *
- * Fixture note: the L1 fixture's `app/menu.ts` omits the type
- * annotation that `appendMenuEntry` requires, so the bundled enable
- * fails with 500 `EnableMenuTsAppendFailed` unless we patch the
- * annotation in beforeEach. The workaround is reverted in afterEach.
- * See Phase 1 escalate finding #1 for the upstream cleanup.
  */
 import { test, expect } from './helpers/l1-per-test-setup'
-import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
-  cleanupAppDir,
-} from './helpers/v021-bundled-helpers'
+import { cleanupAppDir } from './helpers/v021-bundled-helpers'
 
 const RECIPE_ID = 'document-viewer'
 const APP_ID = 'document-viewer'
 
 test.describe('Sample apps tab — Enable toggle UI (BS-T8)', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
-  })
-
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('BS-T8-a: clicking Enable on a sample card materialises the badge + surfaces the app on the Apps tab (BS-L1)', async ({

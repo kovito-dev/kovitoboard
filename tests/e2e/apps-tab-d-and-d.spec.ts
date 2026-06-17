@@ -38,8 +38,6 @@
  */
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   readAppManifest,
   waitForWsFrame,
@@ -50,10 +48,7 @@ const APP_DOC = 'document-viewer'
 const APP_TODO = 'todo'
 
 test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+  test.beforeEach(async ({ request }) => {
     const r1 = await request.post(
       `${API_BASE}/api/recipes/sample/${APP_DOC}/enable`,
     )
@@ -67,10 +62,6 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_DOC)
     cleanupAppDir(kbFixture.projectRoot, APP_TODO)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('BS-T9-a: drag a row past the 4px activation threshold reorders + persists + broadcasts (BS-L6, cascade §10.2)', async ({

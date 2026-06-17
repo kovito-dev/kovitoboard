@@ -37,8 +37,6 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   waitForWsFrame,
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   readAppManifest,
   readRecipeManifest,
@@ -50,10 +48,7 @@ const RECIPE_ID = 'document-viewer'
 const APP_ID = 'document-viewer'
 
 test.describe('App menu-label PATCH (BS-T11) — userMenuLabel override + reset + cascade', () => {
-  let originalMenuTs: string | null = null
-
-  test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+  test.beforeEach(async ({ request }) => {
     const r = await request.post(
       `${API_BASE}/api/recipes/sample/${RECIPE_ID}/enable`,
     )
@@ -62,10 +57,6 @@ test.describe('App menu-label PATCH (BS-T11) — userMenuLabel override + reset 
 
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('BS-T11-a happy path set: 200 + AppManifest write + app_menu_changed broadcast (BS-L7)', async ({

@@ -43,8 +43,6 @@
  */
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
 } from './helpers/v021-bundled-helpers'
@@ -98,10 +96,7 @@ async function fetchMenuLabels(
 }
 
 test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
-  let originalMenuTs: string | null = null
-
   test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
     expect(
       (
         await request.post(
@@ -116,10 +111,6 @@ test.describe('Recipe nav menu-label locale resolution (BL-206 T1)', () => {
     removeAppDataDir(kbFixture.projectRoot, DOC_APP_ID)
     cleanupAppDir(kbFixture.projectRoot, TODO_APP_ID)
     removeAppDataDir(kbFixture.projectRoot, TODO_APP_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
-    }
   })
 
   test('T1-a en: document-viewer nav label resolves to "Documents" (i18n.en.menu override)', async ({
