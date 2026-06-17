@@ -115,20 +115,27 @@ export function SessionDetailPage({
     return window ? window.name : null
   }, [tmuxStatus, sessionAgentMap])
 
-  // Send message to the current session
+  // Send message to the current session.
+  //
+  // An `idle` session is not a terminated one: the 5-minute idle timer
+  // only flips the status label while the claude process and its tmux
+  // window stay alive. A plain `tmuxSend` to such a session appends to
+  // the SAME claude session (claude only starts a fresh JSONL session on
+  // `/clear`), so we must NOT arm `startPendingNewSession` here — doing
+  // so would wait for a new session that never appears, leaving the
+  // Continue button stuck in its loading state and the typing indicator
+  // showing forever while the reply is in fact streamed into the session
+  // already on screen. Starting a brand new topic goes through
+  // `handleStartNewTopic` (the `/clear` path), which is where the pending
+  // new-session navigation belongs.
   const handleSendMessage = useCallback(async (sessionId: string, message: string) => {
     const windowName = resolveTmuxWindow(sessionId)
     if (windowName) {
-      const session = sessions.find((s) => s.id === sessionId)
-      const agentId = sessionAgentMap[sessionId]
-      if (session?.status === 'idle' && agentId) {
-        startPendingNewSession(agentId)
-      }
       await tmuxSend(windowName, message, sessionId)
     } else {
       await sendMessage(sessionId, message)
     }
-  }, [resolveTmuxWindow, sessions, sessionAgentMap, tmuxSend, sendMessage, startPendingNewSession])
+  }, [resolveTmuxWindow, tmuxSend, sendMessage])
 
   // Start new topic for the current session
   const handleStartNewTopic = useCallback(async (agentId: string, message: string) => {
