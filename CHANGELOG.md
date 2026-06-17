@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation (`export const menuEntries = [...]` instead of
   `export const menuEntries: AppMenuEntry[] = [...]`). The menu editor
   now accepts both forms.
+- The trust-confirmation / unknown-prompt dialog now always shows the
+  actual message instead of hiding it behind a collapsible accordion, and
+  renders it on a surface background (white in light mode) with higher
+  text contrast so it is easier to read.
 
 ## [0.2.9] - 2026-06-16
 
