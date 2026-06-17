@@ -103,7 +103,6 @@ export function TrustPromptModal({
   onRawKeys,
   onDismiss,
 }: TrustPromptModalProps) {
-  const [showRawBuffer, setShowRawBuffer] = useState(false)
   const [rawKeysInput, setRawKeysInput] = useState('')
   const [copied, setCopied] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -112,17 +111,9 @@ export function TrustPromptModal({
 
   // Reset internal state when the event changes
   useEffect(() => {
-    setShowRawBuffer(false)
     setRawKeysInput('')
     setCopied(false)
   }, [promptId])
-
-  // Always expand buffer in fallback mode
-  useEffect(() => {
-    if (item?.kind === 'fallback') {
-      setShowRawBuffer(true)
-    }
-  }, [item?.kind, promptId])
 
   // Focus the free-form input field when fallback mode is displayed
   useEffect(() => {
@@ -172,8 +163,6 @@ export function TrustPromptModal({
     return (
       <DetectedModal
         event={item.payload}
-        showRawBuffer={showRawBuffer}
-        onToggleRawBuffer={() => setShowRawBuffer((v) => !v)}
         onChoice={onChoice}
         onRawKeys={onRawKeys}
         rawKeysInput={rawKeysInput}
@@ -252,12 +241,8 @@ export function TrustPromptModal({
             </div>
           </div>
 
-          {/* Raw buffer (always expanded in fallback mode) */}
-          <RawBufferSection
-            rawBuffer={rawBuffer}
-            show={showRawBuffer}
-            onToggle={() => setShowRawBuffer((v) => !v)}
-          />
+          {/* Raw buffer (always visible) */}
+          <RawBufferSection rawBuffer={rawBuffer} />
 
           {/* Quick key buttons */}
           <div className="space-y-2">
@@ -336,8 +321,6 @@ export function TrustPromptModal({
 /** Modal for detected mode (structure ported from Phase 5c) */
 function DetectedModal({
   event,
-  showRawBuffer,
-  onToggleRawBuffer,
   onChoice,
   onRawKeys,
   rawKeysInput,
@@ -346,8 +329,6 @@ function DetectedModal({
   onDismiss,
 }: {
   event: TrustPromptDetectedPayload
-  showRawBuffer: boolean
-  onToggleRawBuffer: () => void
   onChoice: (choiceId: string) => void
   onRawKeys: (rawKeys: string) => void
   rawKeysInput: string
@@ -449,12 +430,8 @@ function DetectedModal({
             </div>
           )}
 
-          {/* Raw buffer collapsible */}
-          <RawBufferSection
-            rawBuffer={event.rawBuffer}
-            show={showRawBuffer}
-            onToggle={onToggleRawBuffer}
-          />
+          {/* Raw buffer (always visible) */}
+          <RawBufferSection rawBuffer={event.rawBuffer} />
 
           {/* Custom answer section (spec v1.2 §5-3-1a — always present
               on detected dialogs, not only on the fallback UX). Lets
@@ -582,30 +559,25 @@ function CloseButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-/** Raw buffer collapsible section (shared between detected / fallback) */
-function RawBufferSection({
-  rawBuffer,
-  show,
-  onToggle,
-}: {
-  rawBuffer: string
-  show: boolean
-  onToggle: () => void
-}) {
+/**
+ * Raw buffer section (shared between detected / fallback).
+ *
+ * The actual message is always visible — there is no collapse toggle. It
+ * is the primary signal users rely on to decide how to respond, so hiding
+ * it behind an accordion (or rendering it on a dark surface) hurt
+ * readability. The body uses `--bg-surface` (white in light mode,
+ * #16162a in dark mode) for contrast and `--text-secondary` for legible
+ * monospace text.
+ */
+function RawBufferSection({ rawBuffer }: { rawBuffer: string }) {
   return (
     <div className="rounded-lg border border-[var(--border)] overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-[var(--text-dim)] hover:text-[var(--text-tertiary)] bg-[var(--bg-surface)] transition-colors"
-      >
-        <span>{t('trust.rawBuffer.title')}</span>
-        <span aria-hidden>{show ? '▲' : '▼'}</span>
-      </button>
-      {show && (
-        <pre className="px-4 py-3 text-[11px] leading-snug font-mono text-[var(--text-tertiary)] bg-black/30 overflow-x-auto whitespace-pre max-h-64">
-          {rawBuffer}
-        </pre>
-      )}
+      <div className="px-4 py-2 text-xs font-semibold text-[var(--text-dim)] bg-[var(--bg-surface)] border-b border-[var(--border)]">
+        {t('trust.rawBuffer.title')}
+      </div>
+      <pre className="px-4 py-3 text-[11px] leading-snug font-mono text-[var(--text-secondary)] bg-[var(--bg-surface)] overflow-x-auto whitespace-pre max-h-64">
+        {rawBuffer}
+      </pre>
     </div>
   )
 }
