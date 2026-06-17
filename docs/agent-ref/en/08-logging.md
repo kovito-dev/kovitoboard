@@ -1,6 +1,6 @@
 # 08. Logging Conventions
 
-**Target KB version:** v0.2.10
+**Target KB version:** v0.2.11
 **Last updated:** 2026-06-17
 **Authoritative source:** [`../08-logging.md`](../08-logging.md) (Japanese)
 

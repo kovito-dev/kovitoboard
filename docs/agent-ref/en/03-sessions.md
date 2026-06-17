@@ -1,6 +1,6 @@
 # 03. Session Management
 
-**Target KB version:** v0.2.10
+**Target KB version:** v0.2.11
 **Last updated:** 2026-06-17
 **Authoritative source:** [`../03-sessions.md`](../03-sessions.md) (Japanese)
 

@@ -1,6 +1,6 @@
 # 04. Recipes
 
-**Target KB version:** v0.2.10
+**Target KB version:** v0.2.11
 **Last updated:** 2026-06-17
 **Authoritative source:** [`../04-recipes.md`](../04-recipes.md) (Japanese)
 
