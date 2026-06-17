@@ -9,6 +9,14 @@ KovitoBoard の主要な変更点を本ファイルに記録します。
 
 ## [Unreleased]
 
+### 修正
+
+- プロジェクトの `app/menu.ts` がメニュー配列を型注釈なし
+  （`export const menuEntries: AppMenuEntry[] = [...]` ではなく
+  `export const menuEntries = [...]`）で宣言している場合に、同梱サンプル
+  アプリの有効化・無効化が失敗しなくなりました。メニューエディタが
+  両方の形式を受け付けるようになっています。
+
 ## [0.2.9] - 2026-06-16
 
 ### 追加

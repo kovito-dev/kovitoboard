@@ -53,10 +53,10 @@
  */
 import { test, expect, type Page } from './helpers/l1-per-test-setup'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   removeAppDataDir,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 import { setLocaleOnDisk } from './helpers/locale-fixture'
 
@@ -118,10 +118,14 @@ async function openRecipePage(page: Page, appId: string): Promise<void> {
 }
 
 test.describe('Recipe page body i18n (BL-208 T2)', () => {
-  let originalMenuTs: string | null = null
+  // Enabling samples appends entries to `app/menu.ts`, which lives outside
+  // the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot and
+  // restore it per-test so the appended entries do not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
 
   test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     for (const recipeId of [DOC_RECIPE_ID, TODO_RECIPE_ID]) {
       expect(
         (
@@ -138,9 +142,9 @@ test.describe('Recipe page body i18n (BL-208 T2)', () => {
       cleanupAppDir(kbFixture.projectRoot, appId)
       removeAppDataDir(kbFixture.projectRoot, appId)
     }
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
     }
   })
 

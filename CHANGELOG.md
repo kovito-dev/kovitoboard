@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Enabling or disabling a bundled sample app no longer fails when the
+  project's `app/menu.ts` declares its menu array without a type
+  annotation (`export const menuEntries = [...]` instead of
+  `export const menuEntries: AppMenuEntry[] = [...]`). The menu editor
+  now accepts both forms.
+
 ## [0.2.9] - 2026-06-16
 
 ### Added
