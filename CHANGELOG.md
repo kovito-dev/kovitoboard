@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-06-17
+
+### Fixed
+
+- Light mode: warning text on the remaining hardcoded surfaces (such as the
+  "degraded" status banner) is now readable. Previously some amber/warning
+  messages used a fixed color that washed out against the light-mode
+  background; they now use theme warning color tokens that adapt to both
+  themes.
+- Startup: fixed a false-positive "degraded" status banner. When sessions were
+  restored on startup, a session could briefly be flagged as degraded before
+  any live activity arrived. Restored sessions now stay idle until a real live
+  event is received (per-file restoration latch).
+- Idle sessions: a message sent to an idle session now stays in the same
+  session and shows the reply. Previously the reply could appear to never
+  arrive because the input was mistakenly treated as starting a new session.
+
 ## [0.2.9] - 2026-06-16
 
 ### Added

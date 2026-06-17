@@ -1,6 +1,6 @@
 # 12. Protected Paths
 
-**Target KB version:** v0.2.9
+**Target KB version:** v0.2.10
 **Last updated:** 2026-06-15
 **Authoritative source:** [`../12-protected-paths.md`](../12-protected-paths.md) (Japanese)
 
