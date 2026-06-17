@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GHSA-fx2h-pf6j-xcff (`server.fs.deny` bypass on Windows alternate
   paths) and GHSA-v6wh-96g9-6wx3 (`launch-editor` NTLMv2 hash disclosure
   via UNC path on Windows). The `^8.0.16` floor keeps the fix in place
-  across future installs while still allowing forward 8.x patch updates.
-  Both are Windows-only dev-server advisories and do not affect
+  across future installs while still allowing forward 8.x minor and patch
+  updates. Both are Windows-only dev-server advisories and do not affect
   production builds.
 
 ## [0.2.9] - 2026-06-16
