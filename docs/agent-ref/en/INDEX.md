@@ -1,6 +1,6 @@
 # KovitoBoard Reference (for Agents) — English
 
-**Target KB version:** v0.2.10
+**Target KB version:** v0.2.11
 **Last updated:** 2026-06-17
 **Role:** Navigation layer for chapters 01–12. Detailed content for every chapter lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md).
 
