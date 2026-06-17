@@ -127,15 +127,31 @@ export function TrustPromptModal({
     }
   }, [item?.kind, promptId])
 
-  // Close on ESC key
+  // The degrade modal for `multi-question-unsupported` advertises a
+  // "Cancel (Esc)" button that sends the canonical ESC payload to cancel
+  // the form. For that kind the physical Escape key must do the same thing
+  // (send ESC), not the non-destructive hide that `onDismiss` performs —
+  // otherwise the label would lie and Esc would silently re-hide a still
+  // pending prompt. For every other kind, Escape keeps the existing
+  // dismiss behavior.
+  const isUnsupportedDegrade =
+    item?.kind === 'detected' &&
+    item.payload.kind === 'multi-question-unsupported'
+
+  // Handle the ESC key.
   useEffect(() => {
     if (!item) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss()
+      if (e.key !== 'Escape') return
+      if (isUnsupportedDegrade) {
+        onRawKeys(CANONICAL_ESC_RAW_KEYS)
+      } else {
+        onDismiss()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [item, onDismiss])
+  }, [item, isUnsupportedDegrade, onDismiss, onRawKeys])
 
   // Submit handler for free-form input field
   const handleRawKeysSubmit = useCallback(() => {
