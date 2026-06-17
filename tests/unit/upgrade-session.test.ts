@@ -21,6 +21,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createStartUpgradeSession } from '../../src/server/upgrade-session'
 
 const AGENT_ID = 'kovito-concierge'
+// Deliberately distinct from AGENT_ID so the assertions prove production
+// forwards `tmuxAgent.windowName` (not `agentId`) to the tmux methods.
+const WINDOW_NAME = 'kovito-concierge-window-7'
 const MESSAGE = '  please upgrade  '
 
 function makeDeps() {
@@ -63,7 +66,7 @@ describe('createStartUpgradeSession (BL-2026-269)', () => {
     // Existing window path (the BL scenario): clear-and-send reuses a
     // running agent window, so the new /clear session must be claimed
     // via the parked reservation.
-    deps.ensureTmuxAgent.mockResolvedValue({ windowName: AGENT_ID, justStarted: false })
+    deps.ensureTmuxAgent.mockResolvedValue({ windowName: WINDOW_NAME, justStarted: false })
 
     const result = await deps.start({ agentId: AGENT_ID, message: MESSAGE })
 
@@ -73,15 +76,16 @@ describe('createStartUpgradeSession (BL-2026-269)', () => {
     expect(deps.reserveOrigin.mock.invocationCallOrder[0]).toBeLessThan(
       deps.ensureTmuxAgent.mock.invocationCallOrder[0],
     )
-    // Existing-window branch trims the message and uses clear-and-send.
-    expect(deps.clearAndSendMessage).toHaveBeenCalledWith(AGENT_ID, 'please upgrade')
+    // Existing-window branch trims the message, targets the resolved
+    // window name (not the agentId), and uses clear-and-send.
+    expect(deps.clearAndSendMessage).toHaveBeenCalledWith(WINDOW_NAME, 'please upgrade')
     expect(deps.sendMessage).not.toHaveBeenCalled()
-    expect(result).toEqual({ via: 'tmux', windowName: AGENT_ID })
+    expect(result).toEqual({ via: 'tmux', windowName: WINDOW_NAME })
   })
 
   it('reserves origin "sessions" before ensureTmuxAgent (justStarted=true)', async () => {
     // Freshly started window: wait for the prompt, then send (no /clear).
-    deps.ensureTmuxAgent.mockResolvedValue({ windowName: AGENT_ID, justStarted: true })
+    deps.ensureTmuxAgent.mockResolvedValue({ windowName: WINDOW_NAME, justStarted: true })
 
     const result = await deps.start({ agentId: AGENT_ID, message: MESSAGE })
 
@@ -90,10 +94,12 @@ describe('createStartUpgradeSession (BL-2026-269)', () => {
     expect(deps.reserveOrigin.mock.invocationCallOrder[0]).toBeLessThan(
       deps.ensureTmuxAgent.mock.invocationCallOrder[0],
     )
-    expect(deps.waitForAgentReady).toHaveBeenCalledWith(AGENT_ID, 45000)
-    expect(deps.sendMessage).toHaveBeenCalledWith(AGENT_ID, 'please upgrade')
+    // Both the readiness wait and the send target the resolved window
+    // name (not the agentId).
+    expect(deps.waitForAgentReady).toHaveBeenCalledWith(WINDOW_NAME, 45000)
+    expect(deps.sendMessage).toHaveBeenCalledWith(WINDOW_NAME, 'please upgrade')
     expect(deps.clearAndSendMessage).not.toHaveBeenCalled()
-    expect(result).toEqual({ via: 'tmux', windowName: AGENT_ID })
+    expect(result).toEqual({ via: 'tmux', windowName: WINDOW_NAME })
   })
 
   it('still reserves origin when tmux is unavailable and falls back to ClaudeBridge', async () => {
@@ -110,12 +116,14 @@ describe('createStartUpgradeSession (BL-2026-269)', () => {
   })
 
   it('falls back to ClaudeBridge when the tmux send fails', async () => {
-    deps.ensureTmuxAgent.mockResolvedValue({ windowName: AGENT_ID, justStarted: false })
+    deps.ensureTmuxAgent.mockResolvedValue({ windowName: WINDOW_NAME, justStarted: false })
     deps.clearAndSendMessage.mockResolvedValue({ success: false, error: 'send boom' })
 
     const result = await deps.start({ agentId: AGENT_ID, message: MESSAGE })
 
     expect(deps.reserveOrigin).toHaveBeenCalledWith(AGENT_ID, 'sessions')
+    expect(deps.clearAndSendMessage).toHaveBeenCalledWith(WINDOW_NAME, 'please upgrade')
+    // The ClaudeBridge fallback is keyed by agentId, not the window name.
     expect(deps.startNewSession).toHaveBeenCalledWith('please upgrade', AGENT_ID)
     expect(result).toEqual({ via: 'claude-bridge', processId: 'proc-1' })
   })
