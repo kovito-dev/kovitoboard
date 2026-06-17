@@ -322,13 +322,17 @@ export class Watcher {
     this.watchingStarted = false
     this.selfVerifyDone = false
     this.failedFiles.clear()
-    // Drop the restoration phase markers. filePositions is
-    // intentionally NOT cleared (see above), so after a restart an append
-    // to an already-known file is read from its committed offset and — with
-    // the offset already defined — is treated as live (isFirstRead=false),
-    // which is correct: post-restart appends are genuine live activity, not
-    // startup restoration.
-    this.restoringFiles.clear()
+    // restoringFiles is intentionally NOT cleared, mirroring filePositions
+    // (see above). A file is removed from this set the moment its first read
+    // drains it to EOF, so by the time stop() runs the set holds ONLY files
+    // whose restoration is still incomplete (a partial line was held, offset
+    // < EOF). Those files must stay restoring across a restart: their
+    // retained offset makes the next start() see isFirstRead=false, so
+    // without this carry-over the held pre-existing tail would be read as a
+    // first post-restart "change" and mis-classified as live, branding a
+    // non-idle status from pre-existing content (INV-1). Fully-restored
+    // files are already absent here, so post-restart appends to them are
+    // correctly treated as live (INV-2).
   }
 
   // --- Reconciliation scan (§7.3.2, safety net) ---
@@ -473,9 +477,26 @@ export class Watcher {
       // the fallback. On first read we mark the file as restoring so its
       // pre-existing content does not update `status`.
       const isFirstRead = this.filePositions.get(filePath) === undefined
-      if (isFirstRead) this.restoringFiles.add(filePath)
+      // Mark the file as restoring only when it already has pre-existing
+      // bytes at its first observation. "Restoring" means replaying content
+      // that existed on disk before we started reading this file; an EMPTY
+      // file (size 0) has nothing to restore, so its first genuine append is
+      // live activity and must update status (INV-2).
+      if (isFirstRead && currentSize > 0) this.restoringFiles.add(filePath)
       const historical = this.restoringFiles.has(filePath)
       const previousPosition = this.filePositions.get(filePath) || 0
+
+      if (isFirstRead && currentSize === 0) {
+        // First observation of an empty pre-existing file: record offset 0 so
+        // it is no longer treated as a first read. Without this, the empty
+        // file never gets a filePositions entry, so the read that finally
+        // brings its first content is still isFirstRead=true and would be
+        // marked restoring — swallowing that genuinely-live first append's
+        // status transition (INV-2). Recording it here makes the next append
+        // read live.
+        this.filePositions.set(filePath, 0)
+        return
+      }
 
       // Idempotent: no new bytes since the last commit (§7.3.4). Safe to
       // re-enter from both live watch and the reconcile scan.

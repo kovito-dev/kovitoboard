@@ -370,6 +370,74 @@ describe('Watcher → SessionManager startup status restoration', () => {
     w.stop()
   })
 
+  it('INV-2 edge: a pre-existing EMPTY file does not stay restoring; its first append is live', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new SessionManager()
+    const w = new Watcher(makeConfig(100), sm, fs as never)
+
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+
+    // A pre-existing empty (size 0) .jsonl. Its first read marks it
+    // restoring but then takes the no-new-bytes fast path; the latch must be
+    // released there, otherwise the first genuine append below is wrongly
+    // swallowed as historical.
+    const file = join(sessionsDir, 'sess-empty.jsonl')
+    fs.setFile(file, '')
+    fs.emit(sessionsDir, { type: 'add', path: file })
+
+    // First genuine live content arrives — must update status.
+    fs.setFile(file, userLine('first real message'))
+    fs.emit(sessionsDir, { type: 'change', path: file })
+
+    expect(statusOf(sm, 'sess-empty')).toBe('waiting')
+
+    w.stop()
+  })
+
+  it('INV-1 edge: a partial held across a restart still completes as historical', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new SessionManager()
+    const w = new Watcher(makeConfig(100), sm, fs as never)
+
+    // First run: the file has a complete user line plus a terminal end_turn
+    // line that is still being appended (no trailing newline). The first
+    // read commits only the user line and HOLDS the partial (offset < EOF),
+    // so the file stays restoring. We then stop before the partial completes.
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    const file = join(sessionsDir, 'sess-rp.jsonl')
+    const complete = userLine('do it')
+    const terminal = endTurnLine('all done')
+    const partial = terminal.slice(0, terminal.length - 5)
+    fs.setFile(file, complete + partial)
+    fs.emit(sessionsDir, { type: 'add', path: file })
+    expect(statusOf(sm, 'sess-rp')).toBe('idle')
+    w.stop()
+
+    // Second run: filePositions is retained, so isFirstRead=false. Without
+    // carrying the restoring marker across stop(), the held pre-existing tail
+    // would be read as a first post-restart change and mis-classified as
+    // live. The terminal end_turn is pre-existing content, so status MUST
+    // stay idle (INV-1).
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    fs.setFile(file, complete + terminal)
+    fs.emit(sessionsDir, { type: 'change', path: file })
+
+    expect(statusOf(sm, 'sess-rp')).toBe('idle')
+
+    // And once that restoration finally drains to EOF, a genuinely-live
+    // append afterwards updates status (INV-2 — the latch released).
+    fs.setFile(file, complete + terminal + userLine('next live turn'))
+    fs.emit(sessionsDir, { type: 'change', path: file })
+    expect(statusOf(sm, 'sess-rp')).toBe('waiting')
+
+    w.stop()
+  })
+
   // --- End-to-end: path-E race yields healthy /api/admin/status ---
 
   it('end-to-end: path-E restore yields healthy GET /api/admin/status (no false degraded)', async () => {
