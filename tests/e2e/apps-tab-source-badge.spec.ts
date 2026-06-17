@@ -152,7 +152,18 @@ function appendMenuTsEntries(
 }
 
 test.describe('Apps tab — source badge rendering (BS-T13)', () => {
+  // This spec appends its own seed entries to `app/menu.ts` in
+  // beforeEach (`appendMenuTsEntries`). `app/menu.ts` lives outside the
+  // `.kovitoboard/` snapshot, so kbFixture's snapshot/restore does not
+  // roll it back; without an explicit restore the appended entries would
+  // accumulate across tests and surface a seed row (e.g. `self-made-1`)
+  // more than once. Capture the original bytes here and restore them in
+  // afterEach so each test starts from the pristine fixture menu.ts.
+  let originalMenuTs: string | null = null
+
   test.beforeEach(async ({ kbFixture }) => {
+    const menuTsPath = join(kbFixture.projectRoot, 'app', 'menu.ts')
+    originalMenuTs = readFileSync(menuTsPath, 'utf-8')
     for (const seed of SEEDS) {
       seedAppManifest(kbFixture.projectRoot, seed)
     }
@@ -162,6 +173,13 @@ test.describe('Apps tab — source badge rendering (BS-T13)', () => {
   test.afterEach(async ({ kbFixture }) => {
     for (const seed of SEEDS) {
       cleanupAppDir(kbFixture.projectRoot, seed.appId)
+    }
+    if (originalMenuTs !== null) {
+      writeFileSync(
+        join(kbFixture.projectRoot, 'app', 'menu.ts'),
+        originalMenuTs,
+      )
+      originalMenuTs = null
     }
   })
 
