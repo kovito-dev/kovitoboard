@@ -601,6 +601,10 @@ const en: Record<MessageKey, string> = {
   'trust.tmux.label': 'Last resort: open tmux directly',
   'trust.tmux.copy': 'Copy',
   'trust.tmux.copied': 'Copied',
+  'trust.unsupported.title': 'Input form not operable from KB UI',
+  'trust.unsupported.description': 'This form requires terminal interaction. Attach the tmux session to operate it, or press Cancel (Esc) to dismiss.',
+  'trust.unsupported.button.cancel': 'Cancel (Esc)',
+  'trust.unsupported.badge': 'Unsupported',
   'trust.rawBuffer.title': 'Actual message (tail)',
 
   // Trust marker + preamble warning (recipe trust axis, v0.2.0)

@@ -128,6 +128,7 @@ import type {
   TrustPromptRespondPayload,
   ClientLogPayload,
 } from '../shared/ws-events'
+import { CANONICAL_ESC_RAW_KEYS } from '../shared/ws-events'
 import { RecipeManifestStore } from './recipeManifestStore'
 import {
   acquireAppLock,
@@ -3136,6 +3137,42 @@ function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
   // exactly two responds racing through `respondChoice` / `respondRawKeys`
   // in `state.lastDetectedKind === 'pattern'`. Once dispatch fires, the
   // tmux keystroke is already in flight.
+
+  // Phase 2a (kind-aware restriction for multi-question-unsupported,
+  // trust-prompt-relay.md v1.8 §7.8.5 / ws-event-contract.md v1.5 §8.3
+  // row 7.5a/7.5b). This runs *before* the dedup claim and dispatch so a
+  // rejected response neither consumes a `(windowName, promptId)` slot nor
+  // reaches `tmux.sendTrustPromptKeys`.
+  //
+  // This kind is detected via pattern matching (it is a known prompt) but
+  // KB cannot operate the form from the UI. The renderer's "Esc only"
+  // degrade modal is merely a UI promise; the structural defense against a
+  // forged / buggy client injecting arbitrary keys into the tmux pane lives
+  // here on the server:
+  //   - choice  → always rejected (the kind has no operable choices)
+  //   - raw-keys → accepted only when it exactly equals the canonical ESC
+  //                payload; any other raw-keys is rejected
+  const pendingKind = trustPromptDetector.getPendingPromptKind(windowName, promptId)
+  if (pendingKind === 'multi-question-unsupported') {
+    if (response.mode === 'choice') {
+      wsLogger.warn(
+        { reason: 'unsupported-kind-choice-rejected', kind: pendingKind, promptId, windowName },
+        'trust_prompt_respond: choice rejected for unsupported kind',
+      )
+      return
+    }
+    if (response.mode === 'raw-keys') {
+      if (response.rawKeys !== CANONICAL_ESC_RAW_KEYS) {
+        wsLogger.warn(
+          { reason: 'unsupported-kind-raw-keys-rejected', kind: pendingKind, promptId, windowName },
+          'trust_prompt_respond: non-canonical raw-keys rejected for unsupported kind',
+        )
+        return
+      }
+      // Canonical ESC is allowed through to the normal raw-keys branch below,
+      // where Phase 2 length validation, the dedup claim, and dispatch run.
+    }
+  }
 
   if (response.mode === 'choice') {
     // Phase 2 (mode-specific): choiceId is a non-empty string.

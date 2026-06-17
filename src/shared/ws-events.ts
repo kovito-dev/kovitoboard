@@ -34,6 +34,26 @@ export type TrustPromptKind =
   | 'bash'
   | 'sandbox-network'
   | 'other'
+  // Known-but-unsupported: a tab-style multi-question / multi-select form
+  // that KB detects via pattern matching but cannot operate from the UI.
+  // The renderer shows a degrade modal (tmux attach guidance + Esc cancel)
+  // instead of choice buttons. See trust-prompt-relay.md v1.8 §2.1 / §10.7.
+  | 'multi-question-unsupported'
+
+/**
+ * Canonical Esc-cancel raw-keys payload for `multi-question-unsupported`
+ * prompts (trust-prompt-relay.md v1.8 §7.8.6).
+ *
+ * A single ESC byte (ASCII 0x1B, length = 1) — NOT the empty string `''`,
+ * which has length 0 and would be rejected by the `>= 1` length check.
+ * Sent literally (`tmux send-keys -l`); the ESC byte still reaches the pane
+ * as the Esc key and is accepted by the form footer `Esc to cancel`.
+ *
+ * Both the renderer's Esc button and the server-side response restriction
+ * reference this single SSOT value, so the server accepts exactly what the
+ * UI sends and rejects any other raw-keys for this kind.
+ */
+export const CANONICAL_ESC_RAW_KEYS = '\x1b'
 
 /** A single choice displayed in the UI */
 export interface TrustPromptChoice {
