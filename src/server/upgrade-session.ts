@@ -22,7 +22,19 @@
  * the bridges mocked, without bootstrapping the whole server.
  */
 import type { SessionManager } from './session-manager'
-import type { UpgradeSessionStartResult } from './routes/version-routes'
+
+/**
+ * Outcome of a session-start invocation, returned by the
+ * `startUpgradeSession` callback. Mirrors the shape of
+ * `POST /api/sessions/new` so the renderer can navigate using the same
+ * identifiers. The version router re-exports this type (it only consumes
+ * the result), keeping the dependency direction implementation -> route.
+ */
+export interface UpgradeSessionStartResult {
+  via: 'tmux' | 'claude-bridge'
+  windowName?: string
+  processId?: string
+}
 
 /** Subset of `TmuxBridge` the upgrade flow touches. */
 interface UpgradeTmuxBridge {

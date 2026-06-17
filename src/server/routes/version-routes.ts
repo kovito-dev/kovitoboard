@@ -23,19 +23,14 @@ import { readSetting } from '../setting-manager'
 import { buildUpgradePrompt } from '../services/upgrade-prompts'
 import { lazyChildLogger } from '../logger'
 
-const log = lazyChildLogger('version-routes')
+// Re-export the upgrade session-start result type. The canonical
+// definition lives in `upgrade-session.ts` (the helper that produces
+// it); this router only consumes it, so the dependency points
+// implementation -> route layer rather than the other way around.
+export type { UpgradeSessionStartResult } from '../upgrade-session'
+import type { UpgradeSessionStartResult } from '../upgrade-session'
 
-/**
- * Outcome of a session-start invocation, returned by the
- * `startUpgradeSession` callback. Mirrors the shape of
- * `POST /api/sessions/new` so the renderer can navigate using the
- * same identifiers.
- */
-export interface UpgradeSessionStartResult {
-  via: 'tmux' | 'claude-bridge'
-  windowName?: string
-  processId?: string
-}
+const log = lazyChildLogger('version-routes')
 
 interface CreateVersionRouterDeps {
   fs: FileAccessLayer
