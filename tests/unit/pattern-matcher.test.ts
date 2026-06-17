@@ -227,6 +227,55 @@ describe('PatternMatcher 2.1.153', () => {
 })
 
 // =========================
+// multi-question-unsupported (BL-2026-263 Phase A, spec v1.8 §7.8 / §9.5)
+// =========================
+
+describe('multi-question-unsupported', () => {
+  const FIXTURE_DIR_2_1_126 = join(__dirname, '../fixtures/trust-prompts/claude-2.1.126')
+  const load = (name: string) => readFileSync(join(FIXTURE_DIR_2_1_126, name), 'utf-8')
+
+  it('§9.5-1: detects the tab-style multi-question form and exposes empty choices', () => {
+    const capture = load('multi-question-form.txt')
+    const result = matcher.match(capture)
+    expect(result).not.toBeNull()
+    expect(result!.pattern.id).toBe('multi-question-form-unsupported')
+    expect(result!.pattern.kind).toBe('multi-question-unsupported')
+    // choices: [] is mandatory — the renderer shows a degrade modal and the
+    // server rejects any choice response for this kind (§7.8.1 / §10.7.1).
+    expect(result!.pattern.choices).toEqual([])
+    expect(result!.degenerate).toBe(false)
+  })
+
+  it('§9.5-2: existing fixtures keep their original kind (regression-zero)', () => {
+    // The new pattern (footer `Enter to select`, matchAny `Tab/Arrow keys to
+    // navigate` / `✔ Submit`) must not steal any existing prompt (§7.8.3).
+    const expectations: Array<[string, string, string]> = [
+      ['claude-2.1.97/folder-trust-initial.txt', 'folder-trust-initial', 'folder-trust'],
+      ['claude-2.1.97/edit-modify-existing.txt', 'edit-update-existing', 'edit'],
+      ['claude-2.1.97/write-create-new-file.txt', 'write-create-new', 'write'],
+      ['claude-2.1.97/bash-short-redirect.txt', 'bash-command', 'bash'],
+      ['claude-2.1.97/read-file-01.txt', 'read-file', 'read'],
+      ['claude-2.1.97/sandbox-network-escape.txt', 'sandbox-network-escape', 'sandbox-network'],
+    ]
+    const baseDir = join(__dirname, '../fixtures/trust-prompts')
+    for (const [rel, expectedId, expectedKind] of expectations) {
+      const capture = readFileSync(join(baseDir, rel), 'utf-8')
+      const result = matcher.match(capture)
+      expect(result, `fixture ${rel} should still match`).not.toBeNull()
+      expect(result!.pattern.id, `fixture ${rel} pattern id`).toBe(expectedId)
+      expect(result!.pattern.kind, `fixture ${rel} kind`).toBe(expectedKind)
+    }
+  })
+
+  it('§7.8.3: the multi-question footer does not match any existing pattern footer', () => {
+    // Only the new pattern should pre-filter the multi-question footer line.
+    const capture = load('multi-question-form.txt')
+    const result = matcher.match(capture)!
+    expect(result.pattern.id).toBe('multi-question-form-unsupported')
+  })
+})
+
+// =========================
 // Negative match tests
 // =========================
 

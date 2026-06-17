@@ -139,6 +139,17 @@
         { "id": "yes-session", "label": "Yes, and allow this host", "keys": "2\n", "labelPattern": "Yes,?\\s+and\\s+allow\\s+this\\s+host" },
         { "id": "no", "label": "No", "keys": "3\n", "labelPattern": "^No$" }
       ]
+    },
+    {
+      "id": "multi-question-form-unsupported",
+      "kind": "multi-question-unsupported",
+      "priority": 70,
+      "matchAny": [
+        "Tab/Arrow keys to navigate",
+        "✔\\s+Submit"
+      ],
+      "footer": "Enter\\s+to\\s+select",
+      "choices": []
     }
   ]
 }

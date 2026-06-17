@@ -75,6 +75,7 @@ export function App() {
     setSessionAgent, isSessionSendable, rollbackOptimisticMessage,
     getDraft, setDraft, agentActivities,
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
+    hideTrustPromptNonDestructive,
     wsConnected, appMenuVersion, sampleRecipeVersion,
   } = ipc
 
@@ -407,6 +408,18 @@ export function App() {
       }}
       onDismiss={() => {
         if (!currentTrustPrompt) return
+        // Close of a multi-question-unsupported degrade modal is
+        // non-destructive: hide it in the UI but keep the prompt pending
+        // in the queue, so Claude Code is not left waiting silently in
+        // tmux (trust-prompt-relay.md v1.8 §10.7.2, plan A). All other
+        // kinds keep the existing queue-removal dismiss behavior.
+        if (
+          currentTrustPrompt.kind === 'detected' &&
+          currentTrustPrompt.payload.kind === 'multi-question-unsupported'
+        ) {
+          hideTrustPromptNonDestructive(currentTrustPrompt.payload.promptId)
+          return
+        }
         dismissTrustPrompt(currentTrustPrompt.payload.promptId)
       }}
     />

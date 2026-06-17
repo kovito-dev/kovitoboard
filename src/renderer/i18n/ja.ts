@@ -597,6 +597,10 @@ const ja = {
   'trust.tmux.label': '最終手段: tmux を直接開く',
   'trust.tmux.copy': 'コピー',
   'trust.tmux.copied': '✓ コピー済み',
+  'trust.unsupported.title': 'この入力形式は KB UI から操作できません',
+  'trust.unsupported.description': 'このフォームはターミナルでの操作が必要です。tmux セッションに接続して操作するか、キャンセル（Esc）で閉じてください。',
+  'trust.unsupported.button.cancel': 'キャンセル（Esc）',
+  'trust.unsupported.badge': '操作非対応',
   'trust.rawBuffer.title': '実メッセージ（末尾）',
 
   // Trust marker + preamble warning（レシピの信頼軸、v0.2.0）

@@ -79,6 +79,19 @@ export function useIPC() {
   // discriminated union in the same queue; the modal branches by kind.
   const [trustPromptQueue, setTrustPromptQueue] = useState<TrustPromptItem[]>([])
 
+  // Non-destructive dismiss set for degrade modals (BL-2026-263 Phase A,
+  // trust-prompt-relay.md v1.8 §10.7.2, plan A). Closing a
+  // `multi-question-unsupported` degrade modal must hide it in the UI
+  // *without* removing the promptId from the queue — removing it would
+  // leave Claude Code waiting in tmux (silent-stall). We instead record
+  // the promptId here and skip dismissed items when picking the modal to
+  // show. The queue item is finally dropped only on `trust_prompt_resolved`
+  // (which also clears the matching dismissed entry). Existing detected /
+  // fallback dismiss behavior (queue removal) is unchanged.
+  const [dismissedTrustPromptIds, setDismissedTrustPromptIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+
   // Per-session draft text for the message input.
   // Without this, switching sessions destroys the unsent text in
   // <MessageInput> because it lives in component-local state.
@@ -332,6 +345,18 @@ export function useIPC() {
             }
             return [...prev, { kind: 'detected', payload: detectedPayload }]
           })
+          // A fresh broadcast / reconnect replay for this promptId means the
+          // prompt is still pending and should re-surface, even if its
+          // degrade modal was closed earlier. Clearing the non-destructive
+          // hide here honors the spec's "close re-surfaces on the next
+          // broadcast / replay" contract (trust-prompt-relay.md v1.8
+          // §10.7.2) without ever removing the item from the queue.
+          setDismissedTrustPromptIds((prev) => {
+            if (!prev.has(detectedPayload.promptId)) return prev
+            const next = new Set(prev)
+            next.delete(detectedPayload.promptId)
+            return next
+          })
         } else if (type === 'trust_prompt_fallback') {
           // Phase 5d: add unknown prompt to queue as 'fallback'
           const fallbackPayload = payload as TrustPromptFallbackPayload
@@ -345,6 +370,14 @@ export function useIPC() {
           // Prompt resolved on the server side -> remove the corresponding promptId from the queue
           const resolvedPayload = payload as TrustPromptResolvedPayload
           setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== resolvedPayload.promptId))
+          // Clear any non-destructive dismiss record for the resolved prompt
+          // so the set does not accumulate stale ids (Phase A, §10.7.2).
+          setDismissedTrustPromptIds((prev) => {
+            if (!prev.has(resolvedPayload.promptId)) return prev
+            const next = new Set(prev)
+            next.delete(resolvedPayload.promptId)
+            return next
+          })
         } else if (type === 'agent_restarted') {
           // Agent restarted via admin API — refresh agents and tmux status
           fetchJson<AgentInfo[]>(`${API_BASE}/agents`).then(setAgents).catch(() => {})
@@ -665,6 +698,31 @@ export function useIPC() {
     setTrustPromptQueue((prev) => prev.filter((p) => p.payload.promptId !== promptId))
   }, [])
 
+  /**
+   * Non-destructive hide for the `multi-question-unsupported` degrade modal
+   * (BL-2026-263 Phase A, trust-prompt-relay.md v1.8 §10.7.2, plan A).
+   *
+   * Unlike `dismissTrustPrompt`, this does NOT remove the item from the
+   * queue — it only records the promptId so the UI stops showing it *now*.
+   * The prompt stays pending on the server, so:
+   *   - it re-surfaces on the next `trust_prompt_detected` broadcast /
+   *     reconnect replay for the same promptId (that handler clears this
+   *     entry), per the spec's "close re-surfaces" contract, and
+   *   - it is finally dropped from the queue (and from this set) only when
+   *     the server emits `trust_prompt_resolved` (e.g. after Esc cancel or
+   *     operating the form via tmux).
+   * Removing it from the queue here would leave Claude Code waiting in
+   * tmux with no reminder (silent-stall).
+   */
+  const hideTrustPromptNonDestructive = useCallback((promptId: string) => {
+    setDismissedTrustPromptIds((prev) => {
+      if (prev.has(promptId)) return prev
+      const next = new Set(prev)
+      next.add(promptId)
+      return next
+    })
+  }, [])
+
   // Refresh tmux status
   const refreshTmuxStatus = useCallback(async () => {
     try {
@@ -675,8 +733,13 @@ export function useIPC() {
     }
   }, [])
 
-  // The first item in the queue is the one to display in the modal (Phase 5c / 5d)
-  const currentTrustPrompt = trustPromptQueue[0] ?? null
+  // The first non-dismissed item in the queue is the one to display in the
+  // modal (Phase 5c / 5d; Phase A added the non-destructive dismiss set so a
+  // closed degrade modal stays out of view while its prompt remains pending).
+  const currentTrustPrompt = useMemo(
+    () => trustPromptQueue.find((p) => !dismissedTrustPromptIds.has(p.payload.promptId)) ?? null,
+    [trustPromptQueue, dismissedTrustPromptIds],
+  )
 
   return {
     sessions, currentSession, selectedId, config, agents, sessionAgentMap, tmuxStatus, isLoading,
@@ -689,6 +752,7 @@ export function useIPC() {
     agentActivities,
     // Trust prompt relay (Phase 5c / 5d)
     currentTrustPrompt, respondTrustPromptChoice, respondTrustPromptRawKeys, dismissTrustPrompt,
+    hideTrustPromptNonDestructive,
     // WebSocket connection state (used by admin status indicator)
     wsConnected,
     // Bumped when the server reports `app_menu_changed`; use as a

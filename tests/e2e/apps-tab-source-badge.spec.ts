@@ -38,9 +38,9 @@ import { test, expect } from './helpers/l1-per-test-setup'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 type SourceBadge = 'self-made' | 'bundled' | 'sample' | 'import' | 'url'
@@ -142,10 +142,7 @@ function appendMenuTsEntries(
       )
     })
     .join('')
-  // Insert just before the closing `]` of the menuEntries array. The
-  // `rewriteMenuTsForEnable` step in beforeEach has already injected
-  // the `AppMenuEntry[]` type annotation so the regex match below
-  // matches the canonical form.
+  // Insert just before the closing `]` of the menuEntries array.
   const arrayMatch = /(\]\s*\n?)$/.exec(current)
   if (!arrayMatch) {
     throw new Error(
@@ -159,10 +156,17 @@ function appendMenuTsEntries(
 }
 
 test.describe('Apps tab — source badge rendering (BS-T13)', () => {
-  let originalMenuTs: string | null = null
+  // This spec appends its own seed entries to `app/menu.ts` in
+  // beforeEach (`appendMenuTsEntries`). `app/menu.ts` lives outside the
+  // `.kovitoboard/` snapshot, so kbFixture's snapshot/restore does not
+  // roll it back; without an explicit restore the appended entries would
+  // accumulate across tests and surface a seed row (e.g. `self-made-1`)
+  // more than once. Capture the original bytes here and restore them in
+  // afterEach so each test starts from the pristine fixture menu.ts.
+  let menuTsSnapshot: string | null = null
 
   test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     for (const seed of SEEDS) {
       seedAppManifest(kbFixture.projectRoot, seed)
     }
@@ -173,9 +177,9 @@ test.describe('Apps tab — source badge rendering (BS-T13)', () => {
     for (const seed of SEEDS) {
       cleanupAppDir(kbFixture.projectRoot, seed.appId)
     }
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
     }
   })
 
