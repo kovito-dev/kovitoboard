@@ -382,9 +382,12 @@ describe('annotation-free menuEntries (BL-2026-259)', () => {
   })
 
   it('removeMenuEntry ignores a commented menuEntries phrase and edits the real array', () => {
+    // A real JSDoc block whose ` * ` line mentions the declaration. The
+    // line-start anchor must skip the ` * export const menuEntries = [`
+    // inside the comment and splice into the genuine array below.
     const src =
       `${HEAD}` +
-      ` * docs note: export const menuEntries = [ ... ]\n` +
+      `/**\n * docs note: export const menuEntries = [ ... ]\n */\n` +
       `export const menuEntries = [\n` +
       `  {\n    id: 'todo',\n    label: 'TODO',\n    icon: 'content',\n    component: () => import('./todo/pages/TodoPage'),\n  },\n` +
       `  {\n    id: 'doc',\n    label: 'Docs',\n    icon: 'content',\n    component: () => import('./doc/pages/DocViewer'),\n  },\n` +
