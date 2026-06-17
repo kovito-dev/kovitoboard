@@ -37,11 +37,11 @@
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
   waitForWsFrame,
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   readAppManifest,
   readRecipeManifest,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -49,10 +49,14 @@ const RECIPE_DOCUMENT_VIEWER = 'document-viewer'
 const RECIPE_TODO = 'todo'
 
 test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () => {
-  let originalMenuTs: string | null = null
+  // Enabling samples appends entries to `app/menu.ts`, which lives outside
+  // the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot and
+  // restore it per-test so the appended entries do not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
 
   test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     // Enable both bundled samples so the eligible app set is fixed at
     // exactly {document-viewer, todo}. Each enable also appends an
     // entry to `app/menu.ts` so the closed-world coverage check has
@@ -70,9 +74,9 @@ test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () 
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, RECIPE_DOCUMENT_VIEWER)
     cleanupAppDir(kbFixture.projectRoot, RECIPE_TODO)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
     }
   })
 

@@ -94,38 +94,23 @@ export async function waitForWsFrame(
 }
 
 /**
- * Workaround for the fixture vs `appendMenuEntry` regex drift:
- *   - The bundled-installer's menu.ts editor (`appendMenuEntry`,
- *     `src/server/services/menu-ts-editor.ts:473`) requires the
- *     `export const menuEntries: AppMenuEntry[] = [...]` form.
- *   - `tests/fixtures/projects/blank-onboarded/app/menu.ts` omits the
- *     type annotation on purpose (its leading comment notes that the
- *     `AppMenuEntry` import path would escape the fixture project
- *     root at parse time).
- * Returns the original bytes so the caller can restore them in
- * afterEach via `restoreMenuTs`.
+ * Snapshot the current bytes of `app/menu.ts` so a test can restore
+ * them in afterEach via `restoreMenuTs`.
+ *
+ * `app/menu.ts` lives outside the `.kovitoboard/` prefix that the L1
+ * fixture (`l1-per-test-setup.ts`) snapshots and restores, so a test
+ * that enables a bundled sample (which appends an entry to `menu.ts`)
+ * would otherwise leak that entry into later tests in the same
+ * Playwright project and make them order-dependent. Unlike the removed
+ * type-annotation workaround, this pair does NOT rewrite the file — it
+ * only captures and restores the exact original bytes.
  */
-export function rewriteMenuTsForEnable(projectRoot: string): string {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  const original = readFileSync(menuTsPath, 'utf-8')
-  if (
-    /export\s+const\s+menuEntries\s*:\s*[A-Za-z_$][\w$]*\[\]\s*=\s*\[/.test(
-      original,
-    )
-  ) {
-    return original
-  }
-  const rewritten = original.replace(
-    /export\s+const\s+menuEntries\s*=\s*\[/,
-    'export const menuEntries: AppMenuEntry[] = [',
-  )
-  writeFileSync(menuTsPath, rewritten)
-  return original
+export function snapshotMenuTs(projectRoot: string): string {
+  return readFileSync(join(projectRoot, 'app', 'menu.ts'), 'utf-8')
 }
 
-export function restoreMenuTs(projectRoot: string, original: string): void {
-  const menuTsPath = join(projectRoot, 'app', 'menu.ts')
-  writeFileSync(menuTsPath, original)
+export function restoreMenuTs(projectRoot: string, snapshot: string): void {
+  writeFileSync(join(projectRoot, 'app', 'menu.ts'), snapshot)
 }
 
 /**

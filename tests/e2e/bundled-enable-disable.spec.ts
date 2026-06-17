@@ -52,9 +52,9 @@ import {
   readHistoryLines,
   cleanupAppDir,
   removeAppDataDir,
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   waitForWsFrame,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -77,10 +77,14 @@ const SAMPLE_APP_ID = 'document-viewer'
 // ---------------------------------------------------------------------------
 
 test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
-  let originalMenuTs: string | null = null
+  // Enable / grandfather-seed both append to `app/menu.ts`, which lives
+  // outside the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot
+  // and restore it per-test so the appended entry does not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
 
   test.beforeEach(async ({ kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
   })
 
   test.afterEach(async ({ kbFixture }) => {
@@ -90,9 +94,9 @@ test.describe('Bundled sample enable/disable (BS-T1 ~ BS-T7)', () => {
     // from the same blank project state.
     cleanupAppDir(kbFixture.projectRoot, SAMPLE_APP_ID)
     removeAppDataDir(kbFixture.projectRoot, SAMPLE_APP_ID)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
     }
   })
 

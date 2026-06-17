@@ -38,11 +38,11 @@
  */
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
-  rewriteMenuTsForEnable,
-  restoreMenuTs,
   cleanupAppDir,
   readAppManifest,
   waitForWsFrame,
+  snapshotMenuTs,
+  restoreMenuTs,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -50,10 +50,14 @@ const APP_DOC = 'document-viewer'
 const APP_TODO = 'todo'
 
 test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
-  let originalMenuTs: string | null = null
+  // Enabling samples appends entries to `app/menu.ts`, which lives outside
+  // the `.kovitoboard/` snapshot the L1 fixture restores. Snapshot and
+  // restore it per-test so the appended entries do not leak into later
+  // tests in the same Playwright project.
+  let menuTsSnapshot: string | null = null
 
   test.beforeEach(async ({ request, kbFixture }) => {
-    originalMenuTs = rewriteMenuTsForEnable(kbFixture.projectRoot)
+    menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
     const r1 = await request.post(
       `${API_BASE}/api/recipes/sample/${APP_DOC}/enable`,
     )
@@ -67,9 +71,9 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
   test.afterEach(async ({ kbFixture }) => {
     cleanupAppDir(kbFixture.projectRoot, APP_DOC)
     cleanupAppDir(kbFixture.projectRoot, APP_TODO)
-    if (originalMenuTs !== null) {
-      restoreMenuTs(kbFixture.projectRoot, originalMenuTs)
-      originalMenuTs = null
+    if (menuTsSnapshot !== null) {
+      restoreMenuTs(kbFixture.projectRoot, menuTsSnapshot)
+      menuTsSnapshot = null
     }
   })
 
