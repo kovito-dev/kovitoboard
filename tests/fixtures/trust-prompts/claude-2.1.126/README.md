@@ -40,5 +40,9 @@ when the menu cannot be parsed (rare, but covers truncated buffers).
 |---|---|
 | `folder-trust-initial.txt` | Two-choice folder trust prompt (unchanged from 2.1.97). Verifies the loader and detector still match the original layout. |
 | `bash-command-two-choices.txt` | The 2.1.126 bash prompt with the per-session row dropped. The detector must resolve `Yes` to `1\n` here, not `2\n`. |
+| `multi-question-form.txt` | A tab-style multi-question / multi-select form (footer `Enter to select · Tab/Arrow keys to navigate · Esc to cancel`). Verifies the `multi-question-form-unsupported` pattern matches it (kind `multi-question-unsupported`, `choices: []`) while the existing patterns are unaffected. Captured from a later stable build (2.1.179) but kept here as part of the representative capture set; the form layout is the structural signal under test, not the build number. |
 
-PII has been scrubbed (workspace path, user name, email).
+PII has been scrubbed (workspace path, user name, email). The
+`multi-question-form.txt` capture is a debug-dump capture whose home
+path was already masked to `~` by the redaction layer; it contains no
+user name, email, or absolute home path.

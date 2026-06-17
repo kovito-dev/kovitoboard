@@ -30,6 +30,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation (`export const menuEntries = [...]` instead of
   `export const menuEntries: AppMenuEntry[] = [...]`). The menu editor
   now accepts both forms.
+- The trust-confirmation / unknown-prompt dialog now always shows the
+  actual message instead of hiding it behind a collapsible accordion, and
+  renders it on a surface background (white in light mode) with higher
+  text contrast so it is easier to read.
+- Tab-style multi-question / multi-select forms (which Claude Code shows
+  for some interactive prompts) no longer leave the session silently
+  stalled. KovitoBoard now detects these forms and shows a dedicated
+  notice explaining that the form must be operated in the terminal
+  (with a copyable `tmux attach` command) and offering a Cancel (Esc)
+  button. The form's own keys are intentionally not exposed in the UI,
+  since KovitoBoard cannot drive this form type yet; the server also
+  rejects any response other than Cancel for these prompts.
+
+### Security
+
+- Raised the minimum transitive `vite` version to 8.0.16 (via a
+  `package.json` `overrides` entry of `^8.0.16`) to address
+  GHSA-fx2h-pf6j-xcff (`server.fs.deny` bypass on Windows alternate
+  paths) and GHSA-v6wh-96g9-6wx3 (`launch-editor` NTLMv2 hash disclosure
+  via UNC path on Windows). The `^8.0.16` floor keeps the fix in place
+  across future installs while still allowing forward 8.x minor and patch
+  updates. Both are Windows-only dev-server advisories and do not affect
+  production builds.
 
 ## [0.2.9] - 2026-06-16
 

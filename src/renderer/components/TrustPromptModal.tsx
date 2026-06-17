@@ -9,6 +9,7 @@ import type {
   TrustPromptFallbackPayload,
   TrustPromptKind,
 } from '../../shared/ws-events'
+import { CANONICAL_ESC_RAW_KEYS } from '../../shared/ws-events'
 import type { TrustPromptItem } from '../hooks/useIPC'
 import { t } from '../i18n'
 import { createLogger } from '../lib/logger'
@@ -61,6 +62,8 @@ function resolveKindLabel(kind: TrustPromptKind): string {
       return t('trust.kind.sandboxNetwork')
     case 'other':
       return t('trust.kind.other')
+    case 'multi-question-unsupported':
+      return t('trust.unsupported.title')
     default:
       return kind
   }
@@ -74,6 +77,7 @@ const KIND_ICON: Record<TrustPromptKind, string> = {
   bash: '⚡',
   'sandbox-network': '🌐',
   other: '❓',
+  'multi-question-unsupported': '🚫',
 }
 
 /**
@@ -103,7 +107,6 @@ export function TrustPromptModal({
   onRawKeys,
   onDismiss,
 }: TrustPromptModalProps) {
-  const [showRawBuffer, setShowRawBuffer] = useState(false)
   const [rawKeysInput, setRawKeysInput] = useState('')
   const [copied, setCopied] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -112,17 +115,9 @@ export function TrustPromptModal({
 
   // Reset internal state when the event changes
   useEffect(() => {
-    setShowRawBuffer(false)
     setRawKeysInput('')
     setCopied(false)
   }, [promptId])
-
-  // Always expand buffer in fallback mode
-  useEffect(() => {
-    if (item?.kind === 'fallback') {
-      setShowRawBuffer(true)
-    }
-  }, [item?.kind, promptId])
 
   // Focus the free-form input field when fallback mode is displayed
   useEffect(() => {
@@ -132,15 +127,31 @@ export function TrustPromptModal({
     }
   }, [item?.kind, promptId])
 
-  // Close on ESC key
+  // The degrade modal for `multi-question-unsupported` advertises a
+  // "Cancel (Esc)" button that sends the canonical ESC payload to cancel
+  // the form. For that kind the physical Escape key must do the same thing
+  // (send ESC), not the non-destructive hide that `onDismiss` performs —
+  // otherwise the label would lie and Esc would silently re-hide a still
+  // pending prompt. For every other kind, Escape keeps the existing
+  // dismiss behavior.
+  const isUnsupportedDegrade =
+    item?.kind === 'detected' &&
+    item.payload.kind === 'multi-question-unsupported'
+
+  // Handle the ESC key.
   useEffect(() => {
     if (!item) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss()
+      if (e.key !== 'Escape') return
+      if (isUnsupportedDegrade) {
+        onRawKeys(CANONICAL_ESC_RAW_KEYS)
+      } else {
+        onDismiss()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [item, onDismiss])
+  }, [item, isUnsupportedDegrade, onDismiss, onRawKeys])
 
   // Submit handler for free-form input field
   const handleRawKeysSubmit = useCallback(() => {
@@ -169,11 +180,28 @@ export function TrustPromptModal({
   const rawBuffer = item.payload.rawBuffer
 
   if (item.kind === 'detected') {
+    // Known-but-unsupported prompts (tab-style multi-question / multi-select
+    // forms) are detected via pattern matching but cannot be operated from
+    // the UI. Branch to the degrade modal *before* the normal DetectedModal
+    // so no operable choices / quick-keys / free-input are ever rendered
+    // (trust-prompt-relay.md v1.8 §10.7.1). The degrade modal is choice-
+    // independent (it never reads payload.choices), a second line of defense
+    // on top of the server guaranteeing `choices: []` for this kind.
+    if (item.payload.kind === 'multi-question-unsupported') {
+      return (
+        <UnsupportedDegradeModal
+          event={item.payload}
+          onRawKeys={onRawKeys}
+          onDismiss={onDismiss}
+          windowName={windowName}
+          copied={copied}
+          onCopyTmuxCommand={handleCopyTmuxCommand}
+        />
+      )
+    }
     return (
       <DetectedModal
         event={item.payload}
-        showRawBuffer={showRawBuffer}
-        onToggleRawBuffer={() => setShowRawBuffer((v) => !v)}
         onChoice={onChoice}
         onRawKeys={onRawKeys}
         rawKeysInput={rawKeysInput}
@@ -252,12 +280,8 @@ export function TrustPromptModal({
             </div>
           </div>
 
-          {/* Raw buffer (always expanded in fallback mode) */}
-          <RawBufferSection
-            rawBuffer={rawBuffer}
-            show={showRawBuffer}
-            onToggle={() => setShowRawBuffer((v) => !v)}
-          />
+          {/* Raw buffer (always visible) */}
+          <RawBufferSection rawBuffer={rawBuffer} />
 
           {/* Quick key buttons */}
           <div className="space-y-2">
@@ -336,8 +360,6 @@ export function TrustPromptModal({
 /** Modal for detected mode (structure ported from Phase 5c) */
 function DetectedModal({
   event,
-  showRawBuffer,
-  onToggleRawBuffer,
   onChoice,
   onRawKeys,
   rawKeysInput,
@@ -346,8 +368,6 @@ function DetectedModal({
   onDismiss,
 }: {
   event: TrustPromptDetectedPayload
-  showRawBuffer: boolean
-  onToggleRawBuffer: () => void
   onChoice: (choiceId: string) => void
   onRawKeys: (rawKeys: string) => void
   rawKeysInput: string
@@ -449,12 +469,8 @@ function DetectedModal({
             </div>
           )}
 
-          {/* Raw buffer collapsible */}
-          <RawBufferSection
-            rawBuffer={event.rawBuffer}
-            show={showRawBuffer}
-            onToggle={onToggleRawBuffer}
-          />
+          {/* Raw buffer (always visible) */}
+          <RawBufferSection rawBuffer={event.rawBuffer} />
 
           {/* Custom answer section (spec v1.2 §5-3-1a — always present
               on detected dialogs, not only on the fallback UX). Lets
@@ -557,6 +573,138 @@ function DetectedModal({
   )
 }
 
+/**
+ * Degrade modal for the `multi-question-unsupported` kind (BL-2026-263
+ * Phase A, trust-prompt-relay.md v1.8 §10.7).
+ *
+ * This kind is detected via pattern matching but KB cannot operate the
+ * tab-style multi-question / multi-select form from the UI. The modal
+ * therefore provides NO operable choices, quick-keys, or free-form input —
+ * only:
+ *   - a raw buffer tail so the user can see the form,
+ *   - a tmux attach hint to operate the form in the terminal, and
+ *   - an Esc (Cancel) button that sends the canonical ESC payload.
+ *
+ * Close (the × button / overlay click) is intentionally non-destructive:
+ * it calls `onDismiss`, which the App routes to a UI-only hide that leaves
+ * the prompt pending in the queue. Removing it would leave Claude Code
+ * waiting in tmux and re-introduce the silent-stall UX (§10.7.2).
+ */
+function UnsupportedDegradeModal({
+  event,
+  onRawKeys,
+  onDismiss,
+  windowName,
+  copied,
+  onCopyTmuxCommand,
+}: {
+  event: TrustPromptDetectedPayload
+  onRawKeys: (rawKeys: string) => void
+  onDismiss: () => void
+  windowName: string
+  copied: boolean
+  onCopyTmuxCommand: (windowName: string) => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Overlay */}
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onDismiss}
+      />
+
+      {/* Modal body */}
+      <div
+        className="relative w-full max-w-2xl mx-0 md:mx-4 bg-[var(--bg-base)] md:rounded-2xl border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden max-h-[90vh]"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trust-prompt-modal-title"
+        data-testid="trust-prompt-modal"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+          <h2
+            id="trust-prompt-modal-title"
+            className="text-lg font-semibold text-[var(--text-secondary)] flex items-center gap-2"
+          >
+            <span className="text-2xl leading-none" aria-hidden>
+              🚫
+            </span>
+            <span data-testid="trust-prompt-kind-label">{t('trust.unsupported.title')}</span>
+          </h2>
+          <CloseButton onClick={onDismiss} />
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {/* Meta information */}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-dim)]">
+            <span className="px-2 py-1 rounded-md bg-[var(--bg-surface)] border border-[var(--border)]">
+              window: <span className="text-[var(--text-tertiary)] font-mono">{event.windowName}</span>
+            </span>
+            <span
+              className="px-2 py-1 rounded-md border"
+              style={{
+                background: 'var(--warning-bg)',
+                borderColor: 'var(--warning-border)',
+                color: 'var(--warning-text)',
+              }}
+              data-testid="trust-prompt-unsupported-badge"
+            >
+              {t('trust.unsupported.badge')}
+            </span>
+          </div>
+
+          {/* Description (tmux attach guidance) */}
+          <div
+            className="p-3 rounded-lg border text-sm flex items-start gap-2"
+            style={{
+              background: 'var(--warning-bg)',
+              borderColor: 'var(--warning-border)',
+              color: 'var(--warning-text)',
+            }}
+          >
+            <span aria-hidden className="text-base leading-none mt-0.5">⚠️</span>
+            <div className="text-xs opacity-90">{t('trust.unsupported.description')}</div>
+          </div>
+
+          {/* Raw buffer (always visible) */}
+          <RawBufferSection rawBuffer={event.rawBuffer} />
+
+          {/* tmux attach command copy */}
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+            <div className="text-xs text-[var(--text-dim)] mb-2">
+              {t('trust.tmux.label')}
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 px-2 py-1 text-xs font-mono text-[var(--text-tertiary)] bg-black/20 rounded">
+                tmux attach -t &quot;{windowName}&quot;
+              </code>
+              <button
+                onClick={() => onCopyTmuxCommand(windowName)}
+                className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-tertiary)] hover:bg-white/5 transition-colors"
+              >
+                {copied ? t('trust.tmux.copied') : t('trust.tmux.copy')}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer: Esc (cancel) only — no operable choices */}
+        <div className="px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-surface)] flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button
+            data-testid="trust-prompt-unsupported-cancel"
+            onClick={() => onRawKeys(CANONICAL_ESC_RAW_KEYS)}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-[var(--accent-bg)] text-[var(--accent-text)] border border-[var(--accent-border)] hover:opacity-90 transition-opacity"
+          >
+            {t('trust.unsupported.button.cancel')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Close button (shared) */
 function CloseButton({ onClick }: { onClick: () => void }) {
   return (
@@ -582,30 +730,25 @@ function CloseButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-/** Raw buffer collapsible section (shared between detected / fallback) */
-function RawBufferSection({
-  rawBuffer,
-  show,
-  onToggle,
-}: {
-  rawBuffer: string
-  show: boolean
-  onToggle: () => void
-}) {
+/**
+ * Raw buffer section (shared between detected / fallback).
+ *
+ * The actual message is always visible — there is no collapse toggle. It
+ * is the primary signal users rely on to decide how to respond, so hiding
+ * it behind an accordion (or rendering it on a dark surface) hurt
+ * readability. The body uses `--bg-surface` (white in light mode,
+ * #16162a in dark mode) for contrast and `--text-secondary` for legible
+ * monospace text.
+ */
+function RawBufferSection({ rawBuffer }: { rawBuffer: string }) {
   return (
     <div className="rounded-lg border border-[var(--border)] overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-[var(--text-dim)] hover:text-[var(--text-tertiary)] bg-[var(--bg-surface)] transition-colors"
-      >
-        <span>{t('trust.rawBuffer.title')}</span>
-        <span aria-hidden>{show ? '▲' : '▼'}</span>
-      </button>
-      {show && (
-        <pre className="px-4 py-3 text-[11px] leading-snug font-mono text-[var(--text-tertiary)] bg-black/30 overflow-x-auto whitespace-pre max-h-64">
-          {rawBuffer}
-        </pre>
-      )}
+      <div className="px-4 py-2 text-xs font-semibold text-[var(--text-dim)] bg-[var(--bg-surface)] border-b border-[var(--border)]">
+        {t('trust.rawBuffer.title')}
+      </div>
+      <pre className="px-4 py-3 text-[11px] leading-snug font-mono text-[var(--text-secondary)] bg-[var(--bg-surface)] overflow-x-auto whitespace-pre max-h-64">
+        {rawBuffer}
+      </pre>
     </div>
   )
 }
