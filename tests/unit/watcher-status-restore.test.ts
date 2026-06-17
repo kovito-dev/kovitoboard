@@ -473,6 +473,38 @@ describe('Watcher → SessionManager startup status restoration', () => {
     w.stop()
   })
 
+  it('INV-2 edge: mid-restoration stop then recreate-empty does not leave a stale restoring marker', () => {
+    const fs = new MockFs()
+    fs.dirs.add(sessionsDir)
+    const sm = new SessionManager()
+    const w = new Watcher(makeConfig(100), sm, fs as never)
+
+    // First run: the file's entire first read is a single newline-less
+    // partial line, so no offset is committed (filePositions stays
+    // undefined) but the path IS marked restoring. Stop before it completes.
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    const file = join(sessionsDir, 'sess-mr.jsonl')
+    fs.setFile(file, '{"type":"user","message":{"role":"user","content":"par') // no newline
+    fs.emit(sessionsDir, { type: 'add', path: file })
+    w.stop()
+
+    // The path is recreated EMPTY before the next start (restoringFiles is
+    // retained across stop()). The empty-file fast path must clear the stale
+    // restoring marker so the first real append below is live.
+    w.start()
+    fs.emit(sessionsDir, { type: 'ready' })
+    fs.setFile(file, '')
+    fs.emit(sessionsDir, { type: 'add', path: file })
+
+    fs.setFile(file, userLine('genuinely live'))
+    fs.emit(sessionsDir, { type: 'change', path: file })
+
+    expect(statusOf(sm, 'sess-mr')).toBe('waiting')
+
+    w.stop()
+  })
+
   // --- End-to-end: path-E race yields healthy /api/admin/status ---
 
   it('end-to-end: path-E restore yields healthy GET /api/admin/status (no false degraded)', async () => {

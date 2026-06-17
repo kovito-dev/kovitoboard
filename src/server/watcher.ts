@@ -520,6 +520,15 @@ export class Watcher {
         // marked restoring — swallowing that genuinely-live first append's
         // status transition (INV-2). Recording it here makes the next append
         // read live.
+        //
+        // Also clear any stale restoring marker for this path. A marker can
+        // survive across a restart (restoringFiles is retained in stop()) for
+        // a file that stopped mid-restoration without ever committing an
+        // offset (its whole first read was a single newline-less partial). If
+        // that path is then recreated EMPTY before the next start(), the
+        // empty file has nothing to restore, so the marker must not persist
+        // and swallow the first real append's status (INV-2).
+        this.restoringFiles.delete(filePath)
         this.filePositions.set(filePath, 0)
         return
       }
