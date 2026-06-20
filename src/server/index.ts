@@ -1009,18 +1009,26 @@ async function handleNewSession(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'agentId must be a string' })
     return
   }
+  // Note: `'extension'` is intentionally NOT accepted here. The
+  // loopback `/api/sessions/new` is the renderer-facing API; only the
+  // external-client guard (`/api/ext/_client/v1/sessions/new`) is
+  // allowed to mint extension-origin sessions, and it sets the origin
+  // internally via `startExtSession`. Accepting a client-supplied
+  // `origin: 'extension'` here would let any loopback caller create an
+  // extension-tagged session that could be correlated into the ext
+  // ownership registry — a scope escape (external-client-api.md §7.3 /
+  // INV-ORIGIN-1).
   if (
     origin !== undefined &&
     origin !== 'sidebar' &&
     origin !== 'sessions' &&
     origin !== 'recipe-create-app' &&
     origin !== 'recipe-install' &&
-    origin !== 'app-removal' &&
-    origin !== 'extension'
+    origin !== 'app-removal'
   ) {
     res.status(400).json({
       error:
-        'origin must be "sidebar", "sessions", "recipe-create-app", "recipe-install", "app-removal", or "extension"',
+        'origin must be "sidebar", "sessions", "recipe-create-app", "recipe-install", or "app-removal"',
     })
     return
   }
@@ -3540,7 +3548,13 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
     clientRequestId: p.clientRequestId,
   })
   if (!reg.ok) {
-    wsLogger.warn({ agentId }, 'ext_session_new: agent launch in-flight, ignoring')
+    // §8.5: a duplicate in-flight clientRequestId is ignored + warned
+    // (the client owns minting a fresh id). Same disposition as the
+    // in-flight case on the WS path (ignore + warn).
+    wsLogger.warn(
+      { agentId, reason: reg.reason },
+      'ext_session_new: launch rejected, ignoring',
+    )
     return
   }
 

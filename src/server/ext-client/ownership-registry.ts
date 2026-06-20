@@ -52,7 +52,7 @@ export interface PendingExtLaunch {
 
 export type RegisterLaunchResult =
   | { ok: true; launchId: string }
-  | { ok: false; reason: 'agent-in-flight' }
+  | { ok: false; reason: 'agent-in-flight' | 'duplicate-client-request' }
 
 /**
  * Outcome of correlating a materialised session with a pending launch.
@@ -74,6 +74,8 @@ export class OwnershipRegistry {
   private pendingByLaunchId = new Map<string, PendingExtLaunch>()
   /** agentId → launchId, the per-agent in-flight serialisation lock. */
   private inFlightAgentToLaunch = new Map<string, string>()
+  /** clientRequestId → launchId, dedup of in-flight client correlations (§8.5). */
+  private pendingClientRequestIds = new Map<string, string>()
   private readonly now: () => number
   private readonly mintLaunchId: () => string
 
@@ -109,6 +111,13 @@ export class OwnershipRegistry {
     if (this.inFlightAgentToLaunch.has(args.agentId)) {
       return { ok: false, reason: 'agent-in-flight' }
     }
+    // §8.5: a clientRequestId that is still pending (not yet
+    // materialised / expired) must not start a second launch, even for a
+    // different agentId — the client is responsible for minting a fresh
+    // id per request. Ignore the duplicate.
+    if (args.clientRequestId !== null && this.pendingClientRequestIds.has(args.clientRequestId)) {
+      return { ok: false, reason: 'duplicate-client-request' }
+    }
     const launchId = this.mintLaunchId()
     this.pendingByLaunchId.set(launchId, {
       launchId,
@@ -118,6 +127,9 @@ export class OwnershipRegistry {
       expiresAt: this.now() + EXT_LAUNCH_TTL_MS,
     })
     this.inFlightAgentToLaunch.set(args.agentId, launchId)
+    if (args.clientRequestId !== null) {
+      this.pendingClientRequestIds.set(args.clientRequestId, launchId)
+    }
     return { ok: true, launchId }
   }
 
@@ -142,6 +154,7 @@ export class OwnershipRegistry {
     this.owned.add(sessionId)
     this.pendingByLaunchId.delete(launchId)
     this.inFlightAgentToLaunch.delete(agentId)
+    this.releaseClientRequestId(pending)
     return {
       launchId: pending.launchId,
       agentId: pending.agentId,
@@ -165,6 +178,7 @@ export class OwnershipRegistry {
     if (this.inFlightAgentToLaunch.get(entry.agentId) === launchId) {
       this.inFlightAgentToLaunch.delete(entry.agentId)
     }
+    this.releaseClientRequestId(entry)
   }
 
   /** Whether `sessionId` is owned by the current extension (§7.3.1). */
@@ -181,6 +195,7 @@ export class OwnershipRegistry {
     this.owned.clear()
     this.pendingByLaunchId.clear()
     this.inFlightAgentToLaunch.clear()
+    this.pendingClientRequestIds.clear()
   }
 
   /** Remove expired pending launches and release their in-flight locks. */
@@ -192,7 +207,18 @@ export class OwnershipRegistry {
         if (this.inFlightAgentToLaunch.get(entry.agentId) === launchId) {
           this.inFlightAgentToLaunch.delete(entry.agentId)
         }
+        this.releaseClientRequestId(entry)
       }
+    }
+  }
+
+  /** Drop the clientRequestId dedup entry for a consumed launch. */
+  private releaseClientRequestId(entry: PendingExtLaunch): void {
+    if (
+      entry.clientRequestId !== null &&
+      this.pendingClientRequestIds.get(entry.clientRequestId) === entry.launchId
+    ) {
+      this.pendingClientRequestIds.delete(entry.clientRequestId)
     }
   }
 }

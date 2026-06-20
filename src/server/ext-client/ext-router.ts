@@ -115,16 +115,24 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
   const extGuard = buildExtensionGuard(deps)
 
   // --- /pair (pre-guard special route, pairing-code auth, §7.2.2) ---
-  // Route-scoped JSON parse so the body is available without depending
-  // on the global `express.json()` (which is mounted AFTER this router).
-  router.post('/pair', express.json(), (req, res) => {
+  // The exact-origin check runs in a middleware BEFORE `express.json()`
+  // so a non-extension origin is rejected without ever parsing a body —
+  // mirroring the existing `/api` design where auth precedes body
+  // parsing (no pre-token, pre-origin JSON-parsing DoS surface). The
+  // route-scoped JSON parser is used because the global `express.json()`
+  // is mounted AFTER this router.
+  const pairOriginGate = (req: Request, res: Response, next: express.NextFunction): void => {
     // §7.2.2: exact origin parse step 1–4 (no allowedExtensionId match
     // yet — the id is not confirmed until this request succeeds).
-    const originId = parseExtensionOrigin(req.headers.origin)
-    if (originId === null) {
+    if (parseExtensionOrigin(req.headers.origin) === null) {
       res.status(403).json({ error: 'Origin not allowed' })
       return
     }
+    next()
+  }
+  router.post('/pair', pairOriginGate, express.json(), (req, res) => {
+    // Origin already validated by `pairOriginGate`; re-derive the id.
+    const originId = parseExtensionOrigin(req.headers.origin)!
     const body = req.body as { pairingCode?: unknown; extensionId?: unknown } | undefined
     if (
       !body ||
@@ -255,6 +263,7 @@ async function handleExtNew(deps: ExtRouterDeps, req: Request, res: Response): P
     return
   }
   const agentId = body.agentId
+  const clientRequestId = body.clientRequestId
 
   // §7.2.1 TOCTOU (HTTP path): `extGuard` validated the pairing/origin
   // BEFORE `express.json()` streamed the body. A re-pair (overwrite to a
@@ -285,9 +294,15 @@ async function handleExtNew(deps: ExtRouterDeps, req: Request, res: Response): P
   const reg = deps.registry.registerLaunch({
     agentId,
     originConnId: null, // HTTP path has no WS connection.
-    clientRequestId: body.clientRequestId,
+    clientRequestId,
   })
   if (!reg.ok) {
+    if (reg.reason === 'duplicate-client-request') {
+      // §8.5: a clientRequestId still pending must not start a second
+      // launch — the client owns minting a fresh id per request.
+      res.status(409).json({ error: 'Duplicate clientRequestId' })
+      return
+    }
     res.status(409).json({ error: 'Agent launch in-flight' })
     return
   }

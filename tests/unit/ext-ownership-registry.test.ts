@@ -65,6 +65,28 @@ describe('OwnershipRegistry — launch + correlation', () => {
     expect(registry.registerLaunch({ agentId: 'a2', originConnId: 2, clientRequestId: 'c2' }).ok).toBe(true)
   })
 
+  it('rejects a duplicate in-flight clientRequestId even for a different agentId (§8.5)', () => {
+    const { registry } = makeRegistry()
+    expect(registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'dup' }).ok).toBe(true)
+    const second = registry.registerLaunch({ agentId: 'a2', originConnId: 2, clientRequestId: 'dup' })
+    expect(second).toEqual({ ok: false, reason: 'duplicate-client-request' })
+  })
+
+  it('frees a clientRequestId after the launch materialises (reusable thereafter)', () => {
+    const { registry } = makeRegistry()
+    registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'dup' })
+    registry.correlateNewSession('sess-1', 'a1')
+    expect(registry.registerLaunch({ agentId: 'a2', originConnId: 2, clientRequestId: 'dup' }).ok).toBe(true)
+  })
+
+  it('frees a clientRequestId on abort', () => {
+    const { registry } = makeRegistry()
+    const r = registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'dup' })
+    if (!r.ok) throw new Error('expected ok')
+    registry.abortLaunch(r.launchId)
+    expect(registry.registerLaunch({ agentId: 'a1', originConnId: 2, clientRequestId: 'dup' }).ok).toBe(true)
+  })
+
   it('allows a fresh launch for the same agentId after the previous one materialised', () => {
     const { registry } = makeRegistry()
     registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'c1' })
