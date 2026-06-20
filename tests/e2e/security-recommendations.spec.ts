@@ -118,6 +118,164 @@ test.describe('セキュリティ警告トースト (onboarded user)', () => {
   })
 })
 
+/**
+ * "Ask an agent to fix this" remediation button. KB cannot write
+ * Claude Code's settings itself, so the button starts a session
+ * prefilled with the `security:add-deny-pattern` dictionary prompt and
+ * lets an agent perform the edit.
+ *
+ * The L1 fixture reaches a deny-pattern violation with `reason: 'ok'`
+ * (not fail-closed, bypass inactive), which is exactly the branch that
+ * renders the button — but we mock `/api/security/settings-check` here
+ * to pin each branch deterministically and to keep these tests
+ * independent of the fixture's incidental state. The mock shape is
+ * pinned against the `isSecurityCheckResponse` runtime guard.
+ */
+test.describe('セキュリティ警告トースト「エージェントに対応を依頼」ボタン', () => {
+  function denyViolationEnvelope(
+    overrides: Partial<SettingsCheckResult> = {},
+  ): SecurityCheckResponse {
+    return {
+      result: {
+        overallOk: false,
+        reason: 'ok',
+        permissionMode: { current: 'default', recommended: 'default', ok: true },
+        denyPattern: { hasKovitoboardDeny: false, ok: false, remediation: '' },
+        bypassMode: { active: false, ok: true },
+        settingsFilePath: null,
+        ...overrides,
+      },
+      suppressToast: false,
+      dismissExpiresAt: null,
+    }
+  }
+
+  async function mockSettingsCheck(
+    page: import('@playwright/test').Page,
+    envelope: SecurityCheckResponse,
+  ): Promise<void> {
+    await page.route('**/api/security/settings-check', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(envelope),
+      })
+    })
+  }
+
+  test('deny pattern 違反時にボタンが表示され learn-more リンクは存在しない', async ({ page }) => {
+    await mockSettingsCheck(page, denyViolationEnvelope())
+    await page.goto('/agents')
+    await page.waitForLoadState('networkidle')
+
+    const toast = page.getByTestId('security-recommendations-toast')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+
+    const askButton = page.getByTestId('security-toast-ask-agent')
+    await expect(askButton).toBeVisible()
+
+    // Regression: the unhelpful generic docs link must be gone.
+    await expect(
+      toast.locator('a[href*="docs.anthropic.com"]'),
+    ).toHaveCount(0)
+  })
+
+  test('クリックで initialPrompt: security:add-deny-pattern でセッションが起動する', async ({ page }) => {
+    await mockSettingsCheck(page, denyViolationEnvelope())
+
+    // Intercept the session-start call so we can assert the prefill key
+    // without spawning a real session.
+    let capturedBody: Record<string, unknown> | null = null
+    await page.route('**/api/sessions/new', async (route) => {
+      capturedBody = route.request().postDataJSON()
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, processId: 'test-proc' }),
+      })
+    })
+
+    await page.goto('/agents')
+    await page.waitForLoadState('networkidle')
+
+    const toast = page.getByTestId('security-recommendations-toast')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+
+    await page.getByTestId('security-toast-ask-agent').click()
+
+    await expect.poll(() => capturedBody).not.toBeNull()
+    expect(capturedBody!.initialPrompt).toBe('security:add-deny-pattern')
+    // No literal message is sent — the server resolves the prompt from
+    // the dictionary using the initialPrompt key.
+    expect(capturedBody!.message).toBeUndefined()
+
+    // The toast hides optimistically after a successful launch.
+    await expect(toast).toBeHidden({ timeout: 5000 })
+  })
+
+  test('permissionMode 違反も残るときはクリックしてもトーストを消さない', async ({ page }) => {
+    // The deny-pattern prompt fixes only `permissions.deny`, so when a
+    // permissionMode violation is also present the toast must stay
+    // visible after launch rather than suppress the unrelated, still-
+    // unfixed permissionMode warning.
+    await mockSettingsCheck(
+      page,
+      denyViolationEnvelope({
+        permissionMode: { current: 'acceptEdits', recommended: 'default', ok: false },
+      }),
+    )
+    await page.route('**/api/sessions/new', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, processId: 'test-proc' }),
+      })
+    })
+
+    await page.goto('/agents')
+    await page.waitForLoadState('networkidle')
+
+    const toast = page.getByTestId('security-recommendations-toast')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('violation-permissionMode')).toBeVisible()
+
+    await page.getByTestId('security-toast-ask-agent').click()
+
+    // The toast must remain visible: the permissionMode warning is not
+    // addressed by the deny-pattern remediation prompt.
+    await expect(toast).toBeVisible()
+    await expect(page.getByTestId('violation-permissionMode')).toBeVisible()
+  })
+
+  test('fail-closed のときボタンは表示されない', async ({ page }) => {
+    await mockSettingsCheck(
+      page,
+      denyViolationEnvelope({ overallOk: false, reason: 'parse-error' }),
+    )
+    await page.goto('/agents')
+    await page.waitForLoadState('networkidle')
+
+    const toast = page.getByTestId('security-recommendations-toast')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('security-toast-ask-agent')).toHaveCount(0)
+  })
+
+  test('bypass モード有効のときボタンは表示されない', async ({ page }) => {
+    await mockSettingsCheck(
+      page,
+      denyViolationEnvelope({
+        bypassMode: { active: true, ok: false },
+      }),
+    )
+    await page.goto('/agents')
+    await page.waitForLoadState('networkidle')
+
+    const toast = page.getByTestId('security-recommendations-toast')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('security-toast-ask-agent')).toHaveCount(0)
+  })
+})
+
 test.describe('@preonboarding オンボーディング Security ステップ', () => {
   test('Step 5 = Security recommendations が表示される', async ({ page }) => {
     await page.goto('/onboarding')

@@ -114,6 +114,43 @@ export function restoreMenuTs(projectRoot: string, snapshot: string): void {
 }
 
 /**
+ * Remove a single `menuEntries[]` object whose `id === appId` from
+ * `app/menu.ts` in place.
+ *
+ * Closed-world menu-order / D&D contract tests fix the eligible app set
+ * to exactly the bundled samples they enable. Since v0.2.12 the blank
+ * fixture's hand-placed `l1-fixture-app` (a manifest-less self-made app
+ * with a readable page and no recipe-install evidence) is backfilled on
+ * scan and becomes menu-metadata eligible (app-directory-extension.md
+ * v1.8 §6.9), which would otherwise grow `N` beyond the two samples and
+ * break the contiguity / coverage assertions. Tests that need a fixed
+ * two-app eligible set strip that entry up front (and `restoreMenuTs`
+ * puts it back in afterEach). With the entry gone, the backfill never
+ * fires for it, so no leaking `app/l1-fixture-app/manifest.json` is
+ * written either.
+ *
+ * The removal is a targeted regex over the single-object literal the
+ * menu-extractor recognizes; if no matching entry exists the file is
+ * left unchanged.
+ */
+export function removeMenuEntry(projectRoot: string, appId: string): void {
+  assertSafePathSegment(appId, 'appId')
+  const menuPath = join(projectRoot, 'app', 'menu.ts')
+  const content = readFileSync(menuPath, 'utf-8')
+  // Match the whole `{ ... id: '<appId>' ... }` object literal (plus a
+  // trailing comma + surrounding whitespace) so the array stays
+  // syntactically valid after removal. The id field is single-quoted in
+  // the fixtures and the generated entries.
+  const escaped = appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const entryPattern = new RegExp(
+    `\\s*\\{[^{}]*id:\\s*'${escaped}'[^{}]*\\}\\s*,?`,
+    'g',
+  )
+  const stripped = content.replace(entryPattern, '\n  ')
+  writeFileSync(menuPath, stripped)
+}
+
+/**
  * Reject ids that could escape the intended app/recipe directory via
  * path-separator or `..` segments. The destructive filesystem helpers
  * below (`cleanupAppDir`, `seedGrandfatherManifest`) join the id into a

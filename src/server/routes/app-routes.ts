@@ -27,6 +27,7 @@ import {
   computeMenuOrderSnapshotFromEntries,
   readUserMenuEntries,
   type AppManifestLookup,
+  type BackfillHooks,
   type MenuEntryWithPage,
   type RecipeManifestLookup,
   type TrustLevelLookup,
@@ -36,25 +37,36 @@ import { readSetting } from '../setting-manager'
 import { resolveProjectRoot } from '../config'
 import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
+import { loadRecipeHistorySnapshot } from '../services/bundled-installer'
+import { getRecipeHistoryPath, MAX_HISTORY_BYTES } from '../recipe-history'
+import { loadKbVersion } from '../version-info'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
 
 /**
- * Build the app extension router.
- *
- * `manifestStore` is required so `/menu-entries` can attach the
- * active recipe's `trustLevel` to each entry. Without it the
- * renderer would have to call back for every entry it renders,
- * which would re-introduce the cross-request latency we already
- * pay once at supervisor startup.
+ * The lookups + backfill hooks shared by the `/menu-entries` GET
+ * handler and the `PUT /api/apps/menu-order` case-A backfill pre-scan
+ * (`app-directory-extension.md` v1.8 §6.9.7). Centralizing their
+ * construction keeps the two callers from drifting on the boundary /
+ * recipe-evidence semantics.
  */
-export function createAppRouter(
+interface MenuEntriesContext {
+  trustLookup: TrustLevelLookup
+  manifestLookup: AppManifestLookup
+  recipeManifestLookup: RecipeManifestLookup
+  backfillHooks: BackfillHooks
+}
+
+/**
+ * Build the lookups + backfill hooks used to scan `app/menu.ts` into
+ * the wire `MenuEntryWithPage[]`. Shared by {@link createAppRouter}
+ * (the `/menu-entries` GET) and {@link runMenuBackfillScan} (the
+ * menu-order PUT case-A pre-scan).
+ */
+function createMenuEntriesContext(
   fs: FileAccessLayer,
   manifestStore: RecipeManifestStore,
-  kovitoboardRoot: string,
-): Router {
-  const router = Router()
-
+): MenuEntriesContext {
   // Defence-in-depth: `recipeManifestStore.validateManifest` already
   // refuses to load a recipe manifest that carries the reserved
   // `'KB-trusted'` literal, but the wire boundary fails closed too —
@@ -174,7 +186,180 @@ export function createAppRouter(
     return manifestStore.get(appId)
   }
 
+  // v0.2.12 manifest backfill (app-directory-extension.md v1.8 §6.9):
+  // promote a manifest-less self-made app to menu-metadata eligible by
+  // writing an `AppManifest` (`source.type === 'user-creation'`) during
+  // the menu scan. The recipe-evidence predicate reuses the same
+  // `RecipeManifestStore` + `recipe-history` readers the scanner
+  // contract (§6.7) uses — a present `RecipeManifest` OR any history
+  // record bound to the `appId` suppresses backfill so post-uninstall /
+  // partial residue keeps its recipe provenance (§6.9.2 condition 4; no
+  // forked history reader, §6.9.2 shared classifier reuse).
+  //
+  // The history snapshot is read LAZILY and memoized (codex #143 F11):
+  // `recipeInstallEvidenceExists` only fires for a `'missing'` backfill
+  // candidate, so a request whose menu has no manifest-less rows (or no
+  // `app/menu.ts` at all) never touches the up-to-10 MiB
+  // `recipe-history.jsonl`. The first evidence check that does need it
+  // computes the history-bound appId set once and caches it for the rest
+  // of the scan, so a many-row menu still reads/parses the file at most
+  // once (the F2 read-once guarantee, now also F11 read-only-if-needed).
+  //
+  // FAIL-CLOSED on an indeterminate history (codex #143 F6 / F9):
+  //   - Over-cap (codex #143 F9): `loadRecipeHistorySnapshot` returns an
+  //     EMPTY snapshot (not a throw) when the file is over
+  //     `MAX_HISTORY_BYTES` — it rotates the file away and treats the
+  //     active history as empty. For the provenance guard that masks
+  //     indeterminate absence (rotated-away records may have bound this
+  //     app to recipe lineage), so an explicit over-cap pre-check fails
+  //     closed.
+  //   - IO failure (codex #143 F6): `loadRecipeHistorySnapshot` throws on
+  //     a genuine read failure (EACCES / EIO / …) rather than swallowing
+  //     it into `[]` the way `readRecipeHistory` does. §6.9.2 condition 4
+  //     requires recipe evidence to be *completely absent* before
+  //     attributing an app to `user-creation`; if the history cannot be
+  //     read we cannot prove absence, so backfill is suppressed for the
+  //     rest of this scan (every app is treated as if it had evidence).
+  // A genuinely absent file (ENOENT) returns an empty snapshot and is the
+  // normal "no evidence" case — backfill is allowed.
+  //
+  // Each record's appId is resolved as `record.appId ?? record.menu[0]`:
+  // `appId` was promoted to a first-class field in v0.2.0, but older
+  // entries omit it and `RecipeHistoryEntry` mandates the `menu[0]`
+  // legacy fallback for app association (`recipe-types.ts` `appId`
+  // JSDoc SSOT). Without the fallback a legacy recipe-installed app
+  // whose `RecipeManifest` is gone would look evidence-free and be
+  // mis-backfilled as `user-creation`, violating the provenance guard
+  // (codex #143 F1).
+  let historyEvidence:
+    | { indeterminate: boolean; boundAppIds: Set<string> }
+    | null = null
+  const getHistoryEvidence = (): {
+    indeterminate: boolean
+    boundAppIds: Set<string>
+  } => {
+    if (historyEvidence !== null) return historyEvidence
+    const boundAppIds = new Set<string>()
+    // Over-cap pre-check (F9).
+    try {
+      const historyPath = getRecipeHistoryPath(fs)
+      if (
+        fs.existsSync(historyPath) &&
+        fs.statSync(historyPath).size > MAX_HISTORY_BYTES
+      ) {
+        serverLogger.warn(
+          { historyPath },
+          '[app-routes] recipe-history.jsonl exceeds the size cap; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+        )
+        historyEvidence = { indeterminate: true, boundAppIds }
+        return historyEvidence
+      }
+    } catch (err) {
+      serverLogger.warn(
+        { err },
+        '[app-routes] could not stat recipe-history.jsonl; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+      )
+      historyEvidence = { indeterminate: true, boundAppIds }
+      return historyEvidence
+    }
+    // Read + parse (F6 fail-closed on throw).
+    try {
+      for (const record of loadRecipeHistorySnapshot(fs).entries) {
+        const recordAppId = record.appId ?? record.menu[0]
+        if (typeof recordAppId === 'string' && recordAppId.length > 0) {
+          boundAppIds.add(recordAppId)
+        }
+      }
+    } catch (err) {
+      serverLogger.warn(
+        { err },
+        '[app-routes] recipe-history.jsonl unreadable; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+      )
+      historyEvidence = { indeterminate: true, boundAppIds }
+      return historyEvidence
+    }
+    historyEvidence = { indeterminate: false, boundAppIds }
+    return historyEvidence
+  }
+  const backfillHooks: BackfillHooks = {
+    projectRoot: resolveProjectRoot(fs),
+    kovitoboardVersion: loadKbVersion(fs),
+    recipeInstallEvidenceExists: (appId) => {
+      // Cheap in-memory check first — a present RecipeManifest is
+      // evidence without ever reading the history file.
+      if (manifestStore.get(appId) !== null) return true
+      const evidence = getHistoryEvidence()
+      return evidence.indeterminate || evidence.boundAppIds.has(appId)
+    },
+  }
+
+  return { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks }
+}
+
+/**
+ * Run a backfill-capable menu scan and discard the result. Used by the
+ * `PUT /api/apps/menu-order` case-A pre-scan
+ * (`app-directory-extension.md` v1.8 §6.9.7 option A): the closed-world
+ * batch recomputes its eligible set from `scanAppManifests` rather than
+ * the menu-extraction path, so a manifest-less self-made app would be
+ * invisible to a direct PUT (no prior `/menu-entries` GET) unless the
+ * backfill fires first. Running this immediately before the eligible
+ * scan guarantees the manifest exists on disk by the time the batch
+ * enumerates `app/<appId>/`.
+ *
+ * Side-effect only: it writes any backfill-eligible manifests via the
+ * same `readUserMenuEntries` + `BackfillHooks` path the GET uses (so the
+ * firing conditions / guards stay identical), and the entries array is
+ * intentionally not returned.
+ */
+export function runMenuBackfillScan(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  kovitoboardRoot: string,
+): void {
+  const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
+    createMenuEntriesContext(fs, manifestStore)
+  const locale = readSetting(fs)?.locale ?? 'en'
+  // Discard the wire entries; the only purpose here is the on-disk
+  // backfill side-effect performed inside `readUserMenuEntries`.
+  readUserMenuEntries(
+    fs,
+    trustLookup,
+    manifestLookup,
+    recipeManifestLookup,
+    locale,
+    kovitoboardRoot,
+    backfillHooks,
+  )
+}
+
+/**
+ * Build the app extension router.
+ *
+ * `manifestStore` is required so `/menu-entries` can attach the
+ * active recipe's `trustLevel` to each entry. Without it the
+ * renderer would have to call back for every entry it renders,
+ * which would re-introduce the cross-request latency we already
+ * pay once at supervisor startup.
+ */
+export function createAppRouter(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  kovitoboardRoot: string,
+): Router {
+  const router = Router()
+
   router.get('/menu-entries', (_req, res) => {
+    // Build the scan context PER REQUEST. `createMenuEntriesContext`
+    // snapshots `recipe-history.jsonl` into the backfill evidence set
+    // (the F2 read-once optimization), so it must run on every request:
+    // a recipe install / uninstall appended after server startup must be
+    // visible to the next `/menu-entries` scan, otherwise a post-startup
+    // recipe app could be mis-backfilled as user-creation against a
+    // stale evidence snapshot (codex #143 F4). The lookups are cheap
+    // stateless closures over `fs` / `manifestStore`.
+    const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
+      createMenuEntriesContext(fs, manifestStore)
     // Active server locale for recipe nav base-label resolution
     // (app-directory-extension.md v1.7.1 §6.8.2.1 / i18n-architecture
     // v1.1 §6.6). Invalid / null / unset falls back to OSS default.
@@ -186,6 +371,7 @@ export function createAppRouter(
       recipeManifestLookup,
       locale,
       kovitoboardRoot,
+      backfillHooks,
     )
     // The wire ships every entry the parser produced; anomalies
     // are NOT filtered out -- they ride with `manifestState ===

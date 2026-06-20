@@ -74,7 +74,7 @@ import { createUserAvatarRouter } from './routes/user-avatar-routes'
 import { createRecipeUploadRouter } from './routes/recipe-upload-routes'
 import { createAgentWriteRouter } from './routes/agent-write-routes'
 import { createAdminRouter } from './routes/admin-routes'
-import { createAppRouter } from './routes/app-routes'
+import { createAppRouter, runMenuBackfillScan } from './routes/app-routes'
 import { createAppsRouter } from './routes/apps-routes'
 import { createCaptureRouter } from './routes/capture-routes'
 import { createCaptureTokenRouter } from './routes/capture-token-routes'
@@ -433,6 +433,13 @@ app.use(
     projectRoot,
     broadcast,
     apiLogger,
+    // Case-A backfill pre-scan for `PUT /api/apps/menu-order`
+    // (app-directory-extension.md v1.8 §6.9.7 option A): promote a
+    // manifest-less self-made app to eligible before the batch's
+    // eligible scan, so a direct PUT (no prior `/menu-entries` GET)
+    // still observes it.
+    runBackfillScan: () =>
+      runMenuBackfillScan(fs, manifestStore, resolveKovitoboardInstallRoot()),
   }),
 )
 // Capture-token issuance / revoke endpoints

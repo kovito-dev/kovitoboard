@@ -523,13 +523,18 @@ describe('Watcher → SessionManager startup status restoration', () => {
     // Sanity: the SSOT status is idle.
     expect(statusOf(sm, 'sess-http')).toBe('idle')
 
-    // tmux is absent (lazy-spawn idle state). With status correctly idle,
-    // hasActiveSession=false → healthy (admin-routes is unchanged).
+    // tmux is absent (lazy-spawn idle state) and has never been alive in
+    // this process, so the startup latch stays false. With status
+    // correctly idle, hasActiveSession=false → healthy regardless of the
+    // latch.
     const tmuxBridge = {
       get sessionName() {
         return 'kovitoboard-test'
       },
       hasSession() {
+        return false
+      },
+      hasEverHadSession() {
         return false
       },
       listWindows() {

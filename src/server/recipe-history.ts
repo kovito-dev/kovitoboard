@@ -53,7 +53,7 @@ const MIN_FAILURES_TO_ROTATE = 5
  * 10 MiB lets a recipe-history file accumulate well past normal
  * lifetime usage (each entry is well under 1 KiB) before this trips.
  */
-const MAX_HISTORY_BYTES = 10 * 1024 * 1024
+export const MAX_HISTORY_BYTES = 10 * 1024 * 1024
 
 /**
  * Per-line size cap for `appendRecipeHistory`. POSIX `write(2)`

@@ -22,10 +22,10 @@ interface RecipeCodeViewerProps {
 }
 
 const SEVERITY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
-  critical: { bg: 'bg-red-500/20', text: 'text-red-400', label: 'Critical' },
-  high: { bg: 'bg-orange-500/20', text: 'text-orange-400', label: 'High' },
-  medium: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Medium' },
-  info: { bg: 'bg-blue-500/20', text: 'text-blue-400', label: 'Info' },
+  critical: { bg: 'bg-[var(--severity-critical-bg)]', text: 'text-[var(--severity-critical-text)]', label: 'Critical' },
+  high: { bg: 'bg-[var(--severity-high-bg)]', text: 'text-[var(--severity-high-text)]', label: 'High' },
+  medium: { bg: 'bg-[var(--warning-bg)]', text: 'text-[var(--warning-text)]', label: 'Medium' },
+  info: { bg: 'bg-[var(--severity-info-bg)]', text: 'text-[var(--severity-info-text)]', label: 'Info' },
 }
 
 export function RecipeCodeViewer({
@@ -122,7 +122,7 @@ export function RecipeCodeViewer({
                 </span>
               </div>
               {fileFindings.length > 0 && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400">
+                <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--severity-high-bg)] text-[var(--severity-high-text)]">
                   {fileFindings.length} finding(s)
                 </span>
               )}

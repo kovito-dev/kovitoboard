@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-06-20
+
+### Added
+
+- Security recommendations toast: added an "Ask an agent to fix this"
+  button that starts a session prefilled with a prompt asking an agent
+  to add `.kovitoboard/` to Claude Code's deny pattern. KB only reads
+  Claude Code's settings and cannot write them itself, so this hands
+  the remediation to an agent. The button appears only when the
+  deny-pattern recommendation is unmet. The unhelpful generic
+  "Learn More" link was removed.
+
+### Security
+
+- Hardened the `tmux attach` snippet shown (and copied) by the trust-prompt
+  fallback and degrade modals. The tmux window name is now POSIX
+  single-quote encoded instead of interpolated into a double-quoted string,
+  so the snippet stays inert when pasted into a shell. This is defense in
+  depth: window names are already constrained server-side to
+  `^[a-zA-Z0-9_-]{1,64}$`, so shell metacharacters cannot occur today. Both
+  modals now share a single helper, so the displayed command and the
+  clipboard payload can no longer diverge.
+
+### Fixed
+
+- Fixed a latent agent mis-binding when two or more session-origin
+  reservations from different agents raced within the reservation TTL
+  window. A newly created session claimed the queue head without matching
+  it by agent id, so it could be bound to the wrong agent and that wrong
+  mapping persisted across restarts. The eager claim now fires only when
+  exactly one reservation is pending; an ambiguous queue defers resolution
+  to the agent-setting path, which matches by agent id.
+- Severity status colors (diagnostic badges, server status banner, recipe
+  export status, version status) were too faint to read in light mode; they
+  now use theme-aware severity tokens so each color stays readable on both
+  light and dark surfaces.
+- Admin status no longer reports `degraded` from external (non-KB-tmux)
+  sessions that are active before the KB tmux session is first spawned.
+  Until this KB process has spawned its own tmux session at least once, a
+  missing session cannot be a regression of a KB-owned session, so an
+  active terminal-launched Claude process no longer trips the degraded
+  banner. The "tmux gone while a KB session is running" anomaly is still
+  reported once the KB session has been alive.
+- Hand-placed custom apps can now be reordered. A self-made app added by
+  hand (a `app/menu.ts` entry plus an `app/<id>/pages/*.tsx`, with no
+  `manifest.json`) was excluded from the Apps screen's drag-and-drop
+  reorder because the missing manifest left it ineligible. The menu scan
+  now backfills a manifest for such an app — only when its page module
+  is readable and it carries no recipe-install history at all (a pure
+  self-made app) — so it joins the reorderable set on the same scan.
+  Existing manifests are never overwritten, a malformed manifest is left
+  untouched, and apps with recipe-install lineage keep their original
+  source classification.
+
 ## [0.2.11] - 2026-06-17
 
 ### Fixed

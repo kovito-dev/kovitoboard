@@ -89,7 +89,8 @@ const ja = {
   'security.toast.denyPattern.violation': '.kovitoboard/ が Claude Code の deny pattern に含まれていません',
   'security.toast.bypassMode.violation': 'bypass モードが有効です (Rule of Two 違反、HITL 必須)',
   'security.toast.failClosed': 'Claude Code の設定ファイルを読み込めませんでした。設定を手動で確認してください。',
-  'security.toast.learnMore': '詳細を見る',
+  'security.toast.askAgent': 'エージェントに対応を依頼',
+  'security.toast.askAgentFailed': 'セッションを開始できませんでした。もう一度お試しください。',
   'security.toast.dismiss': '閉じる (24 時間)',
   // Phase 1 prompt injection ④ Rule of Two violation announcement
   // (handoff v1.1 §3.2 / §3.5 / §3.6, prompt-injection-threat-model §4)

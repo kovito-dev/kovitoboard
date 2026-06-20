@@ -532,14 +532,23 @@ export function useIPC() {
     return res.json()
   }, [addOptimisticMessage])
 
-  // Start a new session
+  // Start a new session.
+  //
+  // `message` is optional: callers that supply `options.initialPrompt`
+  // (a server-side dictionary key, e.g. 'security:add-deny-pattern')
+  // let the server resolve the locale-aware prompt text instead of
+  // passing a literal message. The server requires at least one of the
+  // two; when both are sent, `initialPrompt` takes precedence and the
+  // resolved dictionary text overrides `message`.
   const startNewSession = useCallback(async (
-    message: string,
+    message: string | undefined,
     agentId?: string,
-    options?: { origin?: SessionOrigin },
+    options?: { origin?: SessionOrigin; initialPrompt?: string },
   ): Promise<NewSessionResponse> => {
-    const body: Record<string, unknown> = { agentId, message }
+    const body: Record<string, unknown> = { agentId }
+    if (message !== undefined) body.message = message
     if (options?.origin) body.origin = options.origin
+    if (options?.initialPrompt) body.initialPrompt = options.initialPrompt
     const res = await kbFetch(`${API_BASE}/sessions/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

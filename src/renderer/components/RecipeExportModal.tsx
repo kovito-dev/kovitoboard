@@ -277,7 +277,7 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
           )}
 
           {state === 'error' && !scan && (
-            <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+            <div className="px-3 py-2 bg-[var(--severity-critical-bg)] border border-[var(--severity-critical-border)] rounded-lg text-sm text-[var(--severity-critical-text)]">
               {error}
             </div>
           )}
@@ -291,8 +291,8 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
 
           {state === 'done' && (
             <div className="space-y-3">
-              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
-                <h4 className="text-sm font-bold text-green-400 mb-1">
+              <div className="bg-[var(--severity-ok-bg)] border border-[var(--severity-ok-border)] rounded-lg p-4">
+                <h4 className="text-sm font-bold text-[var(--severity-ok-text)] mb-1">
                   {t('recipe.export.done.title')}
                 </h4>
                 <p className="text-xs text-[var(--text-secondary)] break-all">
@@ -418,7 +418,7 @@ export function RecipeExportModal({ appId, displayName, onClose }: RecipeExportM
               {error && (
                 <div
                   data-testid="recipe-export-error"
-                  className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400"
+                  className="px-3 py-2 bg-[var(--severity-critical-bg)] border border-[var(--severity-critical-border)] rounded-lg text-sm text-[var(--severity-critical-text)]"
                 >
                   {error}
                 </div>
