@@ -37,7 +37,7 @@ import { readSetting } from '../setting-manager'
 import { resolveProjectRoot } from '../config'
 import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
-import { readRecipeHistory } from '../recipe-history'
+import { loadRecipeHistorySnapshot } from '../services/bundled-installer'
 import { loadKbVersion } from '../version-info'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
@@ -201,6 +201,18 @@ function createMenuEntriesContext(
   // menu over a near-cap `recipe-history.jsonl` no longer re-reads /
   // re-parses the file per manifest-less row (codex #143 F2).
   //
+  // FAIL-CLOSED on an indeterminate history (codex #143 F6): the read
+  // goes through `loadRecipeHistorySnapshot`, which throws on a genuine
+  // IO failure (EACCES / EIO / …) rather than swallowing it into an
+  // empty array the way `readRecipeHistory` does. §6.9.2 condition 4
+  // requires recipe evidence to be *completely absent* before
+  // attributing an app to `user-creation`; if the history cannot be
+  // read we cannot prove absence, so we suppress ALL backfill this scan
+  // cycle (every app is treated as if it had evidence). The next scan
+  // retries once the file is readable again. A genuinely absent file
+  // (ENOENT) returns an empty snapshot and is the normal "no evidence"
+  // case — backfill is allowed.
+  //
   // Each record's appId is resolved as `record.appId ?? record.menu[0]`:
   // `appId` was promoted to a first-class field in v0.2.0, but older
   // entries omit it and `RecipeHistoryEntry` mandates the `menu[0]`
@@ -209,18 +221,29 @@ function createMenuEntriesContext(
   // whose `RecipeManifest` is gone would look evidence-free and be
   // mis-backfilled as `user-creation`, violating the provenance guard
   // (codex #143 F1).
+  let historyIndeterminate = false
   const historyBoundAppIds = new Set<string>()
-  for (const record of readRecipeHistory(fs)) {
-    const recordAppId = record.appId ?? record.menu[0]
-    if (typeof recordAppId === 'string' && recordAppId.length > 0) {
-      historyBoundAppIds.add(recordAppId)
+  try {
+    for (const record of loadRecipeHistorySnapshot(fs).entries) {
+      const recordAppId = record.appId ?? record.menu[0]
+      if (typeof recordAppId === 'string' && recordAppId.length > 0) {
+        historyBoundAppIds.add(recordAppId)
+      }
     }
+  } catch (err) {
+    historyIndeterminate = true
+    serverLogger.warn(
+      { err },
+      '[app-routes] recipe-history.jsonl unreadable; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+    )
   }
   const backfillHooks: BackfillHooks = {
     projectRoot: resolveProjectRoot(fs),
     kovitoboardVersion: loadKbVersion(fs),
     recipeInstallEvidenceExists: (appId) =>
-      manifestStore.get(appId) !== null || historyBoundAppIds.has(appId),
+      historyIndeterminate ||
+      manifestStore.get(appId) !== null ||
+      historyBoundAppIds.has(appId),
   }
 
   return { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks }

@@ -38,6 +38,7 @@ import { initLogger } from '../../src/server/logger'
 import { createAppRouter } from '../../src/server/routes/app-routes'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { DirectFsLayer } from '../../src/server/fs-layer'
+import { _resetProjectRootCache } from '../../src/server/config'
 
 beforeAll(async () => {
   const logRoot = mkdtempSync(join(tmpdir(), 'kb-app-routes-fresh-logroot-'))
@@ -123,6 +124,10 @@ beforeEach(() => {
   process.env.npm_package_version = '0.2.12-test'
   h = buildHarness()
   process.env.KOVITOBOARD_PROJECT_ROOT = h.projectRoot
+  // `resolveProjectRoot` caches at module level; reset so each test's
+  // fresh tmp project root is re-resolved (otherwise the first test's
+  // root stays cached and later tests scan a deleted directory).
+  _resetProjectRootCache()
 })
 afterEach(() => {
   if (savedProjectRoot === undefined) delete process.env.KOVITOBOARD_PROJECT_ROOT
@@ -130,6 +135,7 @@ afterEach(() => {
   if (savedVersion === undefined) delete process.env.npm_package_version
   else process.env.npm_package_version = savedVersion
   rmSync(h.projectRoot, { recursive: true, force: true })
+  _resetProjectRootCache()
 })
 afterAll(() => {
   delete process.env.KOVITOBOARD_PROJECT_ROOT
@@ -178,6 +184,26 @@ describe('GET /api/app/menu-entries — backfill evidence is fresh per request (
     const secondRow = second.find((e) => e.id === APP_ID)
     expect(secondRow?.manifestState).toBe('missing')
     expect(secondRow?.displayName).toBeNull()
+    expect(existsSync(manifestPath)).toBe(false)
+  })
+
+  it('fails closed and suppresses backfill when recipe-history is unreadable (codex #143 F6)', async () => {
+    const manifestPath = join(h.projectRoot, 'app', APP_ID, 'manifest.json')
+    writeMenuTsAndPage(h.projectRoot)
+
+    // Make `recipe-history.jsonl` a DIRECTORY so the snapshot reader's
+    // `readFileSync` throws EISDIR — an indeterminate history state
+    // (cannot prove recipe evidence is absent). The fail-closed guard
+    // must suppress backfill rather than treat the unreadable file as
+    // "no evidence" and mis-attribute the app to user-creation.
+    mkdirSync(join(h.projectRoot, '.kovitoboard', 'recipe-history.jsonl'), {
+      recursive: true,
+    })
+
+    const entries = await getMenuEntries(h.app)
+    const row = entries.find((e) => e.id === APP_ID)
+    expect(row?.manifestState).toBe('missing')
+    expect(row?.displayName).toBeNull()
     expect(existsSync(manifestPath)).toBe(false)
   })
 })

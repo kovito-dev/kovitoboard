@@ -408,10 +408,23 @@ function maybeBackfillManifest(
   // could never enumerate, leaving the row permanently un-reorderable.
   if (!BACKFILL_APP_ID_PATTERN.test(entry.id)) return null
 
-  // Condition 2 (§6.9.2) / guard (§6.9.5): the page module must be
-  // readable. A menu.ts entry that resolves to no `.tsx` / `.ts` file
-  // is a broken / mid-deletion directory — never backfill it.
+  // Condition 2 (§6.9.2) / guard (§6.9.5): the page module must be a
+  // readable regular file. `pageAbsolutePath` is set by the resolver
+  // above, which only checks existence + realpath + symlink, so a
+  // directory named `Index.tsx` (or an unreadable file) would still
+  // populate the field. Re-stat the resolved path and require a regular
+  // file before backfilling, so a broken / non-file app is never
+  // promoted to reorder-eligible (codex #143 F8).
   if (entry.pageAbsolutePath === null) return null
+  try {
+    // `FileStat.isFile` is a boolean property on the fs-layer
+    // abstraction (not a method like node:fs Stats.isFile()).
+    if (!fs.statSync(entry.pageAbsolutePath).isFile) return null
+  } catch {
+    // Stat failed (race with deletion, permission error, …) — treat as
+    // not readable and skip backfill this cycle.
+    return null
+  }
 
   // Condition 4 (§6.9.2): pure self-made — no `RecipeManifest` and no
   // recipe-history record for this appId. Reuses the scanner-contract

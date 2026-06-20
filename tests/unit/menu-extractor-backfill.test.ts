@@ -101,8 +101,25 @@ function makeFs(initial: Record<string, string>): {
     },
     existsSync: (p) => fileMap.has(p) || dirs().has(p),
     statSync: (p) => {
-      if (!fileMap.has(p)) throw new Error(`ENOENT: ${p}`)
-      return { size: fileMap.get(p)!.length } as unknown as ReturnType<FileAccessLayer['statSync']>
+      // Files in the map are regular files. Paths that exist only as
+      // inferred directories (in `dirs()` but not `fileMap`) stat as a
+      // directory, so the backfill page-readable guard (codex #143 F8)
+      // can reject a page candidate that is actually a directory.
+      if (fileMap.has(p)) {
+        return {
+          size: fileMap.get(p)!.length,
+          isFile: true,
+          isDirectory: false,
+        } as unknown as ReturnType<FileAccessLayer['statSync']>
+      }
+      if (dirs().has(p)) {
+        return {
+          size: 0,
+          isFile: false,
+          isDirectory: true,
+        } as unknown as ReturnType<FileAccessLayer['statSync']>
+      }
+      throw new Error(`ENOENT: ${p}`)
     },
     realpathSync: (p) => p,
     lstatSync: (p) =>
@@ -362,6 +379,31 @@ describe('readUserMenuEntries — manifest backfill (§6.9)', () => {
     const row = entries.find((e) => e.id === APP_ID)!
     expect(row.manifestState).toBe('missing')
     expect(row.displayName).toBeNull()
+  })
+
+  it('does not backfill when the resolved page is a directory, not a regular file (codex #143 F8)', () => {
+    // The page candidate `.../pages/Index.tsx` exists only as a
+    // directory (a child file lives under it), so the resolver populates
+    // `pageAbsolutePath` but the regular-file guard must reject it.
+    const { fs, fileMap, writes } = makeFs({
+      [MENU_TS]: MENU_TS_BODY,
+      // `PAGE_FILE` itself is a directory because a child file exists
+      // under that path; `Index.tsx` is therefore not a regular file.
+      [`${PAGE_FILE}/child.ts`]: '// not the page',
+    })
+    const entries = readUserMenuEntries(
+      fs,
+      undefined,
+      lookupFor(fileMap),
+      undefined,
+      'en',
+      undefined,
+      backfillHooks(),
+    )
+    expect(writes).not.toContain(MANIFEST_FILE)
+    expect(fileMap.has(MANIFEST_FILE)).toBe(false)
+    expect(entries.find((e) => e.id === APP_ID)?.manifestState).toBe('missing')
+    expect(entries.find((e) => e.id === APP_ID)?.displayName).toBeNull()
   })
 
   it('does not backfill a multi-segment appId that escapes the §5.4 grammar (codex #143 F5)', () => {

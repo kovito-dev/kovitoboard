@@ -54,6 +54,7 @@ import type { Express } from 'express'
 import { createAppsRouter } from '../../src/server/routes/apps-routes'
 import { runMenuBackfillScan } from '../../src/server/routes/app-routes'
 import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
+import { _resetProjectRootCache } from '../../src/server/config'
 import { DirectFsLayer } from '../../src/server/fs-layer'
 import { initLogger, lazyChildLogger } from '../../src/server/logger'
 
@@ -701,6 +702,9 @@ describe('PUT /api/apps/menu-order — case-A backfill', () => {
     // the env (the apps-router gets `projectRoot` directly, but
     // `readUserMenuEntries` reads it through `resolveProjectRoot`).
     process.env.KOVITOBOARD_PROJECT_ROOT = h.projectRoot
+    // `resolveProjectRoot` caches at module level; reset so each test's
+    // fresh tmp root is re-resolved instead of a prior deleted one.
+    _resetProjectRootCache()
   })
   afterEach(() => {
     if (savedEnvVersion === undefined) delete process.env.npm_package_version
@@ -708,6 +712,7 @@ describe('PUT /api/apps/menu-order — case-A backfill', () => {
     if (savedProjectRoot === undefined) delete process.env.KOVITOBOARD_PROJECT_ROOT
     else process.env.KOVITOBOARD_PROJECT_ROOT = savedProjectRoot
     rmSync(h.projectRoot, { recursive: true, force: true })
+    _resetProjectRootCache()
   })
 
   it('backfills a manifest-less self-made app so a direct PUT covers it', async () => {
