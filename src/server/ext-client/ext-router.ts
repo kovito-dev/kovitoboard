@@ -173,15 +173,18 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
       }
     }
 
-    // Re-pairing overwrite: if the paired id changed, drop the old
-    // extension's ownership state and close its WS connections
-    // synchronously (§7.2.1) before returning the token.
-    if (before !== null && before !== result.extensionId) {
-      deps.registry.clear()
+    // Any successful pairing resets the single slot (§7.2.1): drop the
+    // ownership registry and revoke + close the previously-paired
+    // extension's WS connections synchronously before returning the
+    // token. This applies even when the SAME extension id re-pairs — a
+    // fresh user-initiated pairing starts a fresh session boundary, so
+    // stale sockets / subscriptions / owned sessions / in-flight
+    // launches from before the re-pair must not survive. `before ===
+    // null` (first pairing this launch) just clears an already-empty
+    // registry and has no sockets to revoke.
+    deps.registry.clear()
+    if (before !== null) {
       deps.onRepairOverwrite(before, result.extensionId)
-    } else if (before === null) {
-      // First pairing for this launch: ensure a clean registry.
-      deps.registry.clear()
     }
 
     res.json({ token: deps.getLaunchToken() })

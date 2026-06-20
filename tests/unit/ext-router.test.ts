@@ -211,6 +211,28 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
     expect((await res.json()) as { token: string }).toEqual({ token: TOKEN })
   })
 
+  it('a same-id re-pair still resets the ownership registry (§7.2.1)', async () => {
+    // Pair, then create some owned state, then re-pair the SAME id.
+    const code1 = pairing.issuePairingCode()
+    await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ pairingCode: code1, extensionId: EXT_ID }),
+    })
+    registry.registerLaunch({ agentId: 'agent-z', originConnId: 1, clientRequestId: 'rz' })
+    expect(registry.isAgentInFlight('agent-z')).toBe(true)
+
+    const code2 = pairing.issuePairingCode()
+    const res = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ pairingCode: code2, extensionId: EXT_ID }),
+    })
+    expect(res.status).toBe(200)
+    // The re-pair must have cleared the in-flight launch state.
+    expect(registry.isAgentInFlight('agent-z')).toBe(false)
+  })
+
   it('rejects reuse of a consumed code (401)', async () => {
     const code = pairing.issuePairingCode()
     await fetch(url('/pair'), {

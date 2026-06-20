@@ -363,7 +363,21 @@ app.use('/api', verifyTokenAndOrigin)
 app.use(express.json())
 
 const server = createServer(app)
-const wss = new WebSocketServer({ server, path: '/api/ws', verifyClient: verifyWsClient })
+
+// Upper bound on a single inbound WS frame (external-client-api.md v1.0
+// §8.4 / security-limits.md L-H3). The largest legitimate payload is a
+// shared-chat message (capped at 100000 chars elsewhere); the headroom
+// covers the JSON envelope + the bounded id fields. Enforced at the
+// `ws` library layer via `maxPayload` so an oversized frame is rejected
+// at the protocol level BEFORE it is buffered into memory — the
+// per-message app-level check is a defence-in-depth backstop.
+const MAX_WS_FRAME_BYTES = 128 * 1024
+const wss = new WebSocketServer({
+  server,
+  path: '/api/ws',
+  verifyClient: verifyWsClient,
+  maxPayload: MAX_WS_FRAME_BYTES,
+})
 
 // --- File access abstraction layer ---
 // v0.1.0 only provides DirectFsLayer (direct Node.js fs / chokidar calls).
@@ -3387,12 +3401,6 @@ app.post('/api/agents/:id/restart', async (req, res) => {
   }
 })
 
-// Upper bound on a single inbound WS frame (external-client-api.md
-// v1.0 §8.4 hardening). The largest legitimate payload is a
-// shared-chat message (capped at 100000 chars elsewhere); the headroom
-// covers the JSON envelope + the bounded id fields. Frames larger than
-// this are dropped before parse.
-const MAX_WS_FRAME_BYTES = 128 * 1024
 // Upper bound on the correlation / id fields a paired extension may
 // send (agentId / clientRequestId / sessionId). Generous for real ids
 // (128-bit hex = 32 chars, agent ids are short) while refusing
@@ -3494,11 +3502,11 @@ wss.on('connection', (ws, request) => {
       return
     }
 
-    // Frame size cap: `/api/ws` is now a primary external-client input
-    // path, so bound the raw frame BEFORE `toString()` + `JSON.parse`
-    // to avoid a paired/compromised extension forcing large allocations
-    // and parse CPU. The cap matches the per-field message limit
-    // (100000) with headroom for envelope + small fields.
+    // Frame size cap (defence-in-depth): the `ws` library already
+    // rejects frames over `maxPayload` at the protocol layer before
+    // buffering (see the WebSocketServer config), so this app-level
+    // check is a backstop that also bounds the parse work for anything
+    // that slips through. Checked BEFORE `toString()` + `JSON.parse`.
     const frameLen = wsFrameByteLength(data)
     if (frameLen > MAX_WS_FRAME_BYTES) {
       wsLogger.warn({ frameLen }, 'WS frame exceeds size cap, ignoring')
