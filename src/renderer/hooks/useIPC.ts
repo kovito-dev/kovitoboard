@@ -537,8 +537,9 @@ export function useIPC() {
   // `message` is optional: callers that supply `options.initialPrompt`
   // (a server-side dictionary key, e.g. 'security:add-deny-pattern')
   // let the server resolve the locale-aware prompt text instead of
-  // passing a literal message. The server requires exactly one of the
-  // two to be present.
+  // passing a literal message. The server requires at least one of the
+  // two; when both are sent, `initialPrompt` takes precedence and the
+  // resolved dictionary text overrides `message`.
   const startNewSession = useCallback(async (
     message: string | undefined,
     agentId?: string,
