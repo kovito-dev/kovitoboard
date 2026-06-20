@@ -12,6 +12,7 @@ import type {
 import { CANONICAL_ESC_RAW_KEYS } from '../../shared/ws-events'
 import type { TrustPromptItem } from '../hooks/useIPC'
 import { t } from '../i18n'
+import { buildTmuxAttachCommand } from '../lib/tmux-command'
 import { createLogger } from '../lib/logger'
 
 const log = createLogger('trust-prompt-modal')
@@ -163,7 +164,7 @@ export function TrustPromptModal({
 
   // Copy tmux attach command
   const handleCopyTmuxCommand = useCallback(async (windowName: string) => {
-    const cmd = `tmux attach -t "${windowName}"`
+    const cmd = buildTmuxAttachCommand(windowName)
     try {
       await navigator.clipboard.writeText(cmd)
       setCopied(true)
@@ -333,22 +334,11 @@ export function TrustPromptModal({
           </div>
 
           {/* tmux attach command copy */}
-          <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-            <div className="text-xs text-[var(--text-dim)] mb-2">
-              {t('trust.tmux.label')}
-            </div>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 px-2 py-1 text-xs font-mono text-[var(--text-tertiary)] bg-black/20 rounded">
-                tmux attach -t &quot;{windowName}&quot;
-              </code>
-              <button
-                onClick={() => handleCopyTmuxCommand(windowName)}
-                className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-tertiary)] hover:bg-white/5 transition-colors"
-              >
-                {copied ? t('trust.tmux.copied') : t('trust.tmux.copy')}
-              </button>
-            </div>
-          </div>
+          <TmuxAttachCopy
+            windowName={windowName}
+            copied={copied}
+            onCopy={handleCopyTmuxCommand}
+          />
         </div>
       </div>
     </div>
@@ -356,6 +346,44 @@ export function TrustPromptModal({
 }
 
 // ===== Internal sub-components =====
+
+/**
+ * Shared "open tmux directly" hint: shows the `tmux attach` command and a
+ * copy button. Used by both the fallback modal and the degrade modal.
+ *
+ * The command string comes from `buildTmuxAttachCommand`, which single-quote
+ * encodes the window name so the displayed snippet and the clipboard payload
+ * are identical and inert when pasted into a shell (BL-2026-267,
+ * defense in depth).
+ */
+function TmuxAttachCopy({
+  windowName,
+  copied,
+  onCopy,
+}: {
+  windowName: string
+  copied: boolean
+  onCopy: (windowName: string) => void
+}) {
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+      <div className="text-xs text-[var(--text-dim)] mb-2">
+        {t('trust.tmux.label')}
+      </div>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 px-2 py-1 text-xs font-mono text-[var(--text-tertiary)] bg-black/20 rounded">
+          {buildTmuxAttachCommand(windowName)}
+        </code>
+        <button
+          onClick={() => onCopy(windowName)}
+          className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-tertiary)] hover:bg-white/5 transition-colors"
+        >
+          {copied ? t('trust.tmux.copied') : t('trust.tmux.copy')}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 /** Modal for detected mode (structure ported from Phase 5c) */
 function DetectedModal({
@@ -672,22 +700,11 @@ function UnsupportedDegradeModal({
           <RawBufferSection rawBuffer={event.rawBuffer} />
 
           {/* tmux attach command copy */}
-          <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-            <div className="text-xs text-[var(--text-dim)] mb-2">
-              {t('trust.tmux.label')}
-            </div>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 px-2 py-1 text-xs font-mono text-[var(--text-tertiary)] bg-black/20 rounded">
-                tmux attach -t &quot;{windowName}&quot;
-              </code>
-              <button
-                onClick={() => onCopyTmuxCommand(windowName)}
-                className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-tertiary)] hover:bg-white/5 transition-colors"
-              >
-                {copied ? t('trust.tmux.copied') : t('trust.tmux.copy')}
-              </button>
-            </div>
-          </div>
+          <TmuxAttachCopy
+            windowName={windowName}
+            copied={copied}
+            onCopy={onCopyTmuxCommand}
+          />
         </div>
 
         {/* Footer: Esc (cancel) only — no operable choices */}
