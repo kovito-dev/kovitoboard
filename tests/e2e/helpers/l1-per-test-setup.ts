@@ -460,6 +460,33 @@ function buildKbFixture() {
           err,
         )
       }
+
+      // Remove any AppManifest the v0.2.12 backfill
+      // (app-directory-extension.md v1.8 §6.9) may have written for the
+      // blank fixture's hand-placed `l1-fixture-app` during this test
+      // (a `/menu-entries` GET or a `PUT /api/apps/menu-order` pre-scan
+      // promotes the manifest-less self-made app on scan). `app/` is
+      // outside the `.kovitoboard/` snapshot restored above, so without
+      // this the backfilled manifest would leak and make later tests in
+      // the same Playwright project observe `l1-fixture-app` as
+      // already-eligible. Only the synthesized manifest is removed; the
+      // fixture's `app/l1-fixture-app/` directory + page survive.
+      try {
+        const backfilledManifest = join(
+          projectRoot,
+          'app',
+          'l1-fixture-app',
+          'manifest.json',
+        )
+        if (existsSync(backfilledManifest)) {
+          rmSync(backfilledManifest, { force: true })
+        }
+      } catch (err) {
+        console.warn(
+          `[l1-per-test-setup] failed to clean backfilled l1-fixture-app manifest at ${projectRoot}:`,
+          err,
+        )
+      }
     }
   }
 }
