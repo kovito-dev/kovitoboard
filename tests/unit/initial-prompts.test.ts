@@ -51,4 +51,22 @@ describe('getInitialPrompt', () => {
   it('returns null for an unknown key', () => {
     expect(getInitialPrompt('does:not-exist', 'en')).toBeNull()
   })
+
+  // The deny-pattern checker (`denyCoversKovitoboard`) rejects
+  // action-scoped wrappers like `Read(.kovitoboard/**)` because they
+  // only block one action class. If the remediation prompt suggested
+  // that form, an agent following the example would write a config that
+  // KB's own checker still flags — the toast would never clear. Pin the
+  // prompt examples to a form the checker accepts.
+  it.each(['ja', 'en'] as const)(
+    'security:add-deny-pattern (%s) does not suggest an action-scoped deny entry',
+    (locale) => {
+      const prompt = getInitialPrompt('security:add-deny-pattern', locale)!
+      // The action-scoped form `<Action>(...)` must not appear inside a
+      // JSON deny array example.
+      expect(prompt).not.toMatch(/"deny":\s*\[\s*"[A-Za-z][A-Za-z0-9_-]*\(/)
+      // The accepted whole-tree form must be present in the example.
+      expect(prompt).toContain('".kovitoboard/**"')
+    },
+  )
 })

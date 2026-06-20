@@ -28,10 +28,12 @@ const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
       '```json\n' +
       '{\n' +
       '  "permissions": {\n' +
-      '    "deny": ["Read(.kovitoboard/**)"]\n' +
+      '    "deny": [".kovitoboard/**"]\n' +
       '  }\n' +
       '}\n' +
       '```\n' +
+      '`Read(.kovitoboard/**)` のようなアクション限定の書き方は使わないでください。' +
+      '1 種類のアクションしか塞がず、書き込み系のアクセスが残ってしまいます。\n' +
       '4. 既存の `permissions.deny` がある場合は、その値を保ったまま `.kovitoboard/**` を追記してください。\n\n' +
       'これにより、KovitoBoard の内部状態ディレクトリへの意図しないアクセスを防げます。',
     en:
@@ -46,10 +48,12 @@ const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
       '```json\n' +
       '{\n' +
       '  "permissions": {\n' +
-      '    "deny": ["Read(.kovitoboard/**)"]\n' +
+      '    "deny": [".kovitoboard/**"]\n' +
       '  }\n' +
       '}\n' +
       '```\n' +
+      'Do not use an action-scoped form such as `Read(.kovitoboard/**)`: it only ' +
+      'blocks one action class and leaves write-capable access open.\n' +
       '4. If a `permissions.deny` entry already exists, keep its current values and append `.kovitoboard/**`.\n\n' +
       'This prevents unintended access to KovitoBoard\'s internal state directory.',
   },
