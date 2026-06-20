@@ -69,4 +69,14 @@ describe('getInitialPrompt', () => {
       expect(prompt).toContain('".kovitoboard/**"')
     },
   )
+
+  // `.claude/settings.json` is a sensitive config file. The prompt must
+  // tell the agent to preserve the rest of the file rather than replace
+  // it with the minimal example (which would drop existing allow/deny,
+  // hooks, or env settings).
+  it('security:add-deny-pattern (en) tells the agent to preserve existing settings', () => {
+    const prompt = getInitialPrompt('security:add-deny-pattern', 'en')!
+    expect(prompt).toMatch(/preserve/i)
+    expect(prompt).toMatch(/do not replace the whole file/i)
+  })
 })

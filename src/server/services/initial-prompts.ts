@@ -34,7 +34,10 @@ const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
       '```\n' +
       '`Read(.kovitoboard/**)` のようなアクション限定の書き方は使わないでください。' +
       '1 種類のアクションしか塞がず、書き込み系のアクセスが残ってしまいます。\n' +
-      '4. 既存の `permissions.deny` がある場合は、その値を保ったまま `.kovitoboard/**` を追記してください。\n\n' +
+      '4. 上の例は最小構成です。`.claude/settings.json` には他の重要な設定' +
+      '（`permissions.allow`、既存の `deny`、`hooks`、`env` など）が含まれている場合があります。' +
+      'ファイル全体を置き換えず、既存のキーと値をすべて保持したまま、' +
+      '`permissions.deny` 配列に `.kovitoboard/**` を 1 要素追記するだけにしてください。\n\n' +
       'これにより、KovitoBoard の内部状態ディレクトリへの意図しないアクセスを防げます。',
     en:
       'Following KovitoBoard\'s recommended settings, please add `.kovitoboard/` to ' +
@@ -54,7 +57,11 @@ const INITIAL_PROMPTS: Record<string, Record<'ja' | 'en', string>> = {
       '```\n' +
       'Do not use an action-scoped form such as `Read(.kovitoboard/**)`: it only ' +
       'blocks one action class and leaves write-capable access open.\n' +
-      '4. If a `permissions.deny` entry already exists, keep its current values and append `.kovitoboard/**`.\n\n' +
+      '4. The example above is minimal. Your `.claude/settings.json` may already ' +
+      'contain other important settings (such as `permissions.allow`, an existing ' +
+      '`deny`, `hooks`, or `env`). Do not replace the whole file: preserve every ' +
+      'existing key and value, and only append the single `.kovitoboard/**` entry ' +
+      'to the `permissions.deny` array.\n\n' +
       'This prevents unintended access to KovitoBoard\'s internal state directory.',
   },
 }
