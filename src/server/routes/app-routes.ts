@@ -196,23 +196,32 @@ function createMenuEntriesContext(
   // partial residue keeps its recipe provenance (§6.9.2 condition 4; no
   // forked history reader, §6.9.2 shared classifier reuse).
   //
-  // The history file is read exactly once here (when the scan context
-  // is built) and the appIds bound to any record are precomputed into a
-  // set, so `recipeInstallEvidenceExists` is O(1) per row — a large
-  // menu over a near-cap `recipe-history.jsonl` no longer re-reads /
-  // re-parses the file per manifest-less row (codex #143 F2).
+  // The history snapshot is read LAZILY and memoized (codex #143 F11):
+  // `recipeInstallEvidenceExists` only fires for a `'missing'` backfill
+  // candidate, so a request whose menu has no manifest-less rows (or no
+  // `app/menu.ts` at all) never touches the up-to-10 MiB
+  // `recipe-history.jsonl`. The first evidence check that does need it
+  // computes the history-bound appId set once and caches it for the rest
+  // of the scan, so a many-row menu still reads/parses the file at most
+  // once (the F2 read-once guarantee, now also F11 read-only-if-needed).
   //
-  // FAIL-CLOSED on an indeterminate history (codex #143 F6): the read
-  // goes through `loadRecipeHistorySnapshot`, which throws on a genuine
-  // IO failure (EACCES / EIO / …) rather than swallowing it into an
-  // empty array the way `readRecipeHistory` does. §6.9.2 condition 4
-  // requires recipe evidence to be *completely absent* before
-  // attributing an app to `user-creation`; if the history cannot be
-  // read we cannot prove absence, so we suppress ALL backfill this scan
-  // cycle (every app is treated as if it had evidence). The next scan
-  // retries once the file is readable again. A genuinely absent file
-  // (ENOENT) returns an empty snapshot and is the normal "no evidence"
-  // case — backfill is allowed.
+  // FAIL-CLOSED on an indeterminate history (codex #143 F6 / F9):
+  //   - Over-cap (codex #143 F9): `loadRecipeHistorySnapshot` returns an
+  //     EMPTY snapshot (not a throw) when the file is over
+  //     `MAX_HISTORY_BYTES` — it rotates the file away and treats the
+  //     active history as empty. For the provenance guard that masks
+  //     indeterminate absence (rotated-away records may have bound this
+  //     app to recipe lineage), so an explicit over-cap pre-check fails
+  //     closed.
+  //   - IO failure (codex #143 F6): `loadRecipeHistorySnapshot` throws on
+  //     a genuine read failure (EACCES / EIO / …) rather than swallowing
+  //     it into `[]` the way `readRecipeHistory` does. §6.9.2 condition 4
+  //     requires recipe evidence to be *completely absent* before
+  //     attributing an app to `user-creation`; if the history cannot be
+  //     read we cannot prove absence, so backfill is suppressed for the
+  //     rest of this scan (every app is treated as if it had evidence).
+  // A genuinely absent file (ENOENT) returns an empty snapshot and is the
+  // normal "no evidence" case — backfill is allowed.
   //
   // Each record's appId is resolved as `record.appId ?? record.menu[0]`:
   // `appId` was promoted to a first-class field in v0.2.0, but older
@@ -222,60 +231,66 @@ function createMenuEntriesContext(
   // whose `RecipeManifest` is gone would look evidence-free and be
   // mis-backfilled as `user-creation`, violating the provenance guard
   // (codex #143 F1).
-  let historyIndeterminate = false
-  const historyBoundAppIds = new Set<string>()
-  // Over-cap pre-check (codex #143 F9): `loadRecipeHistorySnapshot`
-  // returns an EMPTY snapshot (not a throw) when the history file is
-  // over `MAX_HISTORY_BYTES` — it rotates the file away and treats the
-  // active history as empty. For the bundled-disable path that is a
-  // benign "effectively empty until next append", but for the backfill
-  // provenance guard an over-cap file makes recipe-evidence absence
-  // INDETERMINATE (the rotated-away records may have bound this app to
-  // recipe lineage). Detect the over-cap state up front and fail closed
-  // rather than letting the empty snapshot read as "no evidence".
-  try {
-    const historyPath = getRecipeHistoryPath(fs)
-    if (
-      fs.existsSync(historyPath) &&
-      fs.statSync(historyPath).size > MAX_HISTORY_BYTES
-    ) {
-      historyIndeterminate = true
+  let historyEvidence:
+    | { indeterminate: boolean; boundAppIds: Set<string> }
+    | null = null
+  const getHistoryEvidence = (): {
+    indeterminate: boolean
+    boundAppIds: Set<string>
+  } => {
+    if (historyEvidence !== null) return historyEvidence
+    const boundAppIds = new Set<string>()
+    // Over-cap pre-check (F9).
+    try {
+      const historyPath = getRecipeHistoryPath(fs)
+      if (
+        fs.existsSync(historyPath) &&
+        fs.statSync(historyPath).size > MAX_HISTORY_BYTES
+      ) {
+        serverLogger.warn(
+          { historyPath },
+          '[app-routes] recipe-history.jsonl exceeds the size cap; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+        )
+        historyEvidence = { indeterminate: true, boundAppIds }
+        return historyEvidence
+      }
+    } catch (err) {
       serverLogger.warn(
-        { historyPath },
-        '[app-routes] recipe-history.jsonl exceeds the size cap; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+        { err },
+        '[app-routes] could not stat recipe-history.jsonl; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
       )
+      historyEvidence = { indeterminate: true, boundAppIds }
+      return historyEvidence
     }
-  } catch (err) {
-    // A stat failure here is itself an indeterminate state — fail closed.
-    historyIndeterminate = true
-    serverLogger.warn(
-      { err },
-      '[app-routes] could not stat recipe-history.jsonl; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
-    )
-  }
-  if (!historyIndeterminate) {
+    // Read + parse (F6 fail-closed on throw).
     try {
       for (const record of loadRecipeHistorySnapshot(fs).entries) {
         const recordAppId = record.appId ?? record.menu[0]
         if (typeof recordAppId === 'string' && recordAppId.length > 0) {
-          historyBoundAppIds.add(recordAppId)
+          boundAppIds.add(recordAppId)
         }
       }
     } catch (err) {
-      historyIndeterminate = true
       serverLogger.warn(
         { err },
         '[app-routes] recipe-history.jsonl unreadable; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
       )
+      historyEvidence = { indeterminate: true, boundAppIds }
+      return historyEvidence
     }
+    historyEvidence = { indeterminate: false, boundAppIds }
+    return historyEvidence
   }
   const backfillHooks: BackfillHooks = {
     projectRoot: resolveProjectRoot(fs),
     kovitoboardVersion: loadKbVersion(fs),
-    recipeInstallEvidenceExists: (appId) =>
-      historyIndeterminate ||
-      manifestStore.get(appId) !== null ||
-      historyBoundAppIds.has(appId),
+    recipeInstallEvidenceExists: (appId) => {
+      // Cheap in-memory check first — a present RecipeManifest is
+      // evidence without ever reading the history file.
+      if (manifestStore.get(appId) !== null) return true
+      const evidence = getHistoryEvidence()
+      return evidence.indeterminate || evidence.boundAppIds.has(appId)
+    },
   }
 
   return { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks }

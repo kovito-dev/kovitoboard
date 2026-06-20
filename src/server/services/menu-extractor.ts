@@ -458,6 +458,38 @@ function maybeBackfillManifest(
     // the user's first `PUT /api/apps/menu-order` persists it.
   }
 
+  // Boundary re-check immediately before the write (codex #143 F10):
+  // the page-resolution Layer-3 check ran earlier in the loop, and
+  // `writeAppManifest` re-derives `projectRoot/app/<appId>/` and writes
+  // there. To shrink the TOCTOU window where `app/<appId>` could be
+  // swapped for a symlink pointing outside the project, re-resolve the
+  // app directory's realpath here and require it to stay under the
+  // canonical `app/` root before writing. This does not fully close the
+  // residual (an fd-based open would be needed, and the shared
+  // `writeAppManifest` must not be forked — the same accepted residual
+  // the page `/@fs/` resolution documents), but it refuses the obvious
+  // pre-write redirection.
+  const appRoot = join(hooks.projectRoot, 'app')
+  const appIdDir = join(appRoot, entry.id)
+  try {
+    const realAppRoot = fs.realpathSync(appRoot)
+    const realAppIdDir = fs.realpathSync(appIdDir)
+    const appRootMarker = realAppRoot.endsWith(sep) ? realAppRoot : realAppRoot + sep
+    if (realAppIdDir !== realAppRoot && !realAppIdDir.startsWith(appRootMarker)) {
+      serverLogger.warn(
+        { appId: entry.id, reason: 'app-id-dir-escape' },
+        '[menu-extractor] Refusing manifest backfill: app/<id> canonicalizes outside app/',
+      )
+      return null
+    }
+  } catch (err) {
+    serverLogger.warn(
+      { appId: entry.id, err, reason: 'app-id-dir-realpath-failure' },
+      '[menu-extractor] Refusing manifest backfill: could not canonicalize app/<id>',
+    )
+    return null
+  }
+
   try {
     // Atomic write (same-dir temp + fsync + rename, mkdir included) via
     // the AppManifest owner helper. §6.9.5 best-effort: a write failure

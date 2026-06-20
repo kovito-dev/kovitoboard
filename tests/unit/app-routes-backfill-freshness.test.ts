@@ -207,6 +207,21 @@ describe('GET /api/app/menu-entries — backfill evidence is fresh per request (
     expect(existsSync(manifestPath)).toBe(false)
   })
 
+  it('does not read recipe-history when there are no backfill candidates (codex #143 F11)', async () => {
+    // No `app/menu.ts` → zero menu rows → zero backfill candidates →
+    // `recipeInstallEvidenceExists` is never invoked, so the (up to
+    // 10 MiB) history file is never read/parsed. Prove it by making the
+    // history a DIRECTORY: an eager read would throw and the request
+    // would carry a warn / 503; the lazy read leaves it untouched and
+    // the GET returns an empty menu cleanly.
+    mkdirSync(join(h.projectRoot, '.kovitoboard', 'recipe-history.jsonl'), {
+      recursive: true,
+    })
+    const entries = await getMenuEntries(h.app)
+    expect(Array.isArray(entries)).toBe(true)
+    expect(entries).toHaveLength(0)
+  })
+
   it('fails closed and suppresses backfill when recipe-history is over the size cap (codex #143 F9)', async () => {
     const manifestPath = join(h.projectRoot, 'app', APP_ID, 'manifest.json')
     writeMenuTsAndPage(h.projectRoot)
