@@ -61,6 +61,10 @@ export function parseExtensionOrigin(origin: string | undefined | null): string 
 
   if (url.protocol !== 'chrome-extension:') return null
   if (url.username !== '' || url.password !== '') return null
+  // A port is not part of the canonical `chrome-extension://<id>` origin
+  // shape; reject `chrome-extension://<id>:123` (which would otherwise
+  // parse with the same hostname) to keep the match exact.
+  if (url.port !== '') return null
   if (url.pathname !== '' && url.pathname !== '/') return null
   if (url.search !== '' || url.hash !== '') return null
 

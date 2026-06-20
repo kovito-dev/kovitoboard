@@ -139,6 +139,35 @@ describe('SessionManager origin reservation (SS-1)', () => {
     expect(second.origin).toBe('sessions')
   })
 
+  it('hasPendingReservation reports a live reservation without consuming it', () => {
+    // External-client API §7.3.1: the ext path checks this read-only
+    // before launching. It must not consume the reservation.
+    expect(mgr.hasPendingReservation('agent-a')).toBe(false)
+    mgr.reserveOrigin('agent-a', 'extension')
+    expect(mgr.hasPendingReservation('agent-a')).toBe(true)
+    // Still consumable afterwards (not drained by the check).
+    const sess = mgr.ensureSession('sess-1', '/proj', '/proj/.../sess-1.jsonl')
+    expect(sess.origin).toBe('extension')
+  })
+
+  it('cancelReservation removes a parked reservation (failed ext launch cleanup)', () => {
+    mgr.reserveOrigin('agent-a', 'extension')
+    expect(mgr.hasPendingReservation('agent-a')).toBe(true)
+    expect(mgr.cancelReservation('agent-a', 'extension')).toBe(true)
+    expect(mgr.hasPendingReservation('agent-a')).toBe(false)
+    // A later session for the same agent is no longer mis-tagged.
+    const sess = mgr.ensureSession('sess-1', '/proj', '/proj/.../sess-1.jsonl')
+    expect(sess.origin).toBeUndefined()
+  })
+
+  it('cancelReservation only removes a matching agentId + origin pair', () => {
+    mgr.reserveOrigin('agent-a', 'extension')
+    mgr.reserveOrigin('agent-b', 'sidebar')
+    expect(mgr.cancelReservation('agent-a', 'sidebar')).toBe(false)
+    expect(mgr.cancelReservation('agent-a', 'extension')).toBe(true)
+    expect(mgr.hasPendingReservation('agent-b')).toBe(true)
+  })
+
   it('emits agent_claimed when the reservation lands', () => {
     // index.ts subscribes to `agent_claimed` to persist the mapping
     // to .kovitoboard/session-agents.jsonl. Lose the event and the

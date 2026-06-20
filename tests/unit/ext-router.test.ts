@@ -48,6 +48,7 @@ beforeAll(async () => {
       getLaunchToken: () => TOKEN,
       tokensMatchLaunchToken: (actual, expected) => actual === expected,
       onRepairOverwrite: () => {},
+      onAsyncError: () => {},
       handleAgentsList: (_req, res) => res.json([{ id: 'agent-1' }]),
       handleExtSessionNew: (req, res, ctx) => {
         // Mirror the real delegate's validate-before-launch contract so

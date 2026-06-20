@@ -60,6 +60,8 @@ export interface ExtRouterDeps {
    * registry is cleared here in the router before invoking it.
    */
   onRepairOverwrite: (oldExtensionId: string | null, newExtensionId: string) => void
+  /** Operator-only logging hook for swallowed async handler rejections. */
+  onAsyncError: (err: unknown) => void
   /** Reuse the existing `GET /api/agents` business logic verbatim. */
   handleAgentsList: (req: Request, res: Response) => void
   /**
@@ -196,7 +198,7 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
 
   // --- sessions/new (full guard, §6.1 / §7.3) ---
   router.post('/sessions/new', extGuard, express.json(), (req, res) => {
-    void handleExtNew(deps, req, res)
+    runAsync(res, handleExtNew(deps, req, res), deps.onAsyncError)
   })
 
   // --- sessions/:id/send (full guard, §6.1) ---
@@ -206,10 +208,29 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
       res.status(403).json({ error: 'Session not owned' })
       return
     }
-    void deps.handleSessionSend(req, res)
+    runAsync(res, Promise.resolve(deps.handleSessionSend(req, res)), deps.onAsyncError)
   })
 
   return router
+}
+
+/**
+ * Catch a rejected async handler so a thrown error does not leave the
+ * request hanging or surface as an unhandled rejection. If the response
+ * has not been sent yet, reply with a 500; otherwise the response is
+ * already committed and we only swallow the rejection. The detail is
+ * forwarded to the injected `onError` hook for operator logging (no
+ * client leak). Express 5 propagates returned-promise rejections to its
+ * error handler, but this router has no custom error middleware, so we
+ * terminate explicitly here.
+ */
+function runAsync(res: Response, p: Promise<unknown>, onError?: (err: unknown) => void): void {
+  void p.catch((err: unknown) => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal error' })
+    }
+    if (onError) onError(err)
+  })
 }
 
 /**

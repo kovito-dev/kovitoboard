@@ -304,6 +304,9 @@ app.use(
         }
       }
     },
+    onAsyncError: (err) => {
+      apiLogger.error({ err }, 'Ext router async handler rejected')
+    },
     handleAgentsList,
     handleExtSessionNew: async (req, res, ctx) => {
       // Validate client input BEFORE committing to the launch so bad
@@ -1136,24 +1139,34 @@ async function startExtSession(
   // `new_session` correlation listener can match it to the ext launch.
   sessionManager.reserveOrigin(agentId, 'extension')
 
-  const tmuxAgent = await ensureTmuxAgent(agentId)
-  if (tmuxAgent) {
-    if (tmuxAgent.justStarted) {
-      const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
-      if (!ready) {
-        apiLogger.warn({ agentId, timeoutMs: 45000 }, 'Prompt wait timeout for ext agent')
+  // If the launch work below fails, cancel the reservation we just
+  // parked so it does not linger for the full TTL — a stale reservation
+  // would block the next ext launch for this agent
+  // (`hasPendingReservation`) and could mis-tag an unrelated later
+  // session as `'extension'`.
+  try {
+    const tmuxAgent = await ensureTmuxAgent(agentId)
+    if (tmuxAgent) {
+      if (tmuxAgent.justStarted) {
+        const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
+        if (!ready) {
+          apiLogger.warn({ agentId, timeoutMs: 45000 }, 'Prompt wait timeout for ext agent')
+        }
+        const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
+        if (result.success) return
+      } else {
+        const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
+        if (result.success) return
       }
-      const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
-      if (result.success) return
-    } else {
-      const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
-      if (result.success) return
+      apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
     }
-    apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
-  }
 
-  // Fallback: ClaudeBridge (--print mode).
-  claudeBridge.startNewSession(message.trim(), agentId, resolvedCwd)
+    // Fallback: ClaudeBridge (--print mode).
+    claudeBridge.startNewSession(message.trim(), agentId, resolvedCwd)
+  } catch (err) {
+    sessionManager.cancelReservation(agentId, 'extension')
+    throw err
+  }
 }
 
 // Get process status
@@ -3461,7 +3474,9 @@ wss.on('connection', (ws, request) => {
     } else if (type === 'client_log') {
       handleClientLog(parsed.payload as ClientLogPayload)
     } else if (type === 'ext_session_new') {
-      void handleExtWsSessionNew(ws, parsed.payload)
+      handleExtWsSessionNew(ws, parsed.payload).catch((err: unknown) => {
+        wsLogger.warn({ err: String(err) }, 'ext_session_new handler rejected')
+      })
     } else if (type === 'ext_session_send') {
       handleExtWsSessionSend(parsed.payload)
     } else if (type === 'ext_subscribe') {
@@ -3586,7 +3601,12 @@ function handleExtWsSessionSend(payload: unknown): void {
       return synthRes
     },
   } as unknown as Response
-  void handleSessionSend(synthReq, synthRes)
+  // The WS path has no Express error handler, so catch any rejection
+  // from the shared send logic explicitly rather than letting it become
+  // an unhandled rejection.
+  Promise.resolve(handleSessionSend(synthReq, synthRes)).catch((err: unknown) => {
+    wsLogger.warn({ err: String(err), sessionId }, 'ext_session_send: delegated send threw')
+  })
 }
 
 /**

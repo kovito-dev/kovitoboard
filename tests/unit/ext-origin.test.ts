@@ -42,6 +42,7 @@ describe('parseExtensionOrigin — rejects (evasion vectors §9.6.1)', () => {
     ['a normal https web origin', 'https://evil.example'],
     ['http loopback origin', 'http://127.0.0.1:5173'],
     ['subdomain smuggling', `chrome-extension://${VALID_ID}.evil.example`],
+    ['port smuggling', `chrome-extension://${VALID_ID}:123`],
     ['path smuggling', `chrome-extension://${VALID_ID}/path`],
     ['query smuggling', `chrome-extension://${VALID_ID}?x=1`],
     ['hash smuggling', `chrome-extension://${VALID_ID}#frag`],

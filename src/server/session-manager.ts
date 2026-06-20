@@ -145,6 +145,28 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Cancel the most recently parked reservation matching `agentId` +
+   * `origin`. Added for the external-client API: when an ext launch
+   * fails AFTER `reserveOrigin('extension')` but before any session
+   * materialises, the caller cancels the reservation so it does not
+   * linger for the full TTL — which would otherwise block the next ext
+   * launch for that agent (`hasPendingReservation`) and could mis-tag a
+   * later session as `'extension'`. Removes at most one matching entry
+   * (LIFO, the one this caller just parked); returns whether one was
+   * removed. Other callers' reservations are untouched.
+   */
+  cancelReservation(agentId: string, origin: SessionOrigin): boolean {
+    for (let i = this.originReservations.length - 1; i >= 0; i--) {
+      const r = this.originReservations[i]
+      if (r.agentId === agentId && r.origin === origin) {
+        this.originReservations.splice(i, 1)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
    * Read-only check: is there a live (non-expired) origin reservation
    * for `agentId`? Added for the external-client API (§7.3.1 step 1):
    * an ext launch is rejected while ANY pending reservation exists for
