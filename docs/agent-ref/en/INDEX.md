@@ -1,7 +1,7 @@
 # KovitoBoard Reference (for Agents) — English
 
-**Target KB version:** v0.2.11
-**Last updated:** 2026-06-17
+**Target KB version:** v0.2.12
+**Last updated:** 2026-06-20
 **Role:** Navigation layer for chapters 01–12. Detailed content for every chapter lives in the Japanese authoritative source at [`../INDEX.md`](../INDEX.md).
 
 > ℹ️ **About this tree:** `docs/agent-ref/en/` is primarily a **navigation layer**, not a translation. Most chapters here provide English section titles and pointers into the Japanese authoritative source (`docs/agent-ref/`). Agents reading this tree should follow the pointers and read the Japanese detailed content directly — Claude can read Japanese and respond in English without loss.
