@@ -139,7 +139,23 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     }
     next()
   }
-  router.post('/pair', pairOriginGate, express.json(), (req, res) => {
+  // Catch `express.json()`'s parse error so malformed JSON returns the
+  // documented `{ error: 'Bad request' }` envelope (400) rather than
+  // Express' default error response, which can be HTML and — in
+  // development — carry a stack trace / paths on this pre-token route.
+  const jsonParseErrorGate = (
+    err: unknown,
+    _req: Request,
+    res: Response,
+    next: express.NextFunction,
+  ): void => {
+    if (err) {
+      res.status(400).json({ error: 'Bad request' })
+      return
+    }
+    next()
+  }
+  const handlePair = (req: Request, res: Response): void => {
     // Origin already validated by `pairOriginGate`; re-derive the id.
     const originId = parseExtensionOrigin(req.headers.origin)!
     const body = req.body as { pairingCode?: unknown; extensionId?: unknown } | undefined
@@ -188,7 +204,8 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     }
 
     res.json({ token: deps.getLaunchToken() })
-  })
+  }
+  router.post('/pair', pairOriginGate, express.json(), jsonParseErrorGate, handlePair)
 
   // --- /token (origin-only, token NOT required, §7.2.4) ---
   router.get('/token', (req, res) => {

@@ -233,6 +233,18 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
     expect(registry.isAgentInFlight('agent-z')).toBe(false)
   })
 
+  it('returns the safe { error: "Bad request" } envelope for malformed JSON (no HTML/stack leak)', async () => {
+    pairing.issuePairingCode()
+    const res = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: '{ not valid json',
+    })
+    expect(res.status).toBe(400)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Bad request' })
+  })
+
   it('rejects reuse of a consumed code (401)', async () => {
     const code = pairing.issuePairingCode()
     await fetch(url('/pair'), {
