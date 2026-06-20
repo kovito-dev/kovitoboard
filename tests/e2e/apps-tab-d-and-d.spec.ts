@@ -43,6 +43,7 @@ import {
   waitForWsFrame,
   snapshotMenuTs,
   restoreMenuTs,
+  removeMenuEntry,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -58,6 +59,13 @@ test.describe('Apps tab — drag-and-drop reorder (BS-T9)', () => {
 
   test.beforeEach(async ({ request, kbFixture }) => {
     menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+    // Strip the hand-placed `l1-fixture-app` entry so the D&D operates
+    // on exactly the two enabled samples. Since v0.2.12 a manifest-less
+    // self-made app with a readable page is backfilled on scan and
+    // becomes eligible (app-directory-extension.md v1.8 §6.9), which
+    // would add a third reorderable row; `restoreMenuTs` puts it back
+    // in afterEach.
+    removeMenuEntry(kbFixture.projectRoot, 'l1-fixture-app')
     const r1 = await request.post(
       `${API_BASE}/api/recipes/sample/${APP_DOC}/enable`,
     )

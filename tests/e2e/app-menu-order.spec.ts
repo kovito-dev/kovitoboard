@@ -30,9 +30,11 @@
  * starts empty of bundled apps; we enable `document-viewer` and `todo`
  * (the two KB-shipped bundled samples) inside beforeEach so the
  * eligible app set is exactly {document-viewer, todo} for every test.
- * The pre-existing `l1-fixture-app` ext app has no AppManifest and is
- * therefore not part of the eligible set (the menu-order route scans
- * `app/<appId>/manifest.json` only).
+ * The pre-existing `l1-fixture-app` ext app would otherwise be
+ * backfilled into the eligible set since v0.2.12 (a manifest-less
+ * self-made app with a readable page is promoted on scan,
+ * app-directory-extension.md v1.8 §6.9), so beforeEach strips its
+ * menu.ts entry to keep the eligible set fixed at the two samples.
  */
 import { test, expect } from './helpers/l1-per-test-setup'
 import {
@@ -42,6 +44,7 @@ import {
   readRecipeManifest,
   snapshotMenuTs,
   restoreMenuTs,
+  removeMenuEntry,
 } from './helpers/v021-bundled-helpers'
 
 const API_BASE = 'http://127.0.0.1:3001'
@@ -57,6 +60,13 @@ test.describe('App menu-order PUT (BS-T10) — closed-world batch contract', () 
 
   test.beforeEach(async ({ request, kbFixture }) => {
     menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+    // Strip the hand-placed `l1-fixture-app` entry so it is not
+    // backfilled into the eligible set (since v0.2.12 a manifest-less
+    // self-made app with a readable page is promoted on scan,
+    // app-directory-extension.md v1.8 §6.9). These contract tests fix
+    // the eligible set to exactly {document-viewer, todo};
+    // `restoreMenuTs` puts the entry back in afterEach.
+    removeMenuEntry(kbFixture.projectRoot, 'l1-fixture-app')
     // Enable both bundled samples so the eligible app set is fixed at
     // exactly {document-viewer, todo}. Each enable also appends an
     // entry to `app/menu.ts` so the closed-world coverage check has

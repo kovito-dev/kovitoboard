@@ -41,6 +41,7 @@ import {
   cleanupAppDir,
   snapshotMenuTs,
   restoreMenuTs,
+  removeMenuEntry,
 } from './helpers/v021-bundled-helpers'
 
 type SourceBadge = 'self-made' | 'bundled' | 'sample' | 'import' | 'url'
@@ -167,6 +168,14 @@ test.describe('Apps tab — source badge rendering (BS-T13)', () => {
 
   test.beforeEach(async ({ kbFixture }) => {
     menuTsSnapshot = snapshotMenuTs(kbFixture.projectRoot)
+    // Strip the hand-placed `l1-fixture-app` entry so it is not
+    // backfilled as a second `self-made` row (since v0.2.12 a
+    // manifest-less self-made app with a readable page is promoted on
+    // scan, app-directory-extension.md v1.8 §6.9). This test asserts
+    // exactly one badge per source, so the seeded `self-made-1` must be
+    // the only self-made app; `restoreMenuTs` puts the entry back in
+    // afterEach.
+    removeMenuEntry(kbFixture.projectRoot, 'l1-fixture-app')
     for (const seed of SEEDS) {
       seedAppManifest(kbFixture.projectRoot, seed)
     }

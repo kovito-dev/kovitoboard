@@ -75,6 +75,17 @@ interface CreateAppsRouterDeps {
   projectRoot: string
   broadcast: BroadcastFn
   apiLogger: Logger
+  /**
+   * Optional case-A backfill pre-scan
+   * (`app-directory-extension.md` v1.8 §6.9.7 option A). Invoked at the top
+   * of `PUT /api/apps/menu-order`, before the eligible scan, so a
+   * manifest-less self-made app is backfilled (and therefore observable
+   * by `scanAppManifests`) even when the client PUTs without a prior
+   * `/menu-entries` GET. Wired in `index.ts` to {@link runMenuBackfillScan}.
+   * Omitted in unit tests that drive the batch directly with
+   * pre-written manifests.
+   */
+  runBackfillScan?: () => void
 }
 
 /**
@@ -83,7 +94,7 @@ interface CreateAppsRouterDeps {
  * never need to re-verify auth.
  */
 export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
-  const { fs, projectRoot, broadcast, apiLogger } = deps
+  const { fs, projectRoot, broadcast, apiLogger, runBackfillScan } = deps
   const router = Router()
 
   // -----------------------------------------------------------------
@@ -149,6 +160,28 @@ export function createAppsRouter(deps: CreateAppsRouterDeps): Router {
     }
     const requestedSnapshot =
       typeof rawSnapshot === 'string' ? rawSnapshot : undefined
+
+    // Case-A backfill pre-scan (app-directory-extension.md v1.8
+    // §6.9.7 option A): run the menu-extraction backfill BEFORE the
+    // eligible scan so a manifest-less self-made app is written to
+    // disk (and therefore observable by `scanAppManifests` below)
+    // even when the client PUTs without a prior `/menu-entries` GET.
+    // Best-effort: the backfill is internally try/caught per app
+    // (§6.9.5), so a write failure leaves that app ineligible rather
+    // than throwing here. Any residual size-`N` observation drift
+    // between this pre-scan and the locked eligible scan is the
+    // benign drift the spec accepts (§6.9.7 F5): the client refetches
+    // `/menu-entries` and re-PUTs on a `MenuOrderCoverageMismatch`.
+    if (runBackfillScan) {
+      try {
+        runBackfillScan()
+      } catch (err) {
+        apiLogger.warn(
+          { err },
+          'PUT /api/apps/menu-order: case-A backfill pre-scan failed; continuing with current eligible set',
+        )
+      }
+    }
 
     // ---------------------------------------------------------------
     // Lock-then-read ordering (Spec note (attempt 1)):
