@@ -372,8 +372,49 @@ export class TmuxBridge {
   private fs: FileAccessLayer
   private _sessionName: string | null = null
 
+  /**
+   * Process-lifetime latch: `true` once this KB process has observed its
+   * own tmux session alive at least once, set on every KB-owned
+   * alive-observation / creation path — `hasSession()` returning true,
+   * `ensureSession()` creating a fresh session, and `startAgent()` /
+   * `startJobWindow()` succeeding.
+   *
+   * It backs `hasEverHadSession()`, which the admin status route uses to
+   * suppress the degraded banner during the startup window before the
+   * KB-owned tmux session is first spawned. tmux is owned by the bridge,
+   * so the latch lives here as an instance field (not a module-scope
+   * variable) to keep ownership and lifetime aligned with the bridge.
+   *
+   * Known limitation (per-instance): the latch is scoped to this bridge
+   * instance. An embedded app that constructs its own `TmuxBridge` and
+   * launches a job window (e.g. the research-reports app) sets only that
+   * instance's latch, not the admin router's. The admin router's own
+   * `hasSession()` poll on each `/api/admin/status` request latches its
+   * instance as soon as it next observes the session alive, so the only
+   * exposure is a narrow race (job window created, then tmux dies, before
+   * the next admin poll), which self-corrects on the following poll. The
+   * durable fix — unifying the "active session" signal so this dimension
+   * shares the same single source of truth as the other status inputs —
+   * is tracked in the degraded-banner follow-up.
+   */
+  private _everAlive = false
+
   constructor(fs: FileAccessLayer) {
     this.fs = fs
+  }
+
+  /**
+   * Whether this KB process has ever seen its own tmux session alive
+   * (latched; never resets for the process lifetime).
+   *
+   * Consumed by `GET /api/admin/status` to avoid reporting `degraded`
+   * before the KB-owned tmux session has been spawned for the first
+   * time — at that point a missing session cannot be a regression of a
+   * KB session, and any active sessions are external (terminal-launched)
+   * Claude processes the bridge does not own.
+   */
+  hasEverHadSession(): boolean {
+    return this._everAlive
   }
 
   /**
@@ -462,6 +503,8 @@ export class TmuxBridge {
   hasSession(): boolean {
     try {
       execFileSync('tmux', ['has-session', '-t', this.sessionName], { stdio: 'pipe' })
+      // Latch: the KB-owned session has been observed alive at least once.
+      this._everAlive = true
       return true
     } catch {
       return false
@@ -757,6 +800,10 @@ export class TmuxBridge {
     execFileSync('tmux', [
       'new-session', '-d', '-s', this.sessionName, '-n', 'main', '-c', projectRoot,
     ], { stdio: 'pipe' })
+    // Latch: a KB-owned session now exists. The existing-session branch
+    // above already latches via `hasSession()`, so both alive-observation
+    // points (fresh creation here, prior attach there) set the latch.
+    this._everAlive = true
     tmuxLogger.info({ sessionName: this.sessionName, cwd: projectRoot }, 'Session created')
 
     // New session: strip nested-detection env so `new-window` children
@@ -907,6 +954,8 @@ export class TmuxBridge {
 
     try {
       execFileSync('tmux', launchArgs, { stdio: 'pipe' })
+      // Latch: a KB-owned window now exists, so the session is alive.
+      this._everAlive = true
       tmuxLogger.info({ name, agentId, workDir, isSystemDefault }, 'Agent started')
 
       return { success: true }
@@ -961,6 +1010,10 @@ export class TmuxBridge {
         'new-window', '-t', this.sessionName, '-n', windowName, '-c', workDir,
         'claude',
       ], { stdio: 'pipe' })
+      // Latch: a KB-owned job window now exists. `ensureSession()` above
+      // already latches, but `startJobWindow` is a first-class KB-owned
+      // launch path, so we set it here too for parity with `startAgent`.
+      this._everAlive = true
       tmuxLogger.info({ windowName, workDir }, 'Job window started')
       return { success: true }
     } catch (err) {
