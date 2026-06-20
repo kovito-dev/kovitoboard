@@ -380,7 +380,13 @@ async function handleExtNew(deps: ExtRouterDeps, req: Request, res: Response): P
     return
   }
 
-  // Force origin='extension' regardless of any client-supplied value.
-  ;(req.body as Record<string, unknown>).origin = 'extension'
+  // The ext session's `origin='extension'` is enforced SERVER-SIDE by
+  // the injected delegate (it reserves `reserveOrigin(agentId,
+  // 'extension')` in `startExtSession`), so any client-supplied
+  // `req.body.origin` is ignored and we do NOT mutate the request body
+  // here. Mutating it would be dead/misleading — the delegate never
+  // reads `req.body.origin`, and a future delegate routing through
+  // `handleNewSession` would hit that path's explicit `origin:
+  // 'extension'` rejection rather than silently inheriting this value.
   await deps.handleExtSessionNew(req, res, { agentId, launchId: reg.launchId })
 }
