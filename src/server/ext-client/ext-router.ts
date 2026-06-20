@@ -34,19 +34,17 @@ import express, { type Request, type Response, type Router } from 'express'
 import type { PairingStore } from './pairing-store'
 import type { OwnershipRegistry } from './ownership-registry'
 import type { ExtAgentExistence } from './agent-existence'
+import { MAX_EXT_ID_LEN } from './limits'
 import { parseExtensionOrigin } from '../middleware/ext-origin'
 
 /** Mount prefix for the external-client API (§5.1, case-B namespace). */
 export const EXT_CLIENT_MOUNT_PREFIX = '/api/ext/_client/v1'
 
-/**
- * Upper bound on the correlation / id fields a paired extension may
- * send (agentId / clientRequestId / sessionId). Matches the WS path's
- * cap so the HTTP and WS validation are consistent and oversized ids
- * cannot sit in registry maps until TTL (external-client-api.md v1.0
- * §8.4 hardening).
- */
-export const MAX_EXT_ID_LEN = 256
+// `MAX_EXT_ID_LEN` (the external-client id-field cap) lives in the
+// shared `limits` module so the HTTP and WS paths share ONE source of
+// truth (external-client-api.md §8.4 hardening, HTTP/WS parity). It is
+// re-exported here so existing importers of this router keep working.
+export { MAX_EXT_ID_LEN } from './limits'
 
 /** capabilities response (§6.3). Frozen so callers cannot mutate it. */
 const CAPABILITIES = Object.freeze({

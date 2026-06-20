@@ -57,13 +57,14 @@ import {
   tokensMatchLaunchToken,
   isLoopbackOrigin,
 } from './middleware/auth'
-import { PairingStore } from './ext-client/pairing-store'
+import { PairingStore, PAIRING_CODE_TTL_MS } from './ext-client/pairing-store'
 import { OwnershipRegistry } from './ext-client/ownership-registry'
 import {
   createExtClientRouter,
   EXT_CLIENT_MOUNT_PREFIX,
 } from './ext-client/ext-router'
 import { resolveAgentExistence, type ExtAgentExistence } from './ext-client/agent-existence'
+import { MAX_EXT_ID_LEN } from './ext-client/limits'
 import {
   ExtWsConnections,
   classifyConnection,
@@ -752,7 +753,9 @@ app.get('/api/config', (_req, res) => {
 // single-use, 5-minute code is the only auth material `/pair` accepts.
 app.post('/api/ext-pairing/issue', (_req, res) => {
   const code = extPairing.issuePairingCode()
-  res.json({ pairingCode: code, ttlMs: 300000 })
+  // Advertise the SAME TTL the store actually enforces so the response
+  // cannot silently drift from the real expiry if the constant changes.
+  res.json({ pairingCode: code, ttlMs: PAIRING_CODE_TTL_MS })
 })
 
 app.get('/api/agents', handleAgentsList)
@@ -3421,11 +3424,10 @@ app.post('/api/agents/:id/restart', async (req, res) => {
   }
 })
 
-// Upper bound on the correlation / id fields a paired extension may
-// send (agentId / clientRequestId / sessionId). Generous for real ids
-// (128-bit hex = 32 chars, agent ids are short) while refusing
-// unbounded strings that would otherwise sail past the per-message gate.
-const MAX_WS_ID_LEN = 256
+// The WS ext id-field cap is the SAME shared constant the HTTP ext
+// router enforces (`MAX_EXT_ID_LEN` from `ext-client/limits`), so the
+// HTTP/WS validation parity required by the spec cannot drift.
+const MAX_WS_ID_LEN = MAX_EXT_ID_LEN
 
 // Known client-to-server event types (whitelist)
 const KNOWN_WS_EVENT_TYPES = new Set<string>([
