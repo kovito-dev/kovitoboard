@@ -63,6 +63,7 @@ import {
   createExtClientRouter,
   EXT_CLIENT_MOUNT_PREFIX,
 } from './ext-client/ext-router'
+import { resolveAgentExistence, type ExtAgentExistence } from './ext-client/agent-existence'
 import {
   ExtWsConnections,
   classifyConnection,
@@ -311,6 +312,7 @@ app.use(
     onAsyncError: (err) => {
       apiLogger.error({ err }, 'Ext router async handler rejected')
     },
+    checkAgentExists: resolveExtAgentExistence,
     handleAgentsList,
     handleExtSessionNew: async (req, res, ctx) => {
       // Validate client input BEFORE committing to the launch so bad
@@ -1151,6 +1153,23 @@ function validateExtSessionInput(body: { message?: unknown; cwd?: unknown }): Ex
     resolvedCwd = result.resolvedCwd
   }
   return { ok: true, message, resolvedCwd }
+}
+
+/**
+ * Bind the shared R-7 agent-existence resolver (§10.4) to this server's
+ * `fs` / `config`. Used by both the HTTP (`handleExtNew`) and WS
+ * (`handleExtWsSessionNew`) ext launch paths so the existence check is
+ * identical. `loadAgentDefinitions` swallows its own per-file read
+ * errors and always includes the system default agent, so a throw is
+ * rare (e.g. config/path resolution failure); the shared helper still
+ * enforces the normative fail-closed disposition if it does throw.
+ */
+function resolveExtAgentExistence(agentId: string): ExtAgentExistence {
+  return resolveAgentExistence(
+    agentId,
+    () => loadAgentDefinitions(fs, config),
+    (err) => apiLogger.error({ err }, 'Ext agentId existence check failed to load agent definitions'),
+  )
 }
 
 /**
@@ -3580,6 +3599,22 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
     return
   }
   const agentId = p.agentId
+
+  // §10.4 R-7: the agentId must name a real agent definition before any
+  // launch side effect. An unknown agentId is ignored + warned (no
+  // registry mutation, no launchId mint, no echo/ack, no tmux); a
+  // definition-load failure is fail-closed (also no launch) rather than
+  // falling back to bounded-string acceptance. Placed right after the
+  // bounded-string check and before registry/in-flight mutation.
+  const existence = resolveExtAgentExistence(agentId)
+  if (existence !== 'exists') {
+    wsLogger.warn(
+      { agentId, reason: existence },
+      'ext_session_new: unknown or unresolvable agentId, ignoring',
+    )
+    return
+  }
+
   const connId = extWs.getConnId(ws)
   if (connId === null) {
     wsLogger.warn('ext_session_new: connection not registered, ignoring')

@@ -32,6 +32,10 @@ let base: string
 let pairing: PairingStore
 let registry: OwnershipRegistry
 let loopbackGuardHits = 0
+// R-7 (§10.4): drives the injected agentId existence check. Defaults to
+// 'exists' so the pre-existing launch tests are unaffected; individual
+// tests override it to exercise the unknown / load-failed dispositions.
+let agentExistence: 'exists' | 'unknown' | 'load-failed' = 'exists'
 
 beforeAll(async () => {
   pairing = new PairingStore()
@@ -49,6 +53,7 @@ beforeAll(async () => {
       tokensMatchLaunchToken: (actual, expected) => actual === expected,
       onRepairOverwrite: () => {},
       onAsyncError: () => {},
+      checkAgentExists: () => agentExistence,
       handleAgentsList: (_req, res) => res.json([{ id: 'agent-1' }]),
       handleExtSessionNew: (req, res, ctx) => {
         // Mirror the real delegate's validate-before-launch contract so
@@ -293,7 +298,10 @@ describe('ownership enforcement on send (§7.3.1 / §9.5)', () => {
 })
 
 describe('ext new-session launch (§7.3.1 / §9.4)', () => {
-  beforeAll(pair)
+  beforeAll(async () => {
+    agentExistence = 'exists'
+    await pair()
+  })
 
   it('returns 202 + launchId and marks the agent in-flight', async () => {
     const res = await fetch(url('/sessions/new'), {
@@ -325,6 +333,52 @@ describe('ext new-session launch (§7.3.1 / §9.4)', () => {
       body: JSON.stringify({ agentId: 'agent-x', clientRequestId: 'req-2', message: 'go again' }),
     })
     expect(res.status).toBe(409)
+  })
+})
+
+describe('ext new-session agentId existence check (§10.4 R-7)', () => {
+  beforeAll(async () => {
+    agentExistence = 'exists'
+    await pair()
+  })
+
+  it('400s `Unknown agentId` and mints no launch for a non-existent agent', async () => {
+    agentExistence = 'unknown'
+    const res = await fetch(url('/sessions/new'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'ghost-agent', clientRequestId: 'req-ghost', message: 'go' }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Unknown agentId' })
+    // No launchId minted, no in-flight lock taken: the check runs before
+    // any registry mutation (no side effect on rejection).
+    expect(registry.isAgentInFlight('ghost-agent')).toBe(false)
+  })
+
+  it('500s (fail-closed) and mints no launch when the definition load fails', async () => {
+    agentExistence = 'load-failed'
+    const res = await fetch(url('/sessions/new'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agent-loadfail', clientRequestId: 'req-lf', message: 'go' }),
+    })
+    expect(res.status).toBe(500)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Internal error' })
+    // Fail-closed: never falls back to bounded-string acceptance, so no
+    // launch is registered.
+    expect(registry.isAgentInFlight('agent-loadfail')).toBe(false)
+  })
+
+  it('proceeds to 202 for a real agent (existence check does not block valid launches)', async () => {
+    agentExistence = 'exists'
+    const res = await fetch(url('/sessions/new'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'real-agent', clientRequestId: 'req-real', message: 'go' }),
+    })
+    expect(res.status).toBe(202)
+    expect(registry.isAgentInFlight('real-agent')).toBe(true)
   })
 })
 
@@ -363,6 +417,7 @@ describe('ext new-session re-pair TOCTOU on the HTTP path (§7.2.1)', () => {
         tokensMatchLaunchToken: (actual, expected) => actual === expected,
         onRepairOverwrite: () => {},
         onAsyncError: () => {},
+        checkAgentExists: () => 'exists',
         handleAgentsList: (_req, res) => res.json([]),
         handleExtSessionNew: (_req, res, ctx) => res.status(202).json({ launchId: ctx.launchId }),
         handleSessionSend: (_req, res) => res.json({ ok: true }),

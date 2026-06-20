@@ -33,6 +33,7 @@
 import express, { type Request, type Response, type Router } from 'express'
 import type { PairingStore } from './pairing-store'
 import type { OwnershipRegistry } from './ownership-registry'
+import type { ExtAgentExistence } from './agent-existence'
 import { parseExtensionOrigin } from '../middleware/ext-origin'
 
 /** Mount prefix for the external-client API (§5.1, case-B namespace). */
@@ -71,6 +72,15 @@ export interface ExtRouterDeps {
   onRepairOverwrite: (oldExtensionId: string | null, newExtensionId: string) => void
   /** Operator-only logging hook for swallowed async handler rejections. */
   onAsyncError: (err: unknown) => void
+  /**
+   * Resolve whether an ext-supplied `agentId` names a real agent
+   * definition (external-client-api.md v1.2 §10.4 R-7). Returns
+   * `'exists'` to proceed, `'unknown'` for a well-formed but
+   * non-existent agent (→ HTTP 400 `Unknown agentId`), or `'load-failed'`
+   * when the definition set could not be built (→ HTTP 500 fail-closed,
+   * NOT a fallback to bounded-string acceptance).
+   */
+  checkAgentExists: (agentId: string) => ExtAgentExistence
   /** Reuse the existing `GET /api/agents` business logic verbatim. */
   handleAgentsList: (req: Request, res: Response) => void
   /**
@@ -310,6 +320,23 @@ async function handleExtNew(deps: ExtRouterDeps, req: Request, res: Response): P
   }
   const agentId = body.agentId
   const clientRequestId = body.clientRequestId
+
+  // §10.4 R-7: the agentId must name a real agent definition before any
+  // launch side effect. Placed right after the bounded-string check and
+  // before the registry/in-flight mutation (mirrors /api/sessions/new's
+  // bad-input-is-4xx semantics, §7.3). An unknown agentId is a client
+  // error (400 `Unknown agentId`); a definition-load failure is
+  // fail-closed (500 `Internal error`) — we do NOT fall back to
+  // bounded-string acceptance, so an unvalidated agentId never spawns.
+  const existence = deps.checkAgentExists(agentId)
+  if (existence === 'unknown') {
+    res.status(400).json({ error: 'Unknown agentId' })
+    return
+  }
+  if (existence === 'load-failed') {
+    res.status(500).json({ error: 'Internal error' })
+    return
+  }
 
   // §7.2.1 TOCTOU (HTTP path): `extGuard` validated the pairing/origin
   // BEFORE `express.json()` streamed the body. A re-pair (overwrite to a
