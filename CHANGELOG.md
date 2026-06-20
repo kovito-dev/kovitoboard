@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Severity status colors (diagnostic badges, server status banner, recipe
+  export status, version status) were too faint to read in light mode; they
+  now use theme-aware severity tokens so each color stays readable on both
+  light and dark surfaces.
 - Admin status no longer reports `degraded` from external (non-KB-tmux)
   sessions that are active before the KB tmux session is first spawned.
   Until this KB process has spawned its own tmux session at least once, a
