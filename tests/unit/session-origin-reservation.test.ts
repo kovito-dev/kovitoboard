@@ -62,19 +62,55 @@ describe('SessionManager origin reservation (SS-1)', () => {
     expect(map['sess-1']).toBe(SYSTEM_DEFAULT_AGENT_ID)
   })
 
-  it('uses FIFO order when multiple reservations are queued', () => {
-    // Two new-session requests fired in quick succession before the
-    // watcher catches up — each must land on the right reservation.
+  it('skips the eager claim while the queue is ambiguous and resolves via setAgentId (BL-2026-258)', () => {
+    // Two reservations from DIFFERENT agents race within the TTL window.
+    // The eager claim has no JSONL sessionId to disambiguate against, so
+    // taking the queue head could mis-bind a session to the wrong agent.
+    // Per spec session-management.md §7.4.2 the eager claim fires ONLY
+    // when exactly one reservation remains, so here both ensureSession
+    // calls leave the session unbound and defer to the `agent-setting`
+    // path. setAgentId then matches by agentId (consumeOriginReservation
+    // findIndex), binding each session to its TRUE agent regardless of
+    // queue order — proving the mis-claim path is closed.
     mgr.reserveOrigin('agent-a', 'sessions')
     mgr.reserveOrigin('agent-b', 'sidebar')
 
     const first = mgr.ensureSession('sess-a', '/proj', '/proj/.../sess-a.jsonl')
     const second = mgr.ensureSession('sess-b', '/proj', '/proj/.../sess-b.jsonl')
 
+    // Ambiguous queue (length 2): no eager claim on either session.
+    expect(first.agentId).toBeUndefined()
+    expect(first.origin).toBeUndefined()
+    expect(second.agentId).toBeUndefined()
+    expect(second.origin).toBeUndefined()
+
+    // The watcher later parses each session's `agent-setting` line and
+    // calls setAgentId. Resolve them OUT of queue order to prove the
+    // binding follows agentId, not FIFO position.
+    mgr.setAgentId('sess-b', 'agent-b')
+    mgr.setAgentId('sess-a', 'agent-a')
+
     expect(first.agentId).toBe('agent-a')
     expect(first.origin).toBe('sessions')
     expect(second.agentId).toBe('agent-b')
     expect(second.origin).toBe('sidebar')
+  })
+
+  it('does not eager-claim and does not emit agent_claimed for an ambiguous queue (BL-2026-258)', () => {
+    // Reinforces the §7.4.2 guard: with 2+ reservations pending, the
+    // eager claim must neither stamp agentId/origin nor fire the
+    // agent_claimed persistence hook (which would otherwise write a
+    // wrong, restart-surviving mapping to session-agents.jsonl).
+    const emitted: Array<{ sessionId: string; agentId: string }> = []
+    mgr.on('agent_claimed', (sessionId: string, agentId: string) => {
+      emitted.push({ sessionId, agentId })
+    })
+
+    mgr.reserveOrigin('agent-a', 'sessions')
+    mgr.reserveOrigin('agent-b', 'sidebar')
+    mgr.ensureSession('sess-x', '/proj', '/proj/.../sess-x.jsonl')
+
+    expect(emitted).toEqual([])
   })
 
   it('leaves agentId untouched when no reservation is pending', () => {
