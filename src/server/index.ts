@@ -286,20 +286,35 @@ app.use(
     getLaunchToken,
     tokensMatchLaunchToken,
     onRepairOverwrite: (_oldId, _newId) => {
-      // Synchronously close the old extension's WS connections so a
-      // stale socket cannot keep receiving / sending after the paired
-      // id changed (§7.2.1 TOCTOU). The registry was already cleared by
-      // the router before this callback fired.
+      // Revoke the old extension's WS connections synchronously
+      // (§7.2.1 TOCTOU). The registry was already cleared by the router
+      // before this callback fired. We FIRST `unregister` each socket
+      // so `extWs.isExtension(ws)` flips to false immediately — the
+      // per-message dispatch re-checks this, so any `ext_*` already
+      // queued on the old socket is refused even before `close()`
+      // completes — and only THEN close the socket. `terminate()`
+      // forces an immediate teardown rather than a graceful close
+      // handshake the old client could stall.
       for (const ws of extWs.extensionSockets()) {
+        extWs.unregister(ws)
         try {
-          ws.close(4001, 'Re-paired to a different extension')
+          ws.terminate()
         } catch {
-          // best-effort; the close path may already be tearing down.
+          // best-effort; the socket may already be tearing down.
         }
       }
     },
     handleAgentsList,
     handleExtSessionNew: async (req, res, ctx) => {
+      // Validate client input BEFORE committing to the launch so bad
+      // input returns 400 (not 500) and is not logged as a server error
+      // (§7.3 — mirrors /api/sessions/new's 400 semantics).
+      const input = validateExtSessionInput(req.body as { message?: unknown; cwd?: unknown })
+      if (!input.ok) {
+        extRegistry.abortLaunch(ctx.launchId)
+        res.status(400).json({ error: input.error })
+        return
+      }
       // §7.3.1 step 1 (cross-origin half): reject the ext launch if any
       // pending origin reservation exists for this agentId on ANY path
       // (renderer / sidebar / internal). The ext-vs-ext half is already
@@ -314,11 +329,10 @@ app.use(
       // Respond immediately with the server-minted launchId so a client
       // with multiple WS connections can correlate the later
       // `new_session` echo (§7.3.1 step 4c). The actual session start
-      // side effects run via the shared new-session handler, whose own
-      // res.json would double-send; we therefore drive the side effects
-      // through a launch-only variant.
+      // side effects run via the launch-only helper, whose own res.json
+      // would double-send.
       try {
-        await startExtSession(req, ctx.agentId)
+        await startExtSession(ctx.agentId, input.message, input.resolvedCwd)
         res.status(202).json({ launchId: ctx.launchId })
       } catch (err) {
         extRegistry.abortLaunch(ctx.launchId)
@@ -1060,32 +1074,30 @@ async function handleNewSession(req: Request, res: Response): Promise<void> {
 }
 
 /**
- * Launch-only side effects for an external-client `sessions/new`
- * (external-client-api.md v1.0 §7.3). The ext HTTP path responds
- * immediately with `{ launchId }` (202) for correlation, so this helper
- * performs the reservation + tmux/claude start WITHOUT writing an HTTP
- * response. It throws on a hard failure so the caller can abort the
- * launch and return 500.
- *
- * `origin='extension'` is reserved here so the materialised session
- * inherits the tag via the existing watcher reservation pattern (P-10),
- * which is also what the `new_session` correlation listener keys on.
- * cwd validation mirrors `handleNewSession`'s gate.
+ * Validate the client input for an external-client `sessions/new`
+ * BEFORE any launch is registered (external-client-api.md v1.0 §7.3).
+ * Returns a discriminated result so callers surface a 4xx (HTTP) /
+ * warn-and-ignore (WS) for bad input, rather than letting a validation
+ * failure fall through to a 500 like a genuine internal error would.
+ * Mirrors `handleNewSession`'s message + cwd gates.
  */
-async function startExtSession(req: Request, agentId: string): Promise<void> {
-  const body = req.body as { message?: unknown; cwd?: unknown }
+type ExtInputResult =
+  | { ok: true; message: string; resolvedCwd: string | undefined }
+  | { ok: false; error: string }
+
+function validateExtSessionInput(body: { message?: unknown; cwd?: unknown }): ExtInputResult {
   const message = typeof body.message === 'string' ? body.message : ''
   if (message.trim().length === 0) {
-    throw new Error('message must be a non-empty string')
+    return { ok: false, error: 'message must be a non-empty string' }
   }
   if (message.length > 100000) {
-    throw new Error('message exceeds maximum length (100000 chars)')
+    return { ok: false, error: 'message exceeds maximum length (100000 chars)' }
   }
 
   let resolvedCwd: string | undefined = undefined
   if (body.cwd !== undefined) {
     if (typeof body.cwd !== 'string') {
-      throw new Error('cwd must be a string')
+      return { ok: false, error: 'cwd must be a string' }
     }
     const snapshot = ensureWorkRootMetadata(fs, projectRoot)
     const result = validateCwd(
@@ -1096,11 +1108,30 @@ async function startExtSession(req: Request, agentId: string): Promise<void> {
       fs,
     )
     if (!result.ok) {
-      throw new Error('cwd outside allow-list')
+      return { ok: false, error: 'cwd outside allow-list' }
     }
     resolvedCwd = result.resolvedCwd
   }
+  return { ok: true, message, resolvedCwd }
+}
 
+/**
+ * Launch-only side effects for an external-client `sessions/new`
+ * (external-client-api.md v1.0 §7.3). Input is assumed already
+ * validated via `validateExtSessionInput`; this helper performs the
+ * reservation + tmux/claude start WITHOUT writing an HTTP response, and
+ * throws only on a genuine internal failure so the caller aborts the
+ * launch and returns 500.
+ *
+ * `origin='extension'` is reserved here so the materialised session
+ * inherits the tag via the existing watcher reservation pattern (P-10),
+ * which is also what the `new_session` correlation listener keys on.
+ */
+async function startExtSession(
+  agentId: string,
+  message: string,
+  resolvedCwd: string | undefined,
+): Promise<void> {
   // Reserve origin='extension' so the watcher tags the session, and the
   // `new_session` correlation listener can match it to the ext launch.
   sessionManager.reserveOrigin(agentId, 'extension')
@@ -2982,7 +3013,12 @@ function broadcast(typeOrEvent: string | ServerToClientEvent, payload?: unknown)
  * that are not session-scoped (so extensions never receive them).
  */
 function sessionIdOf(type: string, payload: unknown): string | null {
-  if (type !== 'new_event' && type !== 'status_change') return null
+  // Session-scoped events the extension subscription filter understands
+  // (§7.5). `process_end` carries `sessionId` resolved at emit time from
+  // its `processId` (the renderer payload also has `processId`).
+  if (type !== 'new_event' && type !== 'status_change' && type !== 'process_end') {
+    return null
+  }
   if (payload && typeof payload === 'object' && 'sessionId' in payload) {
     const sid = (payload as { sessionId?: unknown }).sessionId
     return typeof sid === 'string' ? sid : null
@@ -3071,7 +3107,14 @@ sessionManager.on('agent_claimed', (sessionId: string, agentId: string) => {
 })
 
 claudeBridge.on('process_end', (processId: string, status: string, exitCode: number) => {
-  broadcast('process_end', { processId, status, exitCode })
+  // Resolve the owning sessionId so extension connections can be
+  // subscription-filtered (external-client-api.md v1.0 §7.5: process_end
+  // is a session-scoped event). The field is additive — the renderer
+  // ignores it (P-11 fan-out unchanged) and only the ext broadcast
+  // filter reads it. `null` when the process never bound a session
+  // (in which case extensions simply do not receive it).
+  const sessionId = claudeBridge.getProcess(processId)?.sessionId ?? undefined
+  broadcast('process_end', { processId, status, exitCode, sessionId })
 })
 
 // --- Trust Prompt Detector startup ---
@@ -3390,13 +3433,23 @@ wss.on('connection', (ws, request) => {
     const isExtType =
       type === 'ext_session_new' || type === 'ext_session_send' || type === 'ext_subscribe'
 
+    // Re-evaluate the connection kind on EVERY message rather than
+    // trusting the value captured at connect time. On a re-pairing
+    // overwrite the old extension's sockets are synchronously
+    // unregistered from `extWs` (see `onRepairOverwrite`), so
+    // `isExtension(ws)` flips to false immediately — closing the
+    // revocation TOCTOU where an `ext_*` message already queued on the
+    // old socket would otherwise be processed against the new registry
+    // after `close()` was requested but before it completed.
+    const liveIsExtension = extWs.isExtension(ws)
+
     // Privilege separation (§8.4): ext_* only from extension
     // connections; renderer-only types only from renderer connections.
-    if (isExtType && !isExtension) {
+    if (isExtType && !liveIsExtension) {
       wsLogger.warn({ type }, 'ext_* received from non-extension connection, ignoring')
       return
     }
-    if (!isExtType && isExtension) {
+    if (!isExtType && liveIsExtension) {
       wsLogger.warn({ type }, 'renderer-only message received from extension connection, ignoring')
       return
     }
@@ -3446,6 +3499,14 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
     return
   }
 
+  // Validate message / cwd up front (parity with the HTTP path). Bad
+  // input is ignored + warned rather than launching.
+  const input = validateExtSessionInput({ message: p.message, cwd: p.cwd })
+  if (!input.ok) {
+    wsLogger.warn({ agentId, reason: input.error }, 'ext_session_new: invalid input, ignoring')
+    return
+  }
+
   // §7.3.1 step 1: reject if a pending reservation exists for this
   // agentId on any path (cross-origin) — the ext-vs-ext half is the
   // registry's in-flight lock below.
@@ -3465,11 +3526,9 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
   }
 
   // Run the launch side effects (reserveOrigin('extension') + tmux /
-  // claude). A synthetic request carries the validated fields into the
-  // shared launch helper.
-  const synthReq = { body: { message: p.message, cwd: p.cwd } } as unknown as Request
+  // claude) with the validated input.
   try {
-    await startExtSession(synthReq, agentId)
+    await startExtSession(agentId, input.message, input.resolvedCwd)
   } catch (err) {
     extRegistry.abortLaunch(reg.launchId)
     wsLogger.warn({ err: String(err), agentId }, 'ext_session_new: launch failed')
@@ -3479,6 +3538,14 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
 /**
  * WS `ext_session_send` handler (§6.2.1 / §7.3.1 ownership). Ignored +
  * warned unless the sessionId is owned by the current extension.
+ *
+ * After the ownership pre-gate, the actual send is delegated to the
+ * SAME `handleSessionSend` used by `POST /api/sessions/:id/send` so the
+ * tmux routing and persisted-cwd validation are identical across the
+ * HTTP and WS paths (no behavioural divergence). A synthetic
+ * request/response captures the result for logging only — the
+ * shared-chat client observes the outcome through the session's WS
+ * events, not this response.
  */
 function handleExtWsSessionSend(payload: unknown): void {
   if (!payload || typeof payload !== 'object') {
@@ -3494,24 +3561,32 @@ function handleExtWsSessionSend(payload: unknown): void {
     wsLogger.warn({ sessionId: p.sessionId }, 'ext_session_send: session not owned, ignoring')
     return
   }
-  const message = p.message
-  if (message.trim().length === 0 || message.length > 100000) {
-    wsLogger.warn('ext_session_send: invalid message length')
-    return
-  }
-  // Reuse the existing claude-bridge send path. tmux routing is
-  // intentionally left to the HTTP send path; the WS shared-chat MVP
-  // sends via claude-bridge for the owned session.
-  const session = sessionManager.getSession(p.sessionId)
-  if (!session) {
-    wsLogger.warn({ sessionId: p.sessionId }, 'ext_session_send: session not found')
-    return
-  }
-  try {
-    claudeBridge.sendToSession(p.sessionId, message.trim())
-  } catch (err) {
-    wsLogger.warn({ err: String(err), sessionId: p.sessionId }, 'ext_session_send failed')
-  }
+
+  // Delegate to the shared HTTP send handler via a synthetic req/res so
+  // tmux routing + cwd validation are reused verbatim.
+  const sessionId = p.sessionId
+  const synthReq = {
+    params: { id: sessionId },
+    body: { message: p.message },
+    path: '/ext-ws/sessions/send',
+  } as unknown as Request
+  const captured = { statusCode: 200 }
+  const synthRes = {
+    status(code: number) {
+      captured.statusCode = code
+      return synthRes
+    },
+    json(body: unknown) {
+      if (captured.statusCode >= 400) {
+        wsLogger.warn(
+          { sessionId, status: captured.statusCode, body },
+          'ext_session_send: delegated send returned an error',
+        )
+      }
+      return synthRes
+    },
+  } as unknown as Response
+  void handleSessionSend(synthReq, synthRes)
 }
 
 /**

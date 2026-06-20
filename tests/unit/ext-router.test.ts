@@ -49,7 +49,17 @@ beforeAll(async () => {
       tokensMatchLaunchToken: (actual, expected) => actual === expected,
       onRepairOverwrite: () => {},
       handleAgentsList: (_req, res) => res.json([{ id: 'agent-1' }]),
-      handleExtSessionNew: (_req, res, ctx) => {
+      handleExtSessionNew: (req, res, ctx) => {
+        // Mirror the real delegate's validate-before-launch contract so
+        // the test pins the 400 (bad input) vs 202 (accepted) split and
+        // the abort-on-bad-input behaviour (§7.3 — no 500 for bad input).
+        const body = req.body as { message?: unknown }
+        const message = typeof body.message === 'string' ? body.message : ''
+        if (message.trim().length === 0) {
+          registry.abortLaunch(ctx.launchId)
+          res.status(400).json({ error: 'message must be a non-empty string' })
+          return
+        }
         res.status(202).json({ launchId: ctx.launchId })
       },
       handleSessionSend: (_req, res) => res.json({ ok: true }),
@@ -260,6 +270,17 @@ describe('ext new-session launch (§7.3.1 / §9.4)', () => {
     const body = (await res.json()) as { launchId: string }
     expect(typeof body.launchId).toBe('string')
     expect(registry.isAgentInFlight('agent-x')).toBe(true)
+  })
+
+  it('400s (not 500) on invalid input and releases the in-flight lock', async () => {
+    const res = await fetch(url('/sessions/new'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agent-y', clientRequestId: 'req-y', message: '   ' }),
+    })
+    expect(res.status).toBe(400)
+    // The aborted launch must not leave agent-y locked.
+    expect(registry.isAgentInFlight('agent-y')).toBe(false)
   })
 
   it('409s a second concurrent launch for the same agentId', async () => {

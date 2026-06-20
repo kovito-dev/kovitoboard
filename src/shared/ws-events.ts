@@ -200,7 +200,22 @@ export type ServerToClientEvent =
   | { type: 'new_event'; payload: { sessionId: string; event: unknown } }
   | { type: 'status_change'; payload: { sessionId: string; status: string } }
   | { type: 'new_session'; payload: { summary: unknown } }
-  | { type: 'process_end'; payload: { processId: string; status: string; exitCode: number } }
+  | {
+      type: 'process_end'
+      payload: {
+        processId: string
+        status: string
+        exitCode: number
+        /**
+         * Owning sessionId, resolved at emit time from `processId`.
+         * Additive (external-client-api.md v1.0 §7.5): lets the
+         * external-client subscription filter treat `process_end` as a
+         * session-scoped event. The renderer ignores it. `undefined`
+         * when the process never bound a session.
+         */
+        sessionId?: string
+      }
+    }
   | { type: 'trust_prompt_detected'; payload: TrustPromptDetectedPayload }
   | { type: 'trust_prompt_fallback'; payload: TrustPromptFallbackPayload }
   | { type: 'trust_prompt_resolved'; payload: TrustPromptResolvedPayload }
