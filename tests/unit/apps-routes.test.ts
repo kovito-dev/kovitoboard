@@ -51,6 +51,8 @@ import express from 'express'
 import type { Express } from 'express'
 
 import { createAppsRouter } from '../../src/server/routes/apps-routes'
+import { runMenuBackfillScan } from '../../src/server/routes/app-routes'
+import { RecipeManifestStore } from '../../src/server/recipeManifestStore'
 import { DirectFsLayer } from '../../src/server/fs-layer'
 import { initLogger, lazyChildLogger } from '../../src/server/logger'
 
@@ -627,6 +629,107 @@ describe('PUT /api/apps/menu-order', () => {
     // No broadcast either — clients that listen for refetch
     // signals stay quiet on no-op submissions.
     expect(h.broadcasts).toHaveLength(0)
+  })
+})
+
+// =====================================================================
+// PUT /api/apps/menu-order — case-A backfill pre-scan (§6.9.7 案 A)
+// =====================================================================
+
+interface BackfillHarness {
+  projectRoot: string
+  app: Express
+}
+
+/**
+ * Build an apps router wired with the real {@link runMenuBackfillScan}
+ * (the case-A pre-scan) over a `DirectFsLayer` tmp project, so a
+ * manifest-less self-made app with a readable `app/<id>/page.tsx` +
+ * `app/menu.ts` entry gets backfilled when the batch fires — even
+ * though the request never hit `/menu-entries` first.
+ */
+function buildBackfillHarness(): BackfillHarness {
+  const projectRoot = mkdtempSync(join(tmpdir(), 'kb-apps-backfill-'))
+  mkdirSync(join(projectRoot, 'app'), { recursive: true })
+  mkdirSync(join(projectRoot, '.kovitoboard'), { recursive: true })
+  const fs = new DirectFsLayer()
+  const manifestStore = new RecipeManifestStore(
+    join(projectRoot, '.kovitoboard'),
+    fs,
+  )
+  manifestStore.loadAll()
+  const expressApp = express()
+  expressApp.use(express.json())
+  expressApp.use(
+    '/api/apps',
+    createAppsRouter({
+      fs,
+      projectRoot,
+      broadcast: () => {},
+      apiLogger: log as unknown as Parameters<typeof createAppsRouter>[0]['apiLogger'],
+      runBackfillScan: () =>
+        runMenuBackfillScan(fs, manifestStore, projectRoot),
+    }),
+  )
+  return { projectRoot, app: expressApp }
+}
+
+function writeSelfMadeApp(projectRoot: string, appId: string, label: string): void {
+  const pagesDir = join(projectRoot, 'app', appId, 'pages')
+  mkdirSync(pagesDir, { recursive: true })
+  writeFileSync(join(pagesDir, 'Index.tsx'), '// stub page', 'utf-8')
+  const menuTs = [
+    'export const menuEntries = [',
+    `  { id: '${appId}', label: '${label}', icon: 'note', component: () => import('./${appId}/pages/Index') },`,
+    ']',
+    '',
+  ].join('\n')
+  writeFileSync(join(projectRoot, 'app', 'menu.ts'), menuTs, 'utf-8')
+}
+
+describe('PUT /api/apps/menu-order — case-A backfill', () => {
+  let h: BackfillHarness
+  let savedEnvVersion: string | undefined
+  let savedProjectRoot: string | undefined
+  beforeEach(() => {
+    savedEnvVersion = process.env.npm_package_version
+    savedProjectRoot = process.env.KOVITOBOARD_PROJECT_ROOT
+    process.env.npm_package_version = '0.2.12-test'
+    h = buildBackfillHarness()
+    // The menu-extraction backfill scan resolves the project root from
+    // the env (the apps-router gets `projectRoot` directly, but
+    // `readUserMenuEntries` reads it through `resolveProjectRoot`).
+    process.env.KOVITOBOARD_PROJECT_ROOT = h.projectRoot
+  })
+  afterEach(() => {
+    if (savedEnvVersion === undefined) delete process.env.npm_package_version
+    else process.env.npm_package_version = savedEnvVersion
+    if (savedProjectRoot === undefined) delete process.env.KOVITOBOARD_PROJECT_ROOT
+    else process.env.KOVITOBOARD_PROJECT_ROOT = savedProjectRoot
+    rmSync(h.projectRoot, { recursive: true, force: true })
+  })
+
+  it('backfills a manifest-less self-made app so a direct PUT covers it', async () => {
+    // No manifest.json on disk — only menu.ts + page.tsx.
+    writeSelfMadeApp(h.projectRoot, 'research-reports', 'Research Reports')
+
+    // Direct PUT (no prior /menu-entries GET). The case-A pre-scan
+    // backfills the manifest, so the eligible set is { research-reports }
+    // and a single-element contiguous order succeeds.
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [{ appId: 'research-reports', menuOrder: 0 }],
+    })
+
+    expect(reply.status).toBe(200)
+    expect(reply.body?.updated).toBe(1)
+
+    // The backfill wrote a user-creation manifest, and the batch then
+    // persisted menuOrder onto it.
+    const onDisk = readManifestFromDisk(h.projectRoot, 'research-reports')
+    expect(onDisk.menuOrder).toBe(0)
+    expect(onDisk.displayName).toBe('Research Reports')
+    expect((onDisk.source as Record<string, unknown>).type).toBe('user-creation')
+    expect((onDisk.source as Record<string, unknown>).createdViaAgent).toBe('')
   })
 })
 

@@ -22,6 +22,7 @@ import { join, normalize, resolve, sep } from 'path'
 import type { FileAccessLayer } from '../fs-layer'
 import { resolveProjectRoot } from '../config'
 import { parseRecipe } from '../recipe-parser'
+import { writeAppManifest } from './app-manifest'
 import type { ParsedRecipe } from '../../shared/recipe-types'
 import type { AppMenuEntryMeta } from '../../shared/app-types'
 import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
@@ -315,6 +316,142 @@ export type AppManifestLookup = (
 ) => AppManifestLookupResult
 
 /**
+ * Hooks that enable the v0.2.12 manifest backfill for manifest-less
+ * self-made apps (`app-directory-extension.md` v1.8 §6.9). When supplied
+ * to {@link readUserMenuEntries}, the scanner backfills an `AppManifest`
+ * (`source.type === 'user-creation'`) for a menu row whose manifest is
+ * **entirely absent** (`manifestState === 'missing'`), whose page module
+ * is readable, and that carries **no recipe-install evidence at all**
+ * (pure self-made, §6.9.2 condition 4). The newly synthesized manifest
+ * is adopted in-memory in the same scan cycle so the row becomes
+ * menu-metadata eligible (`displayName !== null`) without waiting for the
+ * next scan (§6.9.6 F4 in-memory synthesis).
+ *
+ * The hooks are optional so unit tests and the recipe-exporter path can
+ * drive {@link readUserMenuEntries} without granting backfill write
+ * capability. Omitting them preserves the pre-v0.2.12 behavior (a
+ * manifest-less row stays `manifestState === 'missing'` / ineligible).
+ *
+ * @see docs/specs/app-directory-extension.md v1.8 §6.9
+ * @stable v0.2.12
+ */
+export interface BackfillHooks {
+  /** Absolute project root (used to write `app/<appId>/manifest.json`). */
+  projectRoot: string
+  /**
+   * KovitoBoard version string recorded as the manifest's
+   * `kovitoboardVersion` (the same value the bundled installer writes).
+   */
+  kovitoboardVersion: string
+  /**
+   * Returns `true` when the `appId` carries **any** recipe-install
+   * evidence — a present `RecipeManifest`
+   * (`recipes-installed/<appId>/manifest.json`) or **any**
+   * `recipe-history.jsonl` record bound to the `appId`. Backfill is
+   * suppressed when this returns `true` so post-uninstall / partial
+   * residue is never reattributed to `user-creation` (§6.9.2 condition 4).
+   *
+   * Wired by `app-routes.ts` from the same `RecipeManifestStore` +
+   * `recipe-history` readers the scanner contract (§6.7) already uses;
+   * a dedicated history reader must NOT be forked here (§6.9.2 shared
+   * classifier reuse).
+   */
+  recipeInstallEvidenceExists: (appId: string) => boolean
+}
+
+/**
+ * Attempt the v0.2.12 manifest backfill for a single manifest-less
+ * self-made menu row (`app-directory-extension.md` v1.8 §6.9).
+ *
+ * Returns the synthesized `AppManifest` when every firing condition
+ * (§6.9.2) and guard (§6.9.5) is satisfied and `writeAppManifest`
+ * succeeds; otherwise returns `null` and the caller keeps the row in
+ * its `'missing'` / ineligible state.
+ *
+ * The four AND conditions checked here (the menu.ts entry anchor —
+ * §6.9.2 condition 1 — is implicit because the caller iterates parsed
+ * `menu.ts` entries):
+ *   2. page module readable (`pageAbsolutePath !== null`),
+ *   3. manifest entirely absent (`manifestState === 'missing'`; the
+ *      caller only invokes this helper on that state, never on
+ *      `'unreadable'` / `'anomalous'` / `'present'` so a malformed
+ *      manifest is never overwritten — §6.9.3 / §6.9.5),
+ *   4. no recipe-install evidence at all (pure self-made).
+ *
+ * Generated fields follow §6.9.4 exactly: `displayName = menu.ts label
+ * ?? appId`, `source = { type: 'user-creation', createdViaAgent: '' }`,
+ * and `menuOrder` / `userMenuLabel` are left unwritten (the scanner
+ * never auto-writes the menu-metadata user-override axis — §6.9.6 pin).
+ */
+function maybeBackfillManifest(
+  fs: FileAccessLayer,
+  hooks: BackfillHooks,
+  entry: MenuEntryWithPage,
+): AppManifest | null {
+  // Condition 2 (§6.9.2) / guard (§6.9.5): the page module must be
+  // readable. A menu.ts entry that resolves to no `.tsx` / `.ts` file
+  // is a broken / mid-deletion directory — never backfill it.
+  if (entry.pageAbsolutePath === null) return null
+
+  // Condition 4 (§6.9.2): pure self-made — no `RecipeManifest` and no
+  // recipe-history record for this appId. Reuses the scanner-contract
+  // evidence readers (§6.9.2 shared classifier reuse); a present
+  // RecipeManifest or any history record (install / uninstall / disable
+  // of any source) suppresses backfill so post-uninstall and partial
+  // residue keep their recipe provenance.
+  if (hooks.recipeInstallEvidenceExists(entry.id)) return null
+
+  // §6.9.4 generated fields. `displayName` is the eligibility-gating
+  // field (`isMenuMetadataEligible` keys off `displayName !== null`);
+  // the menu.ts label is snapshotted so the value matches the display
+  // label resolution (`userMenuLabel ?? label ?? appId`). The parser
+  // requires a non-empty `label`, but fall back to `appId` defensively.
+  const manifest: AppManifest = {
+    appId: entry.id,
+    displayName: entry.label.length > 0 ? entry.label : entry.id,
+    createdAt: new Date().toISOString(),
+    kovitoboardVersion: hooks.kovitoboardVersion,
+    source: {
+      type: 'user-creation',
+      // Empty-string sentinel = "creating agent unknown" (§6.2 /
+      // §6.9.4). The validator only requires a string, so this passes
+      // schema compatibility while staying distinct from any real
+      // (non-empty) agent id.
+      createdViaAgent: '',
+    },
+    // `menuOrder` / `userMenuLabel` are intentionally omitted: backfill
+    // never touches the menu-metadata user-override axis (§6.9.4 /
+    // §6.9.6). The scanner assigns a provisional order downstream and
+    // the user's first `PUT /api/apps/menu-order` persists it.
+  }
+
+  try {
+    // Atomic write (same-dir temp + fsync + rename, mkdir included) via
+    // the AppManifest owner helper. §6.9.5 best-effort: a write failure
+    // leaves the row in its `'missing'` state for this cycle and the
+    // next scan retries.
+    writeAppManifest(fs, hooks.projectRoot, manifest)
+  } catch (err) {
+    serverLogger.warn(
+      { appId: entry.id, err, event: 'app-manifest-backfill-failed' },
+      '[menu-extractor] Failed to backfill AppManifest for manifest-less self-made app; staying ineligible this cycle',
+    )
+    return null
+  }
+
+  serverLogger.info(
+    {
+      appId: entry.id,
+      displayName: manifest.displayName,
+      sourceType: 'user-creation',
+      event: 'app-manifest-backfilled',
+    },
+    '[menu-extractor] Backfilled AppManifest for manifest-less self-made app',
+  )
+  return manifest
+}
+
+/**
  * Optional lookup used by `readUserMenuEntries` to recover the
  * persisted source badge for **partial-residue** rows — apps whose
  * `AppManifest` is unreadable (file exists on disk but parse /
@@ -444,6 +581,17 @@ export function computeMenuOrderSnapshotFromEntries(
  * unchanged — the wire `label` field simply carries the
  * locale-resolved base label. Callers that omit `kovitoboardRoot`
  * (unit tests) keep the pre-v0.2.1 menu.ts-derived base label.
+ *
+ * When `backfill` is supplied (v0.2.12 BL-2026-273), a menu row whose
+ * `AppManifest` is entirely absent (`manifestState === 'missing'`),
+ * whose page module is readable, and that carries no recipe-install
+ * evidence at all (pure self-made) gets an `AppManifest`
+ * (`source.type === 'user-creation'`) backfilled and adopted in-memory
+ * in the same scan cycle, promoting it to menu-metadata eligible
+ * (`displayName !== null`). See {@link BackfillHooks} and
+ * `app-directory-extension.md` v1.8 §6.9. Callers that omit `backfill`
+ * (unit tests, the recipe-exporter path) keep the pre-v0.2.12 behavior
+ * (manifest-less rows stay `'missing'` / ineligible).
  */
 export function readUserMenuEntries(
   fs: FileAccessLayer,
@@ -452,6 +600,7 @@ export function readUserMenuEntries(
   recipeManifestLookup?: RecipeManifestLookup,
   locale: 'ja' | 'en' = 'en',
   kovitoboardRoot?: string,
+  backfill?: BackfillHooks,
 ): MenuEntryWithPage[] {
   const projectRoot = resolveProjectRoot(fs)
   const appDir = join(projectRoot, 'app')
@@ -694,6 +843,33 @@ export function readUserMenuEntries(
               entry.source = recipeManifest.source
             }
             entry.recipeId = recipeManifest.recipeId
+          }
+        } else if (lookup.state === 'missing' && backfill) {
+          // v0.2.12 manifest backfill (app-directory-extension.md v1.8
+          // §6.9): a manifest-less self-made app (menu.ts entry +
+          // readable page + no recipe-install evidence) gets an
+          // `AppManifest` (`source.type === 'user-creation'`) written
+          // here and adopted in-memory in this same scan cycle so the
+          // row becomes menu-metadata eligible (`displayName !== null`)
+          // without waiting for the next scan (§6.9.6 F4 synthesis).
+          //
+          // Strictly gated on `manifestState === 'missing'` (entirely
+          // absent): the `'unreadable'` / `'anomalous'` states never
+          // reach this branch, so a malformed manifest is never
+          // overwritten (§6.9.3 / §6.9.5). The page-readable and
+          // recipe-evidence checks live in `maybeBackfillManifest`.
+          const synthesized = maybeBackfillManifest(fs, backfill, entry)
+          if (synthesized !== null) {
+            // Flip the wire state to `'present'` and populate the
+            // AppManifest-derived fields from the synthesized manifest
+            // exactly as the `'present'` branch above would, so the
+            // single scan response already reflects eligibility. The
+            // backfilled manifest is always `user-creation`, so
+            // `source` is `'self-made'`, `recipeId` stays `null`, and
+            // `menuOrder` / `userMenuLabel` stay unset.
+            entry.manifestState = 'present'
+            entry.source = deriveSourceBadge(synthesized)
+            entry.displayName = synthesized.displayName
           }
         }
       }

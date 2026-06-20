@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hand-placed custom apps can now be reordered. A self-made app added by
+  hand (a `app/menu.ts` entry plus an `app/<id>/pages/*.tsx`, with no
+  `manifest.json`) was excluded from the Apps screen's drag-and-drop
+  reorder because the missing manifest left it ineligible. The menu scan
+  now backfills a manifest for such an app — only when its page module
+  is readable and it carries no recipe-install history at all (a pure
+  self-made app) — so it joins the reorderable set on the same scan.
+  Existing manifests are never overwritten, a malformed manifest is left
+  untouched, and apps with recipe-install lineage keep their original
+  source classification.
+
 ## [0.2.11] - 2026-06-17
 
 ### Fixed

@@ -27,6 +27,7 @@ import {
   computeMenuOrderSnapshotFromEntries,
   readUserMenuEntries,
   type AppManifestLookup,
+  type BackfillHooks,
   type MenuEntryWithPage,
   type RecipeManifestLookup,
   type TrustLevelLookup,
@@ -36,25 +37,35 @@ import { readSetting } from '../setting-manager'
 import { resolveProjectRoot } from '../config'
 import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
+import { readRecipeHistory } from '../recipe-history'
+import { loadKbVersion } from '../version-info'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
 
 /**
- * Build the app extension router.
- *
- * `manifestStore` is required so `/menu-entries` can attach the
- * active recipe's `trustLevel` to each entry. Without it the
- * renderer would have to call back for every entry it renders,
- * which would re-introduce the cross-request latency we already
- * pay once at supervisor startup.
+ * The lookups + backfill hooks shared by the `/menu-entries` GET
+ * handler and the `PUT /api/apps/menu-order` case-A backfill pre-scan
+ * (`app-directory-extension.md` v1.8 §6.9.7). Centralizing their
+ * construction keeps the two callers from drifting on the boundary /
+ * recipe-evidence semantics.
  */
-export function createAppRouter(
+interface MenuEntriesContext {
+  trustLookup: TrustLevelLookup
+  manifestLookup: AppManifestLookup
+  recipeManifestLookup: RecipeManifestLookup
+  backfillHooks: BackfillHooks
+}
+
+/**
+ * Build the lookups + backfill hooks used to scan `app/menu.ts` into
+ * the wire `MenuEntryWithPage[]`. Shared by {@link createAppRouter}
+ * (the `/menu-entries` GET) and {@link runMenuBackfillScan} (the
+ * menu-order PUT case-A pre-scan).
+ */
+function createMenuEntriesContext(
   fs: FileAccessLayer,
   manifestStore: RecipeManifestStore,
-  kovitoboardRoot: string,
-): Router {
-  const router = Router()
-
+): MenuEntriesContext {
   // Defence-in-depth: `recipeManifestStore.validateManifest` already
   // refuses to load a recipe manifest that carries the reserved
   // `'KB-trusted'` literal, but the wire boundary fails closed too —
@@ -174,6 +185,83 @@ export function createAppRouter(
     return manifestStore.get(appId)
   }
 
+  // v0.2.12 manifest backfill (app-directory-extension.md v1.8 §6.9):
+  // promote a manifest-less self-made app to menu-metadata eligible by
+  // writing an `AppManifest` (`source.type === 'user-creation'`) during
+  // the menu scan. The recipe-evidence predicate reuses the same
+  // `RecipeManifestStore` + `recipe-history` readers the scanner
+  // contract (§6.7) uses — a present `RecipeManifest` OR any
+  // history record bound to the `appId` suppresses backfill so
+  // post-uninstall / partial residue keeps its recipe provenance
+  // (§6.9.2 condition 4; no forked history reader, §6.9.2 shared
+  // classifier reuse).
+  const backfillHooks: BackfillHooks = {
+    projectRoot: resolveProjectRoot(fs),
+    kovitoboardVersion: loadKbVersion(fs),
+    recipeInstallEvidenceExists: (appId) => {
+      if (manifestStore.get(appId) !== null) return true
+      return readRecipeHistory(fs).some((record) => record.appId === appId)
+    },
+  }
+
+  return { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks }
+}
+
+/**
+ * Run a backfill-capable menu scan and discard the result. Used by the
+ * `PUT /api/apps/menu-order` case-A pre-scan
+ * (`app-directory-extension.md` v1.8 §6.9.7 option A): the closed-world
+ * batch recomputes its eligible set from `scanAppManifests` rather than
+ * the menu-extraction path, so a manifest-less self-made app would be
+ * invisible to a direct PUT (no prior `/menu-entries` GET) unless the
+ * backfill fires first. Running this immediately before the eligible
+ * scan guarantees the manifest exists on disk by the time the batch
+ * enumerates `app/<appId>/`.
+ *
+ * Side-effect only: it writes any backfill-eligible manifests via the
+ * same `readUserMenuEntries` + `BackfillHooks` path the GET uses (so the
+ * firing conditions / guards stay identical), and the entries array is
+ * intentionally not returned.
+ */
+export function runMenuBackfillScan(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  kovitoboardRoot: string,
+): void {
+  const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
+    createMenuEntriesContext(fs, manifestStore)
+  const locale = readSetting(fs)?.locale ?? 'en'
+  // Discard the wire entries; the only purpose here is the on-disk
+  // backfill side-effect performed inside `readUserMenuEntries`.
+  readUserMenuEntries(
+    fs,
+    trustLookup,
+    manifestLookup,
+    recipeManifestLookup,
+    locale,
+    kovitoboardRoot,
+    backfillHooks,
+  )
+}
+
+/**
+ * Build the app extension router.
+ *
+ * `manifestStore` is required so `/menu-entries` can attach the
+ * active recipe's `trustLevel` to each entry. Without it the
+ * renderer would have to call back for every entry it renders,
+ * which would re-introduce the cross-request latency we already
+ * pay once at supervisor startup.
+ */
+export function createAppRouter(
+  fs: FileAccessLayer,
+  manifestStore: RecipeManifestStore,
+  kovitoboardRoot: string,
+): Router {
+  const router = Router()
+  const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
+    createMenuEntriesContext(fs, manifestStore)
+
   router.get('/menu-entries', (_req, res) => {
     // Active server locale for recipe nav base-label resolution
     // (app-directory-extension.md v1.7.1 §6.8.2.1 / i18n-architecture
@@ -186,6 +274,7 @@ export function createAppRouter(
       recipeManifestLookup,
       locale,
       kovitoboardRoot,
+      backfillHooks,
     )
     // The wire ships every entry the parser produced; anomalies
     // are NOT filtered out -- they ride with `manifestState ===
