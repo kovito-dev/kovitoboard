@@ -29,6 +29,18 @@ import type { RecipeManifest, RecipePageTrustLevel } from '../recipe/apiTypes'
 import type { AppManifest } from '../../shared/app-manifest-types'
 
 /**
+ * Strict single-segment appId grammar (`app-directory-extension.md`
+ * §5.4). Mirrors `APP_ID_PATTERN` in `apps-routes.ts` / `recipe-exporter.ts`.
+ * The backfill path re-checks `entry.id` against this before writing a
+ * manifest: the canonical-path guard (`isCanonicalAppIdPath`) accepts
+ * multi-segment ids like `foo/bar` (it only forbids escapes), but a
+ * backfilled `app/foo/bar/manifest.json` would never be enumerated by
+ * the menu-order eligible scan (which walks only immediate `app/`
+ * subdirectories), so such an id must not be backfilled (codex #143 F5).
+ */
+const BACKFILL_APP_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+
+/**
  * UI-facing source classification derived from `AppManifest.source`.
  *
  * Five values:
@@ -388,6 +400,14 @@ function maybeBackfillManifest(
   hooks: BackfillHooks,
   entry: MenuEntryWithPage,
 ): AppManifest | null {
+  // Guard (codex #143 F5): the appId must be a single-segment slug
+  // matching the §5.4 grammar. `isCanonicalAppIdPath` (applied by the
+  // caller) only forbids `app/` escapes, so a multi-segment id like
+  // `foo/bar` would otherwise pass and write `app/foo/bar/manifest.json`
+  // — a manifest the menu-order eligible scan (immediate-subdir walk)
+  // could never enumerate, leaving the row permanently un-reorderable.
+  if (!BACKFILL_APP_ID_PATTERN.test(entry.id)) return null
+
   // Condition 2 (§6.9.2) / guard (§6.9.5): the page module must be
   // readable. A menu.ts entry that resolves to no `.tsx` / `.ts` file
   // is a broken / mid-deletion directory — never backfill it.

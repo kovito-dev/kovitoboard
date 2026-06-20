@@ -278,10 +278,18 @@ export function createAppRouter(
   kovitoboardRoot: string,
 ): Router {
   const router = Router()
-  const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
-    createMenuEntriesContext(fs, manifestStore)
 
   router.get('/menu-entries', (_req, res) => {
+    // Build the scan context PER REQUEST. `createMenuEntriesContext`
+    // snapshots `recipe-history.jsonl` into the backfill evidence set
+    // (the F2 read-once optimization), so it must run on every request:
+    // a recipe install / uninstall appended after server startup must be
+    // visible to the next `/menu-entries` scan, otherwise a post-startup
+    // recipe app could be mis-backfilled as user-creation against a
+    // stale evidence snapshot (codex #143 F4). The lookups are cheap
+    // stateless closures over `fs` / `manifestStore`.
+    const { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks } =
+      createMenuEntriesContext(fs, manifestStore)
     // Active server locale for recipe nav base-label resolution
     // (app-directory-extension.md v1.7.1 §6.8.2.1 / i18n-architecture
     // v1.1 §6.6). Invalid / null / unset falls back to OSS default.

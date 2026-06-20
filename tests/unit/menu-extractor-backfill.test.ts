@@ -364,6 +364,48 @@ describe('readUserMenuEntries — manifest backfill (§6.9)', () => {
     expect(row.displayName).toBeNull()
   })
 
+  it('does not backfill a multi-segment appId that escapes the §5.4 grammar (codex #143 F5)', () => {
+    // `isCanonicalAppIdPath` accepts `foo/bar` (it only forbids `app/`
+    // escapes), so this entry reaches the backfill branch — but a
+    // backfilled `app/foo/bar/manifest.json` could never be enumerated
+    // by the menu-order eligible scan (immediate-subdir walk), so the
+    // appId-grammar guard must suppress it.
+    const badId = 'foo/bar'
+    const multiSegMenu = [
+      `export const menuEntries = [`,
+      `  { id: '${badId}', label: 'Bad', icon: 'note', component: () => import('./${badId}/pages/Index') },`,
+      `]`,
+    ].join('\n')
+    const badPageFile = `${PROJECT_ROOT}/app/${badId}/pages/Index.tsx`
+    const badManifestFile = `${PROJECT_ROOT}/app/${badId}/manifest.json`
+    const { fs, fileMap, writes } = makeFs({
+      [MENU_TS]: multiSegMenu,
+      [badPageFile]: '// stub page',
+    })
+    const entries = readUserMenuEntries(
+      fs,
+      undefined,
+      (appId): AppManifestLookupResult => {
+        // The off-canonical lookup reflects the live map; the manifest
+        // is absent so the state is 'missing' and the backfill branch
+        // fires (only to be suppressed by the appId-grammar guard).
+        if (appId !== badId) return { state: 'missing' }
+        return fileMap.has(badManifestFile) ? { state: 'unreadable' } : { state: 'missing' }
+      },
+      undefined,
+      'en',
+      undefined,
+      backfillHooks(),
+    )
+    expect(writes).not.toContain(badManifestFile)
+    expect(fileMap.has(badManifestFile)).toBe(false)
+    const row = entries.find((e) => e.id === badId)
+    // The row is still served (manifestState stays 'missing'), it is
+    // simply never promoted to eligible.
+    expect(row?.manifestState).toBe('missing')
+    expect(row?.displayName).toBeNull()
+  })
+
   it('preserves pre-v0.2.12 behavior when backfill hooks are omitted', () => {
     const { fs, fileMap, writes } = makeFs({
       [MENU_TS]: MENU_TS_BODY,
