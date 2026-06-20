@@ -372,8 +372,35 @@ export class TmuxBridge {
   private fs: FileAccessLayer
   private _sessionName: string | null = null
 
+  /**
+   * Process-lifetime latch: `true` once this KB process has observed its
+   * own tmux session alive at least once (via `hasSession()` returning
+   * true) or successfully spawned an agent window (`startAgent()`).
+   *
+   * It backs `hasEverHadSession()`, which the admin status route uses to
+   * suppress the degraded banner during the startup window before the
+   * KB-owned tmux session is first spawned. tmux is owned by the bridge,
+   * so the latch lives here as an instance field (not a module-scope
+   * variable) to keep ownership and lifetime aligned with the bridge.
+   */
+  private _everAlive = false
+
   constructor(fs: FileAccessLayer) {
     this.fs = fs
+  }
+
+  /**
+   * Whether this KB process has ever seen its own tmux session alive
+   * (latched; never resets for the process lifetime).
+   *
+   * Consumed by `GET /api/admin/status` to avoid reporting `degraded`
+   * before the KB-owned tmux session has been spawned for the first
+   * time — at that point a missing session cannot be a regression of a
+   * KB session, and any active sessions are external (terminal-launched)
+   * Claude processes the bridge does not own.
+   */
+  hasEverHadSession(): boolean {
+    return this._everAlive
   }
 
   /**
@@ -462,6 +489,8 @@ export class TmuxBridge {
   hasSession(): boolean {
     try {
       execFileSync('tmux', ['has-session', '-t', this.sessionName], { stdio: 'pipe' })
+      // Latch: the KB-owned session has been observed alive at least once.
+      this._everAlive = true
       return true
     } catch {
       return false
@@ -907,6 +936,8 @@ export class TmuxBridge {
 
     try {
       execFileSync('tmux', launchArgs, { stdio: 'pipe' })
+      // Latch: a KB-owned window now exists, so the session is alive.
+      this._everAlive = true
       tmuxLogger.info({ name, agentId, workDir, isSystemDefault }, 'Agent started')
 
       return { success: true }

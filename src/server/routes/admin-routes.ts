@@ -130,11 +130,23 @@ export function createAdminRouter(
     // field is NOT a usable source here: it derives from tmux windows
     // and is always empty when `tmux.alive === false`, so it cannot
     // tell idle apart from a true anomaly.
+    //
+    // Startup latch (`hasEverHadSession()`): before this KB process has
+    // ever spawned its own tmux session, a missing session cannot be a
+    // regression of a KB-owned session. Any active sessions in that
+    // window are external (terminal-launched) Claude processes the
+    // bridge does not own, so they must not raise degraded. Once the
+    // KB-owned session has been alive at least once the latch stays set
+    // for the process lifetime, restoring the "tmux gone while a session
+    // is running" anomaly detection. This keeps a lazily-spawned (not
+    // yet started) tmux session from tripping degraded purely because an
+    // unrelated external Claude session is active.
     const hasActiveSession = sessionManager
       .getSessions()
       .some((s) => s.status !== 'idle')
+    const tmuxEverAlive = tmuxBridge.hasEverHadSession()
     const status: AdminStatusResponse['status'] =
-      !tmuxAlive && hasActiveSession ? 'degraded' : 'healthy'
+      tmuxEverAlive && !tmuxAlive && hasActiveSession ? 'degraded' : 'healthy'
 
     const body: AdminStatusResponse = {
       status,
