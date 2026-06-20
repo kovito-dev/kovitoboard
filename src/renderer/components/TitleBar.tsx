@@ -148,7 +148,7 @@ export function TitleBar({ projectName, projectDescription, agentConfigs, agentS
             className={`
               hidden md:inline-flex items-center px-2 py-1 rounded text-[11px] font-medium
               ${serverIndicatorState === 'down'
-                ? 'bg-red-500/15 text-red-300 border border-red-500/30'
+                ? 'bg-[var(--severity-critical-bg)] text-[var(--severity-critical-text)] border border-[var(--severity-critical-border)]'
                 : 'bg-[var(--warning-bg)] text-[var(--warning-text)] border border-[var(--warning-border)]'}
             `}
             data-testid="header-status-banner"

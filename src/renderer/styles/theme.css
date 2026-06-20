@@ -48,6 +48,23 @@
   --warning-bg-hover: rgba(245, 158, 11, 0.18);  /* amber-500/18: hover-only bg bump, leaves text contrast intact */
   --warning-border: rgba(245, 158, 11, 0.40);    /* amber-500/40 */
 
+  /* Severity palette (multi-color) — used for diagnostic badges, status
+     banners, export status, and version status. The vivid -400 hues read
+     well on the dark surface; the light block below swaps to darker -700/800
+     text so the same semantics stay readable on a light surface. */
+  --severity-critical-text: #f87171;                  /* red-400 */
+  --severity-critical-bg: rgba(239, 68, 68, 0.20);    /* red-500/20 */
+  --severity-critical-border: rgba(239, 68, 68, 0.30);/* red-500/30 */
+  --severity-high-text: #fb923c;                      /* orange-400 */
+  --severity-high-bg: rgba(249, 115, 22, 0.20);       /* orange-500/20 */
+  --severity-high-border: rgba(249, 115, 22, 0.30);   /* orange-500/30 */
+  --severity-info-text: #60a5fa;                      /* blue-400 */
+  --severity-info-bg: rgba(59, 130, 246, 0.20);       /* blue-500/20 */
+  --severity-info-border: rgba(59, 130, 246, 0.30);   /* blue-500/30 */
+  --severity-ok-text: #34d399;                        /* emerald-400 */
+  --severity-ok-bg: rgba(16, 185, 129, 0.10);         /* emerald-500/10 */
+  --severity-ok-border: rgba(16, 185, 129, 0.30);     /* emerald-500/30 */
+
   /* Onboarding accent (OB-4): the global `--accent` blue read as too
      vivid against the wizard's calm cream-on-cream layout. The
      onboarding-only palette pulls from Kobi's clothing colors
@@ -137,6 +154,23 @@
   --warning-bg: rgba(245, 158, 11, 0.15);        /* amber-500/15 */
   --warning-bg-hover: rgba(245, 158, 11, 0.25);  /* amber-500/25: hover-only bg bump, keeps amber-800 text readable */
   --warning-border: rgba(180, 83, 9, 0.45);      /* amber-700/45 */
+
+  /* Severity palette (multi-color) — light variant. Text uses darker
+     -700/-800 hues so each severity stays >= 4.5:1 against the light
+     surface (#ffffff / #f3f4f6); the translucent bg tint is kept low so
+     the high-contrast text carries the readability. */
+  --severity-critical-text: #b91c1c;                  /* red-700 */
+  --severity-critical-bg: rgba(239, 68, 68, 0.12);    /* red-500/12 */
+  --severity-critical-border: rgba(185, 28, 28, 0.35);/* red-700/35 */
+  --severity-high-text: #c2410c;                      /* orange-700 */
+  --severity-high-bg: rgba(249, 115, 22, 0.15);       /* orange-500/15 */
+  --severity-high-border: rgba(194, 65, 12, 0.35);    /* orange-700/35 */
+  --severity-info-text: #1d4ed8;                      /* blue-700 */
+  --severity-info-bg: rgba(37, 99, 235, 0.12);        /* blue-600/12 */
+  --severity-info-border: rgba(29, 78, 216, 0.35);    /* blue-700/35 */
+  --severity-ok-text: #047857;                        /* emerald-700 */
+  --severity-ok-bg: rgba(16, 185, 129, 0.12);         /* emerald-500/12 */
+  --severity-ok-border: rgba(4, 120, 87, 0.35);       /* emerald-700/35 */
 
   /* Onboarding accent (OB-4): light variant. Kept slightly darker
      than the dark-mode value so the white-text label retains

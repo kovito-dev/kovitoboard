@@ -336,7 +336,7 @@ function KbStatusLine({
       <p
         data-testid="version-panel-kb-status"
         data-status="up-to-date"
-        className="text-emerald-400"
+        className="text-[var(--severity-ok-text)]"
       >
         {t('version.kb.upToDate')}
       </p>
@@ -374,7 +374,7 @@ function ClaudeCodeStatusLine({
       <p
         data-testid="version-panel-claude-status"
         data-tier="primary"
-        className="text-emerald-400"
+        className="text-[var(--severity-ok-text)]"
       >
         {t('version.claudeCode.primary')}
       </p>
@@ -395,7 +395,7 @@ function ClaudeCodeStatusLine({
     <p
       data-testid="version-panel-claude-status"
       data-tier="out-of-range"
-      className="text-red-400"
+      className="text-[var(--severity-critical-text)]"
     >
       {t('version.claudeCode.outOfRange', { primary: claudeCode.primaryTested })}
     </p>
