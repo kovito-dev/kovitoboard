@@ -256,6 +256,22 @@ async function handleExtNew(deps: ExtRouterDeps, req: Request, res: Response): P
   }
   const agentId = body.agentId
 
+  // §7.2.1 TOCTOU (HTTP path): `extGuard` validated the pairing/origin
+  // BEFORE `express.json()` streamed the body. A re-pair (overwrite to a
+  // different extension) can land DURING a slow body stream; that path
+  // synchronously clears the registry and terminates the old WS sockets,
+  // but an in-flight HTTP request is not a WS socket and survives. If we
+  // proceeded, the now-revoked extension would register a launch under
+  // the new pairing. Re-validate the pairing + exact origin here, after
+  // the body has parsed and just before we mutate the registry, so a
+  // request whose pairing changed mid-stream is refused.
+  const currentAllowedId = deps.pairing.getAllowedExtensionId()
+  const originId = parseExtensionOrigin(req.headers.origin)
+  if (currentAllowedId === null || originId === null || originId !== currentAllowedId) {
+    res.status(403).json({ error: 'Origin not allowed' })
+    return
+  }
+
   // §7.3.1 step 1: reject if the agent is in-flight (ext-vs-ext) OR has
   // a pending origin reservation on any path (ext-vs-renderer). The
   // cross-origin reservation check is performed inside the injected

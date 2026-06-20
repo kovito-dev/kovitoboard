@@ -329,19 +329,23 @@ app.use(
         res.status(409).json({ error: 'Agent launch in-flight' })
         return
       }
-      // Respond immediately with the server-minted launchId so a client
-      // with multiple WS connections can correlate the later
-      // `new_session` echo (§7.3.1 step 4c). The actual session start
-      // side effects run via the launch-only helper, whose own res.json
-      // would double-send.
-      try {
-        await startExtSession(ctx.agentId, input.message, input.resolvedCwd)
-        res.status(202).json({ launchId: ctx.launchId })
-      } catch (err) {
-        extRegistry.abortLaunch(ctx.launchId)
-        apiLogger.error({ err }, 'Ext new session start error')
-        res.status(500).json({ error: 'Failed to start session' })
-      }
+      // Respond immediately with the server-minted launchId (202) so a
+      // client with multiple WS connections can correlate the later
+      // `new_session` echo (§7.3.1 step 4c). The session-start side
+      // effects (tmux ensure/send, which can block up to 45s waiting for
+      // an agent to become ready) MUST NOT gate this response, or the
+      // HTTP client would time out and requests would pile up. We fire
+      // the launch in the background; if it throws we abort the launch
+      // reservation and log it (the response is already committed, so we
+      // cannot surface a 500 — the client learns of failure by the
+      // absence of a `new_session` echo before the 60s launch TTL).
+      res.status(202).json({ launchId: ctx.launchId })
+      void startExtSession(ctx.agentId, input.message, input.resolvedCwd).catch(
+        (err: unknown) => {
+          extRegistry.abortLaunch(ctx.launchId)
+          apiLogger.error({ err }, 'Ext new session start error (background)')
+        },
+      )
     },
     handleSessionSend,
   }),

@@ -293,3 +293,70 @@ describe('ext new-session launch (§7.3.1 / §9.4)', () => {
     expect(res.status).toBe(409)
   })
 })
+
+describe('ext new-session re-pair TOCTOU on the HTTP path (§7.2.1)', () => {
+  // `extGuard` validates the pairing/origin BEFORE `express.json()`
+  // streams the body. A re-pair (overwrite to a different extension) can
+  // land DURING a slow body stream — it clears the registry and
+  // terminates the old WS sockets, but an in-flight HTTP request is not
+  // a WS socket and survives. `handleExtNew` must re-validate the
+  // pairing + origin after the body parses, before mutating the
+  // registry, so the now-revoked extension cannot register a launch
+  // under the new pairing.
+  let server2: Server
+  let base2: string
+  let registry2: OwnershipRegistry
+  // Pairing stub: the guard sees the request's origin id as allowed, but
+  // by the time the post-parse re-check runs the slot has flipped to a
+  // different extension (a re-pair landed mid-stream).
+  let allowedIdReturns: Array<string | null>
+
+  beforeAll(async () => {
+    registry2 = new OwnershipRegistry()
+    allowedIdReturns = []
+    const pairingStub = {
+      getAllowedExtensionId: () =>
+        allowedIdReturns.length > 0 ? (allowedIdReturns.shift() as string | null) : EXT_ID,
+    } as unknown as PairingStore
+
+    const app = express()
+    app.use(
+      EXT_CLIENT_MOUNT_PREFIX,
+      createExtClientRouter({
+        pairing: pairingStub,
+        registry: registry2,
+        getLaunchToken: () => TOKEN,
+        tokensMatchLaunchToken: (actual, expected) => actual === expected,
+        onRepairOverwrite: () => {},
+        onAsyncError: () => {},
+        handleAgentsList: (_req, res) => res.json([]),
+        handleExtSessionNew: (_req, res, ctx) => res.status(202).json({ launchId: ctx.launchId }),
+        handleSessionSend: (_req, res) => res.json({ ok: true }),
+      }),
+    )
+    await new Promise<void>((resolve) => {
+      server2 = app.listen(0, '127.0.0.1', resolve)
+    })
+    const addr = server2.address() as AddressInfo
+    base2 = `http://127.0.0.1:${addr.port}`
+  })
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server2.close(() => resolve()))
+  })
+
+  it('403s and does not register a launch when the pairing flips after the guard', async () => {
+    const OTHER_ID = 'ponmlkjihgfedcbaponmlkjihgfedcba'
+    // 1st call = the guard (sees EXT_ID, passes). 2nd call = the
+    // post-parse re-check inside handleExtNew (sees OTHER_ID → mismatch).
+    allowedIdReturns = [EXT_ID, OTHER_ID]
+    const res = await fetch(`${base2}${EXT_CLIENT_MOUNT_PREFIX}/sessions/new`, {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agent-toctou', clientRequestId: 'req-toctou', message: 'go' }),
+    })
+    expect(res.status).toBe(403)
+    // The revoked extension must NOT have registered a launch.
+    expect(registry2.isAgentInFlight('agent-toctou')).toBe(false)
+  })
+})
