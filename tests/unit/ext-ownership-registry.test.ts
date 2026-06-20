@@ -52,6 +52,20 @@ describe('OwnershipRegistry — launch + correlation', () => {
     expect(registry.isAgentInFlight('a1')).toBe(false)
   })
 
+  it('returns the attached processId on correlation (process_end backfill)', () => {
+    const { registry } = makeRegistry()
+    const r = registry.registerLaunch({ agentId: 'a1', originConnId: 7, clientRequestId: 'c1' })
+    if (!r.ok) throw new Error('expected ok')
+    // No processId yet (tmux path) → null.
+    expect(registry.correlateNewSession('sess-tmux', 'a1')?.processId).toBeNull()
+
+    // Fallback path: a processId is attached before materialisation.
+    const r2 = registry.registerLaunch({ agentId: 'a2', originConnId: 8, clientRequestId: 'c2' })
+    if (!r2.ok) throw new Error('expected ok')
+    registry.attachProcessId(r2.launchId, 'proc-42')
+    expect(registry.correlateNewSession('sess-bridge', 'a2')?.processId).toBe('proc-42')
+  })
+
   it('rejects a second concurrent launch for the same agentId (serialisation §7.3.1)', () => {
     const { registry } = makeRegistry()
     registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'c1' })

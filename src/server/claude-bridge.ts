@@ -94,6 +94,20 @@ export class ClaudeBridge extends EventEmitter {
   }
 
   /**
+   * Backfill the `sessionId` of a process once the watcher resolves it.
+   * A `startNewSession` process is spawned with `sessionId: null` (the
+   * id is only known after Claude writes the JSONL), so callers that
+   * later learn the mapping — e.g. the external-client launch
+   * correlation — can attach it here so `process_end` consumers that
+   * key on `getProcess(id).sessionId` (the ext subscription filter)
+   * resolve correctly. No-op if the process has already been cleaned up.
+   */
+  setSessionId(processId: string, sessionId: string): void {
+    const managed = this.processes.get(processId)
+    if (managed) managed.sessionId = sessionId
+  }
+
+  /**
    * Number of active processes.
    */
   getActiveCount(): number {

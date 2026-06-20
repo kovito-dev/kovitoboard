@@ -47,6 +47,13 @@ export interface PendingExtLaunch {
   originConnId: number | null
   /** Client-generated correlation id, echoed on `new_session`. */
   clientRequestId: string | null
+  /**
+   * claude-bridge processId, if the launch fell back to `--print` mode
+   * (rather than tmux). Used to backfill the process's sessionId on
+   * materialisation so `process_end` filtering works for fallback
+   * launches. `null` for tmux launches (no claude-bridge process).
+   */
+  processId: string | null
   expiresAt: number
 }
 
@@ -64,6 +71,7 @@ export interface CorrelationMatch {
   agentId: string
   originConnId: number | null
   clientRequestId: string | null
+  processId: string | null
   sessionId: string
 }
 
@@ -124,6 +132,7 @@ export class OwnershipRegistry {
       agentId: args.agentId,
       originConnId: args.originConnId,
       clientRequestId: args.clientRequestId,
+      processId: null,
       expiresAt: this.now() + EXT_LAUNCH_TTL_MS,
     })
     this.inFlightAgentToLaunch.set(args.agentId, launchId)
@@ -131,6 +140,18 @@ export class OwnershipRegistry {
       this.pendingClientRequestIds.set(args.clientRequestId, launchId)
     }
     return { ok: true, launchId }
+  }
+
+  /**
+   * Attach the claude-bridge `processId` to a still-pending launch (the
+   * `--print` fallback path returns one). Recorded so that, on
+   * materialisation, the caller can backfill the process's sessionId for
+   * `process_end` filtering. No-op if the launch already consumed /
+   * expired.
+   */
+  attachProcessId(launchId: string, processId: string): void {
+    const pending = this.pendingByLaunchId.get(launchId)
+    if (pending) pending.processId = processId
   }
 
   /**
@@ -160,6 +181,7 @@ export class OwnershipRegistry {
       agentId: pending.agentId,
       originConnId: pending.originConnId,
       clientRequestId: pending.clientRequestId,
+      processId: pending.processId,
       sessionId,
     }
   }

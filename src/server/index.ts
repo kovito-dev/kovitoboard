@@ -343,12 +343,17 @@ app.use(
       // cannot surface a 500 — the client learns of failure by the
       // absence of a `new_session` echo before the 60s launch TTL).
       res.status(202).json({ launchId: ctx.launchId })
-      void startExtSession(ctx.agentId, input.message, input.resolvedCwd).catch(
-        (err: unknown) => {
+      void startExtSession(ctx.agentId, input.message, input.resolvedCwd)
+        .then(({ processId }) => {
+          // Record the claude-bridge processId (fallback path) so the
+          // session's process_end can be delivered to subscribers once
+          // the session materialises (§7.5).
+          if (processId !== null) extRegistry.attachProcessId(ctx.launchId, processId)
+        })
+        .catch((err: unknown) => {
           extRegistry.abortLaunch(ctx.launchId)
           apiLogger.error({ err }, 'Ext new session start error (background)')
-        },
-      )
+        })
     },
     handleSessionSend,
   }),
@@ -1149,7 +1154,7 @@ async function startExtSession(
   agentId: string,
   message: string,
   resolvedCwd: string | undefined,
-): Promise<void> {
+): Promise<{ processId: string | null }> {
   // Reserve origin='extension' so the watcher tags the session, and the
   // `new_session` correlation listener can match it to the ext launch.
   sessionManager.reserveOrigin(agentId, 'extension')
@@ -1168,16 +1173,18 @@ async function startExtSession(
           apiLogger.warn({ agentId, timeoutMs: 45000 }, 'Prompt wait timeout for ext agent')
         }
         const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
-        if (result.success) return
+        if (result.success) return { processId: null }
       } else {
         const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
-        if (result.success) return
+        if (result.success) return { processId: null }
       }
       apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
     }
 
-    // Fallback: ClaudeBridge (--print mode).
-    claudeBridge.startNewSession(message.trim(), agentId, resolvedCwd)
+    // Fallback: ClaudeBridge (--print mode). Return the processId so the
+    // caller can register it for `process_end` sessionId backfill.
+    const processId = claudeBridge.startNewSession(message.trim(), agentId, resolvedCwd)
+    return { processId }
   } catch (err) {
     sessionManager.cancelReservation(agentId, 'extension')
     throw err
@@ -3095,6 +3102,13 @@ function correlateExtNewSession(summary: unknown): void {
   const match = extRegistry.correlateNewSession(s.id, s.agentId)
   if (match === null) return
 
+  // Backfill the claude-bridge process's sessionId (fallback launches
+  // only) so a later `process_end` resolves its sessionId and reaches
+  // subscribed extension connections (§7.5).
+  if (match.processId !== null) {
+    claudeBridge.setSessionId(match.processId, s.id)
+  }
+
   const echo = JSON.stringify({
     type: 'new_session',
     payload: {
@@ -3621,7 +3635,10 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
   // Run the launch side effects (reserveOrigin('extension') + tmux /
   // claude) with the validated input.
   try {
-    await startExtSession(agentId, input.message, input.resolvedCwd)
+    const { processId } = await startExtSession(agentId, input.message, input.resolvedCwd)
+    // Record the claude-bridge processId (fallback path) so the
+    // session's process_end can be delivered to subscribers (§7.5).
+    if (processId !== null) extRegistry.attachProcessId(reg.launchId, processId)
   } catch (err) {
     extRegistry.abortLaunch(reg.launchId)
     wsLogger.warn({ err: String(err), agentId }, 'ext_session_new: launch failed')
