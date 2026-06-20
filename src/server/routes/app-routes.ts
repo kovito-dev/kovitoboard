@@ -190,18 +190,37 @@ function createMenuEntriesContext(
   // writing an `AppManifest` (`source.type === 'user-creation'`) during
   // the menu scan. The recipe-evidence predicate reuses the same
   // `RecipeManifestStore` + `recipe-history` readers the scanner
-  // contract (§6.7) uses — a present `RecipeManifest` OR any
-  // history record bound to the `appId` suppresses backfill so
-  // post-uninstall / partial residue keeps its recipe provenance
-  // (§6.9.2 condition 4; no forked history reader, §6.9.2 shared
-  // classifier reuse).
+  // contract (§6.7) uses — a present `RecipeManifest` OR any history
+  // record bound to the `appId` suppresses backfill so post-uninstall /
+  // partial residue keeps its recipe provenance (§6.9.2 condition 4; no
+  // forked history reader, §6.9.2 shared classifier reuse).
+  //
+  // The history file is read exactly once here (when the scan context
+  // is built) and the appIds bound to any record are precomputed into a
+  // set, so `recipeInstallEvidenceExists` is O(1) per row — a large
+  // menu over a near-cap `recipe-history.jsonl` no longer re-reads /
+  // re-parses the file per manifest-less row (codex #143 F2).
+  //
+  // Each record's appId is resolved as `record.appId ?? record.menu[0]`:
+  // `appId` was promoted to a first-class field in v0.2.0, but older
+  // entries omit it and `RecipeHistoryEntry` mandates the `menu[0]`
+  // legacy fallback for app association (`recipe-types.ts` `appId`
+  // JSDoc SSOT). Without the fallback a legacy recipe-installed app
+  // whose `RecipeManifest` is gone would look evidence-free and be
+  // mis-backfilled as `user-creation`, violating the provenance guard
+  // (codex #143 F1).
+  const historyBoundAppIds = new Set<string>()
+  for (const record of readRecipeHistory(fs)) {
+    const recordAppId = record.appId ?? record.menu[0]
+    if (typeof recordAppId === 'string' && recordAppId.length > 0) {
+      historyBoundAppIds.add(recordAppId)
+    }
+  }
   const backfillHooks: BackfillHooks = {
     projectRoot: resolveProjectRoot(fs),
     kovitoboardVersion: loadKbVersion(fs),
-    recipeInstallEvidenceExists: (appId) => {
-      if (manifestStore.get(appId) !== null) return true
-      return readRecipeHistory(fs).some((record) => record.appId === appId)
-    },
+    recipeInstallEvidenceExists: (appId) =>
+      manifestStore.get(appId) !== null || historyBoundAppIds.has(appId),
   }
 
   return { trustLookup, manifestLookup, recipeManifestLookup, backfillHooks }

@@ -35,6 +35,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -730,6 +731,48 @@ describe('PUT /api/apps/menu-order — case-A backfill', () => {
     expect(onDisk.displayName).toBe('Research Reports')
     expect((onDisk.source as Record<string, unknown>).type).toBe('user-creation')
     expect((onDisk.source as Record<string, unknown>).createdViaAgent).toBe('')
+  })
+
+  it('does not backfill an app with a legacy history row that omits appId (menu[0] fallback, codex #143 F1)', async () => {
+    // Manifest-less app whose only recipe-install evidence is a LEGACY
+    // history row written before `appId` was a first-class field: it
+    // carries no `appId`, only `menu: ['research-reports']`. Per the
+    // `RecipeHistoryEntry.appId` JSDoc the reader must fall back to
+    // `menu[0]` for app association, so this row binds the app to recipe
+    // lineage and must suppress backfill (provenance guard, §6.9.2
+    // condition 4) — otherwise a recipe residue is mis-attributed to
+    // user-creation.
+    writeSelfMadeApp(h.projectRoot, 'research-reports', 'Research Reports')
+    const legacyHistoryRow = {
+      id: 'hist-legacy-1',
+      // no `appId` field (legacy)
+      name: 'Research Reports',
+      version: '1.0.0',
+      source: 'import',
+      hash: 'deadbeef',
+      appliedAt: '2026-01-01T00:00:00.000Z',
+      artifacts: ['pages/Index.tsx'],
+      menu: ['research-reports'],
+    }
+    writeFileSync(
+      join(h.projectRoot, '.kovitoboard', 'recipe-history.jsonl'),
+      JSON.stringify(legacyHistoryRow) + '\n',
+      'utf-8',
+    )
+
+    const reply = await sendJson(h.app, 'PUT', '/api/apps/menu-order', {
+      order: [{ appId: 'research-reports', menuOrder: 0 }],
+    })
+
+    // Backfill suppressed → the app stays ineligible → the closed-world
+    // batch sees an empty eligible set and the single-element order does
+    // not cover it.
+    expect(reply.status).toBe(400)
+    expect(reply.body?.error).toBe('MenuOrderCoverageMismatch')
+    // No manifest was synthesized for the recipe-lineage app.
+    expect(
+      existsSync(join(h.projectRoot, 'app', 'research-reports', 'manifest.json')),
+    ).toBe(false)
   })
 })
 
