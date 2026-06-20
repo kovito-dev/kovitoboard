@@ -38,6 +38,7 @@ import { resolveProjectRoot } from '../config'
 import { isWithin } from '../pathResolver'
 import type { RecipeManifestStore } from '../recipeManifestStore'
 import { loadRecipeHistorySnapshot } from '../services/bundled-installer'
+import { getRecipeHistoryPath, MAX_HISTORY_BYTES } from '../recipe-history'
 import { loadKbVersion } from '../version-info'
 import { serverLogger } from '../logger'
 import { isRecipePageTrustLevel } from '../recipe/apiTypes'
@@ -223,19 +224,50 @@ function createMenuEntriesContext(
   // (codex #143 F1).
   let historyIndeterminate = false
   const historyBoundAppIds = new Set<string>()
+  // Over-cap pre-check (codex #143 F9): `loadRecipeHistorySnapshot`
+  // returns an EMPTY snapshot (not a throw) when the history file is
+  // over `MAX_HISTORY_BYTES` — it rotates the file away and treats the
+  // active history as empty. For the bundled-disable path that is a
+  // benign "effectively empty until next append", but for the backfill
+  // provenance guard an over-cap file makes recipe-evidence absence
+  // INDETERMINATE (the rotated-away records may have bound this app to
+  // recipe lineage). Detect the over-cap state up front and fail closed
+  // rather than letting the empty snapshot read as "no evidence".
   try {
-    for (const record of loadRecipeHistorySnapshot(fs).entries) {
-      const recordAppId = record.appId ?? record.menu[0]
-      if (typeof recordAppId === 'string' && recordAppId.length > 0) {
-        historyBoundAppIds.add(recordAppId)
-      }
+    const historyPath = getRecipeHistoryPath(fs)
+    if (
+      fs.existsSync(historyPath) &&
+      fs.statSync(historyPath).size > MAX_HISTORY_BYTES
+    ) {
+      historyIndeterminate = true
+      serverLogger.warn(
+        { historyPath },
+        '[app-routes] recipe-history.jsonl exceeds the size cap; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+      )
     }
   } catch (err) {
+    // A stat failure here is itself an indeterminate state — fail closed.
     historyIndeterminate = true
     serverLogger.warn(
       { err },
-      '[app-routes] recipe-history.jsonl unreadable; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+      '[app-routes] could not stat recipe-history.jsonl; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
     )
+  }
+  if (!historyIndeterminate) {
+    try {
+      for (const record of loadRecipeHistorySnapshot(fs).entries) {
+        const recordAppId = record.appId ?? record.menu[0]
+        if (typeof recordAppId === 'string' && recordAppId.length > 0) {
+          historyBoundAppIds.add(recordAppId)
+        }
+      }
+    } catch (err) {
+      historyIndeterminate = true
+      serverLogger.warn(
+        { err },
+        '[app-routes] recipe-history.jsonl unreadable; suppressing manifest backfill this scan cycle (fail-closed provenance guard)',
+      )
+    }
   }
   const backfillHooks: BackfillHooks = {
     projectRoot: resolveProjectRoot(fs),

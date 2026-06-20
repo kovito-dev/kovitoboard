@@ -206,4 +206,27 @@ describe('GET /api/app/menu-entries — backfill evidence is fresh per request (
     expect(row?.displayName).toBeNull()
     expect(existsSync(manifestPath)).toBe(false)
   })
+
+  it('fails closed and suppresses backfill when recipe-history is over the size cap (codex #143 F9)', async () => {
+    const manifestPath = join(h.projectRoot, 'app', APP_ID, 'manifest.json')
+    writeMenuTsAndPage(h.projectRoot)
+
+    // Write a `recipe-history.jsonl` over the 10 MiB cap. The snapshot
+    // loader rotates it away and returns an EMPTY snapshot — which would
+    // read as "no recipe evidence" — but the rotated-away records may
+    // have bound this app to recipe lineage, so absence is indeterminate
+    // and the over-cap pre-check must fail closed.
+    const oversizeBytes = 10 * 1024 * 1024 + 1024
+    writeFileSync(
+      join(h.projectRoot, '.kovitoboard', 'recipe-history.jsonl'),
+      'x'.repeat(oversizeBytes),
+      'utf-8',
+    )
+
+    const entries = await getMenuEntries(h.app)
+    const row = entries.find((e) => e.id === APP_ID)
+    expect(row?.manifestState).toBe('missing')
+    expect(row?.displayName).toBeNull()
+    expect(existsSync(manifestPath)).toBe(false)
+  })
 })
