@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deny-pattern recommendation is unmet. The unhelpful generic
   "Learn More" link was removed.
 
+### Security
+
+- Hardened the `tmux attach` snippet shown (and copied) by the trust-prompt
+  fallback and degrade modals. The tmux window name is now POSIX
+  single-quote encoded instead of interpolated into a double-quoted string,
+  so the snippet stays inert when pasted into a shell. This is defense in
+  depth: window names are already constrained server-side to
+  `^[a-zA-Z0-9_-]{1,64}$`, so shell metacharacters cannot occur today. Both
+  modals now share a single helper, so the displayed command and the
+  clipboard payload can no longer diverge.
+
 ### Fixed
 
 - Fixed a latent agent mis-binding when two or more session-origin
