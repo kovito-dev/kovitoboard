@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deny-pattern recommendation is unmet. The unhelpful generic
   "Learn More" link was removed.
 
+### Fixed
+
+- Admin status no longer reports `degraded` from external (non-KB-tmux)
+  sessions that are active before the KB tmux session is first spawned.
+  Until this KB process has spawned its own tmux session at least once, a
+  missing session cannot be a regression of a KB-owned session, so an
+  active terminal-launched Claude process no longer trips the degraded
+  banner. The "tmux gone while a KB session is running" anomaly is still
+  reported once the KB session has been alive.
+
 ## [0.2.11] - 2026-06-17
 
 ### Fixed
