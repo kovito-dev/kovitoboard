@@ -144,6 +144,20 @@ export class SessionManager extends EventEmitter {
     })
   }
 
+  /**
+   * Read-only check: is there a live (non-expired) origin reservation
+   * for `agentId`? Added for the external-client API (§7.3.1 step 1):
+   * an ext launch is rejected while ANY pending reservation exists for
+   * the same agentId — across renderer / sidebar / ext / internal
+   * paths — so the shared FIFO cannot mis-bind an ext reservation to a
+   * renderer-started session. This does NOT consume the reservation and
+   * does NOT change any existing behaviour (additive, INV-ORIGIN-1).
+   */
+  hasPendingReservation(agentId: string): boolean {
+    this.gcExpiredReservations()
+    return this.originReservations.some((r) => r.agentId === agentId)
+  }
+
   /** Pull the oldest non-expired reservation matching `agentId`. */
   private consumeOriginReservation(agentId: string): SessionOrigin | null {
     this.gcExpiredReservations()

@@ -284,9 +284,55 @@ export interface ClientLogPayload {
   data?: Record<string, unknown>
 }
 
+// =========================
+// External-client API (Phase 0)
+// =========================
+
+/**
+ * External-client WebSocket payloads (external-client-api.md v1.0 §6.2.1).
+ *
+ * These three message types are sent ONLY by a paired external-client
+ * WebSocket connection (a `chrome-extension://` origin whose id matches
+ * the paired `allowedExtensionId`). The server ignores them on a
+ * built-in renderer connection, and ignores renderer-only messages on
+ * an extension connection (§8.4 권한 분리 / privilege separation).
+ *
+ * They are added to `ClientToServerEvent` additively — no existing type
+ * is changed — so the `@stable v0.1.0` contract for the renderer is
+ * preserved.
+ *
+ * @stable v0.2.x (external-client API v1)
+ */
+export interface ExtSessionNewPayload {
+  /**
+   * Client-generated correlation id (128-bit recommended). Echoed back
+   * on the `new_session` event so the external client can tie the
+   * asynchronously-materialised session to the launch it requested
+   * (§7.3.1). The server also mints its own `launchId` for ownership.
+   */
+  clientRequestId: string
+  agentId: string
+  message: string
+  cwd?: string
+  /** Opaque reference to extension-relayed page context (reserved). */
+  contextRef?: string
+}
+
+export interface ExtSessionSendPayload {
+  sessionId: string
+  message: string
+}
+
+export interface ExtSubscribePayload {
+  sessionId: string
+}
+
 export type ClientToServerEvent =
   | { type: 'trust_prompt_respond'; payload: TrustPromptRespondPayload }
   | { type: 'client_log'; payload: ClientLogPayload }
+  | { type: 'ext_session_new'; payload: ExtSessionNewPayload }
+  | { type: 'ext_session_send'; payload: ExtSessionSendPayload }
+  | { type: 'ext_subscribe'; payload: ExtSubscribePayload }
 
 // =========================
 // Event type utilities

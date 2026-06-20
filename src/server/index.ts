@@ -3,7 +3,7 @@
  * Copyright (C) 2026 Anode LLC
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-import express from 'express'
+import express, { type Request, type Response } from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { join, resolve, dirname, basename } from 'path'
@@ -54,7 +54,20 @@ import {
   createTokenAndOriginGuard,
   createWsClientVerifier,
   resolveLaunchTokenOrThrow,
+  tokensMatchLaunchToken,
+  isLoopbackOrigin,
 } from './middleware/auth'
+import { PairingStore } from './ext-client/pairing-store'
+import { OwnershipRegistry } from './ext-client/ownership-registry'
+import {
+  createExtClientRouter,
+  EXT_CLIENT_MOUNT_PREFIX,
+} from './ext-client/ext-router'
+import {
+  ExtWsConnections,
+  classifyConnection,
+  createExtAwareWsVerifier,
+} from './ext-client/ws-ext'
 import {
   createInternalAuthGuard,
   resolveInternalTokenOrThrow,
@@ -191,7 +204,32 @@ const LAUNCH_TOKEN = resolveLaunchTokenOrThrow()
 const INTERNAL_TOKEN = resolveInternalTokenOrThrow()
 const verifyTokenAndOrigin = createTokenAndOriginGuard(LAUNCH_TOKEN)
 const verifyInternalAuth = createInternalAuthGuard(INTERNAL_TOKEN)
-const verifyWsClient = createWsClientVerifier(LAUNCH_TOKEN)
+const rendererWsVerify = createWsClientVerifier(LAUNCH_TOKEN)
+
+// --- External-client API (external-client-api.md v1.0) state ---
+// All process-wide, in-memory, never persisted (U-1). The pairing store
+// holds the single paired extension id + pending pairing code; the
+// ownership registry holds the per-extension owned-session set + the
+// server-minted launch correlation map; ExtWsConnections tracks WS
+// connection classification + per-connection subscription sets.
+const extPairing = new PairingStore()
+const extRegistry = new OwnershipRegistry()
+const extWs = new ExtWsConnections()
+
+// The launch token is per-launch constant in Phase 0, but expose it via
+// a getter so the ext layer reads the canonical value rather than
+// capturing a copy.
+const getLaunchToken = (): string => LAUNCH_TOKEN
+
+// Ext-aware WS verifier: extension origins are gated on pairing + token
+// + extApiVersion; every other origin delegates to the existing
+// renderer verifier verbatim (§7.6.2, INV / P-8 regression-safe).
+const verifyWsClient = createExtAwareWsVerifier({
+  pairing: extPairing,
+  rendererVerify: rendererWsVerify,
+  getLaunchToken,
+  tokensMatch: tokensMatchLaunchToken,
+})
 
 const app = express()
 
@@ -230,6 +268,68 @@ app.use((_req, res, next) => {
 // itself (`createTokenAndOriginGuard` in `auth/`) verifies the
 // launch-token bearer header + the Origin allowlist before the
 // JSON body parser ever sees the request payload.
+// --- External-client API router (external-client-api.md v1.0 §5.2) ---
+// Mounted BEFORE the broad `/api` loopback guard above so extension
+// requests are handled by the dedicated extension guard inside this
+// router and never intercepted by the loopback-only `/api/*` gate. The
+// router terminates every request (never `next()`s into the `/api`
+// guard); routes that reuse existing business logic call the injected
+// handlers below. `_client` is structurally non-colliding with the
+// recipe-app `/api/ext/*` namespace (P-16, case B): the app loader
+// skips `_`-prefixed files and rejects app names that are not `[a-z]`-
+// initial, so no recipe app can ever own `/api/ext/_client/*`.
+app.use(
+  EXT_CLIENT_MOUNT_PREFIX,
+  createExtClientRouter({
+    pairing: extPairing,
+    registry: extRegistry,
+    getLaunchToken,
+    tokensMatchLaunchToken,
+    onRepairOverwrite: (_oldId, _newId) => {
+      // Synchronously close the old extension's WS connections so a
+      // stale socket cannot keep receiving / sending after the paired
+      // id changed (§7.2.1 TOCTOU). The registry was already cleared by
+      // the router before this callback fired.
+      for (const ws of extWs.extensionSockets()) {
+        try {
+          ws.close(4001, 'Re-paired to a different extension')
+        } catch {
+          // best-effort; the close path may already be tearing down.
+        }
+      }
+    },
+    handleAgentsList,
+    handleExtSessionNew: async (req, res, ctx) => {
+      // §7.3.1 step 1 (cross-origin half): reject the ext launch if any
+      // pending origin reservation exists for this agentId on ANY path
+      // (renderer / sidebar / internal). The ext-vs-ext half is already
+      // enforced by the registry's in-flight lock in the router. This
+      // closes the "renderer pending → ext new" ordering; the reverse
+      // ordering is the accepted bounded residual R-4 (§10.4, decided).
+      if (sessionManager.hasPendingReservation(ctx.agentId)) {
+        extRegistry.abortLaunch(ctx.launchId)
+        res.status(409).json({ error: 'Agent launch in-flight' })
+        return
+      }
+      // Respond immediately with the server-minted launchId so a client
+      // with multiple WS connections can correlate the later
+      // `new_session` echo (§7.3.1 step 4c). The actual session start
+      // side effects run via the shared new-session handler, whose own
+      // res.json would double-send; we therefore drive the side effects
+      // through a launch-only variant.
+      try {
+        await startExtSession(req, ctx.agentId)
+        res.status(202).json({ launchId: ctx.launchId })
+      } catch (err) {
+        extRegistry.abortLaunch(ctx.launchId)
+        apiLogger.error({ err }, 'Ext new session start error')
+        res.status(500).json({ error: 'Failed to start session' })
+      }
+    },
+    handleSessionSend,
+  }),
+)
+
 app.use('/api', verifyTokenAndOrigin)
 app.use(express.json())
 
@@ -598,7 +698,20 @@ app.get('/api/config', (_req, res) => {
 })
 
 // Agent list (definitions + session statistics)
-app.get('/api/agents', (_req, res) => {
+// External-client pairing: issue a pairing code (renderer-only).
+// Lives under the existing loopback `/api/*` guard so only the built-in
+// renderer (a paired user pressing "connect a Chrome extension") can
+// mint a code. The extension then presents it to `POST /api/ext/_client/
+// v1/pair` (external-client-api.md v1.0 §7.2.1 step 1). The 128-bit,
+// single-use, 5-minute code is the only auth material `/pair` accepts.
+app.post('/api/ext-pairing/issue', (_req, res) => {
+  const code = extPairing.issuePairingCode()
+  res.json({ pairingCode: code, ttlMs: 300000 })
+})
+
+app.get('/api/agents', handleAgentsList)
+
+function handleAgentsList(_req: Request, res: Response): void {
   const agents = loadAgentDefinitions(fs, config)
   const records = loadSessionAgentRecords(fs, config)
   const sessionAgentMap = buildSessionAgentMap(records)
@@ -627,7 +740,7 @@ app.get('/api/agents', (_req, res) => {
   }
 
   res.json(agents)
-})
+}
 
 // Agent definition raw content
 app.get('/api/agents/:id/definition', (req, res) => {
@@ -684,8 +797,12 @@ app.post('/api/agents/:agentId/deactivate-sessions', (req, res) => {
 // --- Claude CLI integration API ---
 
 // Send message to an existing session
-app.post('/api/sessions/:id/send', async (req, res) => {
-  const sessionId = req.params.id
+app.post('/api/sessions/:id/send', handleSessionSend)
+
+async function handleSessionSend(req: Request, res: Response): Promise<void> {
+  // `:id` is a single path segment; the Express 5 typings widen
+  // `req.params` values to `string | string[]`, so narrow it here.
+  const sessionId = String(req.params.id)
   const { message } = req.body as SendMessageRequest
 
   if (typeof message !== 'string' || message.trim().length === 0) {
@@ -798,10 +915,12 @@ app.post('/api/sessions/:id/send', async (req, res) => {
     apiLogger.error({ err }, 'Session send error')
     res.status(500).json({ error: 'Failed to send message' })
   }
-})
+}
 
 // Start a new session
-app.post('/api/sessions/new', async (req, res) => {
+app.post('/api/sessions/new', handleNewSession)
+
+async function handleNewSession(req: Request, res: Response): Promise<void> {
   const { agentId, message, cwd, initialPrompt, origin } = req.body as NewSessionRequest
 
   // cwd allow-list gate — consumer #1 in spec `cwd-allowlist.md`
@@ -875,11 +994,12 @@ app.post('/api/sessions/new', async (req, res) => {
     origin !== 'sessions' &&
     origin !== 'recipe-create-app' &&
     origin !== 'recipe-install' &&
-    origin !== 'app-removal'
+    origin !== 'app-removal' &&
+    origin !== 'extension'
   ) {
     res.status(400).json({
       error:
-        'origin must be "sidebar", "sessions", "recipe-create-app", "recipe-install", or "app-removal"',
+        'origin must be "sidebar", "sessions", "recipe-create-app", "recipe-install", "app-removal", or "extension"',
     })
     return
   }
@@ -937,7 +1057,73 @@ app.post('/api/sessions/new', async (req, res) => {
     apiLogger.error({ err }, 'New session start error')
     res.status(500).json({ error: 'Failed to start new session' })
   }
-})
+}
+
+/**
+ * Launch-only side effects for an external-client `sessions/new`
+ * (external-client-api.md v1.0 §7.3). The ext HTTP path responds
+ * immediately with `{ launchId }` (202) for correlation, so this helper
+ * performs the reservation + tmux/claude start WITHOUT writing an HTTP
+ * response. It throws on a hard failure so the caller can abort the
+ * launch and return 500.
+ *
+ * `origin='extension'` is reserved here so the materialised session
+ * inherits the tag via the existing watcher reservation pattern (P-10),
+ * which is also what the `new_session` correlation listener keys on.
+ * cwd validation mirrors `handleNewSession`'s gate.
+ */
+async function startExtSession(req: Request, agentId: string): Promise<void> {
+  const body = req.body as { message?: unknown; cwd?: unknown }
+  const message = typeof body.message === 'string' ? body.message : ''
+  if (message.trim().length === 0) {
+    throw new Error('message must be a non-empty string')
+  }
+  if (message.length > 100000) {
+    throw new Error('message exceeds maximum length (100000 chars)')
+  }
+
+  let resolvedCwd: string | undefined = undefined
+  if (body.cwd !== undefined) {
+    if (typeof body.cwd !== 'string') {
+      throw new Error('cwd must be a string')
+    }
+    const snapshot = ensureWorkRootMetadata(fs, projectRoot)
+    const result = validateCwd(
+      body.cwd,
+      projectRoot,
+      snapshot.additionalWorkRoots,
+      snapshot.workRootsMetadata,
+      fs,
+    )
+    if (!result.ok) {
+      throw new Error('cwd outside allow-list')
+    }
+    resolvedCwd = result.resolvedCwd
+  }
+
+  // Reserve origin='extension' so the watcher tags the session, and the
+  // `new_session` correlation listener can match it to the ext launch.
+  sessionManager.reserveOrigin(agentId, 'extension')
+
+  const tmuxAgent = await ensureTmuxAgent(agentId)
+  if (tmuxAgent) {
+    if (tmuxAgent.justStarted) {
+      const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
+      if (!ready) {
+        apiLogger.warn({ agentId, timeoutMs: 45000 }, 'Prompt wait timeout for ext agent')
+      }
+      const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
+      if (result.success) return
+    } else {
+      const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
+      if (result.success) return
+    }
+    apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
+  }
+
+  // Fallback: ClaudeBridge (--print mode).
+  claudeBridge.startNewSession(message.trim(), agentId, resolvedCwd)
+}
 
 // Get process status
 app.get('/api/process/:id', (req, res) => {
@@ -2758,15 +2944,50 @@ app.get('{*path}', (req, res) => {
 function broadcast(type: string, payload: unknown): void
 function broadcast(event: ServerToClientEvent): void
 function broadcast(typeOrEvent: string | ServerToClientEvent, payload?: unknown): void {
+  const type = typeof typeOrEvent === 'string' ? typeOrEvent : typeOrEvent.type
+  const eventPayload = typeof typeOrEvent === 'string' ? payload : typeOrEvent.payload
   const msg =
     typeof typeOrEvent === 'string'
       ? JSON.stringify({ type: typeOrEvent, payload })
       : JSON.stringify(typeOrEvent)
+
+  // Extract the sessionId (if any) so extension connections can be
+  // filtered to their subscription set (§7.5). Only session-scoped
+  // events carry a sessionId; `new_session` is delivered separately
+  // (launchId-scoped) by the correlation listener and is never sent to
+  // extension connections through this broadcast path.
+  const sessionId = sessionIdOf(type, eventPayload)
+
   for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg)
+    if (client.readyState !== WebSocket.OPEN) continue
+    if (extWs.isExtension(client)) {
+      // Extension connections: deliver only session-scoped events whose
+      // sessionId is in this connection's subscription set. Everything
+      // else (renderer-targeted events, `new_session`, sessionId-less
+      // events) is withheld (data minimisation, §7.5). The renderer
+      // fan-out below is unchanged (P-11 regression-safe).
+      if (sessionId !== null && extWs.isSubscribed(client, sessionId)) {
+        client.send(msg)
+      }
+      continue
     }
+    // Renderer (or programmatic) connection: full fan-out, unchanged.
+    client.send(msg)
   }
+}
+
+/**
+ * Extract the `sessionId` from a server→client event payload for
+ * extension subscription filtering (§7.5). Returns `null` for events
+ * that are not session-scoped (so extensions never receive them).
+ */
+function sessionIdOf(type: string, payload: unknown): string | null {
+  if (type !== 'new_event' && type !== 'status_change') return null
+  if (payload && typeof payload === 'object' && 'sessionId' in payload) {
+    const sid = (payload as { sessionId?: unknown }).sessionId
+    return typeof sid === 'string' ? sid : null
+  }
+  return null
 }
 
 sessionManager.on('new_event', (sessionId: string, event: unknown) => {
@@ -2778,8 +2999,59 @@ sessionManager.on('status_change', (sessionId: string, status: string) => {
 })
 
 sessionManager.on('new_session', (summary: unknown) => {
+  // Renderer fan-out is unchanged: every renderer connection receives
+  // `new_session` (P-11). The broadcast filter withholds `new_session`
+  // from extension connections, so extension delivery is handled here,
+  // launchId-scoped (§7.5 / §7.3.1 step 4).
   broadcast('new_session', { summary })
+  correlateExtNewSession(summary)
 })
+
+/**
+ * Correlate a materialised `new_session` with a pending ext launch
+ * (external-client-api.md v1.0 §7.3.1 step 4). When the session was
+ * started by the ext path (`origin === 'extension'`), match it to the
+ * pending launch by agentId, add it to the per-extension owned-session
+ * registry, auto-subscribe the originating connection, and echo a
+ * `new_session` carrying `launchId` (+ `clientRequestId`) to the right
+ * extension connection(s). Renderer-started sessions never reach the
+ * registry here (correlate returns null), so an extension cannot own
+ * them (the accepted bounded residual R-4 is the only exception, §10.4).
+ */
+function correlateExtNewSession(summary: unknown): void {
+  if (!summary || typeof summary !== 'object') return
+  const s = summary as { id?: unknown; agentId?: unknown; origin?: unknown }
+  if (s.origin !== 'extension') return
+  if (typeof s.id !== 'string' || typeof s.agentId !== 'string') return
+
+  const match = extRegistry.correlateNewSession(s.id, s.agentId)
+  if (match === null) return
+
+  const echo = JSON.stringify({
+    type: 'new_session',
+    payload: {
+      summary,
+      launchId: match.launchId,
+      clientRequestId: match.clientRequestId ?? undefined,
+    },
+  })
+
+  if (match.originConnId !== null) {
+    // WS `ext_session_new` origin: auto-subscribe + echo to that socket.
+    extWs.subscribeByConnId(match.originConnId, s.id)
+    const ws = extWs.socketByConnId(match.originConnId)
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(echo)
+  } else {
+    // HTTP new (no originConnId): echo to ALL extension connections of
+    // the same paired extension (same ownership boundary, §7.5 / §7.3.1
+    // step 4c). Each receiver also auto-subscribes so the subsequent
+    // session events flow without an explicit `ext_subscribe`.
+    for (const ws of extWs.extensionSockets()) {
+      extWs.subscribe(ws, s.id)
+      if (ws.readyState === WebSocket.OPEN) ws.send(echo)
+    }
+  }
+}
 
 // Persist agent associations claimed eagerly via `originReservation` so
 // they survive server restarts. Sessions created by `clearAndSendMessage`
@@ -3031,6 +3303,12 @@ const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'trust_prompt_respond',
   'kb-call',
   'client_log',
+  // External-client API (external-client-api.md v1.0 §6.2.1). Accepted
+  // only from extension connections; the connection-kind + ownership
+  // checks in the dispatch below are the real gate (§8.4).
+  'ext_session_new',
+  'ext_session_send',
+  'ext_subscribe',
 ])
 
 // --- WebSocket connection heartbeat (supplementary review §S5) ---
@@ -3043,7 +3321,7 @@ const KNOWN_WS_EVENT_TYPES = new Set<string>([
 const wsHeartbeat = createHeartbeatTracker(wss, { log: wsLogger })
 
 // --- WebSocket: client -> server (trust prompt response handling) ---
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, request) => {
   // Wire the pong / error listeners that the heartbeat tracker
   // expects. Done at the top of the handler so subsequent logic
   // (replay + message dispatch) cannot short-circuit before the
@@ -3052,13 +3330,38 @@ wss.on('connection', (ws) => {
   // `uncaughtException`.
   wsHeartbeat.attach(ws)
 
+  // 3-value connection classification (external-client-api.md v1.0
+  // §7.6.2). `verifyClient` only accepts / rejects, so the final kind
+  // is re-evaluated here from the live origin + pairing state. A
+  // `reject` (e.g. a stale extension origin after a re-pairing TOCTOU)
+  // is closed immediately rather than silently demoted to renderer.
+  const kind = classifyConnection(request.headers.origin, extPairing, isLoopbackOrigin)
+  if (kind === 'reject') {
+    try {
+      ws.close(4003, 'Connection no longer authorized')
+    } catch {
+      /* best-effort */
+    }
+    return
+  }
+  extWs.register(ws, kind)
+  const isExtension = kind === 'extension'
+
+  ws.on('close', () => {
+    extWs.unregister(ws)
+  })
+
   // Replay pending trust-prompt events to the newly connected client.
-  // The detector may have broadcast events before any UI client was connected,
-  // causing them to be lost. This ensures late-connecting clients receive them.
-  const pending = trustPromptDetector.getPendingPrompts()
-  for (const event of pending) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(event))
+  // The detector may have broadcast events before any UI client was
+  // connected, causing them to be lost. Trust prompts are a
+  // renderer-only concern (§8.4 privilege separation); extension
+  // connections never receive them.
+  if (!isExtension) {
+    const pending = trustPromptDetector.getPendingPrompts()
+    for (const event of pending) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(event))
+      }
     }
   }
 
@@ -3083,15 +3386,154 @@ wss.on('connection', (ws) => {
       return
     }
 
-    if (parsed.type === 'trust_prompt_respond') {
+    const type = parsed.type
+    const isExtType =
+      type === 'ext_session_new' || type === 'ext_session_send' || type === 'ext_subscribe'
+
+    // Privilege separation (§8.4): ext_* only from extension
+    // connections; renderer-only types only from renderer connections.
+    if (isExtType && !isExtension) {
+      wsLogger.warn({ type }, 'ext_* received from non-extension connection, ignoring')
+      return
+    }
+    if (!isExtType && isExtension) {
+      wsLogger.warn({ type }, 'renderer-only message received from extension connection, ignoring')
+      return
+    }
+
+    if (type === 'trust_prompt_respond') {
       handleTrustPromptRespond(parsed.payload as TrustPromptRespondPayload)
-    } else if (parsed.type === 'kb-call') {
+    } else if (type === 'kb-call') {
       handleKbCall(ws, parsed as unknown as { type: 'kb-call' } & KbCallRequest)
-    } else if (parsed.type === 'client_log') {
+    } else if (type === 'client_log') {
       handleClientLog(parsed.payload as ClientLogPayload)
+    } else if (type === 'ext_session_new') {
+      void handleExtWsSessionNew(ws, parsed.payload)
+    } else if (type === 'ext_session_send') {
+      handleExtWsSessionSend(parsed.payload)
+    } else if (type === 'ext_subscribe') {
+      handleExtWsSubscribe(ws, parsed.payload)
     }
   })
 })
+
+/**
+ * WS `ext_session_new` handler (external-client-api.md v1.0 §6.2.1 /
+ * §7.3.1). Mirrors the HTTP ext new-session path but records the
+ * originating WS connection id so the `new_session` echo + auto-
+ * subscribe target the right socket. Same-agentId serialisation
+ * (§7.3.1 step 1) is enforced via the registry in-flight lock + the
+ * cross-origin reservation check.
+ */
+async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<void> {
+  if (!payload || typeof payload !== 'object') {
+    wsLogger.warn('ext_session_new: payload must be an object')
+    return
+  }
+  const p = payload as { agentId?: unknown; clientRequestId?: unknown; message?: unknown; cwd?: unknown }
+  if (typeof p.agentId !== 'string' || p.agentId.length === 0) {
+    wsLogger.warn('ext_session_new: agentId must be a non-empty string')
+    return
+  }
+  if (typeof p.clientRequestId !== 'string' || p.clientRequestId.length === 0) {
+    wsLogger.warn('ext_session_new: clientRequestId must be a non-empty string')
+    return
+  }
+  const agentId = p.agentId
+  const connId = extWs.getConnId(ws)
+  if (connId === null) {
+    wsLogger.warn('ext_session_new: connection not registered, ignoring')
+    return
+  }
+
+  // §7.3.1 step 1: reject if a pending reservation exists for this
+  // agentId on any path (cross-origin) — the ext-vs-ext half is the
+  // registry's in-flight lock below.
+  if (sessionManager.hasPendingReservation(agentId) || extRegistry.isAgentInFlight(agentId)) {
+    wsLogger.warn({ agentId }, 'ext_session_new: agent launch in-flight, ignoring')
+    return
+  }
+
+  const reg = extRegistry.registerLaunch({
+    agentId,
+    originConnId: connId,
+    clientRequestId: p.clientRequestId,
+  })
+  if (!reg.ok) {
+    wsLogger.warn({ agentId }, 'ext_session_new: agent launch in-flight, ignoring')
+    return
+  }
+
+  // Run the launch side effects (reserveOrigin('extension') + tmux /
+  // claude). A synthetic request carries the validated fields into the
+  // shared launch helper.
+  const synthReq = { body: { message: p.message, cwd: p.cwd } } as unknown as Request
+  try {
+    await startExtSession(synthReq, agentId)
+  } catch (err) {
+    extRegistry.abortLaunch(reg.launchId)
+    wsLogger.warn({ err: String(err), agentId }, 'ext_session_new: launch failed')
+  }
+}
+
+/**
+ * WS `ext_session_send` handler (§6.2.1 / §7.3.1 ownership). Ignored +
+ * warned unless the sessionId is owned by the current extension.
+ */
+function handleExtWsSessionSend(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') {
+    wsLogger.warn('ext_session_send: payload must be an object')
+    return
+  }
+  const p = payload as { sessionId?: unknown; message?: unknown }
+  if (typeof p.sessionId !== 'string' || typeof p.message !== 'string') {
+    wsLogger.warn('ext_session_send: sessionId and message must be strings')
+    return
+  }
+  if (!extRegistry.isOwned(p.sessionId)) {
+    wsLogger.warn({ sessionId: p.sessionId }, 'ext_session_send: session not owned, ignoring')
+    return
+  }
+  const message = p.message
+  if (message.trim().length === 0 || message.length > 100000) {
+    wsLogger.warn('ext_session_send: invalid message length')
+    return
+  }
+  // Reuse the existing claude-bridge send path. tmux routing is
+  // intentionally left to the HTTP send path; the WS shared-chat MVP
+  // sends via claude-bridge for the owned session.
+  const session = sessionManager.getSession(p.sessionId)
+  if (!session) {
+    wsLogger.warn({ sessionId: p.sessionId }, 'ext_session_send: session not found')
+    return
+  }
+  try {
+    claudeBridge.sendToSession(p.sessionId, message.trim())
+  } catch (err) {
+    wsLogger.warn({ err: String(err), sessionId: p.sessionId }, 'ext_session_send failed')
+  }
+}
+
+/**
+ * WS `ext_subscribe` handler (§6.2.1 / §7.5). Adds the sessionId to the
+ * connection's subscription set only when it is owned (§7.3.1).
+ */
+function handleExtWsSubscribe(ws: WebSocket, payload: unknown): void {
+  if (!payload || typeof payload !== 'object') {
+    wsLogger.warn('ext_subscribe: payload must be an object')
+    return
+  }
+  const p = payload as { sessionId?: unknown }
+  if (typeof p.sessionId !== 'string') {
+    wsLogger.warn('ext_subscribe: sessionId must be a string')
+    return
+  }
+  if (!extRegistry.isOwned(p.sessionId)) {
+    wsLogger.warn({ sessionId: p.sessionId }, 'ext_subscribe: session not owned, ignoring')
+    return
+  }
+  extWs.subscribe(ws, p.sessionId)
+}
 
 function handleTrustPromptRespond(payload: TrustPromptRespondPayload): void {
   // Validate required fields and their types

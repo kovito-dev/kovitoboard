@@ -136,6 +136,17 @@ export type SessionOrigin =
    * that walks them through `app/<appId>/` cleanup.
    */
   | 'app-removal'
+  /**
+   * External-client API (Phase 0, external-client-api.md v1.0 §7.3): a
+   * session started by a paired external client (e.g. a Chrome
+   * extension) via `POST /api/ext/_client/v1/sessions/new` or the WS
+   * `ext_session_new` message. The ext router reserves this origin
+   * before launching so the resulting session inherits the tag once
+   * the watcher resolves its agent, mirroring the existing reservation
+   * pattern. Ownership of these sessions is tracked separately in the
+   * per-extension registry (see `ext-client/ownership-registry.ts`).
+   */
+  | 'extension'
 
 export interface Session {
   id: string
