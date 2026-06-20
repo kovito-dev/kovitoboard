@@ -713,7 +713,10 @@ export function App() {
             The `onboardingComplete` prop gates the toast off during
             the onboarding wizard so it does not double up with the
             inline StepSecurity surface (CodeX review attempt 1). */}
-        <SecurityRecommendationsToast onboardingComplete={onboardingComplete === true} />
+        <SecurityRecommendationsToast
+          onboardingComplete={onboardingComplete === true}
+          startNewSession={startNewSession}
+        />
 
 
         {/* Mobile bottom nav */}

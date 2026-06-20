@@ -9,8 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Security recommendations toast: added an "Ask an agent to fix this"
+  button that starts a session prefilled with a prompt asking an agent
+  to add `.kovitoboard/` to Claude Code's deny pattern. KB only reads
+  Claude Code's settings and cannot write them itself, so this hands
+  the remediation to an agent. The button appears only when the
+  deny-pattern recommendation is unmet. The unhelpful generic
+  "Learn More" link was removed.
+
 ### Fixed
 
+- Admin status no longer reports `degraded` from external (non-KB-tmux)
+  sessions that are active before the KB tmux session is first spawned.
+  Until this KB process has spawned its own tmux session at least once, a
+  missing session cannot be a regression of a KB-owned session, so an
+  active terminal-launched Claude process no longer trips the degraded
+  banner. The "tmux gone while a KB session is running" anomaly is still
+  reported once the KB session has been alive.
 - Hand-placed custom apps can now be reordered. A self-made app added by
   hand (a `app/menu.ts` entry plus an `app/<id>/pages/*.tsx`, with no
   `manifest.json`) was excluded from the Apps screen's drag-and-drop
