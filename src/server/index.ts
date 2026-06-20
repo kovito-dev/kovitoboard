@@ -3135,6 +3135,7 @@ function correlateExtNewSession(summary: unknown): void {
   const s = summary as { id?: unknown; agentId?: unknown; origin?: unknown }
   if (s.origin !== 'extension') return
   if (typeof s.id !== 'string' || typeof s.agentId !== 'string') return
+  const sessionId = s.id
 
   const match = extRegistry.correlateNewSession(s.id, s.agentId)
   if (match === null) return
@@ -3155,19 +3156,47 @@ function correlateExtNewSession(summary: unknown): void {
     },
   })
 
+  // Catch-up replay (external-client-api.md §7.5 / R-? bounded fix). A
+  // single `addEvents` batch emits all `new_event`s BEFORE the terminal
+  // `new_session`, but auto-subscribe happens here, AFTER `new_session`.
+  // The session's opening line(s) are therefore emitted while this
+  // connection is not yet subscribed, so the broadcast filter drops them
+  // and Phase 0 (no transcript fetch) cannot recover them. To honour the
+  // MVP requirement, replay the already-recorded events of this owned
+  // session to the freshly subscribed extension socket(s) only — same
+  // `new_event` wire shape as the broadcast path, same ownership boundary
+  // as the echo above (owned-confirmed session, this origin connection
+  // only; INV-ORIGIN-1). The renderer fan-out is untouched.
+  const replayCatchUp = (ws: WebSocket): void => {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const session = sessionManager.getSession(sessionId)
+    if (!session) return
+    for (const event of session.events) {
+      ws.send(JSON.stringify({ type: 'new_event', payload: { sessionId, event } }))
+    }
+  }
+
   if (match.originConnId !== null) {
-    // WS `ext_session_new` origin: auto-subscribe + echo to that socket.
+    // WS `ext_session_new` origin: auto-subscribe + echo + catch-up to
+    // that socket.
     extWs.subscribeByConnId(match.originConnId, s.id)
     const ws = extWs.socketByConnId(match.originConnId)
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(echo)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(echo)
+      replayCatchUp(ws)
+    }
   } else {
     // HTTP new (no originConnId): echo to ALL extension connections of
     // the same paired extension (same ownership boundary, §7.5 / §7.3.1
     // step 4c). Each receiver also auto-subscribes so the subsequent
-    // session events flow without an explicit `ext_subscribe`.
+    // session events flow without an explicit `ext_subscribe`, then
+    // receives the same catch-up replay of the opening events.
     for (const ws of extWs.extensionSockets()) {
       extWs.subscribe(ws, s.id)
-      if (ws.readyState === WebSocket.OPEN) ws.send(echo)
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(echo)
+        replayCatchUp(ws)
+      }
     }
   }
 }
