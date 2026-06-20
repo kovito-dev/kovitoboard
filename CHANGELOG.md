@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a latent agent mis-binding when two or more session-origin
+  reservations from different agents raced within the reservation TTL
+  window. A newly created session claimed the queue head without matching
+  it by agent id, so it could be bound to the wrong agent and that wrong
+  mapping persisted across restarts. The eager claim now fires only when
+  exactly one reservation is pending; an ambiguous queue defers resolution
+  to the agent-setting path, which matches by agent id.
 - Severity status colors (diagnostic badges, server status banner, recipe
   export status, version status) were too faint to read in light mode; they
   now use theme-aware severity tokens so each color stays readable on both

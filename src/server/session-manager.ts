@@ -71,7 +71,7 @@ export class SessionManager extends EventEmitter {
       this.sessions.set(sessionId, session)
       // new_session event fires on first message addition (to exclude empty sessions from the list)
 
-      // Eagerly claim the oldest pending origin reservation for this newly
+      // Eagerly claim the single pending origin reservation for this newly
       // created session. Claude Code only emits an `agent-setting` event on
       // process launch (when `--agent <id>` is passed), NOT on the new
       // session that follows a `/clear`. Without this fallback, sessions
@@ -86,9 +86,26 @@ export class SessionManager extends EventEmitter {
       // persistence the association is lost on the next server restart —
       // the new JSONL file has no `agent-setting` event to replay, and
       // the session reverts to the default display name.
+      //
+      // The eager claim fires ONLY when exactly one reservation remains
+      // after GC (spec session-management.md §7.4.2, BL-2026-258). This
+      // queue carries no JSONL `sessionId` at reserve time, so the claim
+      // site has no way to tell which reservation a freshly created session
+      // belongs to — it can only take the queue head. When two or more
+      // reservations from different agents race within the TTL window,
+      // taking the head would mis-bind the session to the wrong agent and
+      // persist that wrong mapping across restarts. We therefore skip the
+      // eager claim while the queue is ambiguous (length !== 1) and defer
+      // resolution to the `setAgentId` path, whose `consumeOriginReservation`
+      // matches by `agentId` (findIndex). The trade-off: a `/clear`-spawned
+      // session with no `agent-setting` event that lands during an ambiguous
+      // window stays unbound (TTL-expiring to the default `'sessions'`
+      // origin) rather than risking a wrong, persisted binding — mis-binding
+      // (permanent) is worse than non-binding (transient), matching the
+      // §7.5.3 INV-1 priority.
       this.gcExpiredReservations()
-      const claimed = this.originReservations.shift()
-      if (claimed) {
+      if (this.originReservations.length === 1) {
+        const claimed = this.originReservations.shift()!
         session.agentId = claimed.agentId
         session.origin = claimed.origin
         this.emit('agent_claimed', sessionId, claimed.agentId)
