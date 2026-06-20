@@ -83,6 +83,14 @@ export type SessionOrigin =
    * NavMenu "Remove app" button.
    */
   | 'app-removal'
+  /**
+   * External-client API (Phase 0, external-client-api.md v1.0 §7.3).
+   * Sessions started by a paired external client (e.g. a Chrome
+   * extension). Value-range parity with the server-side union — the
+   * Sessions list does not yet decorate this origin (no UI rendering
+   * added here, only the union member).
+   */
+  | 'extension'
 
 export interface SessionSummary {
   id: string

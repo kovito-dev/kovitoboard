@@ -199,7 +199,26 @@ export interface AppMenuChangedPayload {
 export type ServerToClientEvent =
   | { type: 'new_event'; payload: { sessionId: string; event: unknown } }
   | { type: 'status_change'; payload: { sessionId: string; status: string } }
-  | { type: 'new_session'; payload: { summary: unknown } }
+  | {
+      type: 'new_session'
+      payload: {
+        summary: unknown
+        /**
+         * Server-minted launch correlation id, present when the session
+         * materialised from an external-client launch (external-client-api.md
+         * §7.3.1 / ws-event-contract.md v1.7). Optional and additive — the
+         * renderer fan-out omits it, which type-checks against this optional
+         * field, so the `@stable v0.1.0` contract stays non-breaking.
+         */
+        launchId?: string
+        /**
+         * Echo of the external client's `ExtSessionNewPayload.clientRequestId`,
+         * letting the client tie the asynchronously-materialised session back
+         * to the launch it requested. Optional and additive (see `launchId`).
+         */
+        clientRequestId?: string
+      }
+    }
   | {
       type: 'process_end'
       payload: {
