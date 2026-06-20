@@ -34,13 +34,24 @@
 import { useEffect, useState, useCallback } from 'react'
 import { kbFetch } from '../lib/kbFetch'
 import { t } from '../i18n'
+import type { NewSessionResponse, SessionOrigin } from '../types'
 import {
   type SecurityCheckResponse,
   buildFetchFailureResponse,
   isSecurityCheckResponse,
 } from '../lib/securityCheckResponse'
+import { useToast } from './Toast'
 import { RuleOfTwoViolationCard } from './RuleOfTwoViolationCard'
 import { RuleOfTwoExplanation } from './RuleOfTwoExplanation'
+
+/**
+ * Server-side initial-prompt dictionary key (see
+ * `src/server/services/initial-prompts.ts`). Launching a session with
+ * this key prefills a locale-aware prompt that asks an agent to add
+ * `.kovitoboard/` to Claude Code's deny pattern — the remediation KB
+ * cannot perform itself because it only reads Claude Code's settings.
+ */
+const ADD_DENY_PATTERN_PROMPT_KEY = 'security:add-deny-pattern'
 
 interface SecurityRecommendationsToastProps {
   /**
@@ -50,11 +61,26 @@ interface SecurityRecommendationsToastProps {
    * StepSecurity surface does not double up with the toast.
    */
   onboardingComplete?: boolean
+  /**
+   * Starts a new session. Wired to `useIPC().startNewSession` by the
+   * App wrapper. Used by the "ask an agent" remediation button to
+   * launch a session prefilled with the deny-pattern fix prompt.
+   * `agentId` is intentionally left undefined so the session starts
+   * with the vanilla `claude` agent — the remediation does not depend
+   * on any configured agent existing.
+   */
+  startNewSession: (
+    message: string | undefined,
+    agentId?: string,
+    options?: { origin?: SessionOrigin; initialPrompt?: string },
+  ) => Promise<NewSessionResponse>
 }
 
 export function SecurityRecommendationsToast({
   onboardingComplete = true,
+  startNewSession,
 }: SecurityRecommendationsToastProps) {
+  const { addToast } = useToast()
   const [state, setState] = useState<SecurityCheckResponse | null>(null)
   // After a successful dismiss we optimistically suppress the toast
   // until the next `/api/security/settings-check` response arrives.
@@ -66,6 +92,9 @@ export function SecurityRecommendationsToast({
   // drift).
   const [optimisticHidden, setOptimisticHidden] = useState(false)
   const [dismissing, setDismissing] = useState(false)
+  // Guards the "ask an agent" remediation button against double-submit
+  // while the session is being launched.
+  const [asking, setAsking] = useState(false)
   // Tracks whether the Rule of Two explanation modal is currently
   // mounted on top of the toast (Phase 1 ④ §3.3 + §3.5).
   const [explanationOpen, setExplanationOpen] = useState(false)
@@ -160,6 +189,32 @@ export function SecurityRecommendationsToast({
     }
   }, [dismissing])
 
+  // "Ask an agent to fix this": KB only reads Claude Code's settings
+  // and cannot write the deny pattern itself, so we hand the
+  // remediation to an agent by starting a session prefilled with the
+  // `security:add-deny-pattern` dictionary prompt. We pass no agentId
+  // so the vanilla `claude` agent runs — this path does not depend on
+  // any configured agent existing, so there is no "0 agents" failure
+  // mode to guard against here. On success we optimistically hide the
+  // toast (the agent's edit will clear the violation; the next
+  // settings-check resurfaces it if it did not). On failure we surface
+  // a toast and leave the warning in place.
+  const handleAskAgent = useCallback(async () => {
+    if (asking) return
+    setAsking(true)
+    try {
+      await startNewSession(undefined, undefined, {
+        origin: 'sidebar',
+        initialPrompt: ADD_DENY_PATTERN_PROMPT_KEY,
+      })
+      setOptimisticHidden(true)
+    } catch {
+      addToast(t('security.toast.askAgentFailed'), 'error')
+    } finally {
+      setAsking(false)
+    }
+  }, [asking, startNewSession, addToast])
+
   if (!onboardingComplete) return null
   if (optimisticHidden) return null
   if (!state) return null
@@ -250,14 +305,26 @@ export function SecurityRecommendationsToast({
           </div>
         </div>
         <div className="flex items-center justify-end gap-2 mt-3">
-          <a
-            href="https://docs.anthropic.com/en/docs/claude-code"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-amber-700 dark:text-amber-300 underline hover:text-amber-900 dark:hover:text-amber-100"
-          >
-            {t('security.toast.learnMore')}
-          </a>
+          {/*
+           * "Ask an agent to fix this" — only offered when a deny-
+           * pattern violation is the actionable issue. Hidden while
+           * fail-closed (settings unreadable, so there is nothing
+           * concrete to fix yet) or while bypass mode is active (the
+           * Rule of Two violation is the dominant concern and must be
+           * resolved by the user, not delegated). Mirrors the dismiss
+           * button's disabled guards.
+           */}
+          {!failClosed && !bypassActive && !result.denyPattern.ok && (
+            <button
+              type="button"
+              data-testid="security-toast-ask-agent"
+              onClick={handleAskAgent}
+              disabled={asking}
+              className="text-xs px-3 py-1 rounded-md border border-amber-700/40 bg-amber-700 text-white hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t('security.toast.askAgent')}
+            </button>
+          )}
           {/*
            * T-2-3 / I-7: dismiss is intentionally disabled when bypass
            * mode is active. The Rule of Two violation must re-surface

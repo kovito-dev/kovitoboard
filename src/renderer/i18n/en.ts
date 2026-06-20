@@ -93,7 +93,8 @@ const en: Record<MessageKey, string> = {
   'security.toast.denyPattern.violation': '.kovitoboard/ is not in Claude Code deny pattern',
   'security.toast.bypassMode.violation': 'bypass mode is active (Rule of Two violation, HITL required)',
   'security.toast.failClosed': 'Could not read your Claude Code settings file. Please review the settings manually.',
-  'security.toast.learnMore': 'Learn More',
+  'security.toast.askAgent': 'Ask an agent to fix this',
+  'security.toast.askAgentFailed': 'Could not start a session. Please try again.',
   'security.toast.dismiss': 'Dismiss (24h)',
   // Phase 1 prompt injection ④ Rule of Two violation announcement
   // (handoff v1.1 §3.2 / §3.5 / §3.6, prompt-injection-threat-model §4)

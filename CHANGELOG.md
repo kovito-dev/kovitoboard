@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Security recommendations toast: added an "Ask an agent to fix this"
+  button that starts a session prefilled with a prompt asking an agent
+  to add `.kovitoboard/` to Claude Code's deny pattern. KB only reads
+  Claude Code's settings and cannot write them itself, so this hands
+  the remediation to an agent. The button appears only when the
+  deny-pattern recommendation is unmet. The unhelpful generic
+  "Learn More" link was removed.
+
 ## [0.2.11] - 2026-06-17
 
 ### Fixed
