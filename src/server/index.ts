@@ -65,6 +65,7 @@ import {
 } from './ext-client/ext-router'
 import { resolveAgentExistence, type ExtAgentExistence } from './ext-client/agent-existence'
 import { MAX_EXT_ID_LEN } from './ext-client/limits'
+import { replayCatchUpEvents } from './ext-client/catch-up-replay'
 import {
   ExtWsConnections,
   classifyConnection,
@@ -3156,24 +3157,18 @@ function correlateExtNewSession(summary: unknown): void {
     },
   })
 
-  // Catch-up replay (external-client-api.md §7.5 / R-? bounded fix). A
-  // single `addEvents` batch emits all `new_event`s BEFORE the terminal
-  // `new_session`, but auto-subscribe happens here, AFTER `new_session`.
-  // The session's opening line(s) are therefore emitted while this
-  // connection is not yet subscribed, so the broadcast filter drops them
-  // and Phase 0 (no transcript fetch) cannot recover them. To honour the
-  // MVP requirement, replay the already-recorded events of this owned
-  // session to the freshly subscribed extension socket(s) only — same
-  // `new_event` wire shape as the broadcast path, same ownership boundary
-  // as the echo above (owned-confirmed session, this origin connection
-  // only; INV-ORIGIN-1). The renderer fan-out is untouched.
+  // Catch-up replay (external-client-api.md §7.5). Auto-subscribe happens
+  // here, AFTER `new_session`, but the opening `new_event`s of the batch
+  // were already broadcast BEFORE this socket was subscribed, so the
+  // broadcast filter dropped them and Phase 0 (no transcript fetch)
+  // cannot recover them. Replay the recorded events of this owned session
+  // to the freshly subscribed extension socket(s) only — same ownership
+  // boundary as the echo above (owned-confirmed session, this origin
+  // connection only; INV-ORIGIN-1). The renderer fan-out is untouched.
   const replayCatchUp = (ws: WebSocket): void => {
-    if (ws.readyState !== WebSocket.OPEN) return
     const session = sessionManager.getSession(sessionId)
     if (!session) return
-    for (const event of session.events) {
-      ws.send(JSON.stringify({ type: 'new_event', payload: { sessionId, event } }))
-    }
+    replayCatchUpEvents(ws, sessionId, session.events)
   }
 
   if (match.originConnId !== null) {
