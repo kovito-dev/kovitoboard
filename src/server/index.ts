@@ -121,6 +121,7 @@ import {
 } from './services/app-id-collision'
 import { readAppManifest } from './services/app-manifest'
 import { buildAppRemovalPrompt } from '../shared/app-removal-prompt'
+import { WS_MESSAGE_LIMIT } from '../shared/security-limits'
 import { readRecipeHistory, appendRecipeHistory, generateHistoryId } from './recipe-history'
 import {
   issueInstallSession,
@@ -364,19 +365,19 @@ app.use(express.json())
 
 const server = createServer(app)
 
-// Upper bound on a single inbound WS frame (external-client-api.md v1.0
-// §8.4 / security-limits.md L-H3). The largest legitimate payload is a
-// shared-chat message (capped at 100000 chars elsewhere); the headroom
-// covers the JSON envelope + the bounded id fields. Enforced at the
-// `ws` library layer via `maxPayload` so an oversized frame is rejected
-// at the protocol level BEFORE it is buffered into memory — the
-// per-message app-level check is a defence-in-depth backstop.
-const MAX_WS_FRAME_BYTES = 128 * 1024
+// Upper bound on a single inbound WS frame on the shared `/api/ws`
+// server (renderer + extension). `WS_MESSAGE_LIMIT` (L-H3, 1 MiB) is the
+// SSOT — it covers every use across both connection kinds (trust prompt
+// / handler dispatch / log streaming for the renderer; shared-chat
+// sends for the extension, themselves capped at 100000 chars by the
+// app-level validation in the message handlers). Enforced at the `ws`
+// library layer so an oversized frame is rejected with close code 1009
+// BEFORE it is buffered into memory.
 const wss = new WebSocketServer({
   server,
   path: '/api/ws',
   verifyClient: verifyWsClient,
-  maxPayload: MAX_WS_FRAME_BYTES,
+  maxPayload: WS_MESSAGE_LIMIT,
 })
 
 // --- File access abstraction layer ---
@@ -3407,24 +3408,6 @@ app.post('/api/agents/:id/restart', async (req, res) => {
 // unbounded strings that would otherwise sail past the per-message gate.
 const MAX_WS_ID_LEN = 256
 
-/**
- * Byte length of a `ws` inbound frame across its `RawData` forms
- * (Buffer | ArrayBuffer | Buffer[]) without materialising a string —
- * used to cap a frame BEFORE parsing.
- */
-function wsFrameByteLength(data: unknown): number {
-  if (Buffer.isBuffer(data)) return data.byteLength
-  if (data instanceof ArrayBuffer) return data.byteLength
-  if (Array.isArray(data)) {
-    let total = 0
-    for (const part of data) {
-      if (Buffer.isBuffer(part)) total += part.byteLength
-    }
-    return total
-  }
-  return 0
-}
-
 // Known client-to-server event types (whitelist)
 const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'trust_prompt_respond',
@@ -3502,17 +3485,12 @@ wss.on('connection', (ws, request) => {
       return
     }
 
-    // Frame size cap (defence-in-depth): the `ws` library already
-    // rejects frames over `maxPayload` at the protocol layer before
-    // buffering (see the WebSocketServer config), so this app-level
-    // check is a backstop that also bounds the parse work for anything
-    // that slips through. Checked BEFORE `toString()` + `JSON.parse`.
-    const frameLen = wsFrameByteLength(data)
-    if (frameLen > MAX_WS_FRAME_BYTES) {
-      wsLogger.warn({ frameLen }, 'WS frame exceeds size cap, ignoring')
-      return
-    }
-
+    // Frame size is bounded at the `ws` library layer by `maxPayload`
+    // (WS_MESSAGE_LIMIT / L-H3, see the WebSocketServer config): an
+    // oversized frame is closed with code 1009 before this handler ever
+    // fires. App-level message validation (e.g. the 100000-char cap in
+    // validateExtSessionInput) further bounds the per-type processing
+    // work, so no additional pre-parse frame check is needed here.
     let parsed: Record<string, unknown>
     try {
       parsed = JSON.parse(data.toString()) as Record<string, unknown>

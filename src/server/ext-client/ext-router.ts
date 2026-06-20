@@ -241,6 +241,14 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
   // --- sessions/:id/send (full guard, §6.1) ---
   router.post('/sessions/:id/send', extGuard, express.json(), (req, res) => {
     const sessionId = String(req.params.id)
+    // Bound the sessionId length BEFORE the registry lookup, matching the
+    // WS path's MAX_WS_ID_LEN cap so an oversized id cannot reach the
+    // ownership map (external-client-api.md v1.0 §8.4 hardening, HTTP/WS
+    // parity).
+    if (sessionId.length === 0 || sessionId.length > MAX_EXT_ID_LEN) {
+      res.status(403).json({ error: 'Session not owned' })
+      return
+    }
     if (!deps.registry.isOwned(sessionId)) {
       res.status(403).json({ error: 'Session not owned' })
       return

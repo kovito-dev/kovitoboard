@@ -13,10 +13,21 @@
  * the numeric contract; changes to either side must land in the
  * same PR (kb-architect for the spec, developer for this file).
  *
- * v0.2.x scope: only L-R1..L-R9 (Recipe Parser DoS) ship via this
- * module. Future categories (L-H / L-F / L-S / L-M) will land
- * alongside their consuming module changes.
+ * v0.2.x scope: L-R1..L-R9 (Recipe Parser DoS) plus L-H3 (WebSocket
+ * maxPayload) ship via this module. The remaining L-H / L-F / L-S / L-M
+ * categories will land alongside their consuming module changes.
  */
+
+// --- L-H: HTTP / WebSocket transport limits (spec §5) ---
+
+/**
+ * L-H3: max byte size of a single inbound WebSocket message. SSOT for
+ * the `ws` library `maxPayload` on the shared `/api/ws` server (renderer
+ * + extension). 1 MiB covers every use (trust prompt / handler dispatch
+ * / log streaming / ext shared-chat); frames above it are rejected at
+ * the protocol layer with close code 1009.
+ */
+export const WS_MESSAGE_LIMIT = 1_048_576 // 1 MiB
 
 // --- L-R: Recipe Parser limits (spec §5.1) ---
 
