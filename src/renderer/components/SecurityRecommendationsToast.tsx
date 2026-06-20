@@ -195,10 +195,16 @@ export function SecurityRecommendationsToast({
   // `security:add-deny-pattern` dictionary prompt. We pass no agentId
   // so the vanilla `claude` agent runs — this path does not depend on
   // any configured agent existing, so there is no "0 agents" failure
-  // mode to guard against here. On success we optimistically hide the
-  // toast (the agent's edit will clear the violation; the next
-  // settings-check resurfaces it if it did not). On failure we surface
-  // a toast and leave the warning in place.
+  // mode to guard against here.
+  //
+  // On success we optimistically hide the toast ONLY when the deny
+  // pattern is the sole remaining violation: this prompt fixes
+  // `permissions.deny` and nothing else, so if `permissionMode` is also
+  // out of compliance we must keep the toast visible rather than
+  // suppress an unrelated, still-unfixed recommendation. In either case
+  // the next settings-check (mount / visibility / focus refetch) is the
+  // source of truth and resurfaces any violation that is still present.
+  // On failure we surface a toast and leave the warning in place.
   const handleAskAgent = useCallback(async () => {
     if (asking) return
     setAsking(true)
@@ -207,13 +213,18 @@ export function SecurityRecommendationsToast({
         origin: 'sidebar',
         initialPrompt: ADD_DENY_PATTERN_PROMPT_KEY,
       })
-      setOptimisticHidden(true)
+      // Only hide when the deny pattern is the only open recommendation,
+      // so launching the deny-pattern fix cannot mask a permissionMode
+      // warning the prompt does not address.
+      if (state?.result.permissionMode.ok === true) {
+        setOptimisticHidden(true)
+      }
     } catch {
       addToast(t('security.toast.askAgentFailed'), 'error')
     } finally {
       setAsking(false)
     }
-  }, [asking, startNewSession, addToast])
+  }, [asking, startNewSession, addToast, state])
 
   if (!onboardingComplete) return null
   if (optimisticHidden) return null
