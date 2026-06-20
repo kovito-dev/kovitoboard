@@ -288,15 +288,18 @@ app.use(
     onRepairOverwrite: (_oldId, _newId) => {
       // Revoke the old extension's WS connections synchronously
       // (§7.2.1 TOCTOU). The registry was already cleared by the router
-      // before this callback fired. We FIRST `unregister` each socket
-      // so `extWs.isExtension(ws)` flips to false immediately — the
-      // per-message dispatch re-checks this, so any `ext_*` already
-      // queued on the old socket is refused even before `close()`
-      // completes — and only THEN close the socket. `terminate()`
-      // forces an immediate teardown rather than a graceful close
-      // handshake the old client could stall.
+      // before this callback fired. We FIRST `revoke` each socket so it
+      // enters the terminal `'revoked'` state — the per-message dispatch
+      // and the broadcast both refuse ALL traffic on a revoked socket,
+      // so a message already queued on the old socket is neither
+      // processed as renderer nor extension, even before `terminate()`
+      // completes. Revoking (not unregistering) is essential: deleting
+      // the metadata would make a still-open socket look like a renderer
+      // (full fan-out + renderer-only message acceptance). `terminate()`
+      // forces an immediate teardown rather than a graceful handshake
+      // the old client could stall.
       for (const ws of extWs.extensionSockets()) {
-        extWs.unregister(ws)
+        extWs.revoke(ws)
         try {
           ws.terminate()
         } catch {
@@ -3016,6 +3019,10 @@ function broadcast(typeOrEvent: string | ServerToClientEvent, payload?: unknown)
 
   for (const client of wss.clients) {
     if (client.readyState !== WebSocket.OPEN) continue
+    // A revoked (re-paired-away) socket lingers OPEN until terminate
+    // lands; it must receive NOTHING — neither the extension-filtered
+    // stream nor the renderer fan-out (§7.2.1 / §7.6.2).
+    if (!extWs.isUsable(client)) continue
     if (extWs.isExtension(client)) {
       // Extension connections: deliver only session-scoped events whose
       // sessionId is in this connection's subscription set. Everything
@@ -3366,6 +3373,36 @@ app.post('/api/agents/:id/restart', async (req, res) => {
   }
 })
 
+// Upper bound on a single inbound WS frame (external-client-api.md
+// v1.0 §8.4 hardening). The largest legitimate payload is a
+// shared-chat message (capped at 100000 chars elsewhere); the headroom
+// covers the JSON envelope + the bounded id fields. Frames larger than
+// this are dropped before parse.
+const MAX_WS_FRAME_BYTES = 128 * 1024
+// Upper bound on the correlation / id fields a paired extension may
+// send (agentId / clientRequestId / sessionId). Generous for real ids
+// (128-bit hex = 32 chars, agent ids are short) while refusing
+// unbounded strings that would otherwise sail past the per-message gate.
+const MAX_WS_ID_LEN = 256
+
+/**
+ * Byte length of a `ws` inbound frame across its `RawData` forms
+ * (Buffer | ArrayBuffer | Buffer[]) without materialising a string —
+ * used to cap a frame BEFORE parsing.
+ */
+function wsFrameByteLength(data: unknown): number {
+  if (Buffer.isBuffer(data)) return data.byteLength
+  if (data instanceof ArrayBuffer) return data.byteLength
+  if (Array.isArray(data)) {
+    let total = 0
+    for (const part of data) {
+      if (Buffer.isBuffer(part)) total += part.byteLength
+    }
+    return total
+  }
+  return 0
+}
+
 // Known client-to-server event types (whitelist)
 const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'trust_prompt_respond',
@@ -3434,6 +3471,26 @@ wss.on('connection', (ws, request) => {
   }
 
   ws.on('message', (data) => {
+    // Refuse all traffic on a socket that is not in a usable state — a
+    // revoked extension socket (re-pairing overwrite) lingers OPEN until
+    // `terminate()` lands, and must be treated as neither extension nor
+    // renderer (§7.2.1 / §7.6.2). This is checked first, before any
+    // parsing work.
+    if (!extWs.isUsable(ws)) {
+      return
+    }
+
+    // Frame size cap: `/api/ws` is now a primary external-client input
+    // path, so bound the raw frame BEFORE `toString()` + `JSON.parse`
+    // to avoid a paired/compromised extension forcing large allocations
+    // and parse CPU. The cap matches the per-field message limit
+    // (100000) with headroom for envelope + small fields.
+    const frameLen = wsFrameByteLength(data)
+    if (frameLen > MAX_WS_FRAME_BYTES) {
+      wsLogger.warn({ frameLen }, 'WS frame exceeds size cap, ignoring')
+      return
+    }
+
     let parsed: Record<string, unknown>
     try {
       parsed = JSON.parse(data.toString()) as Record<string, unknown>
@@ -3460,12 +3517,11 @@ wss.on('connection', (ws, request) => {
 
     // Re-evaluate the connection kind on EVERY message rather than
     // trusting the value captured at connect time. On a re-pairing
-    // overwrite the old extension's sockets are synchronously
-    // unregistered from `extWs` (see `onRepairOverwrite`), so
-    // `isExtension(ws)` flips to false immediately — closing the
-    // revocation TOCTOU where an `ext_*` message already queued on the
-    // old socket would otherwise be processed against the new registry
-    // after `close()` was requested but before it completed.
+    // overwrite the old extension's sockets are synchronously revoked in
+    // `extWs` (see `onRepairOverwrite`), so `isExtension(ws)` flips to
+    // false immediately — and the `isUsable` gate above already refused
+    // the message — closing the revocation TOCTOU where an `ext_*`
+    // message queued on the old socket would otherwise be processed.
     const liveIsExtension = extWs.isExtension(ws)
 
     // Privilege separation (§8.4): ext_* only from extension
@@ -3511,12 +3567,16 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
     return
   }
   const p = payload as { agentId?: unknown; clientRequestId?: unknown; message?: unknown; cwd?: unknown }
-  if (typeof p.agentId !== 'string' || p.agentId.length === 0) {
-    wsLogger.warn('ext_session_new: agentId must be a non-empty string')
+  if (typeof p.agentId !== 'string' || p.agentId.length === 0 || p.agentId.length > MAX_WS_ID_LEN) {
+    wsLogger.warn('ext_session_new: agentId must be a non-empty bounded string')
     return
   }
-  if (typeof p.clientRequestId !== 'string' || p.clientRequestId.length === 0) {
-    wsLogger.warn('ext_session_new: clientRequestId must be a non-empty string')
+  if (
+    typeof p.clientRequestId !== 'string' ||
+    p.clientRequestId.length === 0 ||
+    p.clientRequestId.length > MAX_WS_ID_LEN
+  ) {
+    wsLogger.warn('ext_session_new: clientRequestId must be a non-empty bounded string')
     return
   }
   const agentId = p.agentId
@@ -3586,8 +3646,13 @@ function handleExtWsSessionSend(payload: unknown): void {
     return
   }
   const p = payload as { sessionId?: unknown; message?: unknown }
-  if (typeof p.sessionId !== 'string' || typeof p.message !== 'string') {
-    wsLogger.warn('ext_session_send: sessionId and message must be strings')
+  if (
+    typeof p.sessionId !== 'string' ||
+    p.sessionId.length === 0 ||
+    p.sessionId.length > MAX_WS_ID_LEN ||
+    typeof p.message !== 'string'
+  ) {
+    wsLogger.warn('ext_session_send: sessionId (bounded) and message must be strings')
     return
   }
   if (!extRegistry.isOwned(p.sessionId)) {
@@ -3611,8 +3676,16 @@ function handleExtWsSessionSend(payload: unknown): void {
     },
     json(body: unknown) {
       if (captured.statusCode >= 400) {
+        // Log ONLY the status + a stable error code — never the full
+        // body. `handleSessionSend`'s cwd-rejection bodies carry local
+        // paths (`requested_cwd` / `allowed_roots`), which must not leak
+        // into logs via an extension-triggered send.
+        const errorCode =
+          body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
+            ? (body as { error: string }).error
+            : undefined
         wsLogger.warn(
-          { sessionId, status: captured.statusCode, body },
+          { sessionId, status: captured.statusCode, errorCode },
           'ext_session_send: delegated send returned an error',
         )
       }
@@ -3637,8 +3710,8 @@ function handleExtWsSubscribe(ws: WebSocket, payload: unknown): void {
     return
   }
   const p = payload as { sessionId?: unknown }
-  if (typeof p.sessionId !== 'string') {
-    wsLogger.warn('ext_subscribe: sessionId must be a string')
+  if (typeof p.sessionId !== 'string' || p.sessionId.length === 0 || p.sessionId.length > MAX_WS_ID_LEN) {
+    wsLogger.warn('ext_subscribe: sessionId must be a non-empty bounded string')
     return
   }
   if (!extRegistry.isOwned(p.sessionId)) {

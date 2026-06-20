@@ -91,4 +91,33 @@ describe('ExtWsConnections', () => {
     expect(conns.socketByConnId(connId)).toBeUndefined()
     expect(conns.extensionSockets()).toHaveLength(0)
   })
+
+  it('isUsable is true for registered extension / renderer, false otherwise', () => {
+    const conns = new ExtWsConnections()
+    const ext = fakeWs()
+    const ren = fakeWs()
+    const unknown = fakeWs()
+    conns.register(ext, 'extension')
+    conns.register(ren, 'renderer')
+    expect(conns.isUsable(ext)).toBe(true)
+    expect(conns.isUsable(ren)).toBe(true)
+    // A socket that was never registered (e.g. a rejected upgrade) is
+    // not usable — broadcast / dispatch must refuse it.
+    expect(conns.isUsable(unknown)).toBe(false)
+  })
+
+  it('revoke parks the socket in a terminal state: not extension, not renderer, not usable', () => {
+    const conns = new ExtWsConnections()
+    const e = fakeWs()
+    const connId = conns.register(e, 'extension')
+    conns.subscribe(e, 'sess-1')
+    conns.revoke(e)
+    // No longer an extension, no longer subscribed, no longer indexed...
+    expect(conns.isExtension(e)).toBe(false)
+    expect(conns.isSubscribed(e, 'sess-1')).toBe(false)
+    expect(conns.socketByConnId(connId)).toBeUndefined()
+    expect(conns.extensionSockets()).toHaveLength(0)
+    // ...and crucially NOT silently demoted to a usable renderer.
+    expect(conns.isUsable(e)).toBe(false)
+  })
 })

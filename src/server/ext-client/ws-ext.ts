@@ -33,8 +33,20 @@ export const EXT_API_VERSION = 1
 
 export type ConnectionKind = 'extension' | 'renderer'
 
+/**
+ * Internal per-socket kind. Adds `'revoked'` to the public
+ * `ConnectionKind`: a socket that was an extension and got revoked on a
+ * re-pairing overwrite is parked in this terminal state until close, so
+ * it is treated as NEITHER an extension NOR a renderer — every message
+ * and every broadcast is refused. Without this, deleting the metadata
+ * would make a still-open revoked socket indistinguishable from a
+ * renderer (full fan-out + renderer-only message acceptance), a privilege
+ * escalation (external-client-api.md v1.0 §7.2.1 / §7.6.2).
+ */
+type InternalKind = ConnectionKind | 'revoked'
+
 interface ExtConnectionMeta {
-  kind: ConnectionKind
+  kind: InternalKind
   /** Monotonic per-connection id (correlates HTTP-less launch echo). */
   connId: number
   /** sessionIds this extension connection is subscribed to (§7.5). */
@@ -68,8 +80,35 @@ export class ExtWsConnections {
     this.meta.delete(ws)
   }
 
+  /**
+   * Revoke an extension socket on a re-pairing overwrite (§7.2.1):
+   * remove it from the live extension index but KEEP a `'revoked'`
+   * metadata marker so a queued message arriving before the socket
+   * actually closes is treated as neither extension nor renderer (all
+   * traffic refused), rather than silently demoted to a renderer.
+   */
+  revoke(ws: WebSocket): void {
+    const m = this.meta.get(ws)
+    if (!m) return
+    if (m.kind === 'extension') this.extByConnId.delete(m.connId)
+    m.kind = 'revoked'
+    m.subscriptions.clear()
+  }
+
   isExtension(ws: WebSocket): boolean {
     return this.meta.get(ws)?.kind === 'extension'
+  }
+
+  /**
+   * Whether a socket is known but in a terminal state (revoked, or never
+   * classified). The message dispatch + broadcast use this to refuse ALL
+   * traffic on such a socket. A renderer / extension returns false; a
+   * revoked socket — or one with no metadata (it was never registered,
+   * which should not happen post-`connection`) — returns true.
+   */
+  isUsable(ws: WebSocket): boolean {
+    const kind = this.meta.get(ws)?.kind
+    return kind === 'extension' || kind === 'renderer'
   }
 
   getConnId(ws: WebSocket): number | null {
