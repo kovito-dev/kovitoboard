@@ -264,6 +264,17 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     runAsync(res, Promise.resolve(deps.handleSessionSend(req, res)), deps.onAsyncError)
   })
 
+  // Terminal 404 for unmatched paths under this namespace. Without it an
+  // unmatched `/api/ext/_client/v1/*` request would `next()` out of the
+  // mounted router and fall through into the broad `/api` stack, weakening
+  // the isolation contract stated in this module's header (every request to
+  // this namespace terminates here and never reaches the loopback `/api`
+  // guard). Keeping the boundary explicit also makes the namespace robust if
+  // later `/api` middleware gains side effects.
+  router.use((_req, res) => {
+    res.status(404).json({ error: 'Not found' })
+  })
+
   return router
 }
 
