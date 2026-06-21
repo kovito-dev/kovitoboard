@@ -83,6 +83,13 @@ export function SettingsExtensionPairing() {
     setGenerating(true)
     setIssueError(false)
     setExpired(false)
+    // Clear any lingering copy feedback so a freshly issued code never shows
+    // the previous code's "Copied" / error state.
+    if (copyTimerRef.current !== null) {
+      clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = null
+    }
+    setCopyFeedback(null)
     clearCountdownTimer()
     try {
       const res = await kbFetch('/api/ext-pairing/issue', { method: 'POST' })
