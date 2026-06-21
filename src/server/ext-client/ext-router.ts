@@ -34,7 +34,7 @@ import express, { type Request, type Response, type Router } from 'express'
 import type { PairingStore } from './pairing-store'
 import type { OwnershipRegistry } from './ownership-registry'
 import type { ExtAgentExistence } from './agent-existence'
-import { MAX_EXT_ID_LEN } from './limits'
+import { MAX_EXT_ID_LEN, MAX_PRE_AUTH_BODY_SIZE } from './limits'
 import { parseExtensionOrigin } from '../middleware/ext-origin'
 
 /** Mount prefix for the external-client API (§5.1, case-B namespace). */
@@ -147,10 +147,14 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     }
     next()
   }
-  // Catch `express.json()`'s parse error so malformed JSON returns the
-  // documented `{ error: 'Bad request' }` envelope (400) rather than
-  // Express' default error response, which can be HTML and — in
-  // development — carry a stack trace / paths on this pre-token route.
+  // Catch `express.json()`'s parse error so body-parser errors return a
+  // documented envelope rather than Express' default error response,
+  // which can be HTML and — in development — carry a stack trace / paths
+  // on this pre-token route. Two cases are distinguished (§7.2.2 / R-10):
+  //   - body exceeds the pre-auth cap → 413 `{ error: 'Payload too large' }`
+  //     (body-parser sets `err.type === 'entity.too.large'`); the body is
+  //     never fully parsed because the parser aborts the stream on overflow.
+  //   - malformed JSON / other parse failure → 400 `{ error: 'Bad request' }`.
   const jsonParseErrorGate = (
     err: unknown,
     _req: Request,
@@ -158,6 +162,10 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     next: express.NextFunction,
   ): void => {
     if (err) {
+      if ((err as { type?: unknown }).type === 'entity.too.large') {
+        res.status(413).json({ error: 'Payload too large' })
+        return
+      }
       res.status(400).json({ error: 'Bad request' })
       return
     }
@@ -213,7 +221,17 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
 
     res.json({ token: deps.getLaunchToken() })
   }
-  router.post('/pair', pairOriginGate, express.json(), jsonParseErrorGate, handlePair)
+  router.post(
+    '/pair',
+    pairOriginGate,
+    // §7.2.2 / R-10 pre-auth body-cap: `/pair` is reachable before
+    // pairing-code auth, so bound the body size before parsing to close
+    // the pre-auth body-parsing DoS surface. Overflow surfaces as an
+    // `entity.too.large` error handled by `jsonParseErrorGate` (413).
+    express.json({ limit: MAX_PRE_AUTH_BODY_SIZE }),
+    jsonParseErrorGate,
+    handlePair,
+  )
 
   // --- /token (origin-only, token NOT required, §7.2.4) ---
   router.get('/token', (req, res) => {

@@ -21,3 +21,21 @@
  * registry maps until TTL. Applied identically on the HTTP and WS paths.
  */
 export const MAX_EXT_ID_LEN = 256
+
+/**
+ * Body-size cap for tokenless / pre-auth body-parsing endpoints in the
+ * external-client namespace (external-client-api.md §7.2.2 / §10.4 R-10).
+ *
+ * `/pair` parses its body AFTER only the origin gate (`pairOriginGate`),
+ * which runs BEFORE pairing-code authentication. Any store-distributed
+ * extension presenting a valid `chrome-extension://<id>` origin can reach
+ * `/pair` without knowing a pairing code, so without a cap it could make
+ * the server parse bodies up to Express' default 100KB limit — a
+ * pre-auth body-parsing DoS surface. A legitimate pairing body carries
+ * only `pairingCode` (32-hex) + `extensionId` (≤ 32 chars), so `1kb` is
+ * generous for valid requests while closing the DoS surface.
+ *
+ * Kept here, alongside `MAX_EXT_ID_LEN`, as the single source of truth so
+ * the cap cannot silently drift from the HTTP path that consumes it.
+ */
+export const MAX_PRE_AUTH_BODY_SIZE = '1kb'

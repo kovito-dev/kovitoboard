@@ -250,6 +250,65 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
     expect((await res.json()) as { error: string }).toEqual({ error: 'Bad request' })
   })
 
+  it('rejects an over-cap pre-auth body with 413 before parsing (§7.2.2 / R-10)', async () => {
+    // A valid extension origin reaches /pair before pairing-code auth, so
+    // an oversized body must be refused by the pre-auth cap (1kb) with the
+    // documented 413 envelope — never fully parsed.
+    pairing.issuePairingCode()
+    const oversized = JSON.stringify({
+      pairingCode: 'x',
+      extensionId: EXT_ID,
+      padding: 'a'.repeat(2048),
+    })
+    const res = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: oversized,
+    })
+    expect(res.status).toBe(413)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect((await res.json()) as { error: string }).toEqual({
+      error: 'Payload too large',
+    })
+  })
+
+  it('still pairs with a legitimate body under the 1kb cap (R-10 regression)', async () => {
+    // The cap must not break valid pairing bodies (pairingCode + extensionId
+    // are well under 1kb).
+    const code = pairing.issuePairingCode()
+    const res = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ pairingCode: code, extensionId: EXT_ID }),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()) as { token: string }).toEqual({ token: TOKEN })
+  })
+
+  it('distinguishes payload-too-large (413) from malformed JSON (400)', async () => {
+    pairing.issuePairingCode()
+    // Malformed but small JSON → 400 Bad request.
+    const malformed = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: '{ not valid json',
+    })
+    expect(malformed.status).toBe(400)
+    expect((await malformed.json()) as { error: string }).toEqual({
+      error: 'Bad request',
+    })
+    // Well-formed but oversized JSON → 413 Payload too large.
+    const oversized = await fetch(url('/pair'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ extensionId: EXT_ID, padding: 'a'.repeat(2048) }),
+    })
+    expect(oversized.status).toBe(413)
+    expect((await oversized.json()) as { error: string }).toEqual({
+      error: 'Payload too large',
+    })
+  })
+
   it('rejects reuse of a consumed code (401)', async () => {
     const code = pairing.issuePairingCode()
     await fetch(url('/pair'), {
