@@ -21,32 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { kbFetch } from '../lib/kbFetch'
 import { t } from '../i18n'
-
-const PAIRING_CODE_RE = /^[0-9a-f]{32}$/
-
-interface IssuedCode {
-  pairingCode: string
-  /** Wall-clock ms when this code expires (Date.now() + ttlMs, §7.3). */
-  expiresAt: number
-}
-
-/** Validate the 200 body before display (§6.1). Returns null when invalid. */
-function parseIssueResponse(body: unknown): IssuedCode | null {
-  if (typeof body !== 'object' || body === null) return null
-  const { pairingCode, ttlMs } = body as { pairingCode?: unknown; ttlMs?: unknown }
-  if (typeof pairingCode !== 'string' || !PAIRING_CODE_RE.test(pairingCode)) return null
-  // NaN / Infinity pass `typeof === 'number'`, so reject them explicitly.
-  if (typeof ttlMs !== 'number' || !Number.isFinite(ttlMs) || ttlMs <= 0) return null
-  return { pairingCode, expiresAt: Date.now() + ttlMs }
-}
-
-/** Format remaining ms as mm:ss using ceil so the last second shows 00:01. */
-function formatRemaining(remainingMs: number): string {
-  const totalSeconds = Math.ceil(remainingMs / 1000)
-  const mm = Math.floor(totalSeconds / 60)
-  const ss = totalSeconds % 60
-  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
-}
+import { formatRemaining, parseIssueResponse, type IssuedCode } from './extensionPairingHelpers'
 
 export function SettingsExtensionPairing() {
   const [issued, setIssued] = useState<IssuedCode | null>(null)
@@ -59,6 +34,7 @@ export function SettingsExtensionPairing() {
   // Generation counter to discard stale request completions (§7.1): a request
   // that resolves after unmount / re-generate must not call state setters.
   const requestGenRef = useRef(0)
+  const mountedRef = useRef(true)
   const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -93,6 +69,7 @@ export function SettingsExtensionPairing() {
   // requests so late completions are ignored (§7.1).
   useEffect(() => {
     return () => {
+      mountedRef.current = false
       requestGenRef.current += 1
       clearCountdownTimer()
       if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current)
@@ -142,13 +119,18 @@ export function SettingsExtensionPairing() {
   const copy = useCallback(async () => {
     if (!issued) return
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current)
+    let ok = false
     try {
       if (!navigator.clipboard) throw new Error('clipboard unavailable')
       await navigator.clipboard.writeText(issued.pairingCode)
-      setCopyFeedback('copied')
+      ok = true
     } catch {
-      setCopyFeedback('error')
+      ok = false
     }
+    // Discard the result if the component unmounted during the async write
+    // (§7.2 timer cleanup / no post-unmount state update).
+    if (!mountedRef.current) return
+    setCopyFeedback(ok ? 'copied' : 'error')
     copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1500)
   }, [issued])
 
@@ -219,7 +201,7 @@ export function SettingsExtensionPairing() {
           disabled={generating}
           className="rounded-lg bg-[var(--accent,#6366f1)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors"
         >
-          {showCode
+          {issued
             ? t('setting.extensionPairing.regenerate')
             : t('setting.extensionPairing.generate')}
         </button>
