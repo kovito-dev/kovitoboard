@@ -10,9 +10,10 @@
  * The naive "starts with `chrome-extension://`" check is not enough: a
  * value like `chrome-extension://<id>.evil.example/path` would slip
  * past a prefix match. Every entry point that has to validate an
- * extension origin — the HTTP guard, the `/pair` handler, the `/token`
- * handler, the WS `verifyClient`, and the `connection` re-evaluation —
- * must run this single canonical algorithm so they cannot drift apart.
+ * extension origin — the HTTP guard, the `/pair` handler, the
+ * `/token/refresh` handler, the WS `verifyClient`, and the `connection`
+ * re-evaluation — must run this single canonical algorithm so they
+ * cannot drift apart.
  *
  * The algorithm (normative §7.1.1):
  *

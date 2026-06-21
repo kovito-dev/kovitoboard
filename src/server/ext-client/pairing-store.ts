@@ -17,6 +17,18 @@
  * launch token has not been handed to the extension yet — chicken /
  * egg). It is compared with `timingSafeEqual` and expires after a TTL.
  *
+ * On a successful pairing this store also mints a per-pairing
+ * `refreshSecret` (128-bit, §5.4 / §7.2.4 / (c1)): an origin-independent
+ * second factor that `POST /token/refresh` requires in ADDITION to the
+ * present-Origin exact-match (first factor). It is held in a single slot
+ * paired one-to-one with `allowedExtensionId` (same lifecycle: minted on
+ * pairing, replaced on re-pairing overwrite, dropped on KB shutdown /
+ * `reset()`), is NEVER persisted, and — unlike the launch token — does
+ * NOT rotate while the KB process lives (per-pairing stable). It closes
+ * the S12 actor class: a different extension can DNR-spoof the `Origin`
+ * but cannot read the legitimate extension's `storage.local` to learn
+ * the refresh secret, so it is always rejected at the second factor.
+ *
  * This store owns ONLY the pairing handshake state. Session ownership
  * (owned-session registry, launch correlation) lives in
  * `ownership-registry.ts`; the two are wired together in `index.ts`
@@ -33,24 +45,45 @@ interface PendingPairingCode {
 }
 
 export type PairResult =
-  | { ok: true; extensionId: string }
+  | { ok: true; extensionId: string; refreshSecret: string }
   | { ok: false; reason: 'no-active-pairing' | 'expired' | 'mismatch' }
 
 export class PairingStore {
   /** The single paired extension id, or `null` when unpaired. */
   private allowedExtensionId: string | null = null
+  /**
+   * The per-pairing refresh secret paired one-to-one with
+   * `allowedExtensionId`, or `null` when unpaired (§5.4 / §7.2.4 / (c1)).
+   */
+  private refreshSecret: string | null = null
   /** The single pending pairing code, or `null` when none is active. */
   private pending: PendingPairingCode | null = null
   /** Injectable clock for deterministic tests. */
   private readonly now: () => number
+  /** Injectable secret minter for deterministic tests. */
+  private readonly mintSecret: () => string
 
-  constructor(opts?: { now?: () => number }) {
+  constructor(opts?: { now?: () => number; mintSecret?: () => string }) {
     this.now = opts?.now ?? Date.now
+    this.mintSecret = opts?.mintSecret ?? defaultMintSecret
   }
 
   /** Currently paired extension id (`null` when unpaired). */
   getAllowedExtensionId(): string | null {
     return this.allowedExtensionId
+  }
+
+  /**
+   * Constant-time check that `presented` equals the current per-pairing
+   * `refreshSecret` (§7.2.4 second factor / (c1)). Returns `false` when
+   * unpaired (no secret) or on any length / value mismatch. The presented
+   * value comes from an untrusted `POST /token/refresh` body, so the
+   * compare is timing-safe even though a mismatch is the common case.
+   */
+  verifyRefreshSecret(presented: unknown): boolean {
+    if (this.refreshSecret === null) return false
+    if (typeof presented !== 'string') return false
+    return timingSafeStringEqual(presented, this.refreshSecret)
   }
 
   /**
@@ -71,6 +104,13 @@ export class PairingStore {
    * the new `allowedExtensionId` as live — see §7.2.1. This method only
    * mutates the pairing slot.
    *
+   * On success a fresh `refreshSecret` is minted and replaces any prior
+   * one in the single slot, ATOMICALLY with `allowedExtensionId` (both
+   * are set together so a re-pairing overwrite never leaves the old
+   * secret valid for the new id — §5.4 / §7.2.4 / (c1)). The plaintext
+   * secret is returned so the caller can hand it to the extension in the
+   * `/pair` response; it is never persisted.
+   *
    * `extensionId` must already have been checked to equal the request
    * Origin's `<id>` by the caller (§7.2.2) so the confirmed
    * `allowedExtensionId` is always the requester's own id.
@@ -90,22 +130,33 @@ export class PairingStore {
       return { ok: false, reason: 'mismatch' }
     }
 
-    // Single-use: consume the code on success.
+    // Single-use: consume the code on success. Mint + install the new
+    // refresh secret together with the extension id so the slot is
+    // self-consistent (re-pairing replaces both at once).
+    const refreshSecret = this.mintSecret()
     this.pending = null
     this.allowedExtensionId = extensionId
-    return { ok: true, extensionId }
+    this.refreshSecret = refreshSecret
+    return { ok: true, extensionId, refreshSecret }
   }
 
   /**
-   * Drop the paired extension and any pending code. Used on KB shutdown
-   * paths / explicit unpair. Re-pairing overwrite is handled by
-   * `tryPair` (which sets a new id); callers that need to detect "the
-   * id changed" should compare `getAllowedExtensionId()` before/after.
+   * Drop the paired extension, its refresh secret, and any pending code.
+   * Used on KB shutdown paths / explicit unpair. Re-pairing overwrite is
+   * handled by `tryPair` (which sets a new id + secret); callers that
+   * need to detect "the id changed" should compare
+   * `getAllowedExtensionId()` before/after.
    */
   reset(): void {
     this.allowedExtensionId = null
+    this.refreshSecret = null
     this.pending = null
   }
+}
+
+/** Mint a 128-bit refresh secret (32-char hex), matching the token shape. */
+function defaultMintSecret(): string {
+  return randomBytes(16).toString('hex')
 }
 
 /**

@@ -91,6 +91,10 @@ function url(path: string): string {
   return `${base}${EXT_CLIENT_MOUNT_PREFIX}${path}`
 }
 
+// The per-pairing refresh secret minted by the most recent `pair()` call,
+// captured so the `/token/refresh` tests can present the second factor.
+let lastRefreshSecret = ''
+
 async function pair(): Promise<void> {
   pairing.reset()
   registry.clear()
@@ -101,6 +105,8 @@ async function pair(): Promise<void> {
     body: JSON.stringify({ pairingCode: code, extensionId: EXT_ID }),
   })
   expect(res.status).toBe(200)
+  const body = (await res.json()) as { token: string; refreshSecret: string }
+  lastRefreshSecret = body.refreshSecret
 }
 
 describe('ext guard — origin / token (§7.1 / §9.1)', () => {
@@ -131,9 +137,36 @@ describe('ext guard — origin / token (§7.1 / §9.1)', () => {
     expect(res.status).toBe(403)
   })
 
-  it('rejects an empty Origin (no curl救済 in ext namespace, §7.1)', async () => {
+  // §7.1 step 2-absent (P-17 / v1.7): the MV3 SW omits `Origin` on GET, so
+  // a token-authed GET with an absent Origin delegates to the token gate
+  // (the token becomes the sole authz boundary) rather than 403ing.
+  it('accepts a token-authed GET with an absent Origin + valid token (§7.1 step 2-absent)', async () => {
     const res = await fetch(url('/capabilities'), {
       headers: { 'x-kovitoboard-token': TOKEN },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('401s a token-authed GET with an absent Origin + no token (token gate still applies)', async () => {
+    const res = await fetch(url('/capabilities'), {})
+    expect(res.status).toBe(401)
+  })
+
+  it('401s a token-authed GET with an absent Origin + wrong token', async () => {
+    const res = await fetch(url('/capabilities'), {
+      headers: { 'x-kovitoboard-token': 'wrong' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  // §7.1 step 2 (v1.7): the absent-Origin delegation is scoped to
+  // token-authed GET. A mutating POST keeps requiring present-Origin
+  // exact-match, so an absent-Origin POST is 403 even with a valid token.
+  it('403s a mutating POST (sessions/new) with an absent Origin even with a valid token', async () => {
+    const res = await fetch(url('/sessions/new'), {
+      method: 'POST',
+      headers: { 'x-kovitoboard-token': TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agent-1', clientRequestId: 'r1', message: 'hi' }),
     })
     expect(res.status).toBe(403)
   })
@@ -165,9 +198,14 @@ describe('unpaired fail-closed (§8.1 / §9.1)', () => {
     expect((await res.json()) as { error: string }).toEqual({ error: 'Extension not paired' })
   })
 
-  it('403s /token while unpaired (§7.2.4)', async () => {
-    const res = await fetch(url('/token'), { headers: { origin: EXT_ORIGIN } })
+  it('403s /token/refresh while unpaired (§7.2.4)', async () => {
+    const res = await fetch(url('/token/refresh'), {
+      method: 'POST',
+      headers: { origin: EXT_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshSecret: 'x'.repeat(32) }),
+    })
     expect(res.status).toBe(403)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Extension not paired' })
   })
 })
 
@@ -205,7 +243,7 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
     expect(res.status).toBe(403)
   })
 
-  it('pairs with the correct code and returns the token', async () => {
+  it('pairs with the correct code and returns the token + refresh secret (§7.2.1 / (c1))', async () => {
     const code = pairing.issuePairingCode()
     const res = await fetch(url('/pair'), {
       method: 'POST',
@@ -213,7 +251,10 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
       body: JSON.stringify({ pairingCode: code, extensionId: EXT_ID }),
     })
     expect(res.status).toBe(200)
-    expect((await res.json()) as { token: string }).toEqual({ token: TOKEN })
+    const body = (await res.json()) as { token: string; refreshSecret: string }
+    expect(body.token).toBe(TOKEN)
+    // The refresh secret is a freshly-minted 128-bit value (32-char hex).
+    expect(body.refreshSecret).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it('a same-id re-pair still resets the ownership registry (§7.2.1)', async () => {
@@ -282,7 +323,9 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
       body: JSON.stringify({ pairingCode: code, extensionId: EXT_ID }),
     })
     expect(res.status).toBe(200)
-    expect((await res.json()) as { token: string }).toEqual({ token: TOKEN })
+    const body = (await res.json()) as { token: string; refreshSecret: string }
+    expect(body.token).toBe(TOKEN)
+    expect(body.refreshSecret).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it('distinguishes payload-too-large (413) from malformed JSON (400)', async () => {
@@ -325,20 +368,77 @@ describe('pairing handshake (§7.2 / §9.2)', () => {
   })
 })
 
-describe('/token rotation follow (§7.2.4 / §9.3)', () => {
+describe('/token/refresh two-factor rotation follow (§7.2.4 / §9.3 / (c1))', () => {
   beforeAll(pair)
 
-  it('returns the current token on origin-only (no token required)', async () => {
-    const res = await fetch(url('/token'), { headers: { origin: EXT_ORIGIN } })
+  function refresh(
+    body: unknown,
+    origin: string | null = EXT_ORIGIN,
+  ): Promise<globalThis.Response> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (origin !== null) headers.origin = origin
+    return fetch(url('/token/refresh'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('returns the current token on present-Origin + correct refresh secret (no token required)', async () => {
+    const res = await refresh({ refreshSecret: lastRefreshSecret })
     expect(res.status).toBe(200)
     expect((await res.json()) as { token: string }).toEqual({ token: TOKEN })
   })
 
-  it('403s /token from a mismatched origin', async () => {
-    const res = await fetch(url('/token'), {
-      headers: { origin: 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba' },
-    })
+  it('403s a mismatched origin (first factor fails)', async () => {
+    const res = await refresh(
+      { refreshSecret: lastRefreshSecret },
+      'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba',
+    )
     expect(res.status).toBe(403)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Origin not allowed' })
+  })
+
+  it('403s an absent Origin (no absent-delegation on this token-free route)', async () => {
+    const res = await refresh({ refreshSecret: lastRefreshSecret }, null)
+    expect(res.status).toBe(403)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Origin not allowed' })
+  })
+
+  it('403s a wrong / missing refresh secret with present-Origin (second factor fails)', async () => {
+    const wrong = await refresh({ refreshSecret: 'f'.repeat(32) })
+    expect(wrong.status).toBe(403)
+    expect((await wrong.json()) as { error: string }).toEqual({ error: 'Invalid refresh secret' })
+
+    const missing = await refresh({})
+    expect(missing.status).toBe(403)
+    expect((await missing.json()) as { error: string }).toEqual({ error: 'Invalid refresh secret' })
+  })
+
+  // (c1) core regression: a DNR/webRequest Origin spoof passes the first
+  // factor but, lacking the legitimate extension's refresh secret, is
+  // refused at the second factor — token theft is structurally closed.
+  it('403s a spoofed present-Origin that lacks the refresh secret (S12 closure)', async () => {
+    const res = await refresh({}, EXT_ORIGIN)
+    expect(res.status).toBe(403)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Invalid refresh secret' })
+  })
+
+  // Both factors are AND-ed: correct secret alone (wrong origin) → 403.
+  it('403s a correct refresh secret from a mismatched origin (factors are AND-ed)', async () => {
+    const res = await refresh(
+      { refreshSecret: lastRefreshSecret },
+      'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba',
+    )
+    expect(res.status).toBe(403)
+  })
+
+  // §7.2.2 / R-10: the pre-auth body-cap runs before the secret check, so
+  // an over-cap body is 413'd even with a valid present-Origin.
+  it('413s an over-cap pre-auth body before the secret check (§7.2.2 / R-10)', async () => {
+    const res = await refresh({ refreshSecret: lastRefreshSecret, padding: 'a'.repeat(2048) })
+    expect(res.status).toBe(413)
+    expect((await res.json()) as { error: string }).toEqual({ error: 'Payload too large' })
   })
 })
 
