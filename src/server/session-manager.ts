@@ -103,8 +103,32 @@ export class SessionManager extends EventEmitter {
       // origin) rather than risking a wrong, persisted binding — mis-binding
       // (permanent) is worse than non-binding (transient), matching the
       // §7.5.3 INV-1 priority.
+      //
+      // Additional narrowing for the external-client API (spec
+      // session-management.md §7.4.2.1 + external-client-api.md §7.3.2):
+      // an `'extension'` reservation is ALSO excluded from the eager claim
+      // (the `origin !== 'extension'` AND below). The eager claim binds the
+      // queue head WITHOUT matching on `agentId`, so on the shared FIFO an
+      // unrelated `/clear`-spawned session (e.g. a renderer launch) that
+      // materialises while an ext launch's `'extension'` reservation is the
+      // sole pending entry would steal that reservation, get stamped
+      // `origin='extension'`, and be mis-attributed to the ext owned-session
+      // registry — a cross-path, permanent (persisted via `agent_claimed`,
+      // surviving restart) mis-ownership that violates the data-minimisation
+      // contract. We therefore route `'extension'` reservations EXCLUSIVELY
+      // through the launchId-correlation path (external-client-api.md §7.3.1
+      // step 4, agentId-matched), never the agentId-blind eager claim. The
+      // accepted cost is the R-5 correlation loss (§7.3.2.1): a
+      // `/clear`-spawned ext session for an already-running agent leaves its
+      // `'extension'` reservation to TTL-expire unbound (transient,
+      // ext-scoped, no renderer impact, no eager-claim mis-ownership) —
+      // under-delivery, not over-delivery. Non-`'extension'` origins keep
+      // the original single-reservation eager-claim behaviour unchanged.
       this.gcExpiredReservations()
-      if (this.originReservations.length === 1) {
+      if (
+        this.originReservations.length === 1 &&
+        this.originReservations[0].origin !== 'extension'
+      ) {
         const claimed = this.originReservations.shift()!
         session.agentId = claimed.agentId
         session.origin = claimed.origin
@@ -142,6 +166,42 @@ export class SessionManager extends EventEmitter {
       origin,
       expiresAt: Date.now() + RESERVATION_TTL_MS,
     })
+  }
+
+  /**
+   * Cancel the most recently parked reservation matching `agentId` +
+   * `origin`. Added for the external-client API: when an ext launch
+   * fails AFTER `reserveOrigin('extension')` but before any session
+   * materialises, the caller cancels the reservation so it does not
+   * linger for the full TTL — which would otherwise block the next ext
+   * launch for that agent (`hasPendingReservation`) and could mis-tag a
+   * later session as `'extension'`. Removes at most one matching entry
+   * (LIFO, the one this caller just parked); returns whether one was
+   * removed. Other callers' reservations are untouched.
+   */
+  cancelReservation(agentId: string, origin: SessionOrigin): boolean {
+    for (let i = this.originReservations.length - 1; i >= 0; i--) {
+      const r = this.originReservations[i]
+      if (r.agentId === agentId && r.origin === origin) {
+        this.originReservations.splice(i, 1)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Read-only check: is there a live (non-expired) origin reservation
+   * for `agentId`? Added for the external-client API (§7.3.1 step 1):
+   * an ext launch is rejected while ANY pending reservation exists for
+   * the same agentId — across renderer / sidebar / ext / internal
+   * paths — so the shared FIFO cannot mis-bind an ext reservation to a
+   * renderer-started session. This does NOT consume the reservation and
+   * does NOT change any existing behaviour (additive, INV-ORIGIN-1).
+   */
+  hasPendingReservation(agentId: string): boolean {
+    this.gcExpiredReservations()
+    return this.originReservations.some((r) => r.agentId === agentId)
   }
 
   /** Pull the oldest non-expired reservation matching `agentId`. */

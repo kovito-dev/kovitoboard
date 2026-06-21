@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental external client API namespace (`/api/ext/_client/v1/*`) that
+  a user-paired browser extension can use to talk to the local KovitoBoard
+  backend over a dedicated, origin-scoped, pairing-gated surface. This is an
+  early, internal-facing foundation only: no bundled client ships yet, the
+  surface is intentionally minimal, and it may change without notice. The
+  existing loopback-only `/api/*` boundary is unchanged.
+
 ## [0.2.12] - 2026-06-20
 
 ### Added

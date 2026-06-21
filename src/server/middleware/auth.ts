@@ -191,6 +191,28 @@ function originAllowed(origin: string | undefined): boolean {
 }
 
 /**
+ * Re-exports for the external-client API (external-client-api.md v1.0).
+ *
+ * The ext namespace needs the SAME timing-safe launch-token compare and
+ * the SAME loopback-origin predicate as the existing `/api/*` gate so
+ * the two cannot drift. These are exported verbatim — their bodies are
+ * unchanged (INV-ORIGIN-1: the loopback boundary for `/api/*` is not
+ * touched). The ext guard layers its `chrome-extension://` exact-match
+ * logic on top in `ext-origin.ts` / `ext-router.ts` rather than
+ * threading it through `originAllowed()` here.
+ */
+export function tokensMatchLaunchToken(
+  actual: string | undefined | null,
+  expected: string,
+): boolean {
+  return tokensMatch(actual, expected)
+}
+
+export function isLoopbackOrigin(origin: string | undefined): boolean {
+  return originAllowed(origin)
+}
+
+/**
  * Express middleware factory. The expected token is captured at
  * construction time so the per-request hot path stays cheap.
  */
