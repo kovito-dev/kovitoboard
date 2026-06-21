@@ -37,6 +37,9 @@ export function SettingsExtensionPairing() {
   const mountedRef = useRef(true)
   const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Monotonic copy token so that, under rapid repeated clicks, only the latest
+  // copy's completion applies feedback / schedules the reset timer.
+  const copyGenRef = useRef(0)
   // Tracks the latest issued code so an async copy can tell whether the code
   // it wrote is still the one on screen after awaiting the clipboard.
   const issuedRef = useRef<IssuedCode | null>(null)
@@ -87,6 +90,11 @@ export function SettingsExtensionPairing() {
     setGenerating(true)
     setIssueError(false)
     setExpired(false)
+    // Drop the previous code immediately so a stale / expired code is not left
+    // visible and copyable while the new request is pending (the server's
+    // single pending slot is overwritten by this issue, §7.1 / PR-2).
+    setIssued(null)
+    setRemainingMs(0)
     // Clear any lingering copy feedback so a freshly issued code never shows
     // the previous code's "Copied" / error state.
     if (copyTimerRef.current !== null) {
@@ -136,6 +144,7 @@ export function SettingsExtensionPairing() {
     // regenerated does not show "Copied" under a different, newly issued code
     // (the clipboard would still hold this captured code).
     const copiedCode = issued.pairingCode
+    const copyGen = ++copyGenRef.current
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current)
     let ok = false
     try {
@@ -146,12 +155,18 @@ export function SettingsExtensionPairing() {
       ok = false
     }
     // Discard the result if the component unmounted (§7.2 no post-unmount
-    // state update) or if the displayed code changed while writing (a
-    // regenerate landed) — feedback must not attach to a different code.
+    // state update), if a later copy click superseded this one (rapid clicks),
+    // or if the displayed code changed while writing (a regenerate landed) —
+    // feedback must not attach to a stale completion or a different code.
     if (!mountedRef.current) return
+    if (copyGen !== copyGenRef.current) return
     if (issuedRef.current?.pairingCode !== copiedCode) return
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current)
     setCopyFeedback(ok ? 'copied' : 'error')
-    copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1500)
+    copyTimerRef.current = setTimeout(() => {
+      copyTimerRef.current = null
+      setCopyFeedback(null)
+    }, 1500)
   }, [issued])
 
   const showCode = issued !== null && !expired
