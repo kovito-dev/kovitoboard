@@ -11,6 +11,7 @@ import type { AgentInfo } from '../types'
 import { AgentAvatar } from './AgentAvatar'
 import { UserAvatarUpload } from './UserAvatarUpload'
 import { SettingsWorkRoots } from './SettingsWorkRoots'
+import { SettingsExtensionPairing } from './SettingsExtensionPairing'
 import { kbFetch } from '../lib/kbFetch'
 
 const log = createLogger('SettingsModal')
@@ -65,6 +66,7 @@ type TabId =
   | 'integrations'
   | 'rules'
   | 'ambientSidebar'
+  | 'extensionPairing'
 
 // Built at module evaluation. The locale is restored from
 // localStorage by `i18n/readPersistedLocale()` (OSS fallback: en).
@@ -80,6 +82,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'integrations', label: t('setting.tab.integrations') },
   { id: 'rules', label: t('setting.tab.rules') },
   { id: 'ambientSidebar', label: t('setting.tab.ambientSidebar') },
+  { id: 'extensionPairing', label: t('setting.tab.extensionPairing') },
 ]
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
@@ -152,6 +155,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           {activeTab === 'integrations' && <SettingsIntegrations />}
           {activeTab === 'rules' && <SettingsRules />}
           {activeTab === 'ambientSidebar' && <SettingsAmbientSidebar />}
+          {activeTab === 'extensionPairing' && <SettingsExtensionPairing />}
         </div>
       </div>
     </div>
