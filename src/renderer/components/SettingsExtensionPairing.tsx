@@ -37,6 +37,10 @@ export function SettingsExtensionPairing() {
   const mountedRef = useRef(true)
   const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Tracks the latest issued code so an async copy can tell whether the code
+  // it wrote is still the one on screen after awaiting the clipboard.
+  const issuedRef = useRef<IssuedCode | null>(null)
+  issuedRef.current = issued
 
   const clearCountdownTimer = useCallback(() => {
     if (countdownTimerRef.current !== null) {
@@ -113,6 +117,9 @@ export function SettingsExtensionPairing() {
         setIssueError(true)
         return
       }
+      // Seed remainingMs synchronously so a fresh code never flashes
+      // "Expires in 00:00" before the countdown effect runs after paint.
+      setRemainingMs(Math.max(0, parsed.expiresAt - Date.now()))
       setIssued(parsed)
     } catch {
       if (gen !== requestGenRef.current) return
@@ -125,18 +132,24 @@ export function SettingsExtensionPairing() {
 
   const copy = useCallback(async () => {
     if (!issued) return
+    // Capture the code being copied so a write that resolves after the user
+    // regenerated does not show "Copied" under a different, newly issued code
+    // (the clipboard would still hold this captured code).
+    const copiedCode = issued.pairingCode
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current)
     let ok = false
     try {
       if (!navigator.clipboard) throw new Error('clipboard unavailable')
-      await navigator.clipboard.writeText(issued.pairingCode)
+      await navigator.clipboard.writeText(copiedCode)
       ok = true
     } catch {
       ok = false
     }
-    // Discard the result if the component unmounted during the async write
-    // (§7.2 timer cleanup / no post-unmount state update).
+    // Discard the result if the component unmounted (§7.2 no post-unmount
+    // state update) or if the displayed code changed while writing (a
+    // regenerate landed) — feedback must not attach to a different code.
     if (!mountedRef.current) return
+    if (issuedRef.current?.pairingCode !== copiedCode) return
     setCopyFeedback(ok ? 'copied' : 'error')
     copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1500)
   }, [issued])
