@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface is intentionally minimal, and it may change without notice. The
   existing loopback-only `/api/*` boundary is unchanged.
 
+### Changed
+
+- External client API: a browser extension's service worker does not send an
+  `Origin` header on `GET` requests, so the read-only endpoints
+  (`/capabilities`, `/agents`) now accept a missing `Origin` and fall back to
+  the paired launch token as the sole authorization check. Mutating `POST`
+  endpoints still require an exact extension-origin match. Token re-fetch
+  after a restart now uses `POST /token/refresh` (replacing the previous
+  `GET /token`), which requires both the paired origin and a per-pairing
+  refresh secret issued at pairing time. The `/pair` response now also
+  returns this refresh secret.
+
 ## [0.2.12] - 2026-06-20
 
 ### Added

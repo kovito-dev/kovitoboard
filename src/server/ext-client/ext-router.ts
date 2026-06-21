@@ -15,11 +15,22 @@
  * terminates the request (it does NOT `next()` into the `/api` guard).
  *
  * Authentication layering (§5.2 / §7.1):
- *   - `/pair`   — pre-guard special route, pairing-code authenticated,
- *                 token NOT required (§7.2.2).
- *   - `/token`  — origin-two-step only (step 1+2), token check skipped
- *                 (§7.2.4) so a stale-token client can re-fetch.
- *   - all other — full extension guard: paired + exact origin + token.
+ *   - `/pair`           — pre-guard special route, pairing-code
+ *                         authenticated, token NOT required (§7.2.2).
+ *                         Response carries `{ token, refreshSecret }`.
+ *   - `/token/refresh`  — token-free, but two-factor: present-Origin
+ *                         exact-match (first factor) + body
+ *                         `refreshSecret` (second factor, §7.2.4 / (c1))
+ *                         so a stale-token client can re-fetch the token
+ *                         while a DNR-Origin-spoofing extension that lacks
+ *                         the refresh secret is structurally refused.
+ *   - all other         — full extension guard: paired + token. The exact
+ *                         origin check is method-aware (§7.1 step 2,
+ *                         P-17): a token-authed GET (`/capabilities`,
+ *                         `/agents`) accepts a MISSING `Origin` header and
+ *                         delegates to the token gate (the MV3 service
+ *                         worker omits `Origin` on GET), while a mutating
+ *                         POST requires present-Origin exact-match.
  *
  * Routes that "merge into existing logic" (`agents`, `sessions/new`,
  * `sessions/:id/send`) call injected handler functions so the existing
@@ -97,11 +108,42 @@ export interface ExtRouterDeps {
 }
 
 /**
- * Build the extension guard middleware (§7.1 step 1–3). Applied to
- * every route EXCEPT `/pair` and `/token`, which have their own
- * narrower checks.
+ * Whether an `Origin` header is absent — i.e. the header was not sent at
+ * all (undefined) or is the empty string. This is distinct from a header
+ * that IS present but is not a valid `chrome-extension://` origin (e.g. a
+ * web origin), which must NOT be treated as absent (§7.1 step 2 / §5.3
+ * N-1: a malicious web page CANNOT omit `Origin`, so an empty header is
+ * structurally only reachable by an MV3 SW GET or a same-host non-browser
+ * process — never by a web page). The §7.1 step 2-absent delegation is
+ * keyed on header absence, NOT on `parseExtensionOrigin` returning null
+ * (which also fires for a present-but-invalid origin that must 403).
  */
-function buildExtensionGuard(deps: ExtRouterDeps) {
+function isOriginHeaderAbsent(req: Request): boolean {
+  const origin = req.headers.origin
+  return origin === undefined || origin === ''
+}
+
+/**
+ * Build the extension guard middleware (§7.1 step 1–3). Applied to every
+ * route EXCEPT `/pair` and `/token/refresh`, which have their own
+ * narrower checks.
+ *
+ * Step 2 is scoped per-route (§7.1 step 2 / P-17), NOT keyed on the HTTP
+ * method. The absent-`Origin` delegation is opted into explicitly by the
+ * two token-authed GET routes (`/capabilities`, `/agents`) via
+ * `opts.allowOriginAbsent`, because the MV3 service worker omits `Origin`
+ * on GET fetches — refusing the absent case would 403 every legitimate
+ * GET. Every other route (the mutating POSTs `/sessions/new`,
+ * `/sessions/:id/send`) keeps requiring present-Origin exact-match: the SW
+ * always sends `Origin` on POST, so an absent-Origin POST is only a
+ * crafted path and is refused. Pinning the relaxation to named routes
+ * (rather than to `req.method === 'GET'`) keeps the scope exactly the two
+ * spec-named endpoints, so a future GET added under this guard does not
+ * silently inherit the absent-Origin relaxation. A present `Origin` is
+ * always exact-matched on every route (a present web origin therefore
+ * 403s on step 2, never reaching the absent-delegation path).
+ */
+function buildExtensionGuard(deps: ExtRouterDeps, opts: { allowOriginAbsent: boolean }) {
   return function extensionGuard(req: Request, res: Response, next: express.NextFunction): void {
     // Step 1: paired?
     const allowedExtensionId = deps.pairing.getAllowedExtensionId()
@@ -109,13 +151,26 @@ function buildExtensionGuard(deps: ExtRouterDeps) {
       res.status(403).json({ error: 'Extension not paired' })
       return
     }
-    // Step 2: exact origin parse + allowedExtensionId match.
-    const id = parseExtensionOrigin(req.headers.origin)
-    if (id === null || id !== allowedExtensionId) {
-      res.status(403).json({ error: 'Origin not allowed' })
-      return
+    // Step 2: route-scoped exact-origin / absent-delegation (§7.1 step 2).
+    const originAbsent = isOriginHeaderAbsent(req)
+    if (originAbsent && opts.allowOriginAbsent) {
+      // (2-absent) token-authed GET (capabilities / agents) with no Origin
+      // header: skip the exact origin match and let the token gate (step 3)
+      // be the sole authz boundary (P-17, mirrors the existing /api P-4
+      // empty-Origin path). Only the two opted-in routes reach here.
+    } else {
+      // (2-present) — OR an absent Origin on a route that does NOT opt into
+      // the relaxation (every mutating POST), which we refuse here via the
+      // same exact-match path (parseExtensionOrigin returns null for an
+      // empty header → 403).
+      const id = parseExtensionOrigin(req.headers.origin)
+      if (id === null || id !== allowedExtensionId) {
+        res.status(403).json({ error: 'Origin not allowed' })
+        return
+      }
     }
-    // Step 3: launch token.
+    // Step 3: launch token (required on BOTH the present and absent
+    // paths; on the absent GET path it is the sole authz boundary).
     const headerValue = req.headers['x-kovitoboard-token']
     const headerToken = Array.isArray(headerValue) ? headerValue[0] : headerValue
     if (!deps.tokensMatchLaunchToken(headerToken, deps.getLaunchToken())) {
@@ -129,7 +184,15 @@ function buildExtensionGuard(deps: ExtRouterDeps) {
 
 export function createExtClientRouter(deps: ExtRouterDeps): Router {
   const router = express.Router()
-  const extGuard = buildExtensionGuard(deps)
+  // Two guard instances differing only in the §7.1 step 2 absent-Origin
+  // policy. The token-authed GET routes (`/capabilities`, `/agents`) opt
+  // into the absent-Origin delegation (the MV3 SW omits Origin on GET);
+  // every mutating route uses the strict guard that requires present-Origin
+  // exact-match. Scoping the relaxation to these two named routes (rather
+  // than to the HTTP method) keeps it exactly at the two spec-named
+  // endpoints (§7.1 step 2, addressing the authorization-scope-drift risk).
+  const extGuardGetReadOnly = buildExtensionGuard(deps, { allowOriginAbsent: true })
+  const extGuard = buildExtensionGuard(deps, { allowOriginAbsent: false })
 
   // --- /pair (pre-guard special route, pairing-code auth, §7.2.2) ---
   // The exact-origin check runs in a middleware BEFORE `express.json()`
@@ -219,7 +282,11 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
       deps.onRepairOverwrite(before, result.extensionId)
     }
 
-    res.json({ token: deps.getLaunchToken() })
+    // Return the launch token AND the freshly-minted per-pairing refresh
+    // secret (§7.2.1 step 4 / (c1)). The extension persists the secret in
+    // `chrome.storage.local` and presents it as the second factor of
+    // `POST /token/refresh`; the volatile token goes to `storage.session`.
+    res.json({ token: deps.getLaunchToken(), refreshSecret: result.refreshSecret })
   }
   router.post(
     '/pair',
@@ -233,29 +300,70 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     handlePair,
   )
 
-  // --- /token (origin-only, token NOT required, §7.2.4) ---
-  router.get('/token', (req, res) => {
+  // --- /token/refresh (token-free, two-factor, §7.2.4 / (c1)) ---
+  // A stale-token client re-fetches the current launch token here without
+  // re-pairing. It is token-free (the client only has a stale token) but
+  // NOT origin-only: present-Origin alone is spoofable via DNR/webRequest
+  // header rewrite and KB does not use CORS (P-2), so origin-only would
+  // let a different extension steal the token (the (b1) re-reject root).
+  // (c1) closes this with TWO factors that must BOTH pass:
+  //   (first)  present-Origin exact-match — the route is POST, so the SW
+  //            always sends `Origin` (P-17); an absent / mismatched Origin
+  //            is 403 (no absent-delegation path, unlike token-authed GET).
+  //   (second) body `refreshSecret` timing-safe equal to the per-pairing
+  //            secret minted at `/pair` — a DNR-Origin-spoofing extension
+  //            cannot read the legitimate extension's storage and so is
+  //            refused here even after spoofing the origin (S12 closure).
+  // The pre-auth body-cap (1kb) runs BEFORE the secret check so an
+  // attacker who spoofs the origin cannot force large-body parsing
+  // (§7.2.2 / R-10); origin is validated first via `tokenRefreshOriginGate`
+  // so a mismatched origin never parses a body at all.
+  const tokenRefreshOriginGate = (req: Request, res: Response, next: express.NextFunction): void => {
+    // §7.1 step 1: unpaired (incl. post-restart) → 403 fail-closed.
     const allowedExtensionId = deps.pairing.getAllowedExtensionId()
     if (allowedExtensionId === null) {
-      // §7.1 step 1: unpaired (incl. post-restart) → 403 fail-closed.
       res.status(403).json({ error: 'Extension not paired' })
       return
     }
+    // First factor: present-Origin exact-match. No absent-delegation —
+    // an absent Origin (empty / undefined) fails `parseExtensionOrigin`
+    // and 403s, because this token-free route has no token gate to fall
+    // back to (§7.2.4 / §5.3 N-3).
     const id = parseExtensionOrigin(req.headers.origin)
     if (id === null || id !== allowedExtensionId) {
       res.status(403).json({ error: 'Origin not allowed' })
       return
     }
+    next()
+  }
+  const handleTokenRefresh = (req: Request, res: Response): void => {
+    // Second factor: refresh secret. `verifyRefreshSecret` is timing-safe
+    // and returns false when unpaired or on any mismatch / missing field.
+    const body = req.body as { refreshSecret?: unknown } | undefined
+    if (!deps.pairing.verifyRefreshSecret(body?.refreshSecret)) {
+      res.status(403).json({ error: 'Invalid refresh secret' })
+      return
+    }
     res.json({ token: deps.getLaunchToken() })
-  })
+  }
+  router.post(
+    '/token/refresh',
+    tokenRefreshOriginGate,
+    // §7.2.2 / R-10 pre-auth body-cap: this token-free route parses a body
+    // before the refresh-secret check, so bound the size to close the
+    // pre-auth body-parsing DoS surface (shared cap with `/pair`).
+    express.json({ limit: MAX_PRE_AUTH_BODY_SIZE }),
+    jsonParseErrorGate,
+    handleTokenRefresh,
+  )
 
-  // --- capabilities (full guard, §7.4) ---
-  router.get('/capabilities', extGuard, (_req, res) => {
+  // --- capabilities (read-only GET guard, absent-Origin allowed, §7.4) ---
+  router.get('/capabilities', extGuardGetReadOnly, (_req, res) => {
     res.json(CAPABILITIES)
   })
 
-  // --- agents (full guard, merges into GET /api/agents, §6.1) ---
-  router.get('/agents', extGuard, (req, res) => {
+  // --- agents (read-only GET guard, absent-Origin allowed, §6.1) ---
+  router.get('/agents', extGuardGetReadOnly, (req, res) => {
     deps.handleAgentsList(req, res)
   })
 
