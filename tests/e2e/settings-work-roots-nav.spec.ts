@@ -47,6 +47,7 @@ const TAB_LABELS_IN_ORDER = [
   'Integrations',
   'Rules',
   'Sidebar',
+  'Chrome extension',
 ] as const
 
 async function openSettingsModal(page: Page): Promise<void> {
@@ -65,17 +66,17 @@ async function openSettingsModal(page: Page): Promise<void> {
 }
 
 test.describe('Work Roots → Settings modal integration (A-11)', () => {
-  test('WR-T1: the gear opens Settings with all 7 tabs, workRoots inserted right after Basic', async ({
+  test('WR-T1: the gear opens Settings with all 8 tabs, workRoots inserted right after Basic', async ({
     page,
   }) => {
     await openSettingsModal(page)
 
-    // WR-I7 + decision doc §2.2 case B-1: exactly the seven expected
-    // tabs, in order, with `workRoots` right after `basic`. Scope to the
-    // tab bar (the parent of any tab button) and compare the buttons'
-    // text in DOM order — this pins both the exact count (an accidental
-    // eighth tab fails) and the order, without coupling to pixel layout,
-    // viewport width, or row wrapping.
+    // WR-I7 + decision doc §2.2 case B-1: exactly the eight expected
+    // tabs, in order, with `workRoots` right after `basic` and
+    // `extensionPairing` last. Scope to the tab bar (the parent of any tab
+    // button) and compare the buttons' text in DOM order — this pins both
+    // the exact count (an accidental ninth tab fails) and the order, without
+    // coupling to pixel layout, viewport width, or row wrapping.
     const tabBar = page
       .getByRole('button', { name: 'Work roots', exact: true })
       .locator('xpath=..')
