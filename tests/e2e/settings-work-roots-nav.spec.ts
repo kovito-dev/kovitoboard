@@ -47,6 +47,7 @@ const TAB_LABELS_IN_ORDER = [
   'Integrations',
   'Rules',
   'Sidebar',
+  'Chrome extension',
 ] as const
 
 async function openSettingsModal(page: Page): Promise<void> {
@@ -65,7 +66,7 @@ async function openSettingsModal(page: Page): Promise<void> {
 }
 
 test.describe('Work Roots → Settings modal integration (A-11)', () => {
-  test('WR-T1: the gear opens Settings with all 7 tabs, workRoots inserted right after Basic', async ({
+  test('WR-T1: the gear opens Settings with all 8 tabs, workRoots inserted right after Basic', async ({
     page,
   }) => {
     await openSettingsModal(page)
