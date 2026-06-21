@@ -128,18 +128,22 @@ function isOriginHeaderAbsent(req: Request): boolean {
  * route EXCEPT `/pair` and `/token/refresh`, which have their own
  * narrower checks.
  *
- * Step 2 is method-aware (§7.1 step 2 / P-17). A token-authed GET
- * (`/capabilities`, `/agents`) tolerates a MISSING `Origin` header and
- * delegates to the token gate (step 3), because the MV3 service worker
- * omits `Origin` on GET fetches — refusing the absent case would 403
- * every legitimate GET. A mutating POST (`/sessions/new`,
- * `/sessions/:id/send`) keeps requiring present-Origin exact-match: the
- * SW always sends `Origin` on POST, so an absent-Origin POST is only a
- * crafted path and is refused. A present `Origin` is always exact-matched
- * regardless of method (a present web origin therefore 403s on step 2,
- * never reaching the absent-delegation path).
+ * Step 2 is scoped per-route (§7.1 step 2 / P-17), NOT keyed on the HTTP
+ * method. The absent-`Origin` delegation is opted into explicitly by the
+ * two token-authed GET routes (`/capabilities`, `/agents`) via
+ * `opts.allowOriginAbsent`, because the MV3 service worker omits `Origin`
+ * on GET fetches — refusing the absent case would 403 every legitimate
+ * GET. Every other route (the mutating POSTs `/sessions/new`,
+ * `/sessions/:id/send`) keeps requiring present-Origin exact-match: the SW
+ * always sends `Origin` on POST, so an absent-Origin POST is only a
+ * crafted path and is refused. Pinning the relaxation to named routes
+ * (rather than to `req.method === 'GET'`) keeps the scope exactly the two
+ * spec-named endpoints, so a future GET added under this guard does not
+ * silently inherit the absent-Origin relaxation. A present `Origin` is
+ * always exact-matched on every route (a present web origin therefore
+ * 403s on step 2, never reaching the absent-delegation path).
  */
-function buildExtensionGuard(deps: ExtRouterDeps) {
+function buildExtensionGuard(deps: ExtRouterDeps, opts: { allowOriginAbsent: boolean }) {
   return function extensionGuard(req: Request, res: Response, next: express.NextFunction): void {
     // Step 1: paired?
     const allowedExtensionId = deps.pairing.getAllowedExtensionId()
@@ -147,17 +151,18 @@ function buildExtensionGuard(deps: ExtRouterDeps) {
       res.status(403).json({ error: 'Extension not paired' })
       return
     }
-    // Step 2: method-aware exact-origin / absent-delegation (§7.1 step 2).
+    // Step 2: route-scoped exact-origin / absent-delegation (§7.1 step 2).
     const originAbsent = isOriginHeaderAbsent(req)
-    const isTokenAuthedGet = req.method === 'GET'
-    if (originAbsent && isTokenAuthedGet) {
-      // (2-absent) token-authed GET with no Origin header: skip the exact
-      // origin match and let the token gate (step 3) be the sole authz
-      // boundary (P-17, mirrors the existing /api P-4 empty-Origin path).
+    if (originAbsent && opts.allowOriginAbsent) {
+      // (2-absent) token-authed GET (capabilities / agents) with no Origin
+      // header: skip the exact origin match and let the token gate (step 3)
+      // be the sole authz boundary (P-17, mirrors the existing /api P-4
+      // empty-Origin path). Only the two opted-in routes reach here.
     } else {
-      // (2-present) — OR a mutating POST with an absent Origin, which we
-      // refuse here via the same exact-match path (parseExtensionOrigin
-      // returns null for an empty header → 403).
+      // (2-present) — OR an absent Origin on a route that does NOT opt into
+      // the relaxation (every mutating POST), which we refuse here via the
+      // same exact-match path (parseExtensionOrigin returns null for an
+      // empty header → 403).
       const id = parseExtensionOrigin(req.headers.origin)
       if (id === null || id !== allowedExtensionId) {
         res.status(403).json({ error: 'Origin not allowed' })
@@ -179,7 +184,15 @@ function buildExtensionGuard(deps: ExtRouterDeps) {
 
 export function createExtClientRouter(deps: ExtRouterDeps): Router {
   const router = express.Router()
-  const extGuard = buildExtensionGuard(deps)
+  // Two guard instances differing only in the §7.1 step 2 absent-Origin
+  // policy. The token-authed GET routes (`/capabilities`, `/agents`) opt
+  // into the absent-Origin delegation (the MV3 SW omits Origin on GET);
+  // every mutating route uses the strict guard that requires present-Origin
+  // exact-match. Scoping the relaxation to these two named routes (rather
+  // than to the HTTP method) keeps it exactly at the two spec-named
+  // endpoints (§7.1 step 2, addressing the authorization-scope-drift risk).
+  const extGuardGetReadOnly = buildExtensionGuard(deps, { allowOriginAbsent: true })
+  const extGuard = buildExtensionGuard(deps, { allowOriginAbsent: false })
 
   // --- /pair (pre-guard special route, pairing-code auth, §7.2.2) ---
   // The exact-origin check runs in a middleware BEFORE `express.json()`
@@ -344,13 +357,13 @@ export function createExtClientRouter(deps: ExtRouterDeps): Router {
     handleTokenRefresh,
   )
 
-  // --- capabilities (full guard, §7.4) ---
-  router.get('/capabilities', extGuard, (_req, res) => {
+  // --- capabilities (read-only GET guard, absent-Origin allowed, §7.4) ---
+  router.get('/capabilities', extGuardGetReadOnly, (_req, res) => {
     res.json(CAPABILITIES)
   })
 
-  // --- agents (full guard, merges into GET /api/agents, §6.1) ---
-  router.get('/agents', extGuard, (req, res) => {
+  // --- agents (read-only GET guard, absent-Origin allowed, §6.1) ---
+  router.get('/agents', extGuardGetReadOnly, (req, res) => {
     deps.handleAgentsList(req, res)
   })
 
