@@ -54,6 +54,34 @@ export interface PendingExtLaunch {
    * launches. `null` for tmux launches (no claude-bridge process).
    */
   processId: string | null
+  /**
+   * Sidecar-correlation launch-time latch (external-client-api.md
+   * §7.3.2.1 (S-4)/(S-6), BL-2026-285). Latched by `latchLaunchProcess`
+   * just before the launch fires its `/clear` (`clearAndSendMessage`),
+   * so the materialisation-time correlation can prove launch-causality
+   * (not merely state-match) against the per-PID sidecar:
+   *  - `tmuxPid`        — the ext launch's tmux pane PID (the process
+   *                       whose sidecar carries the post-`/clear`
+   *                       sessionId). `null` until latched / when PID
+   *                       resolution failed (fail-closed at correlate).
+   *  - `windowName`     — the actual tmux window name passed to
+   *                       startAgent (NOT assumed == agentId, (S-4)
+   *                       HIGH #7), kept for diagnostics / late PID
+   *                       resolution.
+   *  - `priorSessionId` — the sidecar's sessionId at launch time (the
+   *                       pre-`/clear` active session). The materialised
+   *                       sessionId must DIFFER from this (transition,
+   *                       (S-6a)) — a stale pre-launch re-materialisation
+   *                       of `priorSessionId` is rejected.
+   *  - `procBirthId`    — the PID's birth identity at launch
+   *                       (sidecar `procStart`). Must equal the
+   *                       sidecar's current `procStart` at correlate time
+   *                       to reject PID reuse ((S-6b)).
+   */
+  tmuxPid: number | null
+  windowName: string | null
+  priorSessionId: string | null
+  procBirthId: string | null
   expiresAt: number
 }
 
@@ -133,6 +161,10 @@ export class OwnershipRegistry {
       originConnId: args.originConnId,
       clientRequestId: args.clientRequestId,
       processId: null,
+      tmuxPid: null,
+      windowName: null,
+      priorSessionId: null,
+      procBirthId: null,
       expiresAt: this.now() + EXT_LAUNCH_TTL_MS,
     })
     this.inFlightAgentToLaunch.set(args.agentId, launchId)
@@ -152,6 +184,87 @@ export class OwnershipRegistry {
   attachProcessId(launchId: string, processId: string): void {
     const pending = this.pendingByLaunchId.get(launchId)
     if (pending) pending.processId = processId
+  }
+
+  /**
+   * Latch the sidecar-correlation launch-causality basis onto a
+   * still-pending launch (external-client-api.md §7.3.2.1 (S-4)/(S-6)).
+   * Called from the ext launch side effect just before it fires the
+   * `/clear` (`clearAndSendMessage`), with the launch's tmux pane PID,
+   * the actual window name, the pre-`/clear` sidecar sessionId
+   * (`priorSessionId`, transition basis (S-6a)), and the PID's birth
+   * identity (`procBirthId`, PID-reuse basis (S-6b)). No-op if the launch
+   * already consumed / expired. Individual fields may be `null` when the
+   * launch path could not resolve them (e.g. no tmux PID) — the
+   * materialisation-time correlation then fail-closes on the missing
+   * field rather than over-delivering.
+   */
+  latchLaunchProcess(
+    launchId: string,
+    fields: {
+      tmuxPid: number | null
+      windowName: string | null
+      priorSessionId: string | null
+      procBirthId: string | null
+    },
+  ): void {
+    const pending = this.pendingByLaunchId.get(launchId)
+    if (!pending) return
+    pending.tmuxPid = fields.tmuxPid
+    pending.windowName = fields.windowName
+    pending.priorSessionId = fields.priorSessionId
+    pending.procBirthId = fields.procBirthId
+  }
+
+  /**
+   * Read-only snapshot of every currently-pending (non-expired) ext
+   * launch, for the sidecar-correlation resolver (§7.3.2.1 (S-1)/(S-6))
+   * to iterate. Expired entries are GC'd first. The snapshot is a shallow
+   * copy array of the live entries — the caller MUST treat it as
+   * read-only (it does not consume / mutate; consume happens via
+   * `consumeLaunchByIdAndOwn`). Returned entries reference the live
+   * objects' field values at call time.
+   */
+  listInFlightLaunches(): ReadonlyArray<Readonly<PendingExtLaunch>> {
+    this.gcExpired()
+    return Array.from(this.pendingByLaunchId.values())
+  }
+
+  /**
+   * Atomic consume-then-own for sidecar-correlation (§7.3.2.1 (S-3)):
+   * consume the EXACT `launchId` (not an agentId-only lookup) and, ONLY
+   * if that consume succeeds, add `sessionId` to the owned registry and
+   * return the match for the caller's stamp + downstream wiring. Returns
+   * `null` when the launch is no longer pending (TTL-expired / already
+   * consumed by the materialisation-time path or a prior reconcile tick /
+   * unknown launchId) — in which case the caller performs NO stamp
+   * (no-bind, under-delivery). Because a successful consume removes the
+   * entry, a racing second call (materialise-time vs reconcile-time)
+   * fails → no double-stamp (§7.3.2.1 (S-3) (S-7) idempotence).
+   *
+   * Distinct from `correlateNewSession` (the §7.3.1 step-4 agentId-keyed
+   * path for freshly-started agents): this is the launchId-exact path
+   * used after the sidecar proved launch-causality, so it cannot bind to
+   * the wrong pending entry for the same agentId.
+   */
+  consumeLaunchByIdAndOwn(launchId: string, sessionId: string): CorrelationMatch | null {
+    this.gcExpired()
+    const pending = this.pendingByLaunchId.get(launchId)
+    if (pending === undefined) return null
+    this.owned.add(sessionId)
+    this.pendingByLaunchId.delete(launchId)
+    if (this.inFlightAgentToLaunch.get(pending.agentId) === launchId) {
+      this.inFlightAgentToLaunch.delete(pending.agentId)
+    }
+    this.releaseClientRequestId(pending)
+    return {
+      launchId: pending.launchId,
+      agentId: pending.agentId,
+      originConnId: pending.originConnId,
+      clientRequestId: pending.clientRequestId,
+      processId: pending.processId,
+      sessionId,
+    }
   }
 
   /**

@@ -26,6 +26,28 @@ interface OriginReservation {
 
 const RESERVATION_TTL_MS = 60_000
 
+/**
+ * Read-only callback that resolves a materialising session to an
+ * in-flight external-client launch via the per-PID sidecar
+ * (external-client-api.md §7.3.2.1 (S-1)/(S-2)/(S-6), BL-2026-285).
+ *
+ * The callback (wired in `index.ts`) owns the PID resolution → sidecar
+ * read → launch-causality five-point check AND the atomic exact-launchId
+ * consume-then-own ((S-3)). It returns `{ launchId, agentId }` ONLY when
+ * a unique in-flight ext launch proved launch-causality for `sessionId`
+ * AND its launch entry was successfully consumed; it returns `null` in
+ * every other case (no match / ambiguous / sidecar absent / schema
+ * mismatch / launch already consumed / not injected). This keeps the
+ * `SessionManager` free of any sidecar reader / tmux / OwnershipRegistry
+ * dependency (layer separation INV-ORIGIN-1 / M-2): the manager only
+ * stamps `origin='extension'` + `agentId` on a non-null result, and
+ * never over-delivers on a `null` (fail-closed, under-delivery).
+ */
+export type ResolveExtLaunchSession = (args: {
+  sessionId: string
+  projectPath: string
+}) => { launchId: string; agentId: string } | null
+
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>()
   private statusTimers = new Map<string, NodeJS.Timeout>()
@@ -33,6 +55,22 @@ export class SessionManager extends EventEmitter {
   private initializing = true
   // FIFO queue of origin reservations awaiting setAgentId resolution.
   private originReservations: OriginReservation[] = []
+  // Read-only sidecar-correlation callback (§7.3.2.1, BL-2026-285).
+  // Optional: when unset (e.g. tests not exercising the ext path), the
+  // `'extension'` narrowing simply skips (old R-5 under-delivery) — never
+  // over-delivers.
+  private resolveExtLaunchSession: ResolveExtLaunchSession | null = null
+
+  /**
+   * Inject the read-only sidecar-correlation resolver (§7.3.2.1 (S-2),
+   * wired in `index.ts`). Kept as a setter (not a constructor arg) so the
+   * existing `new SessionManager()` call sites and tests are unchanged;
+   * the resolver is attached during server wiring after the registry /
+   * sidecar reader / tmux bridge it closes over are constructed.
+   */
+  setExtLaunchResolver(resolver: ResolveExtLaunchSession): void {
+    this.resolveExtLaunchSession = resolver
+  }
 
   getSessions(): SessionSummary[] {
     return Array.from(this.sessions.values())
@@ -47,6 +85,21 @@ export class SessionManager extends EventEmitter {
 
   ensureSession(sessionId: string, projectPath: string, filePath: string): Session {
     let session = this.sessions.get(sessionId)
+    if (session) {
+      // Reconcile retry for sidecar-correlation (§7.3.2.1 (S-7)): a
+      // write-race (sidecar.sessionId not yet updated when the JSONL
+      // materialised) makes the create-time stamp attempt below skip. A
+      // later live `change` / reconcile tick re-enters `ensureSession`
+      // for the now-existing session; re-attempt the stamp while the
+      // session is still unbound, so the launch is recovered once the
+      // sidecar catches up (within the launch TTL). Idempotent: the
+      // resolver consumes the launch exactly once, so a session that was
+      // already stamped (origin set) is not re-attempted.
+      if (!session.origin) {
+        this.tryStampExtLaunch(session, projectPath)
+      }
+      return session
+    }
     if (!session) {
       // Project name: restore directory name from path hash
       const projectName = this.extractProjectName(projectPath)
@@ -133,9 +186,57 @@ export class SessionManager extends EventEmitter {
         session.agentId = claimed.agentId
         session.origin = claimed.origin
         this.emit('agent_claimed', sessionId, claimed.agentId)
+      } else {
+        // §7.3.2.1 sidecar-correlation (BL-2026-285): the eager claim
+        // above is intentionally skipped for `'extension'` reservations
+        // (and ambiguous queues). Immediately after that skip, attempt to
+        // recover an ext launch's correlation via the per-PID sidecar
+        // (launch-causality, NOT the agentId-blind eager claim). This is
+        // the only place the materialising `/clear`-spawned session for
+        // an already-running agent can be stamped `origin='extension'` —
+        // it carries no `agent-setting` event, so `setAgentId` /
+        // `consumeOriginReservation` never fire (old R-5). The resolver
+        // fail-closes (no stamp) on any ambiguity / sidecar absence, so
+        // this never over-delivers.
+        this.tryStampExtLaunch(session, projectPath)
       }
     }
     return session
+  }
+
+  /**
+   * Attempt the sidecar-correlation `'extension'` stamp on a just- /
+   * still-unbound session (external-client-api.md §7.3.2.1 (S-1)/(S-3)).
+   * Delegates the PID resolution → sidecar read → launch-causality check
+   * → atomic exact-launchId consume-then-own to the injected read-only
+   * resolver (M-2 layer separation). On a non-null result the manager
+   * stamps `origin='extension'` + `agentId` and emits `agent_claimed`
+   * (same persistence path as the eager claim, so the mapping survives
+   * restart). A `null` result (no resolver / no match / ambiguous /
+   * sidecar absent / already consumed) leaves the session unbound
+   * (under-delivery, R-5'); it NEVER stamps speculatively.
+   *
+   * Stamp-after-consume ordering ((S-3)): the resolver performs the
+   * atomic consume and ownership add, then returns; the stamp runs
+   * synchronously on the returned value with no intervening await, so a
+   * successful consume always commits a stamp and a failed consume
+   * (`null`) commits none — no "stamped but launch un-consumed" state.
+   */
+  private tryStampExtLaunch(session: Session, projectPath: string): void {
+    if (session.origin) return
+    const resolver = this.resolveExtLaunchSession
+    if (!resolver) return
+    let match: { launchId: string; agentId: string } | null
+    try {
+      match = resolver({ sessionId: session.id, projectPath })
+    } catch {
+      // Resolver threw → fail-closed (under-delivery), never over-deliver.
+      return
+    }
+    if (!match) return
+    session.agentId = match.agentId
+    session.origin = 'extension'
+    this.emit('agent_claimed', session.id, match.agentId)
   }
 
   setAgentId(sessionId: string, agentId: string): void {

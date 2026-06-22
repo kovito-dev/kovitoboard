@@ -537,6 +537,37 @@ export class TmuxBridge {
   }
 
   /**
+   * Resolve the OS PID of the single pane in `windowName`, for the
+   * external-client sidecar-correlation launch-time PID latch
+   * (external-client-api.md §7.3.2.1 (S-4), BL-2026-285). Runs
+   * `tmux list-panes -t <session>:<window> -F '#{pane_pid}'`.
+   *
+   * Fail-closed: returns `null` when the window has no panes, MORE THAN
+   * ONE pane (ambiguous — which pane runs the agent's `claude`?), the PID
+   * is not a positive integer, or the tmux call fails. A `null` here
+   * makes the correlation skip the stamp (under-delivery), never
+   * over-deliver — consistent with (S-4)'s "more-than-one-pane / zero =
+   * fail-closed" rule.
+   */
+  getWindowPanePid(windowName: string): number | null {
+    if (!isValidTmuxName(windowName)) return null
+    try {
+      const output = execFileSync(
+        'tmux',
+        ['list-panes', '-t', `${this.sessionName}:${windowName}`, '-F', '#{pane_pid}'],
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      ).trim()
+      if (!output) return null
+      const lines = output.split('\n').filter((l) => l.length > 0)
+      if (lines.length !== 1) return null
+      const pid = Number(lines[0])
+      return Number.isInteger(pid) && pid > 0 ? pid : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Send a message to the specified window (agent).
    *
    * @param windowName Window name (agent ID)

@@ -150,3 +150,91 @@ describe('OwnershipRegistry — ownership boundary', () => {
     expect(registry.isAgentInFlight('a1')).toBe(false)
   })
 })
+
+describe('OwnershipRegistry — sidecar-correlation latch + atomic consume (§7.3.2.1)', () => {
+  function regWithLaunch(agentId = 'a1') {
+    const { registry, advance } = makeRegistry()
+    const r = registry.registerLaunch({ agentId, originConnId: 7, clientRequestId: 'c1' })
+    if (!r.ok) throw new Error('expected ok')
+    return { registry, advance, launchId: r.launchId }
+  }
+
+  it('latches the launch-causality basis onto a pending launch (S-4/S-6)', () => {
+    const { registry, launchId } = regWithLaunch()
+    registry.latchLaunchProcess(launchId, {
+      tmuxPid: 12345,
+      windowName: 'a1',
+      priorSessionId: 'sess-prior',
+      procBirthId: '4347449',
+    })
+    const launches = registry.listInFlightLaunches()
+    expect(launches).toHaveLength(1)
+    expect(launches[0]).toMatchObject({
+      launchId,
+      agentId: 'a1',
+      tmuxPid: 12345,
+      windowName: 'a1',
+      priorSessionId: 'sess-prior',
+      procBirthId: '4347449',
+    })
+  })
+
+  it('latchLaunchProcess is a no-op for an unknown / consumed launchId', () => {
+    const { registry, launchId } = regWithLaunch()
+    registry.consumeLaunchByIdAndOwn(launchId, 'sess-1')
+    // Now consumed — latch must not resurrect it.
+    registry.latchLaunchProcess(launchId, {
+      tmuxPid: 1,
+      windowName: 'a1',
+      priorSessionId: null,
+      procBirthId: null,
+    })
+    expect(registry.listInFlightLaunches()).toHaveLength(0)
+  })
+
+  it('listInFlightLaunches GCs expired entries', () => {
+    const { registry, advance } = regWithLaunch()
+    expect(registry.listInFlightLaunches()).toHaveLength(1)
+    advance(EXT_LAUNCH_TTL_MS + 1)
+    expect(registry.listInFlightLaunches()).toHaveLength(0)
+  })
+
+  it('consumeLaunchByIdAndOwn owns the session + releases the in-flight lock on the exact launchId (S-3)', () => {
+    const { registry, launchId } = regWithLaunch()
+    const match = registry.consumeLaunchByIdAndOwn(launchId, 'sess-1')
+    expect(match).toMatchObject({ launchId, agentId: 'a1', originConnId: 7, sessionId: 'sess-1' })
+    expect(registry.isOwned('sess-1')).toBe(true)
+    expect(registry.isAgentInFlight('a1')).toBe(false)
+    expect(registry.listInFlightLaunches()).toHaveLength(0)
+  })
+
+  it('consumeLaunchByIdAndOwn is idempotent: a second consume of the same launchId returns null (S-3/S-7 no double-stamp)', () => {
+    const { registry, launchId } = regWithLaunch()
+    expect(registry.consumeLaunchByIdAndOwn(launchId, 'sess-1')).not.toBeNull()
+    // Materialise-time vs reconcile-time double-resolve: the second
+    // consume fails → caller performs no stamp.
+    expect(registry.consumeLaunchByIdAndOwn(launchId, 'sess-1')).toBeNull()
+  })
+
+  it('consumeLaunchByIdAndOwn returns null for an unknown / TTL-expired launchId (no-bind)', () => {
+    const { registry, advance, launchId } = regWithLaunch()
+    expect(registry.consumeLaunchByIdAndOwn('nope', 'sess-x')).toBeNull()
+    advance(EXT_LAUNCH_TTL_MS + 1)
+    expect(registry.consumeLaunchByIdAndOwn(launchId, 'sess-late')).toBeNull()
+    expect(registry.isOwned('sess-late')).toBe(false)
+  })
+
+  it('consumeLaunchByIdAndOwn binds to the EXACT launchId, not an agentId-only lookup', () => {
+    // Two launches for DIFFERENT agents in flight (serialisation is
+    // per-agentId, so distinct agents can co-exist). Consuming launch-2
+    // by id must not touch launch-1.
+    const { registry } = makeRegistry()
+    const r1 = registry.registerLaunch({ agentId: 'a1', originConnId: 1, clientRequestId: 'c1' })
+    const r2 = registry.registerLaunch({ agentId: 'a2', originConnId: 2, clientRequestId: 'c2' })
+    if (!r1.ok || !r2.ok) throw new Error('expected ok')
+    const match = registry.consumeLaunchByIdAndOwn(r2.launchId, 'sess-2')
+    expect(match?.agentId).toBe('a2')
+    expect(registry.isAgentInFlight('a1')).toBe(true) // untouched
+    expect(registry.isAgentInFlight('a2')).toBe(false)
+  })
+})

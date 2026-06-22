@@ -58,7 +58,8 @@ import {
   isLoopbackOrigin,
 } from './middleware/auth'
 import { PairingStore, PAIRING_CODE_TTL_MS } from './ext-client/pairing-store'
-import { OwnershipRegistry } from './ext-client/ownership-registry'
+import { OwnershipRegistry, type CorrelationMatch } from './ext-client/ownership-registry'
+import { readSidecar } from './ext-client/sidecar-reader'
 import {
   createExtClientRouter,
   EXT_CLIENT_MOUNT_PREFIX,
@@ -348,7 +349,7 @@ app.use(
       // cannot surface a 500 — the client learns of failure by the
       // absence of a `new_session` echo before the 60s launch TTL).
       res.status(202).json({ launchId: ctx.launchId })
-      void startExtSession(ctx.agentId, input.message, input.resolvedCwd)
+      void startExtSession(ctx.agentId, input.message, input.resolvedCwd, ctx.launchId)
         .then(({ processId }) => {
           // Record the claude-bridge processId (fallback path) so the
           // session's process_end can be delivered to subscribers once
@@ -484,6 +485,93 @@ const sessionManager = new SessionManager()
 const watcher = new Watcher(config, sessionManager, fs)
 const claudeBridge = new ClaudeBridge(projectRoot)
 const tmuxBridge = new TmuxBridge(fs)
+
+// --- sidecar-correlation wiring (external-client-api.md §7.3.2.1, BL-2026-285) ---
+//
+// Matches consumed by the sidecar resolver at `ensureSession` time but
+// whose `new_session` echo / auto-subscribe / catch-up still needs the
+// session SUMMARY (which only exists once the first message arrives).
+// `correlateExtNewSession` drains this on `new_session` (keyed by
+// sessionId) to do the same step-4 wiring the agentId-keyed path does.
+const sidecarMatchBySessionId = new Map<string, CorrelationMatch>()
+
+/**
+ * Read-only sidecar-correlation resolver injected into the
+ * SessionManager (§7.3.2.1 (S-1)/(S-2)/(S-6)). Iterates in-flight ext
+ * launches, resolves each launch's PID, reads its per-PID sidecar, and
+ * applies the launch-causality five-point check. When EXACTLY ONE launch
+ * matches, it atomically consumes that exact launchId (own + return) and
+ * records the match for the deferred `new_session` echo. Any ambiguity /
+ * absence / mismatch returns `null` (fail-closed, under-delivery — never
+ * over-delivery; no cwd-heuristic fallback, (S-1') (c)).
+ *
+ * Layer separation (M-2): this closure — NOT the SessionManager — holds
+ * the OwnershipRegistry / sidecar reader / tmux bridge dependencies.
+ */
+function resolveExtLaunchSession(args: {
+  sessionId: string
+  projectPath: string
+}): { launchId: string; agentId: string } | null {
+  const { sessionId } = args
+  const launches = extRegistry.listInFlightLaunches()
+  if (launches.length === 0) return null
+
+  let matchedLaunchId: string | null = null
+  let matchedAgentId: string | null = null
+
+  for (const launch of launches) {
+    // (S-4) PID resolution: prefer the launch-time latch; fall back to a
+    // late `list-panes` lookup by the latched window name. Either failing
+    // → skip this launch (fail-closed, never guess).
+    let pid = launch.tmuxPid
+    if (pid === null && launch.windowName !== null) {
+      pid = tmuxBridge.getWindowPanePid(launch.windowName)
+    }
+    if (pid === null) continue
+
+    const sidecar = readSidecar(fs, config.claudeDir, pid)
+    if (sidecar === null) continue
+
+    // (S-1) state-match: the sidecar's current session must BE this
+    // materialising session, and its agent must be this launch's agent.
+    if (sidecar.sessionId !== sessionId) continue
+    if (sidecar.agent === null || sidecar.agent !== launch.agentId) continue
+
+    // (S-6a) transition: the materialised session must differ from the
+    // pre-launch active session (reject a stale pre-launch re-materialise).
+    if (launch.priorSessionId !== null && sessionId === launch.priorSessionId) continue
+
+    // (S-6b) process birth identity: reject PID reuse. The launch latched
+    // `procBirthId` (sidecar `procStart` at launch); it must equal the
+    // sidecar's current `procStart`. If either side lacks a birth id we
+    // cannot prove identity → fail-closed (skip).
+    if (launch.procBirthId === null || sidecar.procStart === null) continue
+    if (launch.procBirthId !== sidecar.procStart) continue
+
+    // A launch satisfying all five points. Require EXACTLY ONE such
+    // launch ((S-1) "exactly one"): a second match means the result is
+    // ambiguous, so we no-bind (under-delivery) and never over-deliver.
+    if (matchedLaunchId !== null) return null
+    matchedLaunchId = launch.launchId
+    matchedAgentId = launch.agentId
+  }
+
+  if (matchedLaunchId === null || matchedAgentId === null) return null
+
+  // (S-3) atomic consume-then-own: consume the exact launchId; only on
+  // success does the caller (SessionManager) commit the stamp. A racing
+  // reconcile / materialise double-resolve fails the second consume →
+  // no double-stamp ((S-7) idempotence).
+  const match = extRegistry.consumeLaunchByIdAndOwn(matchedLaunchId, sessionId)
+  if (match === null) return null
+
+  // Defer the `new_session` echo / auto-subscribe / catch-up to
+  // `correlateExtNewSession` (the summary does not exist yet).
+  sidecarMatchBySessionId.set(sessionId, match)
+  return { launchId: match.launchId, agentId: match.agentId }
+}
+
+sessionManager.setExtLaunchResolver(resolveExtLaunchSession)
 
 /**
  * Ensure a tmux window exists for the specified agent.
@@ -1192,6 +1280,7 @@ async function startExtSession(
   agentId: string,
   message: string,
   resolvedCwd: string | undefined,
+  launchId: string,
 ): Promise<{ processId: string | null }> {
   // Reserve origin='extension' so the watcher tags the session, and the
   // `new_session` correlation listener can match it to the ext launch.
@@ -1213,6 +1302,26 @@ async function startExtSession(
         const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
       } else {
+        // Sidecar-correlation launch-time latch (§7.3.2.1 (S-4)/(S-6),
+        // BL-2026-285). This `/clear`-on-running-agent path is the R-5
+        // primary case (no `agent-setting` event → the agentId-keyed
+        // correlate never fires). Latch the launch's tmux pane PID, its
+        // birth identity, and the PRE-`/clear` sidecar sessionId BEFORE
+        // firing `/clear`, so the materialisation-time resolver can prove
+        // launch-causality (transition (S-6a) + birth identity (S-6b))
+        // against the per-PID sidecar. A null PID / null birth id makes
+        // the resolver fail-closed (under-delivery), never over-deliver.
+        // The freshly-started branch above is left untouched (byte-for-
+        // byte non-interference) — it resolves via `agent-setting` /
+        // `correlateNewSession` as before.
+        const pid = tmuxBridge.getWindowPanePid(tmuxAgent.windowName)
+        const pre = pid !== null ? readSidecar(fs, config.claudeDir, pid) : null
+        extRegistry.latchLaunchProcess(launchId, {
+          tmuxPid: pid,
+          windowName: tmuxAgent.windowName,
+          priorSessionId: pre?.sessionId ?? null,
+          procBirthId: pre?.procStart ?? null,
+        })
         const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
       }
@@ -3138,7 +3247,20 @@ function correlateExtNewSession(summary: unknown): void {
   if (typeof s.id !== 'string' || typeof s.agentId !== 'string') return
   const sessionId = s.id
 
-  const match = extRegistry.correlateNewSession(s.id, s.agentId)
+  // Sidecar-correlation path (§7.3.2.1, BL-2026-285): a session stamped
+  // `origin='extension'` at `ensureSession` time by the sidecar resolver
+  // already had its launch atomically consumed + owned there, so the
+  // agentId-keyed `correlateNewSession` below would return null. Drain
+  // the deferred match recorded by the resolver and do the SAME step-4
+  // wiring (echo / auto-subscribe / catch-up). Falls through to the
+  // agentId-keyed path for freshly-started agents (the `--agent` /
+  // `agent-setting` launch, §7.3.1 step 4).
+  let match = sidecarMatchBySessionId.get(sessionId) ?? null
+  if (match !== null) {
+    sidecarMatchBySessionId.delete(sessionId)
+  } else {
+    match = extRegistry.correlateNewSession(s.id, s.agentId)
+  }
   if (match === null) return
 
   // Backfill the claude-bridge process's sessionId (fallback launches
@@ -3682,7 +3804,7 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
   // Run the launch side effects (reserveOrigin('extension') + tmux /
   // claude) with the validated input.
   try {
-    const { processId } = await startExtSession(agentId, input.message, input.resolvedCwd)
+    const { processId } = await startExtSession(agentId, input.message, input.resolvedCwd, reg.launchId)
     // Record the claude-bridge processId (fallback path) so the
     // session's process_end can be delivered to subscribers (§7.5).
     if (processId !== null) extRegistry.attachProcessId(reg.launchId, processId)
