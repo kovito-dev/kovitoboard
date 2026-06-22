@@ -438,8 +438,10 @@ export class Watcher {
     // file growth; this gives the retry a growth-INDEPENDENT driver so a
     // sidecar that catches up after the first `new_session` batch (with
     // no further JSONL writes) is still picked up within the launch TTL.
-    // No-op while no ext launch is in flight.
-    this.sessionManager.retryExtCorrelationForUnbound()
+    // The driver reads each pending launch's sidecar once and targets the
+    // named session, so the pass is O(in-flight launches) and a no-op
+    // while none is pending.
+    this.sessionManager.runExtReconcileRetry()
   }
 
   /**

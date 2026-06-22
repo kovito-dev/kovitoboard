@@ -82,6 +82,29 @@ export class SessionManager extends EventEmitter {
     this.resolveExtLaunchSession = resolver
   }
 
+  // Batch reconcile-retry driver (§7.3.2.1 (S-7), wired in `index.ts`).
+  // It reads each pending launch's sidecar ONCE per tick and calls
+  // `retryExtCorrelationForSession` for the sidecar's sessionId, so the
+  // sidecar reads stay in the wiring layer (M-2) and the per-tick cost is
+  // O(in-flight launches), not O(all unbound sessions). Unset when the
+  // ext path is not wired (tests) → `runExtReconcileRetry` is a no-op.
+  private extReconcileRetryDriver: (() => void) | null = null
+
+  /** Inject the batch reconcile-retry driver (§7.3.2.1 (S-7)). */
+  setExtReconcileRetryDriver(driver: () => void): void {
+    this.extReconcileRetryDriver = driver
+  }
+
+  /**
+   * Run one ext sidecar-correlation reconcile-retry pass. Called from the
+   * watcher reconcile tick; delegates to the injected batch driver (which
+   * reads pending launch sidecars once and targets the named sessions via
+   * `retryExtCorrelationForSession`). No-op when no driver is wired.
+   */
+  runExtReconcileRetry(): void {
+    this.extReconcileRetryDriver?.()
+  }
+
   getSessions(): SessionSummary[] {
     return Array.from(this.sessions.values())
       .filter((s) => s.stats.userMessages > 0 || s.stats.assistantMessages > 0)
@@ -278,29 +301,27 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Re-attempt sidecar-correlation for every still-unbound session
-   * (§7.3.2.1 (S-7) reconcile retry). The create-/append-time stamp in
-   * `ensureSession` only fires when the watcher calls `ensureSession` —
-   * which it does on file growth (`currentSize > previousPosition`). In a
-   * write-race where the sidecar catches up AFTER the first `new_session`
-   * batch and the JSONL does not grow again before the launch TTL, no
-   * further `ensureSession` fires and the stamp is never retried. This
-   * method gives the retry a file-growth-INDEPENDENT driver: the watcher
-   * calls it on each reconcile tick, so a late-catching-up sidecar is
-   * picked up within the launch TTL regardless of further writes.
+   * Targeted sidecar-correlation retry for ONE session named by a pending
+   * launch's sidecar (§7.3.2.1 (S-7) reconcile retry). If `sessionId`
+   * exists and is still unbound, re-run the stamp attempt for it.
    *
-   * Cheap when idle: `tryStampExtLaunch` early-returns for any session
-   * that already has an origin, and the injected resolver fast-returns
-   * `null` when no ext launch is in flight (so the scan is a no-op while
-   * nothing is pending). Layer separation is preserved — the manager only
-   * calls its resolver callback.
+   * This is the targeted half of the file-growth-INDEPENDENT retry: the
+   * batch driver (wired in `index.ts`, called from the watcher reconcile
+   * tick) reads each pending launch's sidecar ONCE, takes the sidecar's
+   * `sessionId`, and calls this for that exact session — so the per-tick
+   * work is O(in-flight launches), NOT O(all unbound sessions). The
+   * create-/append-time stamp in `ensureSession` only runs on file
+   * growth, so without this a sidecar that catches up after the first
+   * `new_session` batch (with no further JSONL writes) would never be
+   * retried before the launch TTL. Layer separation is preserved — the
+   * manager only consults its resolver callback; the sidecar reads live
+   * in the injected batch driver.
    */
-  retryExtCorrelationForUnbound(): void {
+  retryExtCorrelationForSession(sessionId: string): void {
     if (!this.resolveExtLaunchSession) return
-    for (const session of this.sessions.values()) {
-      if (!session.origin) {
-        this.tryStampExtLaunch(session, session.projectPath)
-      }
+    const session = this.sessions.get(sessionId)
+    if (session && !session.origin) {
+      this.tryStampExtLaunch(session, session.projectPath)
     }
   }
 

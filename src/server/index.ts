@@ -592,6 +592,28 @@ function resolveExtLaunchSession(args: {
 sessionManager.setExtLaunchResolver(resolveExtLaunchSession)
 
 /**
+ * Batch reconcile-retry driver (§7.3.2.1 (S-7)), called from the watcher
+ * reconcile tick via `SessionManager.runExtReconcileRetry`. Reads each
+ * pending launch's sidecar ONCE, takes the sidecar's `sessionId`, and
+ * asks the SessionManager to (re)stamp THAT specific session if it is
+ * still unbound. The per-tick cost is O(in-flight launches) — it does
+ * NOT scan every unbound session — and it is a no-op while nothing is in
+ * flight. The actual launch-causality match + atomic consume still runs
+ * inside `retryExtCorrelationForSession` → `resolveExtLaunchSession`, so
+ * the safety checks are identical to the materialisation-time path.
+ */
+function retryExtCorrelationBatch(): void {
+  for (const launch of extRegistry.listInFlightLaunches()) {
+    if (launch.tmuxPid === null) continue
+    const sidecar = readSidecar(fs, config.claudeDir, launch.tmuxPid)
+    if (sidecar === null) continue
+    sessionManager.retryExtCorrelationForSession(sidecar.sessionId)
+  }
+}
+
+sessionManager.setExtReconcileRetryDriver(retryExtCorrelationBatch)
+
+/**
  * Ensure a tmux window exists for the specified agent.
  * If the window does not exist, automatically creates a tmux session + window
  * and starts a Claude Code agent.

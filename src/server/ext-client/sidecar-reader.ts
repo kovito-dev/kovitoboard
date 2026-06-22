@@ -132,13 +132,18 @@ export function readSidecar(
   // correlate.
   if (typeof obj.sessionId !== 'string' || obj.sessionId.length === 0) return null
 
+  // Numeric fields are validated with `Number.isFinite`, not just
+  // `typeof === 'number'`: `JSON.parse` yields `Infinity` for inputs like
+  // `1e999`, and a non-finite `updatedAt` would slip past the resolver's
+  // freshness check (`Date.now() - Infinity` is never > the window).
+  // Non-finite → null → fail-closed.
   return {
     pid,
     sessionId: obj.sessionId,
     agent: typeof obj.agent === 'string' ? obj.agent : null,
     procStart: typeof obj.procStart === 'string' ? obj.procStart : null,
-    startedAt: typeof obj.startedAt === 'number' ? obj.startedAt : null,
-    updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : null,
+    startedAt: typeof obj.startedAt === 'number' && Number.isFinite(obj.startedAt) ? obj.startedAt : null,
+    updatedAt: typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) ? obj.updatedAt : null,
   }
 }
 

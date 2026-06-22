@@ -146,6 +146,16 @@ describe('readSidecar — fail-closed matrix (S-1’ (c))', () => {
     expect(readSidecar(fsNum, CLAUDE_DIR, 8)).toBeNull()
   })
 
+  it('normalises non-finite numeric fields to null (Infinity from 1e999 must not bypass freshness)', () => {
+    // `1e999` parses to `Infinity`; an infinite `updatedAt` would slip
+    // past the resolver's `Date.now() - updatedAt > window` freshness
+    // check. The reader must treat non-finite numbers as null.
+    const fs = makeFs({ [sidecarPath(7)]: '{"sessionId":"s","updatedAt":1e999,"startedAt":1e999}' })
+    const snap = readSidecar(fs, CLAUDE_DIR, 7)
+    expect(snap?.updatedAt).toBeNull()
+    expect(snap?.startedAt).toBeNull()
+  })
+
   it('returns null when the bounded read reports oversized (no content buffered)', () => {
     const fs = makeFs({ [sidecarPath(7)]: { oversized: true, notRegular: false, size: 999999 } })
     expect(readSidecar(fs, CLAUDE_DIR, 7)).toBeNull()

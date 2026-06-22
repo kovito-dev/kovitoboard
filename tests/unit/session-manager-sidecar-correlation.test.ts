@@ -140,7 +140,7 @@ describe('SessionManager — sidecar-correlation stamp (§7.3.2.1)', () => {
     expect(correlated).toHaveLength(0)
   })
 
-  it('retryExtCorrelationForUnbound recovers a stamp WITHOUT any further ensureSession / file growth (S-7)', () => {
+  it('retryExtCorrelationForSession recovers a stamp WITHOUT any further ensureSession / file growth (S-7)', () => {
     const mgr = new SessionManager()
     let ready = false
     mgr.setExtLaunchResolver(() => (ready ? { launchId: 'L1', agentId: 'kb-pdm' } : null))
@@ -154,36 +154,40 @@ describe('SessionManager — sidecar-correlation stamp (§7.3.2.1)', () => {
     expect(s.origin).toBeUndefined()
 
     // The JSONL never grows again, so the watcher never calls
-    // ensureSession for it. The reconcile-tick driver must still recover
-    // the stamp once the sidecar catches up.
+    // ensureSession for it. The reconcile-tick driver targets the session
+    // named by the launch sidecar and must still recover the stamp once
+    // the sidecar catches up.
     ready = true
-    mgr.retryExtCorrelationForUnbound()
+    mgr.retryExtCorrelationForSession('sess-1')
     expect(s.origin).toBe('extension')
     expect(s.agentId).toBe('kb-pdm')
     // Non-empty at stamp time → drives the echo via the dedicated event.
     expect(correlated).toHaveLength(1)
   })
 
-  it('retryExtCorrelationForUnbound is a no-op for already-bound sessions and when no resolver is set', () => {
+  it('retryExtCorrelationForSession is a no-op for unknown / already-bound sessions and when no resolver is set', () => {
     const mgrNoResolver = new SessionManager()
     mgrNoResolver.reserveOrigin('a', 'sidebar')
     const bound = mgrNoResolver.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
     expect(bound.origin).toBe('sidebar')
     // No resolver set → method returns immediately, leaves origin intact.
-    mgrNoResolver.retryExtCorrelationForUnbound()
+    mgrNoResolver.retryExtCorrelationForSession('sess-1')
     expect(bound.origin).toBe('sidebar')
 
-    // With a resolver, an already-bound session is not re-stamped.
     const mgr = new SessionManager()
     let calls = 0
     mgr.setExtLaunchResolver(() => {
       calls++
       return { launchId: 'L1', agentId: 'x' }
     })
+    // Unknown sessionId → no resolver call.
+    mgr.retryExtCorrelationForSession('nope')
+    expect(calls).toBe(0)
+    // Already-bound session → not re-stamped (resolver not called).
     mgr.reserveOrigin('side', 'sidebar')
     mgr.ensureSession('sess-2', '-p', '/p/sess-2.jsonl') // eager-claimed sidebar
-    mgr.retryExtCorrelationForUnbound()
-    expect(calls).toBe(0) // bound session skipped
+    mgr.retryExtCorrelationForSession('sess-2')
+    expect(calls).toBe(0)
   })
 
   it('does not re-consult the resolver once the session is already stamped (idempotent)', () => {
