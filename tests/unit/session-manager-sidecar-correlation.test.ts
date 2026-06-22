@@ -18,6 +18,19 @@
  */
 import { describe, it, expect } from 'vitest'
 import { SessionManager } from '../../src/server/session-manager'
+import type { ParsedEvent } from '../../src/server/types'
+
+/** Minimal `user` event that makes a session non-empty (bumps stats). */
+function makeUserEvent(sessionId: string): ParsedEvent {
+  return {
+    id: `${sessionId}-1`,
+    sessionId,
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    content: { text: 'hi' },
+    metadata: {},
+  } as unknown as ParsedEvent
+}
 
 describe('SessionManager — sidecar-correlation stamp (§7.3.2.1)', () => {
   it('stamps origin=extension + agentId when the resolver returns a match (S-1/S-3)', () => {
@@ -91,6 +104,40 @@ describe('SessionManager — sidecar-correlation stamp (§7.3.2.1)', () => {
     expect(s2.origin).toBe('extension')
     expect(s2.agentId).toBe('kb-pdm')
     expect(consumed).toBe(1)
+  })
+
+  it('emits ext_session_correlated when the stamp lands on an already-non-empty session (S-7 echo recovery)', () => {
+    const mgr = new SessionManager()
+    let ready = false
+    mgr.setExtLaunchResolver(() => (ready ? { launchId: 'L1', agentId: 'kb-pdm' } : null))
+    const correlated: unknown[] = []
+    mgr.on('ext_session_correlated', (summary: unknown) => correlated.push(summary))
+
+    // Write-race: first materialise skips (sidecar lagging), then the
+    // first message fires `new_session` and makes the session non-empty.
+    mgr.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
+    mgr.addEvents('sess-1', [makeUserEvent('sess-1')])
+    expect(correlated).toHaveLength(0) // not stamped yet
+
+    // Sidecar catches up on a later reconcile tick: stamp succeeds on the
+    // now-non-empty session → a dedicated correlated event drives the
+    // echo (no second `new_session` will ever fire).
+    ready = true
+    mgr.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
+    expect(correlated).toHaveLength(1)
+    expect((correlated[0] as { id: string; origin: string }).id).toBe('sess-1')
+    expect((correlated[0] as { origin: string }).origin).toBe('extension')
+  })
+
+  it('does NOT emit ext_session_correlated when the stamp lands on an empty session (new_session handles it)', () => {
+    const mgr = new SessionManager()
+    mgr.setExtLaunchResolver(() => ({ launchId: 'L1', agentId: 'kb-pdm' }))
+    const correlated: unknown[] = []
+    mgr.on('ext_session_correlated', (summary: unknown) => correlated.push(summary))
+    // Stamp at create time (session still empty) → rely on the upcoming
+    // `new_session`; no dedicated correlated event (avoids double echo).
+    mgr.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
+    expect(correlated).toHaveLength(0)
   })
 
   it('does not re-consult the resolver once the session is already stamped (idempotent)', () => {

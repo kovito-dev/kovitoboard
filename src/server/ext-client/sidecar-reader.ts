@@ -88,6 +88,13 @@ export interface SidecarSnapshot {
  * rule: no new direct `fs.*` calls) and the reader is unit-testable
  * against an in-memory layer.
  */
+/**
+ * Size cap for a sidecar read. A real sidecar is a few hundred bytes; a
+ * generous 64 KiB cap rejects a malformed / hostile oversized file
+ * without blocking the event loop or allocating unbounded memory.
+ */
+const SIDECAR_MAX_BYTES = 64 * 1024
+
 export function readSidecar(
   fs: FileAccessLayer,
   claudeDir: string,
@@ -96,13 +103,17 @@ export function readSidecar(
   if (!Number.isInteger(pid) || pid <= 0) return null
   const path = join(claudeDir, 'sessions', `${pid}.json`)
 
+  // Bounded, regular-file-gated read: rejects an oversized / non-regular
+  // (FIFO / device / symlink-swapped) sidecar and closes the
+  // exists→read TOCTOU window, all against a single fd. Fail-closed on
+  // any of those, and on a genuine read error (absence / permission /
+  // I/O), since this is a Claude Code internal path (§7.3.2.1 (S-1') (c)).
   let raw: string
   try {
-    if (!fs.existsSync(path)) return null
-    raw = fs.readFileSync(path)
+    const r = fs.readFileBoundedSync(path, SIDECAR_MAX_BYTES)
+    if (r.oversized || r.notRegular) return null
+    raw = r.content
   } catch {
-    // Read failure (vanished between existsSync and read, permission,
-    // I/O error). Fail-closed.
     return null
   }
 

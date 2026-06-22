@@ -3225,6 +3225,19 @@ sessionManager.on('new_session', (summary: unknown) => {
   correlateExtNewSession(summary)
 })
 
+// Sidecar-correlation reconcile-retry recovery (§7.3.2.1 (S-7)). When a
+// write-race makes the sidecar catch up only AFTER the session's first
+// `new_session` already fired, the SessionManager stamps the session on
+// a later reconcile tick and emits this event (instead of a second
+// `new_session`, which `addEvents` never fires). Run the SAME extension
+// echo / auto-subscribe / catch-up wiring so the recovery does not
+// under-deliver. No renderer fan-out here: the renderer already received
+// the original `new_session`; this is purely the ext-side echo for a
+// session whose stamp landed late.
+sessionManager.on('ext_session_correlated', (summary: unknown) => {
+  correlateExtNewSession(summary)
+})
+
 /**
  * Correlate a materialised `new_session` with a pending ext launch
  * (external-client-api.md v1.0 §7.3.1 step 4). When the session was

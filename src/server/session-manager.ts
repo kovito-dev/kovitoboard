@@ -246,6 +246,25 @@ export class SessionManager extends EventEmitter {
     // sit stale in the shared FIFO) for up to the reservation TTL.
     this.cancelReservation(match.agentId, 'extension')
     this.emit('agent_claimed', session.id, match.agentId)
+
+    // Drive the `new_session` echo / auto-subscribe / catch-up for the
+    // extension. Normally the `new_session` event (fired by `addEvents`
+    // on the empty → non-empty transition) triggers that wiring after
+    // the stamp. But in the (S-7) reconcile-retry case the sidecar can
+    // catch up only AFTER the first message already fired `new_session`
+    // (a write-race where the JSONL materialised before the sidecar
+    // updated): `addEvents` emits `new_session` ONLY on the first
+    // transition, so no later `new_session` will fire and the parked
+    // match would never be drained → the recovery still under-delivers.
+    // When the session is already non-empty at stamp time, emit a
+    // dedicated `ext_session_correlated` event carrying the summary so
+    // `index.ts` can run the same echo wiring immediately. The empty
+    // case is left to the upcoming `new_session` (no double echo).
+    const isNonEmpty =
+      session.stats.userMessages > 0 || session.stats.assistantMessages > 0
+    if (isNonEmpty) {
+      this.emit('ext_session_correlated', this.toSummary(session))
+    }
   }
 
   setAgentId(sessionId: string, agentId: string): void {

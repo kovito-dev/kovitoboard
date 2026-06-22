@@ -21,18 +21,26 @@ import { join } from 'path'
 
 const CLAUDE_DIR = '/home/u/.claude'
 
+type BoundedResult =
+  | { oversized: false; notRegular: false; content: string }
+  | { oversized: true; notRegular: false; size: number }
+  | { oversized: false; notRegular: true }
+
 /**
  * Minimal in-memory fs-layer: maps `<claudeDir>/sessions/<pid>.json` to a
- * raw string body (or a thrown error / absence). Only `existsSync` /
- * `readFileSync` are exercised by the reader.
+ * bounded-read outcome — a raw string body, a thrown error (absence /
+ * read error), or an oversized / non-regular gate result. The reader
+ * only exercises `readFileBoundedSync`.
  */
-function makeFs(files: Record<string, string | (() => never)>): FileAccessLayer {
+function makeFs(
+  files: Record<string, string | (() => never) | BoundedResult>,
+): FileAccessLayer {
   return {
-    existsSync: (p: string) => p in files,
-    readFileSync: (p: string) => {
+    readFileBoundedSync: (p: string): BoundedResult => {
       const v = files[p]
       if (v === undefined) throw new Error(`ENOENT: ${p}`)
       if (typeof v === 'function') return v()
+      if (typeof v === 'string') return { oversized: false, notRegular: false, content: v }
       return v
     },
   } as unknown as FileAccessLayer
@@ -138,16 +146,22 @@ describe('readSidecar — fail-closed matrix (S-1’ (c))', () => {
     expect(readSidecar(fsNum, CLAUDE_DIR, 8)).toBeNull()
   })
 
+  it('returns null when the bounded read reports oversized (no content buffered)', () => {
+    const fs = makeFs({ [sidecarPath(7)]: { oversized: true, notRegular: false, size: 999999 } })
+    expect(readSidecar(fs, CLAUDE_DIR, 7)).toBeNull()
+  })
+
+  it('returns null when the bounded read reports a non-regular file (FIFO / device / symlink swap)', () => {
+    const fs = makeFs({ [sidecarPath(7)]: { oversized: false, notRegular: true } })
+    expect(readSidecar(fs, CLAUDE_DIR, 7)).toBeNull()
+  })
+
   it('returns null for a non-positive / non-integer pid without touching fs', () => {
     let touched = false
     const fs = {
-      existsSync: () => {
+      readFileBoundedSync: () => {
         touched = true
-        return true
-      },
-      readFileSync: () => {
-        touched = true
-        return ''
+        return { oversized: false, notRegular: false, content: '' }
       },
     } as unknown as FileAccessLayer
     expect(readSidecar(fs, CLAUDE_DIR, 0)).toBeNull()
