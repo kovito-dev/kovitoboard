@@ -73,10 +73,14 @@ export interface PendingExtLaunch {
    *                       sessionId must DIFFER from this (transition,
    *                       (S-6a)) — a stale pre-launch re-materialisation
    *                       of `priorSessionId` is rejected.
-   *  - `procBirthId`    — the PID's birth identity at launch
-   *                       (sidecar `procStart`). Must equal the
-   *                       sidecar's current `procStart` at correlate time
-   *                       to reject PID reuse ((S-6b)).
+   *  - `procBirthId`    — the PID's birth identity at launch, read from
+   *                       the OS-authoritative `/proc/<pid>/stat`
+   *                       starttime (NOT the sidecar's self-reported
+   *                       `procStart`, which a stale sidecar could replay
+   *                       across a PID reuse). The resolver re-reads the
+   *                       LIVE `/proc` starttime at correlate time and
+   *                       requires equality, which also proves liveness
+   *                       (a gone PID has no `/proc` entry) ((S-6b)).
    */
   tmuxPid: number | null
   windowName: string | null

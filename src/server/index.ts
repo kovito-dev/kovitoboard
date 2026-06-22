@@ -1349,6 +1349,20 @@ async function startExtSession(
         })
         const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
+        // The tmux `/clear` failed and we are about to fall back to the
+        // ClaudeBridge `--print` path. Clear the tmux sidecar latch so the
+        // resolver cannot consume this launch against the tmux PID's
+        // sidecar (which never received the `/clear` we counted on): a
+        // null PID makes the resolver skip this launch, and the fallback
+        // process is correlated via `attachProcessId` + the agentId-keyed
+        // path instead. Without this, a partial `/clear` failure could
+        // mis-correlate the launch to the tmux session.
+        extRegistry.latchLaunchProcess(launchId, {
+          tmuxPid: null,
+          windowName: null,
+          priorSessionId: null,
+          procBirthId: null,
+        })
       }
       apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
     }
