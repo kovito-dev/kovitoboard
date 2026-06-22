@@ -15,7 +15,7 @@
  * the real sidecar schema and the full fail-closed matrix.
  */
 import { describe, it, expect } from 'vitest'
-import { readSidecar } from '../../src/server/ext-client/sidecar-reader'
+import { readSidecar, readProcStarttime } from '../../src/server/ext-client/sidecar-reader'
 import type { FileAccessLayer } from '../../src/server/fs-layer'
 import { join } from 'path'
 
@@ -168,5 +168,55 @@ describe('readSidecar — fail-closed matrix (S-1’ (c))', () => {
     expect(readSidecar(fs, CLAUDE_DIR, -1)).toBeNull()
     expect(readSidecar(fs, CLAUDE_DIR, 1.5)).toBeNull()
     expect(touched).toBe(false)
+  })
+})
+
+describe('readProcStarttime — live birth identity + liveness (S-6b)', () => {
+  // A representative `/proc/<pid>/stat` line: field 1 pid, field 2 comm
+  // (parenthesised), field 3 state, ... field 22 starttime.
+  const STAT_LINE =
+    '582568 (bash) S 243405 582568 582568 0 -1 4194304 499 2201 0 0 0 0 0 0 ' +
+    '20 0 1 0 5805325 5046272 820 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0\n'
+
+  function makeProcFs(content: string | (() => never)): FileAccessLayer {
+    return {
+      readFileBoundedSync: () => {
+        if (typeof content === 'function') return content()
+        return { oversized: false, notRegular: false, content }
+      },
+    } as unknown as FileAccessLayer
+  }
+
+  it('extracts starttime (field 22) from a normal stat line', () => {
+    expect(readProcStarttime(makeProcFs(STAT_LINE), 582568)).toBe('5805325')
+  })
+
+  it('parses correctly when comm contains spaces and parentheses', () => {
+    // Same field layout as STAT_LINE (starttime is field 22), but the
+    // comm itself contains spaces and a nested ')(' — the parser must key
+    // off the LAST ')' to find field 3 onward.
+    const tricky =
+      '999 (weird )( name) S 243405 999 999 0 -1 4194304 499 2201 0 0 0 0 0 0 ' +
+      '20 0 1 0 4242424 5046272 820 0 0 0 0 0 0 0 0 0 0 0 0 0\n'
+    expect(readProcStarttime(makeProcFs(tricky), 999)).toBe('4242424')
+  })
+
+  it('returns null when /proc/<pid>/stat is gone (process exited → no liveness)', () => {
+    const fs = makeProcFs(() => {
+      throw new Error('ENOENT')
+    })
+    expect(readProcStarttime(fs, 12345)).toBeNull()
+  })
+
+  it('returns null when there is no closing paren / field 22 is unparseable', () => {
+    expect(readProcStarttime(makeProcFs('garbage with no paren'), 1)).toBeNull()
+    expect(readProcStarttime(makeProcFs('1 (c) S 1 2 3\n'), 1)).toBeNull() // too few fields
+  })
+
+  it('returns null for a non-positive / non-integer pid', () => {
+    const fs = makeProcFs(STAT_LINE)
+    expect(readProcStarttime(fs, 0)).toBeNull()
+    expect(readProcStarttime(fs, -5)).toBeNull()
+    expect(readProcStarttime(fs, 2.5)).toBeNull()
   })
 })

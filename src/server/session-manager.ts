@@ -27,23 +27,32 @@ interface OriginReservation {
 const RESERVATION_TTL_MS = 60_000
 
 /**
- * Read-only callback that resolves a materialising session to an
+ * Resolve-and-consume callback that maps a materialising session to an
  * in-flight external-client launch via the per-PID sidecar
  * (external-client-api.md §7.3.2.1 (S-1)/(S-2)/(S-6), BL-2026-285).
  *
- * The callback (wired in `index.ts`) owns the PID resolution → sidecar
- * read → launch-causality five-point check AND the atomic exact-launchId
- * consume-then-own ((S-3)). It returns `{ launchId, agentId }` ONLY when
- * a unique in-flight ext launch proved launch-causality for `sessionId`
- * AND its launch entry was successfully consumed; it returns `null` in
- * every other case (no match / ambiguous / sidecar absent / schema
- * mismatch / launch already consumed / not injected). This keeps the
- * `SessionManager` free of any sidecar reader / tmux / OwnershipRegistry
- * dependency (layer separation INV-ORIGIN-1 / M-2): the manager only
- * stamps `origin='extension'` + `agentId` on a non-null result, and
- * never over-delivers on a `null` (fail-closed, under-delivery).
+ * **This callback MUTATES on success** (it is not a pure read). The
+ * implementation (wired in `index.ts`) owns the PID resolution → sidecar
+ * read → launch-causality check AND the atomic exact-launchId
+ * consume-then-own ((S-3)): when a unique in-flight ext launch proves
+ * launch-causality for `sessionId`, it consumes that launch and adds the
+ * session to the owned registry BEFORE returning, then returns
+ * `{ launchId, agentId }`. The consume-before-stamp ordering lives inside
+ * the callback so that, from the `SessionManager`'s side, a non-null
+ * return is always already-consumed-and-owned and the subsequent stamp is
+ * the only remaining step (no "stamped but launch un-consumed" window).
+ * It returns `null` in every other case (no match / ambiguous / sidecar
+ * absent / schema mismatch / freshness or liveness fail / launch already
+ * consumed / not injected).
+ *
+ * The point of routing this through a callback is layer separation
+ * (INV-ORIGIN-1 / M-2): the mutation (registry consume/own, sidecar /
+ * tmux / `/proc` reads) is confined to the injected closure, so the
+ * `SessionManager` itself depends on none of them — it only stamps
+ * `origin='extension'` + `agentId` on a non-null result and never
+ * over-delivers on a `null` (fail-closed, under-delivery).
  */
-export type ResolveExtLaunchSession = (args: {
+export type ResolveAndConsumeExtLaunch = (args: {
   sessionId: string
   projectPath: string
 }) => { launchId: string; agentId: string } | null
@@ -59,16 +68,17 @@ export class SessionManager extends EventEmitter {
   // Optional: when unset (e.g. tests not exercising the ext path), the
   // `'extension'` narrowing simply skips (old R-5 under-delivery) — never
   // over-delivers.
-  private resolveExtLaunchSession: ResolveExtLaunchSession | null = null
+  private resolveExtLaunchSession: ResolveAndConsumeExtLaunch | null = null
 
   /**
-   * Inject the read-only sidecar-correlation resolver (§7.3.2.1 (S-2),
-   * wired in `index.ts`). Kept as a setter (not a constructor arg) so the
-   * existing `new SessionManager()` call sites and tests are unchanged;
-   * the resolver is attached during server wiring after the registry /
-   * sidecar reader / tmux bridge it closes over are constructed.
+   * Inject the resolve-and-consume sidecar-correlation callback
+   * (§7.3.2.1 (S-2), wired in `index.ts`). Kept as a setter (not a
+   * constructor arg) so the existing `new SessionManager()` call sites
+   * and tests are unchanged; the callback is attached during server
+   * wiring after the registry / sidecar reader / tmux bridge it closes
+   * over are constructed.
    */
-  setExtLaunchResolver(resolver: ResolveExtLaunchSession): void {
+  setExtLaunchResolver(resolver: ResolveAndConsumeExtLaunch): void {
     this.resolveExtLaunchSession = resolver
   }
 

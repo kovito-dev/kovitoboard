@@ -141,3 +141,54 @@ export function readSidecar(
     updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : null,
   }
 }
+
+/** Upper bound on a `/proc/<pid>/stat` read. The file is tiny. */
+const PROC_STAT_MAX_BYTES = 8 * 1024
+
+/**
+ * Read the OS-authoritative process birth identity + liveness for `pid`
+ * from `/proc/<pid>/stat` field 22 (`starttime`, in clock ticks since
+ * boot), for the launch-causality (S-6b) check (external-client-api.md
+ * §7.3.2.1 (S-1') (b)).
+ *
+ * Why this is independent of the sidecar
+ * --------------------------------------
+ * The sidecar's own `procStart` is self-reported and can be STALE: if the
+ * process exited and the PID was reused, a sidecar that has not been
+ * rewritten still shows the old `procStart`, so matching the latched
+ * birth-id against the sidecar's `procStart` is tautological for a stale
+ * file. `/proc/<pid>/stat` is the live kernel source: its mere existence
+ * proves the PID is alive, and `starttime` is stable for the life of that
+ * exact process but differs after an exit→reuse. Latching `starttime` at
+ * launch and re-reading it at correlate time therefore proves "the SAME
+ * process is still alive" — liveness + birth identity in one read.
+ *
+ * Returns `null` (fail-closed) when the process is gone (ENOENT), the
+ * file cannot be read, or field 22 is unparseable. `starttime` is parsed
+ * after the LAST `')'` because field 2 (`comm`) is parenthesised and may
+ * itself contain spaces / parentheses.
+ *
+ * `fs` is injected (Phase 4+ fs-layer boundary). `/proc/<pid>/stat`
+ * reports as a regular file (size 0), so the bounded reader accepts it.
+ */
+export function readProcStarttime(fs: FileAccessLayer, pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  let raw: string
+  try {
+    const r = fs.readFileBoundedSync(`/proc/${pid}/stat`, PROC_STAT_MAX_BYTES)
+    if (r.oversized || r.notRegular) return null
+    raw = r.content
+  } catch {
+    // ENOENT (process exited) / read error → fail-closed (no liveness).
+    return null
+  }
+  const lastParen = raw.lastIndexOf(')')
+  if (lastParen < 0) return null
+  // Fields after `comm`: state(3) ppid(4) ... starttime(22). After the
+  // last ')', the remaining tokens start at field 3, so starttime is the
+  // (22 - 3) = 19th 0-based index of the post-comm split.
+  const after = raw.slice(lastParen + 1).trim().split(/\s+/)
+  const starttime = after[19]
+  if (typeof starttime !== 'string' || !/^\d+$/.test(starttime)) return null
+  return starttime
+}

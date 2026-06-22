@@ -58,8 +58,8 @@ import {
   isLoopbackOrigin,
 } from './middleware/auth'
 import { PairingStore, PAIRING_CODE_TTL_MS } from './ext-client/pairing-store'
-import { OwnershipRegistry } from './ext-client/ownership-registry'
-import { readSidecar } from './ext-client/sidecar-reader'
+import { OwnershipRegistry, EXT_LAUNCH_TTL_MS } from './ext-client/ownership-registry'
+import { readSidecar, readProcStarttime } from './ext-client/sidecar-reader'
 import {
   createExtClientRouter,
   EXT_CLIENT_MOUNT_PREFIX,
@@ -493,6 +493,14 @@ const tmuxBridge = new TmuxBridge(fs)
 // single ownership lifecycle (`clear()` drops it on re-pair, closing the
 // cross-pairing-boundary leak). `correlateExtNewSession` drains it via
 // `extRegistry.takeSidecarMatch` on `new_session`.
+
+// (S-1') (b) sidecar freshness window. A correlate happens within the
+// 60s launch TTL right after KB fired the `/clear`, so the sidecar's
+// `updatedAt` should be very recent; a window of 2× the launch TTL
+// tolerates clock skew while rejecting a genuinely stale file. The
+// stronger guarantee is the independent `/proc` liveness check; this is
+// the secondary freshness signal the spec also requires.
+const SIDECAR_FRESHNESS_MS = 2 * EXT_LAUNCH_TTL_MS
 /**
  * Read-only sidecar-correlation resolver injected into the
  * SessionManager (§7.3.2.1 (S-1)/(S-2)/(S-6)). Iterates in-flight ext
@@ -539,12 +547,25 @@ function resolveExtLaunchSession(args: {
     // pre-launch active session (reject a stale pre-launch re-materialise).
     if (launch.priorSessionId !== null && sessionId === launch.priorSessionId) continue
 
-    // (S-6b) process birth identity: reject PID reuse. The launch latched
-    // `procBirthId` (sidecar `procStart` at launch); it must equal the
-    // sidecar's current `procStart`. If either side lacks a birth id we
-    // cannot prove identity → fail-closed (skip).
-    if (launch.procBirthId === null || sidecar.procStart === null) continue
-    if (launch.procBirthId !== sidecar.procStart) continue
+    // (S-1') (b) freshness: reject a stale sidecar. `updatedAt` must be
+    // recent — a sidecar that has not been written within the freshness
+    // window is not trusted to describe the live process. Missing
+    // `updatedAt` → fail-closed.
+    if (sidecar.updatedAt === null) continue
+    if (Date.now() - sidecar.updatedAt > SIDECAR_FRESHNESS_MS) continue
+
+    // (S-6b) process birth identity + liveness, proven INDEPENDENTLY of
+    // the sidecar. The latched `procBirthId` is the `/proc/<pid>/stat`
+    // starttime read AT LAUNCH; here we re-read the LIVE `/proc` starttime
+    // and require equality. This is not tautological the way comparing
+    // the sidecar's self-reported `procStart` to itself would be: if the
+    // process exited (and the PID was possibly reused) the stale sidecar
+    // could still show the old `procStart`, but `/proc/<pid>/stat` either
+    // is gone (ENOENT → null → liveness fail) or shows a DIFFERENT
+    // starttime for the reused PID. Missing either side → fail-closed.
+    if (launch.procBirthId === null) continue
+    const liveStarttime = readProcStarttime(fs, pid)
+    if (liveStarttime === null || liveStarttime !== launch.procBirthId) continue
 
     // A launch satisfying all five points. Require EXACTLY ONE such
     // launch ((S-1) "exactly one"): a second match means the result is
@@ -1311,12 +1332,20 @@ async function startExtSession(
         // byte non-interference) — it resolves via `agent-setting` /
         // `correlateNewSession` as before.
         const pid = tmuxBridge.getWindowPanePid(tmuxAgent.windowName)
+        // `priorSessionId` (transition basis (S-6a)) comes from the
+        // sidecar's pre-`/clear` session; `procBirthId` (birth identity +
+        // liveness basis (S-6b)) is the OS-authoritative `/proc/<pid>/stat`
+        // starttime — NOT the sidecar's self-reported `procStart`, which a
+        // stale sidecar could replay across a PID reuse. The resolver
+        // re-reads the live `/proc` starttime at correlate time and
+        // requires equality.
         const pre = pid !== null ? readSidecar(fs, config.claudeDir, pid) : null
+        const procBirthId = pid !== null ? readProcStarttime(fs, pid) : null
         extRegistry.latchLaunchProcess(launchId, {
           tmuxPid: pid,
           windowName: tmuxAgent.windowName,
           priorSessionId: pre?.sessionId ?? null,
-          procBirthId: pre?.procStart ?? null,
+          procBirthId,
         })
         const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
