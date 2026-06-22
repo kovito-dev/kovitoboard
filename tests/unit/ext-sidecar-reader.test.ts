@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { readSidecar, readProcStarttime } from '../../src/server/ext-client/sidecar-reader'
-import type { FileAccessLayer } from '../../src/server/fs-layer'
+import { type FileAccessLayer, DirectFsLayer } from '../../src/server/fs-layer'
 import { join } from 'path'
 
 const CLAUDE_DIR = '/home/u/.claude'
@@ -180,7 +180,12 @@ describe('readProcStarttime — live birth identity + liveness (S-6b)', () => {
 
   function makeProcFs(content: string | (() => never)): FileAccessLayer {
     return {
-      readFileBoundedSync: () => {
+      // `/proc/<pid>/stat` is a VIRTUAL file (fstat.size === 0); the
+      // reader must use `readVirtualFileBoundedSync`, NOT
+      // `readFileBoundedSync` (which would return ""). The mock provides
+      // only the virtual reader so a regression back to the size-trusting
+      // primitive fails here.
+      readVirtualFileBoundedSync: () => {
         if (typeof content === 'function') return content()
         return { oversized: false, notRegular: false, content }
       },
@@ -218,5 +223,23 @@ describe('readProcStarttime — live birth identity + liveness (S-6b)', () => {
     expect(readProcStarttime(fs, 0)).toBeNull()
     expect(readProcStarttime(fs, -5)).toBeNull()
     expect(readProcStarttime(fs, 2.5)).toBeNull()
+  })
+
+  // Integration test against the REAL DirectFsLayer + the REAL
+  // /proc/<pid>/stat of this test process. This is the regression guard
+  // for the bug where `readFileBoundedSync` (trusting fstat.size === 0
+  // for a virtual file) returned "" and broke the whole correlation
+  // path. A mock cannot catch that — only the real fs layer + real
+  // procfs can. Skipped off Linux (no /proc).
+  const itLinux = process.platform === 'linux' ? it : it.skip
+  itLinux('reads a non-empty starttime from real /proc via DirectFsLayer (regression guard)', () => {
+    const real = new DirectFsLayer()
+    const st = readProcStarttime(real, process.pid)
+    expect(st).not.toBeNull()
+    expect(st).toMatch(/^\d+$/)
+    // Stable for the life of this process: a second read matches.
+    expect(readProcStarttime(real, process.pid)).toBe(st)
+    // A pid that does not exist → null (liveness fail).
+    expect(readProcStarttime(real, 2147483646)).toBeNull()
   })
 })

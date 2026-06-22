@@ -151,6 +151,12 @@ const PROC_STAT_MAX_BYTES = 8 * 1024
  * boot), for the launch-causality (S-6b) check (external-client-api.md
  * §7.3.2.1 (S-1') (b)).
  *
+ * Platform note: this is a Linux / WSL primitive (the spec's primary
+ * tmux deployment). On a platform without `/proc` (e.g. macOS) the open
+ * throws → `null` → the correlation fails closed (under-delivery R-5',
+ * §10.4) rather than over-delivering — i.e. graceful degradation, not a
+ * crash. A macOS-native birth-id source is out of scope here.
+ *
  * Why this is independent of the sidecar
  * --------------------------------------
  * The sidecar's own `procStart` is self-reported and can be STALE: if the
@@ -168,14 +174,17 @@ const PROC_STAT_MAX_BYTES = 8 * 1024
  * after the LAST `')'` because field 2 (`comm`) is parenthesised and may
  * itself contain spaces / parentheses.
  *
- * `fs` is injected (Phase 4+ fs-layer boundary). `/proc/<pid>/stat`
- * reports as a regular file (size 0), so the bounded reader accepts it.
+ * `fs` is injected (Phase 4+ fs-layer boundary). `/proc/<pid>/stat` is a
+ * VIRTUAL file: it reports `fstat.size === 0`, so it MUST be read with
+ * `readVirtualFileBoundedSync` (read-until-EOF). `readFileBoundedSync`
+ * would allocate `size` (= 0) bytes and return an empty string — which
+ * silently broke this check until it was caught in review.
  */
 export function readProcStarttime(fs: FileAccessLayer, pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
   let raw: string
   try {
-    const r = fs.readFileBoundedSync(`/proc/${pid}/stat`, PROC_STAT_MAX_BYTES)
+    const r = fs.readVirtualFileBoundedSync(`/proc/${pid}/stat`, PROC_STAT_MAX_BYTES)
     if (r.oversized || r.notRegular) return null
     raw = r.content
   } catch {
