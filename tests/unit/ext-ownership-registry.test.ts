@@ -238,3 +238,44 @@ describe('OwnershipRegistry — sidecar-correlation latch + atomic consume (§7.
     expect(registry.isAgentInFlight('a2')).toBe(false)
   })
 })
+
+describe('OwnershipRegistry — deferred sidecar match lifecycle (§7.3.2.1 (S-3) / §7.2.1)', () => {
+  it('parks a match on consume and drains it once via takeSidecarMatch', () => {
+    const { registry } = makeRegistry()
+    const r = registry.registerLaunch({ agentId: 'a1', originConnId: 7, clientRequestId: 'c1' })
+    if (!r.ok) throw new Error('expected ok')
+    registry.consumeLaunchByIdAndOwn(r.launchId, 'sess-1')
+    const m = registry.takeSidecarMatch('sess-1')
+    expect(m).toMatchObject({ launchId: r.launchId, agentId: 'a1', sessionId: 'sess-1' })
+    // Drained exactly once — the echo cannot fire twice.
+    expect(registry.takeSidecarMatch('sess-1')).toBeNull()
+  })
+
+  it('takeSidecarMatch returns null for a session correlated via the agentId path', () => {
+    const { registry } = makeRegistry()
+    registry.registerLaunch({ agentId: 'a1', originConnId: 7, clientRequestId: 'c1' })
+    registry.correlateNewSession('sess-1', 'a1') // agentId-keyed, not sidecar
+    expect(registry.takeSidecarMatch('sess-1')).toBeNull()
+  })
+
+  it('clear() drops a parked match so it cannot leak across a re-pair boundary (§7.2.1)', () => {
+    const { registry } = makeRegistry()
+    const r = registry.registerLaunch({ agentId: 'a1', originConnId: 7, clientRequestId: 'c1' })
+    if (!r.ok) throw new Error('expected ok')
+    registry.consumeLaunchByIdAndOwn(r.launchId, 'sess-1')
+    // Re-pair overwrite drops all ownership-bearing state.
+    registry.clear()
+    // The stale pre-repair match must NOT be drainable post-clear (no
+    // cross-pairing-boundary echo / auto-subscribe).
+    expect(registry.takeSidecarMatch('sess-1')).toBeNull()
+  })
+
+  it('GCs a parked match whose new_session never fires within the launch TTL', () => {
+    const { registry, advance } = makeRegistry()
+    const r = registry.registerLaunch({ agentId: 'a1', originConnId: 7, clientRequestId: 'c1' })
+    if (!r.ok) throw new Error('expected ok')
+    registry.consumeLaunchByIdAndOwn(r.launchId, 'sess-1')
+    advance(EXT_LAUNCH_TTL_MS + 1)
+    expect(registry.takeSidecarMatch('sess-1')).toBeNull()
+  })
+})

@@ -58,7 +58,7 @@ import {
   isLoopbackOrigin,
 } from './middleware/auth'
 import { PairingStore, PAIRING_CODE_TTL_MS } from './ext-client/pairing-store'
-import { OwnershipRegistry, type CorrelationMatch } from './ext-client/ownership-registry'
+import { OwnershipRegistry } from './ext-client/ownership-registry'
 import { readSidecar } from './ext-client/sidecar-reader'
 import {
   createExtClientRouter,
@@ -488,13 +488,11 @@ const tmuxBridge = new TmuxBridge(fs)
 
 // --- sidecar-correlation wiring (external-client-api.md §7.3.2.1, BL-2026-285) ---
 //
-// Matches consumed by the sidecar resolver at `ensureSession` time but
-// whose `new_session` echo / auto-subscribe / catch-up still needs the
-// session SUMMARY (which only exists once the first message arrives).
-// `correlateExtNewSession` drains this on `new_session` (keyed by
-// sessionId) to do the same step-4 wiring the agentId-keyed path does.
-const sidecarMatchBySessionId = new Map<string, CorrelationMatch>()
-
+// The deferred-match store (sessionId → consumed match awaiting its
+// `new_session` echo) lives INSIDE `OwnershipRegistry` so it shares the
+// single ownership lifecycle (`clear()` drops it on re-pair, closing the
+// cross-pairing-boundary leak). `correlateExtNewSession` drains it via
+// `extRegistry.takeSidecarMatch` on `new_session`.
 /**
  * Read-only sidecar-correlation resolver injected into the
  * SessionManager (§7.3.2.1 (S-1)/(S-2)/(S-6)). Iterates in-flight ext
@@ -561,13 +559,11 @@ function resolveExtLaunchSession(args: {
   // (S-3) atomic consume-then-own: consume the exact launchId; only on
   // success does the caller (SessionManager) commit the stamp. A racing
   // reconcile / materialise double-resolve fails the second consume →
-  // no double-stamp ((S-7) idempotence).
+  // no double-stamp ((S-7) idempotence). `consumeLaunchByIdAndOwn` also
+  // parks the match by sessionId for the deferred `new_session` echo
+  // (drained via `takeSidecarMatch`), inside the registry's lifecycle.
   const match = extRegistry.consumeLaunchByIdAndOwn(matchedLaunchId, sessionId)
   if (match === null) return null
-
-  // Defer the `new_session` echo / auto-subscribe / catch-up to
-  // `correlateExtNewSession` (the summary does not exist yet).
-  sidecarMatchBySessionId.set(sessionId, match)
   return { launchId: match.launchId, agentId: match.agentId }
 }
 
@@ -3255,10 +3251,8 @@ function correlateExtNewSession(summary: unknown): void {
   // wiring (echo / auto-subscribe / catch-up). Falls through to the
   // agentId-keyed path for freshly-started agents (the `--agent` /
   // `agent-setting` launch, §7.3.1 step 4).
-  let match = sidecarMatchBySessionId.get(sessionId) ?? null
-  if (match !== null) {
-    sidecarMatchBySessionId.delete(sessionId)
-  } else {
+  let match = extRegistry.takeSidecarMatch(sessionId)
+  if (match === null) {
     match = extRegistry.correlateNewSession(s.id, s.agentId)
   }
   if (match === null) return

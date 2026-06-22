@@ -112,6 +112,20 @@ export class OwnershipRegistry {
   private inFlightAgentToLaunch = new Map<string, string>()
   /** clientRequestId → launchId, dedup of in-flight client correlations (§8.5). */
   private pendingClientRequestIds = new Map<string, string>()
+  /**
+   * sessionId → already-consumed sidecar-correlation match awaiting its
+   * `new_session` echo (§7.3.2.1 (S-3)). The sidecar resolver stamps +
+   * consumes the launch at `ensureSession` time, but the `new_session`
+   * echo / auto-subscribe needs the session SUMMARY (which only exists
+   * once the first message arrives), so the match is parked here and
+   * drained by the `new_session` listener. Held INSIDE the registry — not
+   * in `index.ts` — so it shares the single ownership lifecycle: `clear()`
+   * drops it on re-pair / shutdown, closing the cross-pairing-boundary
+   * leak where a stale pre-repair match would otherwise be echoed to the
+   * freshly-paired extension. Each entry carries the launch's `expiresAt`
+   * so a match whose `new_session` never fires is GC'd rather than leaked.
+   */
+  private sidecarMatchBySessionId = new Map<string, { match: CorrelationMatch; expiresAt: number }>()
   private readonly now: () => number
   private readonly mintLaunchId: () => string
 
@@ -257,7 +271,7 @@ export class OwnershipRegistry {
       this.inFlightAgentToLaunch.delete(pending.agentId)
     }
     this.releaseClientRequestId(pending)
-    return {
+    const match: CorrelationMatch = {
       launchId: pending.launchId,
       agentId: pending.agentId,
       originConnId: pending.originConnId,
@@ -265,6 +279,29 @@ export class OwnershipRegistry {
       processId: pending.processId,
       sessionId,
     }
+    // Park the match for the deferred `new_session` echo. Inheriting the
+    // launch's `expiresAt` bounds it: a match whose `new_session` never
+    // fires is GC'd, and `clear()` drops it on re-pair so it cannot leak
+    // across a pairing boundary.
+    this.sidecarMatchBySessionId.set(sessionId, { match, expiresAt: pending.expiresAt })
+    return match
+  }
+
+  /**
+   * Drain the deferred sidecar-correlation match for `sessionId` (parked
+   * by `consumeLaunchByIdAndOwn`), for the `new_session` listener to do
+   * the echo / auto-subscribe / catch-up wiring (§7.3.2.1 (S-3)). Returns
+   * `null` (and removes nothing) when there is no parked match — e.g. the
+   * session was correlated via the agentId-keyed `correlateNewSession`
+   * path, or a re-pair `clear()` already dropped it. Removes the entry on
+   * a hit so the echo happens at most once.
+   */
+  takeSidecarMatch(sessionId: string): CorrelationMatch | null {
+    this.gcExpired()
+    const entry = this.sidecarMatchBySessionId.get(sessionId)
+    if (entry === undefined) return null
+    this.sidecarMatchBySessionId.delete(sessionId)
+    return entry.match
   }
 
   /**
@@ -331,6 +368,10 @@ export class OwnershipRegistry {
     this.pendingByLaunchId.clear()
     this.inFlightAgentToLaunch.clear()
     this.pendingClientRequestIds.clear()
+    // Deferred sidecar-correlation matches are ownership-bearing state:
+    // dropping them here is what prevents a pre-repair match from being
+    // echoed across the fresh pairing boundary (§7.2.1).
+    this.sidecarMatchBySessionId.clear()
   }
 
   /** Remove expired pending launches and release their in-flight locks. */
@@ -344,6 +385,11 @@ export class OwnershipRegistry {
         }
         this.releaseClientRequestId(entry)
       }
+    }
+    // GC deferred matches whose `new_session` never fired within the
+    // launch TTL (bounds the map; the match is unrecoverable past TTL).
+    for (const [sessionId, entry] of this.sidecarMatchBySessionId) {
+      if (entry.expiresAt <= t) this.sidecarMatchBySessionId.delete(sessionId)
     }
   }
 
