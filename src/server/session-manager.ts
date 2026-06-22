@@ -277,6 +277,33 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * Re-attempt sidecar-correlation for every still-unbound session
+   * (§7.3.2.1 (S-7) reconcile retry). The create-/append-time stamp in
+   * `ensureSession` only fires when the watcher calls `ensureSession` —
+   * which it does on file growth (`currentSize > previousPosition`). In a
+   * write-race where the sidecar catches up AFTER the first `new_session`
+   * batch and the JSONL does not grow again before the launch TTL, no
+   * further `ensureSession` fires and the stamp is never retried. This
+   * method gives the retry a file-growth-INDEPENDENT driver: the watcher
+   * calls it on each reconcile tick, so a late-catching-up sidecar is
+   * picked up within the launch TTL regardless of further writes.
+   *
+   * Cheap when idle: `tryStampExtLaunch` early-returns for any session
+   * that already has an origin, and the injected resolver fast-returns
+   * `null` when no ext launch is in flight (so the scan is a no-op while
+   * nothing is pending). Layer separation is preserved — the manager only
+   * calls its resolver callback.
+   */
+  retryExtCorrelationForUnbound(): void {
+    if (!this.resolveExtLaunchSession) return
+    for (const session of this.sessions.values()) {
+      if (!session.origin) {
+        this.tryStampExtLaunch(session, session.projectPath)
+      }
+    }
+  }
+
   setAgentId(sessionId: string, agentId: string): void {
     const session = this.sessions.get(sessionId)
     if (!session) return

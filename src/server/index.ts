@@ -526,13 +526,14 @@ function resolveExtLaunchSession(args: {
   let matchedAgentId: string | null = null
 
   for (const launch of launches) {
-    // (S-4) PID resolution: prefer the launch-time latch; fall back to a
-    // late `list-panes` lookup by the latched window name. Either failing
-    // → skip this launch (fail-closed, never guess).
-    let pid = launch.tmuxPid
-    if (pid === null && launch.windowName !== null) {
-      pid = tmuxBridge.getWindowPanePid(launch.windowName)
-    }
+    // (S-4) PID + birth identity are latched together at launch time
+    // (before `/clear`), because the birth identity (`/proc` starttime)
+    // can only be captured while we know the launch's live PID. A launch
+    // with no latched PID also has no latched birth id, so the birth
+    // identity check below would reject it regardless — there is no late
+    // `list-panes` recovery that could make such a launch correlate.
+    // We therefore skip a launch that has no latched PID (fail-closed).
+    const pid = launch.tmuxPid
     if (pid === null) continue
 
     const sidecar = readSidecar(fs, config.claudeDir, pid)

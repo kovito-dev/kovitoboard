@@ -65,9 +65,10 @@ export interface PendingExtLaunch {
    *                       sessionId). `null` until latched / when PID
    *                       resolution failed (fail-closed at correlate).
    *  - `windowName`     — the actual tmux window name passed to
-   *                       startAgent (NOT assumed == agentId, (S-4)
-   *                       HIGH #7), kept for diagnostics / late PID
-   *                       resolution.
+   *                       startAgent (NOT assumed == agentId), kept for
+   *                       diagnostics only. PID + birth identity are
+   *                       resolved together at launch time, so there is
+   *                       no materialisation-time PID re-resolution.
    *  - `priorSessionId` — the sidecar's sessionId at launch time (the
    *                       pre-`/clear` active session). The materialised
    *                       sessionId must DIFFER from this (transition,
