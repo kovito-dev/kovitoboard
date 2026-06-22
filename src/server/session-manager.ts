@@ -236,6 +236,15 @@ export class SessionManager extends EventEmitter {
     if (!match) return
     session.agentId = match.agentId
     session.origin = 'extension'
+    // The ext launch parked an `'extension'` reservation in
+    // `startExtSession`; the narrowing deliberately leaves it for the
+    // `setAgentId` path, but a `/clear`-spawned session never gets an
+    // `agent-setting` event, so it would otherwise linger for the full
+    // TTL. Now that sidecar-correlation has resolved this launch, cancel
+    // that reservation so it does not keep `hasPendingReservation(agentId)`
+    // true — which would reject the next ext launch for this agent (and
+    // sit stale in the shared FIFO) for up to the reservation TTL.
+    this.cancelReservation(match.agentId, 'extension')
     this.emit('agent_claimed', session.id, match.agentId)
   }
 

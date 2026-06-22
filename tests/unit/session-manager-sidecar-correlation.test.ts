@@ -140,4 +140,28 @@ describe('SessionManager — sidecar-correlation stamp (§7.3.2.1)', () => {
     expect(s.origin).toBe('extension')
     expect(s.agentId).toBe('kb-pdm')
   })
+
+  it('cancels the stale extension reservation on a successful sidecar stamp (no 60s in-flight block)', () => {
+    const mgr = new SessionManager()
+    mgr.setExtLaunchResolver(() => ({ launchId: 'L1', agentId: 'kb-pdm' }))
+    // startExtSession parks the reservation; the /clear session has no
+    // agent-setting event so consumeOriginReservation never fires.
+    mgr.reserveOrigin('kb-pdm', 'extension')
+    expect(mgr.hasPendingReservation('kb-pdm')).toBe(true)
+    mgr.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
+    // After sidecar-correlation resolves the launch, the reservation must
+    // be gone — otherwise the next ext launch for this agent is rejected
+    // for the full TTL and the stale entry sits in the shared FIFO.
+    expect(mgr.hasPendingReservation('kb-pdm')).toBe(false)
+  })
+
+  it('does not disturb OTHER agents reservations when cancelling on a sidecar stamp', () => {
+    const mgr = new SessionManager()
+    mgr.setExtLaunchResolver(() => ({ launchId: 'L1', agentId: 'kb-pdm' }))
+    mgr.reserveOrigin('kb-pdm', 'extension')
+    mgr.reserveOrigin('other-agent', 'sidebar') // unrelated, must survive
+    mgr.ensureSession('sess-1', '-p', '/p/sess-1.jsonl')
+    expect(mgr.hasPendingReservation('kb-pdm')).toBe(false)
+    expect(mgr.hasPendingReservation('other-agent')).toBe(true)
+  })
 })
