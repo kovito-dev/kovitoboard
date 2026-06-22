@@ -25,7 +25,7 @@ import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } f
 import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
-import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord } from './agent-reader'
+import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord, SYSTEM_DEFAULT_AGENT_ID } from './agent-reader'
 import { ClaudeBridge } from './claude-bridge'
 import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
@@ -541,8 +541,13 @@ function resolveExtLaunchSession(args: {
 
     // (S-1) state-match: the sidecar's current session must BE this
     // materialising session, and its agent must be this launch's agent.
+    // The system default agent is launched as plain `claude` (no
+    // `--agent`), so its sidecar has `agent: null` — for a default-agent
+    // launch a `null` sidecar agent IS the match; for any named agent a
+    // `null` (or mismatched) sidecar agent fails.
     if (sidecar.sessionId !== sessionId) continue
-    if (sidecar.agent === null || sidecar.agent !== launch.agentId) continue
+    const sidecarAgentId = sidecar.agent ?? SYSTEM_DEFAULT_AGENT_ID
+    if (sidecarAgentId !== launch.agentId) continue
 
     // (S-6a) transition: the materialised session must differ from the
     // pre-launch active session (reject a stale pre-launch re-materialise).
