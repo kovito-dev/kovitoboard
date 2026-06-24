@@ -25,7 +25,7 @@ import { initLogger, serverLogger, childLogger, flushAndExit, setupKbContext } f
 import { enforcePreflight, runPreflightChecks } from './preflight'
 import { SessionManager } from './session-manager'
 import { Watcher } from './watcher'
-import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord } from './agent-reader'
+import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord, SYSTEM_DEFAULT_AGENT_ID } from './agent-reader'
 import { ClaudeBridge } from './claude-bridge'
 import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
 import { DataFileWatcher } from './data-file-watcher'
@@ -58,7 +58,8 @@ import {
   isLoopbackOrigin,
 } from './middleware/auth'
 import { PairingStore, PAIRING_CODE_TTL_MS } from './ext-client/pairing-store'
-import { OwnershipRegistry } from './ext-client/ownership-registry'
+import { OwnershipRegistry, EXT_LAUNCH_TTL_MS } from './ext-client/ownership-registry'
+import { readSidecar, readProcStarttime } from './ext-client/sidecar-reader'
 import {
   createExtClientRouter,
   EXT_CLIENT_MOUNT_PREFIX,
@@ -348,7 +349,7 @@ app.use(
       // cannot surface a 500 — the client learns of failure by the
       // absence of a `new_session` echo before the 60s launch TTL).
       res.status(202).json({ launchId: ctx.launchId })
-      void startExtSession(ctx.agentId, input.message, input.resolvedCwd)
+      void startExtSession(ctx.agentId, input.message, input.resolvedCwd, ctx.launchId)
         .then(({ processId }) => {
           // Record the claude-bridge processId (fallback path) so the
           // session's process_end can be delivered to subscribers once
@@ -484,6 +485,138 @@ const sessionManager = new SessionManager()
 const watcher = new Watcher(config, sessionManager, fs)
 const claudeBridge = new ClaudeBridge(projectRoot)
 const tmuxBridge = new TmuxBridge(fs)
+
+// --- sidecar-correlation wiring (external-client-api.md §7.3.2.1, BL-2026-285) ---
+//
+// The deferred-match store (sessionId → consumed match awaiting its
+// `new_session` echo) lives INSIDE `OwnershipRegistry` so it shares the
+// single ownership lifecycle (`clear()` drops it on re-pair, closing the
+// cross-pairing-boundary leak). `correlateExtNewSession` drains it via
+// `extRegistry.takeSidecarMatch` on `new_session`.
+
+// (S-1') (b) sidecar freshness window. A correlate happens within the
+// 60s launch TTL right after KB fired the `/clear`, so the sidecar's
+// `updatedAt` should be very recent; a window of 2× the launch TTL
+// tolerates clock skew while rejecting a genuinely stale file. The
+// stronger guarantee is the independent `/proc` liveness check; this is
+// the secondary freshness signal the spec also requires.
+const SIDECAR_FRESHNESS_MS = 2 * EXT_LAUNCH_TTL_MS
+/**
+ * Read-only sidecar-correlation resolver injected into the
+ * SessionManager (§7.3.2.1 (S-1)/(S-2)/(S-6)). Iterates in-flight ext
+ * launches, resolves each launch's PID, reads its per-PID sidecar, and
+ * applies the launch-causality five-point check. When EXACTLY ONE launch
+ * matches, it atomically consumes that exact launchId (own + return) and
+ * records the match for the deferred `new_session` echo. Any ambiguity /
+ * absence / mismatch returns `null` (fail-closed, under-delivery — never
+ * over-delivery; no cwd-heuristic fallback, (S-1') (c)).
+ *
+ * Layer separation (M-2): this closure — NOT the SessionManager — holds
+ * the OwnershipRegistry / sidecar reader / tmux bridge dependencies.
+ */
+function resolveExtLaunchSession(args: {
+  sessionId: string
+  projectPath: string
+}): { launchId: string; agentId: string } | null {
+  const { sessionId } = args
+  const launches = extRegistry.listInFlightLaunches()
+  if (launches.length === 0) return null
+
+  let matchedLaunchId: string | null = null
+  let matchedAgentId: string | null = null
+
+  for (const launch of launches) {
+    // (S-4) PID + birth identity are latched together at launch time
+    // (before `/clear`), because the birth identity (`/proc` starttime)
+    // can only be captured while we know the launch's live PID. A launch
+    // with no latched PID also has no latched birth id, so the birth
+    // identity check below would reject it regardless — there is no late
+    // `list-panes` recovery that could make such a launch correlate.
+    // We therefore skip a launch that has no latched PID (fail-closed).
+    const pid = launch.tmuxPid
+    if (pid === null) continue
+
+    const sidecar = readSidecar(fs, config.claudeDir, pid)
+    if (sidecar === null) continue
+
+    // (S-1) state-match: the sidecar's current session must BE this
+    // materialising session, and its agent must be this launch's agent.
+    // The system default agent is launched as plain `claude` (no
+    // `--agent`), so its sidecar has `agent: null` — for a default-agent
+    // launch a `null` sidecar agent IS the match; for any named agent a
+    // `null` (or mismatched) sidecar agent fails.
+    if (sidecar.sessionId !== sessionId) continue
+    const sidecarAgentId = sidecar.agent ?? SYSTEM_DEFAULT_AGENT_ID
+    if (sidecarAgentId !== launch.agentId) continue
+
+    // (S-6a) transition: the materialised session must differ from the
+    // pre-launch active session (reject a stale pre-launch re-materialise).
+    if (launch.priorSessionId !== null && sessionId === launch.priorSessionId) continue
+
+    // (S-1') (b) freshness: reject a stale sidecar. `updatedAt` must be
+    // recent — a sidecar that has not been written within the freshness
+    // window is not trusted to describe the live process. Missing
+    // `updatedAt` → fail-closed.
+    if (sidecar.updatedAt === null) continue
+    if (Date.now() - sidecar.updatedAt > SIDECAR_FRESHNESS_MS) continue
+
+    // (S-6b) process birth identity + liveness, proven INDEPENDENTLY of
+    // the sidecar. The latched `procBirthId` is the `/proc/<pid>/stat`
+    // starttime read AT LAUNCH; here we re-read the LIVE `/proc` starttime
+    // and require equality. This is not tautological the way comparing
+    // the sidecar's self-reported `procStart` to itself would be: if the
+    // process exited (and the PID was possibly reused) the stale sidecar
+    // could still show the old `procStart`, but `/proc/<pid>/stat` either
+    // is gone (ENOENT → null → liveness fail) or shows a DIFFERENT
+    // starttime for the reused PID. Missing either side → fail-closed.
+    if (launch.procBirthId === null) continue
+    const liveStarttime = readProcStarttime(fs, pid)
+    if (liveStarttime === null || liveStarttime !== launch.procBirthId) continue
+
+    // A launch satisfying all five points. Require EXACTLY ONE such
+    // launch ((S-1) "exactly one"): a second match means the result is
+    // ambiguous, so we no-bind (under-delivery) and never over-deliver.
+    if (matchedLaunchId !== null) return null
+    matchedLaunchId = launch.launchId
+    matchedAgentId = launch.agentId
+  }
+
+  if (matchedLaunchId === null || matchedAgentId === null) return null
+
+  // (S-3) atomic consume-then-own: consume the exact launchId; only on
+  // success does the caller (SessionManager) commit the stamp. A racing
+  // reconcile / materialise double-resolve fails the second consume →
+  // no double-stamp ((S-7) idempotence). `consumeLaunchByIdAndOwn` also
+  // parks the match by sessionId for the deferred `new_session` echo
+  // (drained via `takeSidecarMatch`), inside the registry's lifecycle.
+  const match = extRegistry.consumeLaunchByIdAndOwn(matchedLaunchId, sessionId)
+  if (match === null) return null
+  return { launchId: match.launchId, agentId: match.agentId }
+}
+
+sessionManager.setExtLaunchResolver(resolveExtLaunchSession)
+
+/**
+ * Batch reconcile-retry driver (§7.3.2.1 (S-7)), called from the watcher
+ * reconcile tick via `SessionManager.runExtReconcileRetry`. Reads each
+ * pending launch's sidecar ONCE, takes the sidecar's `sessionId`, and
+ * asks the SessionManager to (re)stamp THAT specific session if it is
+ * still unbound. The per-tick cost is O(in-flight launches) — it does
+ * NOT scan every unbound session — and it is a no-op while nothing is in
+ * flight. The actual launch-causality match + atomic consume still runs
+ * inside `retryExtCorrelationForSession` → `resolveExtLaunchSession`, so
+ * the safety checks are identical to the materialisation-time path.
+ */
+function retryExtCorrelationBatch(): void {
+  for (const launch of extRegistry.listInFlightLaunches()) {
+    if (launch.tmuxPid === null) continue
+    const sidecar = readSidecar(fs, config.claudeDir, launch.tmuxPid)
+    if (sidecar === null) continue
+    sessionManager.retryExtCorrelationForSession(sidecar.sessionId)
+  }
+}
+
+sessionManager.setExtReconcileRetryDriver(retryExtCorrelationBatch)
 
 /**
  * Ensure a tmux window exists for the specified agent.
@@ -1192,6 +1325,7 @@ async function startExtSession(
   agentId: string,
   message: string,
   resolvedCwd: string | undefined,
+  launchId: string,
 ): Promise<{ processId: string | null }> {
   // Reserve origin='extension' so the watcher tags the session, and the
   // `new_session` correlation listener can match it to the ext launch.
@@ -1213,8 +1347,50 @@ async function startExtSession(
         const result = await tmuxBridge.sendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
       } else {
+        // Sidecar-correlation launch-time latch (§7.3.2.1 (S-4)/(S-6),
+        // BL-2026-285). This `/clear`-on-running-agent path is the R-5
+        // primary case (no `agent-setting` event → the agentId-keyed
+        // correlate never fires). Latch the launch's tmux pane PID, its
+        // birth identity, and the PRE-`/clear` sidecar sessionId BEFORE
+        // firing `/clear`, so the materialisation-time resolver can prove
+        // launch-causality (transition (S-6a) + birth identity (S-6b))
+        // against the per-PID sidecar. A null PID / null birth id makes
+        // the resolver fail-closed (under-delivery), never over-deliver.
+        // The freshly-started branch above is left untouched (byte-for-
+        // byte non-interference) — it resolves via `agent-setting` /
+        // `correlateNewSession` as before.
+        const pid = tmuxBridge.getWindowPanePid(tmuxAgent.windowName)
+        // `priorSessionId` (transition basis (S-6a)) comes from the
+        // sidecar's pre-`/clear` session; `procBirthId` (birth identity +
+        // liveness basis (S-6b)) is the OS-authoritative `/proc/<pid>/stat`
+        // starttime — NOT the sidecar's self-reported `procStart`, which a
+        // stale sidecar could replay across a PID reuse. The resolver
+        // re-reads the live `/proc` starttime at correlate time and
+        // requires equality.
+        const pre = pid !== null ? readSidecar(fs, config.claudeDir, pid) : null
+        const procBirthId = pid !== null ? readProcStarttime(fs, pid) : null
+        extRegistry.latchLaunchProcess(launchId, {
+          tmuxPid: pid,
+          windowName: tmuxAgent.windowName,
+          priorSessionId: pre?.sessionId ?? null,
+          procBirthId,
+        })
         const result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, message.trim())
         if (result.success) return { processId: null }
+        // The tmux `/clear` failed and we are about to fall back to the
+        // ClaudeBridge `--print` path. Clear the tmux sidecar latch so the
+        // resolver cannot consume this launch against the tmux PID's
+        // sidecar (which never received the `/clear` we counted on): a
+        // null PID makes the resolver skip this launch, and the fallback
+        // process is correlated via `attachProcessId` + the agentId-keyed
+        // path instead. Without this, a partial `/clear` failure could
+        // mis-correlate the launch to the tmux session.
+        extRegistry.latchLaunchProcess(launchId, {
+          tmuxPid: null,
+          windowName: null,
+          priorSessionId: null,
+          procBirthId: null,
+        })
       }
       apiLogger.warn('tmux send failed for ext session, falling back to ClaudeBridge')
     }
@@ -3120,6 +3296,19 @@ sessionManager.on('new_session', (summary: unknown) => {
   correlateExtNewSession(summary)
 })
 
+// Sidecar-correlation reconcile-retry recovery (§7.3.2.1 (S-7)). When a
+// write-race makes the sidecar catch up only AFTER the session's first
+// `new_session` already fired, the SessionManager stamps the session on
+// a later reconcile tick and emits this event (instead of a second
+// `new_session`, which `addEvents` never fires). Run the SAME extension
+// echo / auto-subscribe / catch-up wiring so the recovery does not
+// under-deliver. No renderer fan-out here: the renderer already received
+// the original `new_session`; this is purely the ext-side echo for a
+// session whose stamp landed late.
+sessionManager.on('ext_session_correlated', (summary: unknown) => {
+  correlateExtNewSession(summary)
+})
+
 /**
  * Correlate a materialised `new_session` with a pending ext launch
  * (external-client-api.md v1.0 §7.3.1 step 4). When the session was
@@ -3138,7 +3327,18 @@ function correlateExtNewSession(summary: unknown): void {
   if (typeof s.id !== 'string' || typeof s.agentId !== 'string') return
   const sessionId = s.id
 
-  const match = extRegistry.correlateNewSession(s.id, s.agentId)
+  // Sidecar-correlation path (§7.3.2.1, BL-2026-285): a session stamped
+  // `origin='extension'` at `ensureSession` time by the sidecar resolver
+  // already had its launch atomically consumed + owned there, so the
+  // agentId-keyed `correlateNewSession` below would return null. Drain
+  // the deferred match recorded by the resolver and do the SAME step-4
+  // wiring (echo / auto-subscribe / catch-up). Falls through to the
+  // agentId-keyed path for freshly-started agents (the `--agent` /
+  // `agent-setting` launch, §7.3.1 step 4).
+  let match = extRegistry.takeSidecarMatch(sessionId)
+  if (match === null) {
+    match = extRegistry.correlateNewSession(s.id, s.agentId)
+  }
   if (match === null) return
 
   // Backfill the claude-bridge process's sessionId (fallback launches
@@ -3682,7 +3882,7 @@ async function handleExtWsSessionNew(ws: WebSocket, payload: unknown): Promise<v
   // Run the launch side effects (reserveOrigin('extension') + tmux /
   // claude) with the validated input.
   try {
-    const { processId } = await startExtSession(agentId, input.message, input.resolvedCwd)
+    const { processId } = await startExtSession(agentId, input.message, input.resolvedCwd, reg.launchId)
     // Record the claude-bridge processId (fallback path) so the
     // session's process_end can be delivered to subscribers (§7.5).
     if (processId !== null) extRegistry.attachProcessId(reg.launchId, processId)

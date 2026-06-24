@@ -243,6 +243,34 @@ export interface FileAccessLayer {
     | { oversized: true; notRegular: false; size: number }
     | { oversized: false; notRegular: true }
 
+  /**
+   * Read a VIRTUAL file (e.g. procfs `/proc/<pid>/stat`) bounded by
+   * `maxBytes`, reading until EOF instead of trusting `fstat.size`.
+   *
+   * Virtual files report `size === 0` from `fstat`, so
+   * `readFileBoundedSync` (which allocates exactly `fstat.size` bytes)
+   * yields an EMPTY string for them. This variant ignores the reported
+   * size and reads into a `maxBytes` buffer until EOF:
+   *
+   *   - **regular-file gate**: `fstat.isFile()` must hold (procfs stat
+   *     files report as regular). FIFO / device / directory / socket →
+   *     `{ notRegular: true }` (same TOCTOU-safe single-fd gate as
+   *     `readFileBoundedSync`).
+   *   - **size cap**: if the content would exceed `maxBytes`, the read
+   *     stops and returns `{ oversized: true }` (no unbounded buffering).
+   *
+   * Throws on `open`/`stat`/`read` failures other than the gates — the
+   * caller treats those as a read-error (and, for `/proc/<pid>`, an
+   * ENOENT means the process is gone = a liveness signal).
+   */
+  readVirtualFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false }
+    | { oversized: false; notRegular: true }
+
   // --- Write ---
   /**
    * Non-atomic write. Pass a `BufferEncoding` string for the legacy
@@ -431,6 +459,42 @@ export class DirectFsLayer implements FileAccessLayer {
         )
         if (bytesRead <= 0) break
         totalRead += bytesRead
+      }
+      return {
+        oversized: false,
+        notRegular: false,
+        content: buffer.subarray(0, totalRead).toString('utf-8'),
+      }
+    } finally {
+      fsCloseSync(fd)
+    }
+  }
+
+  readVirtualFileBoundedSync(
+    path: string,
+    maxBytes: number,
+  ):
+    | { oversized: false; notRegular: false; content: string }
+    | { oversized: true; notRegular: false }
+    | { oversized: false; notRegular: true } {
+    const fd = fsOpenSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK)
+    try {
+      const stat = fsFstatSync(fd)
+      if (!stat.isFile()) {
+        return { oversized: false, notRegular: true }
+      }
+      // Virtual files report size 0, so we cannot trust `stat.size`.
+      // Read up to `maxBytes + 1` into a fixed buffer until EOF; if the
+      // file produced more than `maxBytes`, it is oversized.
+      const buffer = Buffer.alloc(maxBytes + 1)
+      let totalRead = 0
+      while (totalRead < buffer.length) {
+        const bytesRead = fsReadSync(fd, buffer, totalRead, buffer.length - totalRead, totalRead)
+        if (bytesRead <= 0) break
+        totalRead += bytesRead
+      }
+      if (totalRead > maxBytes) {
+        return { oversized: true, notRegular: false }
       }
       return {
         oversized: false,

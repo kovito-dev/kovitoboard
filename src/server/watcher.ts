@@ -432,6 +432,16 @@ export class Watcher {
         watcherLogger.warn({ err, filePath }, 'Reconcile: per-entry failure; skipping entry')
       }
     }
+
+    // External-client sidecar-correlation retry (external-client-api.md
+    // §7.3.2.1 (S-7)). The per-file `ensureSession` stamp only fires on
+    // file growth; this gives the retry a growth-INDEPENDENT driver so a
+    // sidecar that catches up after the first `new_session` batch (with
+    // no further JSONL writes) is still picked up within the launch TTL.
+    // The driver reads each pending launch's sidecar once and targets the
+    // named session, so the pass is O(in-flight launches) and a no-op
+    // while none is pending.
+    this.sessionManager.runExtReconcileRetry()
   }
 
   /**

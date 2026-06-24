@@ -54,6 +54,39 @@ export interface PendingExtLaunch {
    * launches. `null` for tmux launches (no claude-bridge process).
    */
   processId: string | null
+  /**
+   * Sidecar-correlation launch-time latch (external-client-api.md
+   * §7.3.2.1 (S-4)/(S-6), BL-2026-285). Latched by `latchLaunchProcess`
+   * just before the launch fires its `/clear` (`clearAndSendMessage`),
+   * so the materialisation-time correlation can prove launch-causality
+   * (not merely state-match) against the per-PID sidecar:
+   *  - `tmuxPid`        — the ext launch's tmux pane PID (the process
+   *                       whose sidecar carries the post-`/clear`
+   *                       sessionId). `null` until latched / when PID
+   *                       resolution failed (fail-closed at correlate).
+   *  - `windowName`     — the actual tmux window name passed to
+   *                       startAgent (NOT assumed == agentId), kept for
+   *                       diagnostics only. PID + birth identity are
+   *                       resolved together at launch time, so there is
+   *                       no materialisation-time PID re-resolution.
+   *  - `priorSessionId` — the sidecar's sessionId at launch time (the
+   *                       pre-`/clear` active session). The materialised
+   *                       sessionId must DIFFER from this (transition,
+   *                       (S-6a)) — a stale pre-launch re-materialisation
+   *                       of `priorSessionId` is rejected.
+   *  - `procBirthId`    — the PID's birth identity at launch, read from
+   *                       the OS-authoritative `/proc/<pid>/stat`
+   *                       starttime (NOT the sidecar's self-reported
+   *                       `procStart`, which a stale sidecar could replay
+   *                       across a PID reuse). The resolver re-reads the
+   *                       LIVE `/proc` starttime at correlate time and
+   *                       requires equality, which also proves liveness
+   *                       (a gone PID has no `/proc` entry) ((S-6b)).
+   */
+  tmuxPid: number | null
+  windowName: string | null
+  priorSessionId: string | null
+  procBirthId: string | null
   expiresAt: number
 }
 
@@ -84,6 +117,20 @@ export class OwnershipRegistry {
   private inFlightAgentToLaunch = new Map<string, string>()
   /** clientRequestId → launchId, dedup of in-flight client correlations (§8.5). */
   private pendingClientRequestIds = new Map<string, string>()
+  /**
+   * sessionId → already-consumed sidecar-correlation match awaiting its
+   * `new_session` echo (§7.3.2.1 (S-3)). The sidecar resolver stamps +
+   * consumes the launch at `ensureSession` time, but the `new_session`
+   * echo / auto-subscribe needs the session SUMMARY (which only exists
+   * once the first message arrives), so the match is parked here and
+   * drained by the `new_session` listener. Held INSIDE the registry — not
+   * in `index.ts` — so it shares the single ownership lifecycle: `clear()`
+   * drops it on re-pair / shutdown, closing the cross-pairing-boundary
+   * leak where a stale pre-repair match would otherwise be echoed to the
+   * freshly-paired extension. Each entry carries the launch's `expiresAt`
+   * so a match whose `new_session` never fires is GC'd rather than leaked.
+   */
+  private sidecarMatchBySessionId = new Map<string, { match: CorrelationMatch; expiresAt: number }>()
   private readonly now: () => number
   private readonly mintLaunchId: () => string
 
@@ -133,6 +180,10 @@ export class OwnershipRegistry {
       originConnId: args.originConnId,
       clientRequestId: args.clientRequestId,
       processId: null,
+      tmuxPid: null,
+      windowName: null,
+      priorSessionId: null,
+      procBirthId: null,
       expiresAt: this.now() + EXT_LAUNCH_TTL_MS,
     })
     this.inFlightAgentToLaunch.set(args.agentId, launchId)
@@ -152,6 +203,110 @@ export class OwnershipRegistry {
   attachProcessId(launchId: string, processId: string): void {
     const pending = this.pendingByLaunchId.get(launchId)
     if (pending) pending.processId = processId
+  }
+
+  /**
+   * Latch the sidecar-correlation launch-causality basis onto a
+   * still-pending launch (external-client-api.md §7.3.2.1 (S-4)/(S-6)).
+   * Called from the ext launch side effect just before it fires the
+   * `/clear` (`clearAndSendMessage`), with the launch's tmux pane PID,
+   * the actual window name, the pre-`/clear` sidecar sessionId
+   * (`priorSessionId`, transition basis (S-6a)), and the PID's birth
+   * identity (`procBirthId`, PID-reuse basis (S-6b)). No-op if the launch
+   * already consumed / expired. Individual fields may be `null` when the
+   * launch path could not resolve them (e.g. no tmux PID) — the
+   * materialisation-time correlation then fail-closes on the missing
+   * field rather than over-delivering.
+   */
+  latchLaunchProcess(
+    launchId: string,
+    fields: {
+      tmuxPid: number | null
+      windowName: string | null
+      priorSessionId: string | null
+      procBirthId: string | null
+    },
+  ): void {
+    const pending = this.pendingByLaunchId.get(launchId)
+    if (!pending) return
+    pending.tmuxPid = fields.tmuxPid
+    pending.windowName = fields.windowName
+    pending.priorSessionId = fields.priorSessionId
+    pending.procBirthId = fields.procBirthId
+  }
+
+  /**
+   * Read-only snapshot of every currently-pending (non-expired) ext
+   * launch, for the sidecar-correlation resolver (§7.3.2.1 (S-1)/(S-6))
+   * to iterate. Expired entries are GC'd first. The snapshot is a shallow
+   * copy array of the live entries — the caller MUST treat it as
+   * read-only (it does not consume / mutate; consume happens via
+   * `consumeLaunchByIdAndOwn`). Returned entries reference the live
+   * objects' field values at call time.
+   */
+  listInFlightLaunches(): ReadonlyArray<Readonly<PendingExtLaunch>> {
+    this.gcExpired()
+    return Array.from(this.pendingByLaunchId.values())
+  }
+
+  /**
+   * Atomic consume-then-own for sidecar-correlation (§7.3.2.1 (S-3)):
+   * consume the EXACT `launchId` (not an agentId-only lookup) and, ONLY
+   * if that consume succeeds, add `sessionId` to the owned registry and
+   * return the match for the caller's stamp + downstream wiring. Returns
+   * `null` when the launch is no longer pending (TTL-expired / already
+   * consumed by the materialisation-time path or a prior reconcile tick /
+   * unknown launchId) — in which case the caller performs NO stamp
+   * (no-bind, under-delivery). Because a successful consume removes the
+   * entry, a racing second call (materialise-time vs reconcile-time)
+   * fails → no double-stamp (§7.3.2.1 (S-3) (S-7) idempotence).
+   *
+   * Distinct from `correlateNewSession` (the §7.3.1 step-4 agentId-keyed
+   * path for freshly-started agents): this is the launchId-exact path
+   * used after the sidecar proved launch-causality, so it cannot bind to
+   * the wrong pending entry for the same agentId.
+   */
+  consumeLaunchByIdAndOwn(launchId: string, sessionId: string): CorrelationMatch | null {
+    this.gcExpired()
+    const pending = this.pendingByLaunchId.get(launchId)
+    if (pending === undefined) return null
+    this.owned.add(sessionId)
+    this.pendingByLaunchId.delete(launchId)
+    if (this.inFlightAgentToLaunch.get(pending.agentId) === launchId) {
+      this.inFlightAgentToLaunch.delete(pending.agentId)
+    }
+    this.releaseClientRequestId(pending)
+    const match: CorrelationMatch = {
+      launchId: pending.launchId,
+      agentId: pending.agentId,
+      originConnId: pending.originConnId,
+      clientRequestId: pending.clientRequestId,
+      processId: pending.processId,
+      sessionId,
+    }
+    // Park the match for the deferred `new_session` echo. Inheriting the
+    // launch's `expiresAt` bounds it: a match whose `new_session` never
+    // fires is GC'd, and `clear()` drops it on re-pair so it cannot leak
+    // across a pairing boundary.
+    this.sidecarMatchBySessionId.set(sessionId, { match, expiresAt: pending.expiresAt })
+    return match
+  }
+
+  /**
+   * Drain the deferred sidecar-correlation match for `sessionId` (parked
+   * by `consumeLaunchByIdAndOwn`), for the `new_session` listener to do
+   * the echo / auto-subscribe / catch-up wiring (§7.3.2.1 (S-3)). Returns
+   * `null` (and removes nothing) when there is no parked match — e.g. the
+   * session was correlated via the agentId-keyed `correlateNewSession`
+   * path, or a re-pair `clear()` already dropped it. Removes the entry on
+   * a hit so the echo happens at most once.
+   */
+  takeSidecarMatch(sessionId: string): CorrelationMatch | null {
+    this.gcExpired()
+    const entry = this.sidecarMatchBySessionId.get(sessionId)
+    if (entry === undefined) return null
+    this.sidecarMatchBySessionId.delete(sessionId)
+    return entry.match
   }
 
   /**
@@ -218,6 +373,10 @@ export class OwnershipRegistry {
     this.pendingByLaunchId.clear()
     this.inFlightAgentToLaunch.clear()
     this.pendingClientRequestIds.clear()
+    // Deferred sidecar-correlation matches are ownership-bearing state:
+    // dropping them here is what prevents a pre-repair match from being
+    // echoed across the fresh pairing boundary (§7.2.1).
+    this.sidecarMatchBySessionId.clear()
   }
 
   /** Remove expired pending launches and release their in-flight locks. */
@@ -231,6 +390,11 @@ export class OwnershipRegistry {
         }
         this.releaseClientRequestId(entry)
       }
+    }
+    // GC deferred matches whose `new_session` never fired within the
+    // launch TTL (bounds the map; the match is unrecoverable past TTL).
+    for (const [sessionId, entry] of this.sidecarMatchBySessionId) {
+      if (entry.expiresAt <= t) this.sidecarMatchBySessionId.delete(sessionId)
     }
   }
 
