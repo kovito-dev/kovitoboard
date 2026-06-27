@@ -26,6 +26,37 @@ interface OriginReservation {
 
 const RESERVATION_TTL_MS = 60_000
 
+/**
+ * Resolve-and-consume callback that maps a materialising session to an
+ * in-flight external-client launch via the per-PID sidecar
+ * (external-client-api.md §7.3.2.1 (S-1)/(S-2)/(S-6), BL-2026-285).
+ *
+ * **This callback MUTATES on success** (it is not a pure read). The
+ * implementation (wired in `index.ts`) owns the PID resolution → sidecar
+ * read → launch-causality check AND the atomic exact-launchId
+ * consume-then-own ((S-3)): when a unique in-flight ext launch proves
+ * launch-causality for `sessionId`, it consumes that launch and adds the
+ * session to the owned registry BEFORE returning, then returns
+ * `{ launchId, agentId }`. The consume-before-stamp ordering lives inside
+ * the callback so that, from the `SessionManager`'s side, a non-null
+ * return is always already-consumed-and-owned and the subsequent stamp is
+ * the only remaining step (no "stamped but launch un-consumed" window).
+ * It returns `null` in every other case (no match / ambiguous / sidecar
+ * absent / schema mismatch / freshness or liveness fail / launch already
+ * consumed / not injected).
+ *
+ * The point of routing this through a callback is layer separation
+ * (INV-ORIGIN-1 / M-2): the mutation (registry consume/own, sidecar /
+ * tmux / `/proc` reads) is confined to the injected closure, so the
+ * `SessionManager` itself depends on none of them — it only stamps
+ * `origin='extension'` + `agentId` on a non-null result and never
+ * over-delivers on a `null` (fail-closed, under-delivery).
+ */
+export type ResolveAndConsumeExtLaunch = (args: {
+  sessionId: string
+  projectPath: string
+}) => { launchId: string; agentId: string } | null
+
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>()
   private statusTimers = new Map<string, NodeJS.Timeout>()
@@ -33,6 +64,46 @@ export class SessionManager extends EventEmitter {
   private initializing = true
   // FIFO queue of origin reservations awaiting setAgentId resolution.
   private originReservations: OriginReservation[] = []
+  // Read-only sidecar-correlation callback (§7.3.2.1, BL-2026-285).
+  // Optional: when unset (e.g. tests not exercising the ext path), the
+  // `'extension'` narrowing simply skips (old R-5 under-delivery) — never
+  // over-delivers.
+  private resolveExtLaunchSession: ResolveAndConsumeExtLaunch | null = null
+
+  /**
+   * Inject the resolve-and-consume sidecar-correlation callback
+   * (§7.3.2.1 (S-2), wired in `index.ts`). Kept as a setter (not a
+   * constructor arg) so the existing `new SessionManager()` call sites
+   * and tests are unchanged; the callback is attached during server
+   * wiring after the registry / sidecar reader / tmux bridge it closes
+   * over are constructed.
+   */
+  setExtLaunchResolver(resolver: ResolveAndConsumeExtLaunch): void {
+    this.resolveExtLaunchSession = resolver
+  }
+
+  // Batch reconcile-retry driver (§7.3.2.1 (S-7), wired in `index.ts`).
+  // It reads each pending launch's sidecar ONCE per tick and calls
+  // `retryExtCorrelationForSession` for the sidecar's sessionId, so the
+  // sidecar reads stay in the wiring layer (M-2) and the per-tick cost is
+  // O(in-flight launches), not O(all unbound sessions). Unset when the
+  // ext path is not wired (tests) → `runExtReconcileRetry` is a no-op.
+  private extReconcileRetryDriver: (() => void) | null = null
+
+  /** Inject the batch reconcile-retry driver (§7.3.2.1 (S-7)). */
+  setExtReconcileRetryDriver(driver: () => void): void {
+    this.extReconcileRetryDriver = driver
+  }
+
+  /**
+   * Run one ext sidecar-correlation reconcile-retry pass. Called from the
+   * watcher reconcile tick; delegates to the injected batch driver (which
+   * reads pending launch sidecars once and targets the named sessions via
+   * `retryExtCorrelationForSession`). No-op when no driver is wired.
+   */
+  runExtReconcileRetry(): void {
+    this.extReconcileRetryDriver?.()
+  }
 
   getSessions(): SessionSummary[] {
     return Array.from(this.sessions.values())
@@ -47,6 +118,21 @@ export class SessionManager extends EventEmitter {
 
   ensureSession(sessionId: string, projectPath: string, filePath: string): Session {
     let session = this.sessions.get(sessionId)
+    if (session) {
+      // Reconcile retry for sidecar-correlation (§7.3.2.1 (S-7)): a
+      // write-race (sidecar.sessionId not yet updated when the JSONL
+      // materialised) makes the create-time stamp attempt below skip. A
+      // later live `change` / reconcile tick re-enters `ensureSession`
+      // for the now-existing session; re-attempt the stamp while the
+      // session is still unbound, so the launch is recovered once the
+      // sidecar catches up (within the launch TTL). Idempotent: the
+      // resolver consumes the launch exactly once, so a session that was
+      // already stamped (origin set) is not re-attempted.
+      if (!session.origin) {
+        this.tryStampExtLaunch(session, projectPath)
+      }
+      return session
+    }
     if (!session) {
       // Project name: restore directory name from path hash
       const projectName = this.extractProjectName(projectPath)
@@ -103,15 +189,140 @@ export class SessionManager extends EventEmitter {
       // origin) rather than risking a wrong, persisted binding — mis-binding
       // (permanent) is worse than non-binding (transient), matching the
       // §7.5.3 INV-1 priority.
+      //
+      // Additional narrowing for the external-client API (spec
+      // session-management.md §7.4.2.1 + external-client-api.md §7.3.2):
+      // an `'extension'` reservation is ALSO excluded from the eager claim
+      // (the `origin !== 'extension'` AND below). The eager claim binds the
+      // queue head WITHOUT matching on `agentId`, so on the shared FIFO an
+      // unrelated `/clear`-spawned session (e.g. a renderer launch) that
+      // materialises while an ext launch's `'extension'` reservation is the
+      // sole pending entry would steal that reservation, get stamped
+      // `origin='extension'`, and be mis-attributed to the ext owned-session
+      // registry — a cross-path, permanent (persisted via `agent_claimed`,
+      // surviving restart) mis-ownership that violates the data-minimisation
+      // contract. We therefore route `'extension'` reservations EXCLUSIVELY
+      // through the launchId-correlation path (external-client-api.md §7.3.1
+      // step 4, agentId-matched), never the agentId-blind eager claim. The
+      // accepted cost is the R-5 correlation loss (§7.3.2.1): a
+      // `/clear`-spawned ext session for an already-running agent leaves its
+      // `'extension'` reservation to TTL-expire unbound (transient,
+      // ext-scoped, no renderer impact, no eager-claim mis-ownership) —
+      // under-delivery, not over-delivery. Non-`'extension'` origins keep
+      // the original single-reservation eager-claim behaviour unchanged.
       this.gcExpiredReservations()
-      if (this.originReservations.length === 1) {
+      if (
+        this.originReservations.length === 1 &&
+        this.originReservations[0].origin !== 'extension'
+      ) {
         const claimed = this.originReservations.shift()!
         session.agentId = claimed.agentId
         session.origin = claimed.origin
         this.emit('agent_claimed', sessionId, claimed.agentId)
+      } else {
+        // §7.3.2.1 sidecar-correlation (BL-2026-285): the eager claim
+        // above is intentionally skipped for `'extension'` reservations
+        // (and ambiguous queues). Immediately after that skip, attempt to
+        // recover an ext launch's correlation via the per-PID sidecar
+        // (launch-causality, NOT the agentId-blind eager claim). This is
+        // the only place the materialising `/clear`-spawned session for
+        // an already-running agent can be stamped `origin='extension'` —
+        // it carries no `agent-setting` event, so `setAgentId` /
+        // `consumeOriginReservation` never fire (old R-5). The resolver
+        // fail-closes (no stamp) on any ambiguity / sidecar absence, so
+        // this never over-delivers.
+        this.tryStampExtLaunch(session, projectPath)
       }
     }
     return session
+  }
+
+  /**
+   * Attempt the sidecar-correlation `'extension'` stamp on a just- /
+   * still-unbound session (external-client-api.md §7.3.2.1 (S-1)/(S-3)).
+   * Delegates the PID resolution → sidecar read → launch-causality check
+   * → atomic exact-launchId consume-then-own to the injected read-only
+   * resolver (M-2 layer separation). On a non-null result the manager
+   * stamps `origin='extension'` + `agentId` and emits `agent_claimed`
+   * (same persistence path as the eager claim, so the mapping survives
+   * restart). A `null` result (no resolver / no match / ambiguous /
+   * sidecar absent / already consumed) leaves the session unbound
+   * (under-delivery, R-5'); it NEVER stamps speculatively.
+   *
+   * Stamp-after-consume ordering ((S-3)): the resolver performs the
+   * atomic consume and ownership add, then returns; the stamp runs
+   * synchronously on the returned value with no intervening await, so a
+   * successful consume always commits a stamp and a failed consume
+   * (`null`) commits none — no "stamped but launch un-consumed" state.
+   */
+  private tryStampExtLaunch(session: Session, projectPath: string): void {
+    if (session.origin) return
+    const resolver = this.resolveExtLaunchSession
+    if (!resolver) return
+    let match: { launchId: string; agentId: string } | null
+    try {
+      match = resolver({ sessionId: session.id, projectPath })
+    } catch {
+      // Resolver threw → fail-closed (under-delivery), never over-deliver.
+      return
+    }
+    if (!match) return
+    session.agentId = match.agentId
+    session.origin = 'extension'
+    // The ext launch parked an `'extension'` reservation in
+    // `startExtSession`; the narrowing deliberately leaves it for the
+    // `setAgentId` path, but a `/clear`-spawned session never gets an
+    // `agent-setting` event, so it would otherwise linger for the full
+    // TTL. Now that sidecar-correlation has resolved this launch, cancel
+    // that reservation so it does not keep `hasPendingReservation(agentId)`
+    // true — which would reject the next ext launch for this agent (and
+    // sit stale in the shared FIFO) for up to the reservation TTL.
+    this.cancelReservation(match.agentId, 'extension')
+    this.emit('agent_claimed', session.id, match.agentId)
+
+    // Drive the `new_session` echo / auto-subscribe / catch-up for the
+    // extension. Normally the `new_session` event (fired by `addEvents`
+    // on the empty → non-empty transition) triggers that wiring after
+    // the stamp. But in the (S-7) reconcile-retry case the sidecar can
+    // catch up only AFTER the first message already fired `new_session`
+    // (a write-race where the JSONL materialised before the sidecar
+    // updated): `addEvents` emits `new_session` ONLY on the first
+    // transition, so no later `new_session` will fire and the parked
+    // match would never be drained → the recovery still under-delivers.
+    // When the session is already non-empty at stamp time, emit a
+    // dedicated `ext_session_correlated` event carrying the summary so
+    // `index.ts` can run the same echo wiring immediately. The empty
+    // case is left to the upcoming `new_session` (no double echo).
+    const isNonEmpty =
+      session.stats.userMessages > 0 || session.stats.assistantMessages > 0
+    if (isNonEmpty) {
+      this.emit('ext_session_correlated', this.toSummary(session))
+    }
+  }
+
+  /**
+   * Targeted sidecar-correlation retry for ONE session named by a pending
+   * launch's sidecar (§7.3.2.1 (S-7) reconcile retry). If `sessionId`
+   * exists and is still unbound, re-run the stamp attempt for it.
+   *
+   * This is the targeted half of the file-growth-INDEPENDENT retry: the
+   * batch driver (wired in `index.ts`, called from the watcher reconcile
+   * tick) reads each pending launch's sidecar ONCE, takes the sidecar's
+   * `sessionId`, and calls this for that exact session — so the per-tick
+   * work is O(in-flight launches), NOT O(all unbound sessions). The
+   * create-/append-time stamp in `ensureSession` only runs on file
+   * growth, so without this a sidecar that catches up after the first
+   * `new_session` batch (with no further JSONL writes) would never be
+   * retried before the launch TTL. Layer separation is preserved — the
+   * manager only consults its resolver callback; the sidecar reads live
+   * in the injected batch driver.
+   */
+  retryExtCorrelationForSession(sessionId: string): void {
+    if (!this.resolveExtLaunchSession) return
+    const session = this.sessions.get(sessionId)
+    if (session && !session.origin) {
+      this.tryStampExtLaunch(session, session.projectPath)
+    }
   }
 
   setAgentId(sessionId: string, agentId: string): void {
@@ -142,6 +353,42 @@ export class SessionManager extends EventEmitter {
       origin,
       expiresAt: Date.now() + RESERVATION_TTL_MS,
     })
+  }
+
+  /**
+   * Cancel the most recently parked reservation matching `agentId` +
+   * `origin`. Added for the external-client API: when an ext launch
+   * fails AFTER `reserveOrigin('extension')` but before any session
+   * materialises, the caller cancels the reservation so it does not
+   * linger for the full TTL — which would otherwise block the next ext
+   * launch for that agent (`hasPendingReservation`) and could mis-tag a
+   * later session as `'extension'`. Removes at most one matching entry
+   * (LIFO, the one this caller just parked); returns whether one was
+   * removed. Other callers' reservations are untouched.
+   */
+  cancelReservation(agentId: string, origin: SessionOrigin): boolean {
+    for (let i = this.originReservations.length - 1; i >= 0; i--) {
+      const r = this.originReservations[i]
+      if (r.agentId === agentId && r.origin === origin) {
+        this.originReservations.splice(i, 1)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Read-only check: is there a live (non-expired) origin reservation
+   * for `agentId`? Added for the external-client API (§7.3.1 step 1):
+   * an ext launch is rejected while ANY pending reservation exists for
+   * the same agentId — across renderer / sidebar / ext / internal
+   * paths — so the shared FIFO cannot mis-bind an ext reservation to a
+   * renderer-started session. This does NOT consume the reservation and
+   * does NOT change any existing behaviour (additive, INV-ORIGIN-1).
+   */
+  hasPendingReservation(agentId: string): boolean {
+    this.gcExpiredReservations()
+    return this.originReservations.some((r) => r.agentId === agentId)
   }
 
   /** Pull the oldest non-expired reservation matching `agentId`. */

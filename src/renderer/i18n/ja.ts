@@ -662,6 +662,29 @@ const ja = {
   'setting.tab.integrations': '外部連携',
   'setting.tab.rules': 'ルール',
   'setting.tab.ambientSidebar': 'サイドバー',
+  'setting.tab.extensionPairing': 'Chrome 拡張',
+
+  // 設定 — Chrome 拡張ペアリングタブ（chrome-extension-pairing-ui.md §6.2）
+  'setting.extensionPairing.title': 'Chrome 拡張と接続',
+  'setting.extensionPairing.description':
+    '接続コードを発行し、Chrome 拡張のパネルに入力してください。',
+  'setting.extensionPairing.generate': 'コードを発行',
+  'setting.extensionPairing.regenerate': '再発行',
+  'setting.extensionPairing.copy': 'コピー',
+  'setting.extensionPairing.copied': 'コピーしました',
+  'setting.extensionPairing.copyError': 'コピーできませんでした。手動で選択してください。',
+  'setting.extensionPairing.expiresIn': '残り {mmss}',
+  'setting.extensionPairing.expired': 'コードの有効期限が切れました。',
+  'setting.extensionPairing.regenerateHint':
+    '「コードを発行」を押すと、Chrome 拡張と接続するためのコードが表示されます。',
+  'setting.extensionPairing.singleUseNote':
+    'このコードは 1 回のみ有効です。拡張で接続すると無効化されます。KovitoBoard を再起動すると再接続が必要です。',
+  'setting.extensionPairing.replaceWarning':
+    'このコードで接続すると、すでに接続済みの拡張があればそれを置き換えます。',
+  'setting.extensionPairing.phishingWarning':
+    'このコードは、あなた自身が意図して接続する Chrome 拡張にのみ入力してください。第三者には伝えないでください。',
+  'setting.extensionPairing.issueError':
+    'コードの発行に失敗しました。もう一度お試しください。',
 
   // 設定 — Ambient Sidebar タブ（DEC-020 / EU8）
   'setting.ambientSidebar.section.preferences': '挙動',

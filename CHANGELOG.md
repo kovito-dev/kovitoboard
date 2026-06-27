@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-06-27
+
+### Added
+
+- Experimental external client API namespace (`/api/ext/_client/v1/*`) that
+  a user-paired browser extension can use to talk to the local KovitoBoard
+  backend over a dedicated, origin-scoped, pairing-gated surface. This is an
+  early, internal-facing foundation only: no bundled client ships yet, the
+  surface is intentionally minimal, and it may change without notice. The
+  existing loopback-only `/api/*` boundary is unchanged.
+- Settings now include a "Connect a Chrome extension" pairing-code UI.
+
+### Changed
+
+- External client API: a browser extension's service worker does not send an
+  `Origin` header on `GET` requests, so the read-only endpoints
+  (`/capabilities`, `/agents`) now accept a missing `Origin` and fall back to
+  the paired launch token as the sole authorization check. Mutating `POST`
+  endpoints still require an exact extension-origin match. Token re-fetch
+  after a restart now uses `POST /token/refresh` (replacing the previous
+  `GET /token`), which requires both the paired origin and a per-pairing
+  refresh secret issued at pairing time. The `/pair` response now also
+  returns this refresh secret.
+
+### Security
+
+- Resolved Dependabot advisories by bumping two runtime dependencies and
+  pinning two dev-only transitives to patched versions (major versions
+  held):
+  - dompurify 3.4.7 → 3.4.11 (renderer sanitization; Trusted Types policy
+    poisoning, SAFE_FOR_TEMPLATES bypass, ALLOWED_ATTR pollution).
+  - js-yaml 4.1.1 → 4.2.0 (frontmatter/agent YAML; merge-key DoS).
+  - undici → 7.28.0 (test-only via jsdom; TLS validation bypass plus six
+    others), @babel/core → 7.29.7 (build-only; sourceMappingURL file read).
+    Neither is shipped to users.
+
+  > Known issue: a transitive js-yaml 3.14.2 is still pulled in by
+  > gray-matter (same merge-key advisory). No upstream fix is available and
+  > the version cannot be overridden, so it is tracked and accepted for now.
+
 ## [0.2.12] - 2026-06-20
 
 ### Added

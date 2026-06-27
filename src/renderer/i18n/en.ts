@@ -666,6 +666,28 @@ const en: Record<MessageKey, string> = {
   'setting.tab.integrations': 'Integrations',
   'setting.tab.rules': 'Rules',
   'setting.tab.ambientSidebar': 'Sidebar',
+  'setting.tab.extensionPairing': 'Chrome extension',
+
+  // Settings — Chrome extension pairing tab (chrome-extension-pairing-ui.md §6.2)
+  'setting.extensionPairing.title': 'Connect a Chrome extension',
+  'setting.extensionPairing.description':
+    'Generate a pairing code and enter it in the Chrome extension panel.',
+  'setting.extensionPairing.generate': 'Generate code',
+  'setting.extensionPairing.regenerate': 'Regenerate',
+  'setting.extensionPairing.copy': 'Copy',
+  'setting.extensionPairing.copied': 'Copied',
+  'setting.extensionPairing.copyError': 'Could not copy. Select the code manually.',
+  'setting.extensionPairing.expiresIn': 'Expires in {mmss}',
+  'setting.extensionPairing.expired': 'The code has expired.',
+  'setting.extensionPairing.regenerateHint':
+    'Press "Generate code" to show a code for connecting a Chrome extension.',
+  'setting.extensionPairing.singleUseNote':
+    'This code is single-use and is consumed when an extension connects. Restarting KovitoBoard requires reconnecting.',
+  'setting.extensionPairing.replaceWarning':
+    'Connecting with this code replaces any extension that is already connected.',
+  'setting.extensionPairing.phishingWarning':
+    'Only enter this code into a Chrome extension you intend to connect yourself. Never share it with anyone.',
+  'setting.extensionPairing.issueError': 'Failed to generate a code. Please try again.',
 
   // Settings — Ambient Sidebar tab (DEC-020 / EU8)
   'setting.ambientSidebar.section.preferences': 'Preferences',

@@ -199,8 +199,42 @@ export interface AppMenuChangedPayload {
 export type ServerToClientEvent =
   | { type: 'new_event'; payload: { sessionId: string; event: unknown } }
   | { type: 'status_change'; payload: { sessionId: string; status: string } }
-  | { type: 'new_session'; payload: { summary: unknown } }
-  | { type: 'process_end'; payload: { processId: string; status: string; exitCode: number } }
+  | {
+      type: 'new_session'
+      payload: {
+        summary: unknown
+        /**
+         * Server-minted launch correlation id, present when the session
+         * materialised from an external-client launch (external-client-api.md
+         * §7.3.1 / ws-event-contract.md v1.7). Optional and additive — the
+         * renderer fan-out omits it, which type-checks against this optional
+         * field, so the `@stable v0.1.0` contract stays non-breaking.
+         */
+        launchId?: string
+        /**
+         * Echo of the external client's `ExtSessionNewPayload.clientRequestId`,
+         * letting the client tie the asynchronously-materialised session back
+         * to the launch it requested. Optional and additive (see `launchId`).
+         */
+        clientRequestId?: string
+      }
+    }
+  | {
+      type: 'process_end'
+      payload: {
+        processId: string
+        status: string
+        exitCode: number
+        /**
+         * Owning sessionId, resolved at emit time from `processId`.
+         * Additive (external-client-api.md v1.0 §7.5): lets the
+         * external-client subscription filter treat `process_end` as a
+         * session-scoped event. The renderer ignores it. `undefined`
+         * when the process never bound a session.
+         */
+        sessionId?: string
+      }
+    }
   | { type: 'trust_prompt_detected'; payload: TrustPromptDetectedPayload }
   | { type: 'trust_prompt_fallback'; payload: TrustPromptFallbackPayload }
   | { type: 'trust_prompt_resolved'; payload: TrustPromptResolvedPayload }
@@ -284,9 +318,55 @@ export interface ClientLogPayload {
   data?: Record<string, unknown>
 }
 
+// =========================
+// External-client API (Phase 0)
+// =========================
+
+/**
+ * External-client WebSocket payloads (external-client-api.md v1.0 §6.2.1).
+ *
+ * These three message types are sent ONLY by a paired external-client
+ * WebSocket connection (a `chrome-extension://` origin whose id matches
+ * the paired `allowedExtensionId`). The server ignores them on a
+ * built-in renderer connection, and ignores renderer-only messages on
+ * an extension connection (§8.4 권한 분리 / privilege separation).
+ *
+ * They are added to `ClientToServerEvent` additively — no existing type
+ * is changed — so the `@stable v0.1.0` contract for the renderer is
+ * preserved.
+ *
+ * @stable v0.2.x (external-client API v1)
+ */
+export interface ExtSessionNewPayload {
+  /**
+   * Client-generated correlation id (128-bit recommended). Echoed back
+   * on the `new_session` event so the external client can tie the
+   * asynchronously-materialised session to the launch it requested
+   * (§7.3.1). The server also mints its own `launchId` for ownership.
+   */
+  clientRequestId: string
+  agentId: string
+  message: string
+  cwd?: string
+  /** Opaque reference to extension-relayed page context (reserved). */
+  contextRef?: string
+}
+
+export interface ExtSessionSendPayload {
+  sessionId: string
+  message: string
+}
+
+export interface ExtSubscribePayload {
+  sessionId: string
+}
+
 export type ClientToServerEvent =
   | { type: 'trust_prompt_respond'; payload: TrustPromptRespondPayload }
   | { type: 'client_log'; payload: ClientLogPayload }
+  | { type: 'ext_session_new'; payload: ExtSessionNewPayload }
+  | { type: 'ext_session_send'; payload: ExtSessionSendPayload }
+  | { type: 'ext_subscribe'; payload: ExtSubscribePayload }
 
 // =========================
 // Event type utilities

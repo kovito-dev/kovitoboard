@@ -9,6 +9,45 @@ KovitoBoard の主要な変更点を本ファイルに記録します。
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-06-27
+
+### 追加
+
+- 実験的な外部クライアント API 名前空間（`/api/ext/_client/v1/*`）を追加しました。
+  ユーザーがペアリングしたブラウザ拡張が、専用かつ origin スコープ・ペアリング
+  認証付きの経路でローカルの KovitoBoard バックエンドと通信できます。これは
+  内部向けの初期基盤のみで、同梱クライアントはまだ提供されず、経路は意図的に
+  最小限で、予告なく変更される可能性があります。既存の loopback 限定
+  `/api/*` 境界は変更されません。
+- 設定画面に「Connect a Chrome extension」のペアリングコード UI を追加しました。
+
+### 変更
+
+- 外部クライアント API: ブラウザ拡張の Service Worker は `GET` リクエストに
+  `Origin` ヘッダを付与しないため、読み取り専用エンドポイント（`/capabilities`、
+  `/agents`）は `Origin` 欠落を許容し、ペアリング済みの起動トークンを唯一の
+  認可チェックとして用いるようにしました。書き込み系の `POST` エンドポイントは
+  従来どおり拡張 origin の完全一致を必須とします。再起動後のトークン再取得は
+  `POST /token/refresh`（従来の `GET /token` を置換）になり、ペアリング済み origin
+  と、ペアリング時に発行される refresh secret の両方を必須とします。`/pair`
+  応答はこの refresh secret も返すようになりました。
+
+### セキュリティ
+
+- Dependabot のアドバイザリを解消するため、ランタイム依存 2 件を更新し、
+  dev 専用の transitive 依存 2 件を修正版に固定しました（メジャーバージョンは
+  据え置き）:
+  - dompurify 3.4.7 → 3.4.11（renderer のサニタイズ; Trusted Types ポリシー
+    汚染・SAFE_FOR_TEMPLATES バイパス・ALLOWED_ATTR 汚染）。
+  - js-yaml 4.1.1 → 4.2.0（frontmatter/エージェント YAML; merge-key による DoS）。
+  - undici → 7.28.0（テスト専用、jsdom 経由; TLS 検証バイパスほか 6 件）、
+    @babel/core → 7.29.7（ビルド専用; sourceMappingURL のファイル読み取り）。
+    いずれも利用者には出荷されません。
+
+  > 既知の問題: gray-matter 経由で transitive な js-yaml 3.14.2 が依然として
+  > 取り込まれます（同じ merge-key のアドバイザリ）。上流の修正版がなく
+  > override もできないため、現時点では追跡のうえ受容しています。
+
 ## [0.2.12] - 2026-06-20
 
 ### 追加
