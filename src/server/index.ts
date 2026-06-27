@@ -28,6 +28,7 @@ import { Watcher } from './watcher'
 import { loadAgentDefinitions, loadSessionAgentRecords, buildSessionAgentMap, getAgentDefinitionContent, appendSessionAgentRecord, SYSTEM_DEFAULT_AGENT_ID } from './agent-reader'
 import { ClaudeBridge } from './claude-bridge'
 import { TmuxBridge, isValidTmuxName } from './tmux-bridge'
+import { launchAndSendFirstMessage } from './launch-and-send'
 import { DataFileWatcher } from './data-file-watcher'
 import { readBasicSettings, readSkills, readAutomations, readIntegrations, readRules } from './settings-reader'
 import { readArtifact } from './artifact-reader'
@@ -1207,25 +1208,39 @@ async function handleNewSession(req: Request, res: Response): Promise<void> {
   if (agentId) {
     const tmuxAgent = await ensureTmuxAgent(agentId)
     if (tmuxAgent) {
-      let result: { success: boolean; error?: string }
       if (tmuxAgent.justStarted) {
-        // Just started: the agent launch itself starts a new session,
-        // so send the message directly after waiting for the prompt.
-        // Claude Code fetches org / credential info on first launch, so
-        // the welcome screen can linger for 15+ seconds before the live
-        // prompt appears — wait 45 s before giving up.
-        const ready = await tmuxBridge.waitForAgentReady(tmuxAgent.windowName, 45000)
-        if (!ready) {
-          apiLogger.warn(
-            { agentId, timeoutMs: 45000, endpoint: req.path },
-            'Prompt wait timeout for agent',
-          )
-        }
-        result = await tmuxBridge.sendMessage(tmuxAgent.windowName, effectiveMessage.trim())
-      } else {
-        // Already running: end existing session with /clear then send new message
-        result = await tmuxBridge.clearAndSendMessage(tmuxAgent.windowName, effectiveMessage.trim())
+        // Just started: the agent launch itself starts a new session.
+        // Respond immediately (accept semantics) and run
+        // waitForAgentReady → sendMessage in the BACKGROUND, preserving
+        // the wait→send ordering. Claude Code fetches org / credential
+        // info on first launch, so the live prompt can take 15+ seconds
+        // to appear; awaiting it here would block the loopback response
+        // for up to 45 s and freeze the onboarding hand-off
+        // (session-management.md §7.1.5 / onboarding-scenarios.md
+        // §5.3.2 / BL-2026-293). The continuous client-side loading
+        // state machine (S0–S4) covers the resulting no-response window.
+        void launchAndSendFirstMessage(
+          tmuxBridge,
+          tmuxAgent.windowName,
+          effectiveMessage.trim(),
+          apiLogger,
+          { agentId, endpoint: req.path },
+        )
+        res.json({
+          success: true,
+          via: 'tmux',
+          windowName: tmuxAgent.windowName,
+          pending: true,
+        })
+        return
       }
+      // Already running: end existing session with /clear then send new
+      // message. This path stays synchronous so a tmux failure can fall
+      // back to ClaudeBridge below.
+      const result = await tmuxBridge.clearAndSendMessage(
+        tmuxAgent.windowName,
+        effectiveMessage.trim(),
+      )
       if (result.success) {
         res.json({ success: true, via: 'tmux', windowName: tmuxAgent.windowName })
         return
