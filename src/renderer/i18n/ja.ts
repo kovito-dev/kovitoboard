@@ -37,6 +37,15 @@ const ja = {
   'onboarding.complete.talkToKobi': 'コビーと話してみる',
   'onboarding.complete.goToAgents': 'エージェント一覧へ',
   'onboarding.complete.preparing': '準備中…',
+  // S1 of the onboarding first-session loading state machine
+  // (onboarding-scenarios.md §5.3.3): shown on the agent page while the
+  // freshly-launched concierge starts up and its session has not yet
+  // appeared, plus the T1-timeout fallback.
+  'onboarding.starting.loading': 'コビーを起動しています…',
+  'onboarding.starting.timeoutTitle': 'コビーの起動に時間がかかっています',
+  'onboarding.starting.timeoutDescription': 'もう一度試すか、エージェント一覧に戻ってください。',
+  'onboarding.starting.retry': '再試行',
+  'onboarding.starting.goToList': '一覧へ',
   'onboarding.complete.skipClaudeMdGuidance': 'CLAUDE.md への案内ブロック追記をスキップする',
   'onboarding.complete.skipClaudeMdGuidanceHint': 'チェックを入れると、KovitoBoard はあなたのプロジェクト直下の CLAUDE.md に案内ブロックを書き込みません。CLAUDE.md を自分で管理している場合に選択してください。',
   'onboarding.welcome.start': '始める',

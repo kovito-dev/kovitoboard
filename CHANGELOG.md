@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14] - YYYY-MM-DD
+
+### Fixed
+
+- Onboarding: finishing the wizard with the concierge ("Kobi") enabled no
+  longer freezes for up to a minute before the session screen appears. The
+  new-session request now returns as soon as it is accepted and runs the
+  agent startup and first-message send in the background, instead of blocking
+  the response until the agent is ready.
+- Onboarding: the first concierge session no longer looks unresponsive while
+  Kobi prepares its first reply. The typing indicator now stays lit from the
+  moment the session opens until the first response arrives, and a startup
+  loading screen (with a timeout fallback) is shown while the agent is
+  launching.
+
 ## [0.2.13] - 2026-06-27
 
 ### Added
