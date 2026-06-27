@@ -39,6 +39,15 @@ const en: Record<MessageKey, string> = {
   'onboarding.complete.talkToKobi': 'Talk to Kobi',
   'onboarding.complete.goToAgents': 'Go to agents',
   'onboarding.complete.preparing': 'Preparing...',
+  // S1 of the onboarding first-session loading state machine
+  // (onboarding-scenarios.md §5.3.3): shown on the agent page while the
+  // freshly-launched concierge starts up and its session has not yet
+  // appeared, plus the T1-timeout fallback.
+  'onboarding.starting.loading': 'Starting Kobi...',
+  'onboarding.starting.timeoutTitle': 'Kobi is taking longer than expected to start',
+  'onboarding.starting.timeoutDescription': 'Try again, or go back to the agents list.',
+  'onboarding.starting.retry': 'Retry',
+  'onboarding.starting.goToList': 'Go to agents',
   'onboarding.complete.skipClaudeMdGuidance': 'Skip CLAUDE.md guidance injection',
   'onboarding.complete.skipClaudeMdGuidanceHint': "When checked, KovitoBoard will not write a guidance block into your project's CLAUDE.md. Choose this if you manage CLAUDE.md yourself.",
   'onboarding.welcome.start': 'Get Started',
