@@ -626,6 +626,13 @@ sessionManager.setExtReconcileRetryDriver(retryExtCorrelationBatch)
  * @returns { windowName, justStarted } — justStarted=true indicates the agent was newly started
  */
 async function ensureTmuxAgent(agentId: string): Promise<{ windowName: string; justStarted: boolean } | null> {
+  // Browser-control read round-trip PoC (throwaway, env-gated): force the
+  // claude-bridge `--print` fallback so the per-invocation MCP injection in
+  // `startNewSession` is exercised on every launch. Injecting the MCP server
+  // into the tmux primary path is out of PoC scope. No-op when the flag is
+  // unset, so the tmux path is unchanged in a normal build.
+  if (BROWSER_CONTROL_POC_ENABLED) return null
+
   // Return existing window name if already running
   if (tmuxBridge.hasSession()) {
     const windows = tmuxBridge.listWindows()
@@ -3648,6 +3655,96 @@ app.post('/api/agents/:id/restart', async (req, res) => {
   }
 })
 
+// --- Browser-control read round-trip PoC (throwaway, env-gated) ---
+//
+// End-to-end gated by KBEXT_BROWSER_CONTROL_POC. When unset, the HTTP
+// endpoint below is never registered and `bcPocPending` stays empty, so the
+// `ext_action_result` dispatch branch and the result handler are inert —
+// behaviour is identical to a normal build.
+//
+// Transport: the stdio `browser-control` MCP server (spawned by Claude Code)
+// POSTs to a loopback-only endpoint that is deliberately OUTSIDE the `/api`
+// auth namespace, because that subprocess holds no launch token. The
+// endpoint mints a requestId, sends `ext_action_request` to the paired
+// extension socket(s), and blocks on a pending promise until the matching
+// `ext_action_result` arrives (or a timeout fires). This mirrors the
+// `kb-call` / `kb-call-response` requestId correlation, but in the opposite
+// direction (server → extension is the executor).
+const BROWSER_CONTROL_POC_ENABLED = process.env.KBEXT_BROWSER_CONTROL_POC === '1'
+const BC_POC_TIMEOUT_MS = 30_000
+
+interface BcPocPending {
+  resolve: (r: { ok: boolean; data?: { title?: string }; error?: string }) => void
+  timer: ReturnType<typeof setTimeout>
+}
+const bcPocPending = new Map<string, BcPocPending>()
+
+if (BROWSER_CONTROL_POC_ENABLED) {
+  app.post('/_poc/browser-control/action', (req, res) => {
+    const body = (req.body ?? {}) as { action?: unknown }
+    if (body.action !== 'read_page_title') {
+      res.status(400).json({ ok: false, error: 'unsupported-action' })
+      return
+    }
+    const sockets = extWs
+      .extensionSockets()
+      .filter((ws) => ws.readyState === WebSocket.OPEN)
+    if (sockets.length === 0) {
+      res.status(503).json({ ok: false, error: 'no-extension-connected' })
+      return
+    }
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      bcPocPending.delete(requestId)
+      res.status(504).json({ ok: false, error: 'extension-timeout' })
+    }, BC_POC_TIMEOUT_MS)
+    // `resolve` and the timeout are mutually exclusive: whichever fires first
+    // removes the pending entry / clears the timer, so `res` is sent once.
+    bcPocPending.set(requestId, {
+      resolve: (result) => {
+        clearTimeout(timer)
+        res.json(result)
+      },
+      timer,
+    })
+    const frame = JSON.stringify({
+      type: 'ext_action_request',
+      payload: { requestId, action: 'read_page_title' },
+    })
+    for (const ws of sockets) ws.send(frame)
+    wsLogger.info({ requestId }, 'browser-control PoC: ext_action_request sent')
+  })
+  wsLogger.info('browser-control PoC endpoint enabled (KBEXT_BROWSER_CONTROL_POC=1)')
+}
+
+/**
+ * Resolve a pending browser-control PoC request from an `ext_action_result`.
+ * Inert (no-op) unless a request is in flight, so it is safe to dispatch
+ * unconditionally.
+ */
+function handleExtActionResult(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') return
+  const p = payload as {
+    requestId?: unknown
+    ok?: unknown
+    data?: unknown
+    error?: unknown
+  }
+  if (typeof p.requestId !== 'string') return
+  const pending = bcPocPending.get(p.requestId)
+  if (!pending) return
+  bcPocPending.delete(p.requestId)
+  const data =
+    p.data && typeof p.data === 'object'
+      ? (p.data as { title?: string })
+      : undefined
+  pending.resolve({
+    ok: p.ok === true,
+    data,
+    error: typeof p.error === 'string' ? p.error : undefined,
+  })
+}
+
 // The WS ext id-field cap is the SAME shared constant the HTTP ext
 // router enforces (`MAX_EXT_ID_LEN` from `ext-client/limits`), so the
 // HTTP/WS validation parity required by the spec cannot drift.
@@ -3664,6 +3761,10 @@ const KNOWN_WS_EVENT_TYPES = new Set<string>([
   'ext_session_new',
   'ext_session_send',
   'ext_subscribe',
+  // Browser-control read round-trip PoC (throwaway, env-gated). Accepted
+  // only from extension connections (privilege check below); inert unless a
+  // PoC request is in flight.
+  'ext_action_result',
 ])
 
 // --- WebSocket connection heartbeat (supplementary review §S5) ---
@@ -3758,7 +3859,10 @@ wss.on('connection', (ws, request) => {
 
     const type = parsed.type
     const isExtType =
-      type === 'ext_session_new' || type === 'ext_session_send' || type === 'ext_subscribe'
+      type === 'ext_session_new' ||
+      type === 'ext_session_send' ||
+      type === 'ext_subscribe' ||
+      type === 'ext_action_result'
 
     // Re-evaluate the connection kind on EVERY message rather than
     // trusting the value captured at connect time. On a re-pairing
@@ -3794,6 +3898,9 @@ wss.on('connection', (ws, request) => {
       handleExtWsSessionSend(parsed.payload)
     } else if (type === 'ext_subscribe') {
       handleExtWsSubscribe(ws, parsed.payload)
+    } else if (type === 'ext_action_result') {
+      // Browser-control read round-trip PoC (throwaway, env-gated).
+      handleExtActionResult(parsed.payload)
     }
   })
 })

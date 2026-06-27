@@ -7,7 +7,46 @@ import { tmuxLogger, redactSensitiveTokens } from './logger'
 import { spawn, ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
+import { fileURLToPath } from 'url'
+import { dirname, resolve, join } from 'path'
 import { scrubNestedDetectionEnv } from './nested-detection-env'
+
+/**
+ * Browser-control read round-trip PoC (throwaway, env-gated).
+ *
+ * When KBEXT_BROWSER_CONTROL_POC=1, builds the per-invocation flags that
+ * inject a stdio MCP server exposing the read-only `read_page_title` tool.
+ * The server script is shipped under the repo's `scripts/poc/` and resolved
+ * relative to this module so it works both in dev (tsx, `src/server/`) and
+ * in a compiled build (`dist/server/`) — both directories sit two levels
+ * below the repo root. Returns an empty array when the flag is unset, so the
+ * launch arguments — and therefore the behaviour — are byte-for-byte
+ * identical to a normal build.
+ */
+function buildBrowserControlPocArgs(): string[] {
+  if (process.env.KBEXT_BROWSER_CONTROL_POC !== '1') return []
+  const here = dirname(fileURLToPath(import.meta.url))
+  const repoRoot = resolve(here, '../..')
+  const mcpScript = join(repoRoot, 'scripts', 'poc', 'browser-control-mcp.mjs')
+  const port = process.env.PORT || '3001'
+  const endpoint = `http://127.0.0.1:${port}/_poc/browser-control/action`
+  const mcpConfig = JSON.stringify({
+    mcpServers: {
+      'browser-control': {
+        command: process.execPath,
+        args: [mcpScript],
+        env: { KB_BC_ENDPOINT: endpoint },
+      },
+    },
+  })
+  return [
+    '--mcp-config',
+    mcpConfig,
+    '--strict-mcp-config',
+    '--allowedTools',
+    'mcp__browser-control__read_page_title',
+  ]
+}
 
 interface ManagedProcess {
   id: string
@@ -80,6 +119,10 @@ export class ClaudeBridge extends EventEmitter {
     if (agentId) {
       args.push('--agent', agentId)
     }
+
+    // PoC-only MCP injection (no-op unless KBEXT_BROWSER_CONTROL_POC=1).
+    // Pushed before the positional message, which must remain the last arg.
+    args.push(...buildBrowserControlPocArgs())
 
     args.push(message)
 

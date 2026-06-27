@@ -243,6 +243,7 @@ export type ServerToClientEvent =
   | { type: 'agent_activity'; payload: AgentActivityPayload }
   | { type: 'agents_changed'; payload: AgentsChangedPayload }
   | { type: 'recipe_apps_changed'; payload: RecipeAppsChangedPayload }
+  | { type: 'ext_action_request'; payload: ExtActionRequestPayload }
 
 /**
  * Fired when a bundled sample recipe is enabled or disabled (v0.2.1).
@@ -361,12 +362,34 @@ export interface ExtSubscribePayload {
   sessionId: string
 }
 
+/**
+ * Browser-control read round-trip PoC (throwaway, env-gated).
+ *
+ * Server → extension action request (`ext_action_request`) and extension →
+ * server action result (`ext_action_result`). Added additively so the
+ * `@stable v0.1.0` contract is preserved (unknown identifiers are ignored).
+ * These are only exercised when the backend runs with
+ * KBEXT_BROWSER_CONTROL_POC=1; in a normal build neither type is ever sent.
+ */
+export interface ExtActionRequestPayload {
+  requestId: string
+  action: 'read_page_title'
+}
+
+export interface ExtActionResultPayload {
+  requestId: string
+  ok: boolean
+  data?: { title?: string }
+  error?: string
+}
+
 export type ClientToServerEvent =
   | { type: 'trust_prompt_respond'; payload: TrustPromptRespondPayload }
   | { type: 'client_log'; payload: ClientLogPayload }
   | { type: 'ext_session_new'; payload: ExtSessionNewPayload }
   | { type: 'ext_session_send'; payload: ExtSessionSendPayload }
   | { type: 'ext_subscribe'; payload: ExtSubscribePayload }
+  | { type: 'ext_action_result'; payload: ExtActionResultPayload }
 
 // =========================
 // Event type utilities
