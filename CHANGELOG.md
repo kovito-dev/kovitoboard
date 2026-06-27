@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13] - YYYY-MM-DD
+
 ### Added
 
 - Experimental external client API namespace (`/api/ext/_client/v1/*`) that
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   early, internal-facing foundation only: no bundled client ships yet, the
   surface is intentionally minimal, and it may change without notice. The
   existing loopback-only `/api/*` boundary is unchanged.
+- Settings now include a "Connect a Chrome extension" pairing-code UI.
 
 ### Changed
 
@@ -29,6 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /token`), which requires both the paired origin and a per-pairing
   refresh secret issued at pairing time. The `/pair` response now also
   returns this refresh secret.
+
+### Security
+
+- Resolved Dependabot advisories by bumping two runtime dependencies and
+  pinning two dev-only transitives to patched versions (major versions
+  held):
+  - dompurify 3.4.7 → 3.4.11 (renderer sanitization; Trusted Types policy
+    poisoning, SAFE_FOR_TEMPLATES bypass, ALLOWED_ATTR pollution).
+  - js-yaml 4.1.1 → 4.2.0 (frontmatter/agent YAML; merge-key DoS).
+  - undici → 7.28.0 (test-only via jsdom; TLS validation bypass plus six
+    others), @babel/core → 7.29.7 (build-only; sourceMappingURL file read).
+    Neither is shipped to users.
+
+  > Known issue: a transitive js-yaml 3.14.2 is still pulled in by
+  > gray-matter (same merge-key advisory). No upstream fix is available and
+  > the version cannot be overridden, so it is tracked and accepted for now.
 
 ## [0.2.12] - 2026-06-20
 

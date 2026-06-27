@@ -1,7 +1,7 @@
 # 05. Custom App Development (`app/`)
 
-**Target KB version:** v0.2.12
-**Last updated:** 2026-06-20
+**Target KB version:** v0.2.13
+**Last updated:** 2026-06-27
 **Authoritative source:** [`../05-apps.md`](../05-apps.md) (Japanese)
 
 > 📖 This chapter is a navigation layer. For detailed content, follow the section pointers below to the Japanese authoritative source. Agents may read the Japanese source directly and respond in English.
