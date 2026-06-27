@@ -22,6 +22,15 @@ import { scrubNestedDetectionEnv } from './nested-detection-env'
  * below the repo root. Returns an empty array when the flag is unset, so the
  * launch arguments — and therefore the behaviour — are byte-for-byte
  * identical to a normal build.
+ *
+ * Argument order matters: `--allowedTools` is variadic and greedily consumes
+ * every following token until the next recognised flag, so it must NOT be the
+ * last injected flag — otherwise it swallows the positional prompt that the
+ * caller appends after this block, and `claude --print` aborts with
+ * "Input must be provided either through stdin or as a prompt argument".
+ * Keep `--allowedTools <tool>` first and terminate it with the non-variadic
+ * `--mcp-config` / `--strict-mcp-config` flags so the trailing positional
+ * message stays the prompt.
  */
 function buildBrowserControlPocArgs(): string[] {
   if (process.env.KBEXT_BROWSER_CONTROL_POC !== '1') return []
@@ -40,11 +49,11 @@ function buildBrowserControlPocArgs(): string[] {
     },
   })
   return [
+    '--allowedTools',
+    'mcp__browser-control__read_page_title',
     '--mcp-config',
     mcpConfig,
     '--strict-mcp-config',
-    '--allowedTools',
-    'mcp__browser-control__read_page_title',
   ]
 }
 
