@@ -4,7 +4,7 @@
 
 # KovitoBoard
 
-### Build and grow your own AI team — right in your browser.
+### Where your AI team runs your company.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](./LICENSE)
 [![Runtime: Claude Code](https://img.shields.io/badge/Runtime-Claude%20Code-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code)
@@ -34,15 +34,25 @@ it's at a stage where your feedback helps shape it.
   [GitHub Issues](https://github.com/kovito-dev/kovitoboard/issues). Your voice
   shapes the next version.
 
+📬 **Want to hear when a stable release lands?** We publish a free practice log of
+building an AI company-operations harness — and announce stable releases there first:
+**[Practice Log: Building an AI Company-Operations Harness →](https://kovito.ai/magazine)**
+(a free magazine on note, written in Japanese).
+
 [Latest changes in GitHub Releases →](https://github.com/kovito-dev/kovitoboard/releases)
 
 ---
 
-KovitoBoard is an open-source web UI that runs locally on your own Claude Code.
+**KovitoBoard is an AI company-operations harness** — the rig you hand the day-to-day
+work of running your company to a team of AI agents on. It gives you the three things
+that job needs: **the agents you define, the approval step before they act, and the
+record of what they did.** Open source, running locally on your own Claude Code, in
+your browser. No terminal needed for everyday use.
 
-Split your work into screens — research, writing, coding — and station a dedicated
-agent on each. Consult them while looking at the screen, step in when needed: **you
-stay in command.** No terminal needed for everyday use.
+**You stay the owner.** KovitoBoard does not make your business decisions and does not
+act behind your back. Agents propose, you approve, and the record stays on your machine.
+It is built for the **operational** work — drafting, research, organizing, and building
+the small internal tools nobody has time for.
 
 It reads the Claude Code definitions of the project it is installed in, letting you
 manage agents, work in live sessions, and develop and run apps — all from your browser.
@@ -60,18 +70,22 @@ manage agents, work in live sessions, and develop and run apps — all from your
 
 ## What makes it different
 
-Not a SaaS you just consume — **a tool you grow as your own.** So it bends all the
-way to the shape of your work.
+Not a SaaS you just consume — **a rig you grow into the shape of your own company.**
 
-- 🧑‍🤝‍🧑 **Agents with a face and a role** line up on screen — see your whole team at a glance.
-- 🎛️ **Direct autonomous agents** with approvals and interruptions — you stay the conductor.
-- 🌱 **Your team and screens stay in your hands**, ready to grow over time.
+- 🧑‍🤝‍🧑 **A team you define** — agents with a face, a role, and instructions you wrote,
+  lined up on one screen.
+- 🎛️ **An approval step you own** — agents work autonomously and stop for your yes/no
+  when it matters. You stay the conductor.
+- 📓 **A record that stays with you** — sessions, what was done, and the apps you build
+  remain on your machine, as your company's own system.
 
 ## Why KovitoBoard
 
-Using Claude, but still stuck at one-off tasks? Claude's agents show more of their
-power the more you run them as a team with defined roles. KovitoBoard is the
-foundation to build, direct, and grow that team — with your own hands.
+Using Claude, but still stuck at one-off tasks? One agent answers questions. But give
+a team **defined roles, a place to work, and an approval step**, and it can carry the
+actual operations of a company — the drafts, the research, the organizing, the internal
+tools nobody has time to build. KovitoBoard is what you assemble that team on, with
+your own hands.
 
 | | With Claude Code alone | With KovitoBoard |
 |---|---|---|
