@@ -8,6 +8,16 @@ import { useParams, useNavigate, useLocation, Navigate } from 'react-router-dom'
 import type { AgentInfo, SessionSummary, AgentConfig, TmuxStatus, SessionOrigin } from '../types'
 import { AgentDetail } from '../components/AgentDetail'
 import { kbFetch } from '../lib/kbFetch'
+import { t } from '../i18n'
+
+/**
+ * S1 startup-timeout (T1) for the onboarding first-session loading state
+ * machine (onboarding-scenarios.md §5.3.3). When the concierge has not
+ * surfaced a session within this budget the Path B hand-off shows a
+ * fallback UI (retry / go to list) instead of waiting forever
+ * (BL-2026-293 secondary risk).
+ */
+export const ONBOARDING_AGENT_STARTUP_TIMEOUT_MS = 60000
 
 interface AgentDetailPageProps {
   agents: AgentInfo[]
@@ -88,6 +98,27 @@ export function AgentDetailPage({
   // before the flag settles). Guarding with a ref ensures the claim and
   // redirect happen at most once per mount.
   const autoOpenHandledRef = useRef(false)
+
+  // S1: the onboarding hand-off (Path B, `openLatestSession=1` WITHOUT
+  // `awaitNewSession`) lands here while the freshly-launched concierge
+  // is still starting up and its session has not appeared yet. We render
+  // a "starting up" loading screen and arm a T1 timeout so the user is
+  // not stuck on a permanent spinner if the agent never starts
+  // (onboarding-scenarios.md §5.3.3 / BL-2026-293 secondary risk).
+  const isAwaitingOnboardingSession = autoOpenLatest && !awaitNewSession
+  const [agentStartupTimedOut, setAgentStartupTimedOut] = useState(false)
+  useEffect(() => {
+    // Don't re-arm once timed out — the fallback UI owns the next step.
+    // Retry flips `agentStartupTimedOut` back to false, which re-runs
+    // this effect and arms a fresh timer.
+    if (!isAwaitingOnboardingSession || agentStartupTimedOut) return
+    const timer = setTimeout(
+      () => setAgentStartupTimedOut(true),
+      ONBOARDING_AGENT_STARTUP_TIMEOUT_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [isAwaitingOnboardingSession, agentStartupTimedOut])
+
   useEffect(() => {
     if (!autoOpenLatest || !id) return
     if (autoOpenHandledRef.current) return
@@ -132,7 +163,13 @@ export function AgentDetailPage({
         .sort((a, b) => new Date(b.lastEventAt).getTime() - new Date(a.lastEventAt).getTime())[0]
       autoOpenHandledRef.current = true
       setAutoOpenLatest(false)
-      navigate(`/sessions/${latest.id}`, { replace: true })
+      // S1 → S2 hand-off: tell SessionDetailPage to keep the typing
+      // indicator lit until Kobi's first reply (onboarding-scenarios.md
+      // §5.3.3). SPA navigation preserves router state.
+      navigate(`/sessions/${latest.id}`, {
+        replace: true,
+        state: { pendingFirstResponse: true },
+      })
       return
     }
 
@@ -154,7 +191,11 @@ export function AgentDetailPage({
     autoOpenHandledRef.current = true
     setSessionAgent(latest.id, id)
     setAutoOpenLatest(false)
-    navigate(`/sessions/${latest.id}`, { replace: true })
+    // S1 → S2 hand-off (see Path B step 1 above).
+    navigate(`/sessions/${latest.id}`, {
+      replace: true,
+      state: { pendingFirstResponse: true },
+    })
   }, [
     autoOpenLatest,
     awaitNewSession,
@@ -259,6 +300,59 @@ export function AgentDetailPage({
 
   if (!agent) {
     return <Navigate to="/agents" replace />
+  }
+
+  // S1: onboarding hand-off, agent starting up, session not yet visible.
+  if (isAwaitingOnboardingSession) {
+    if (agentStartupTimedOut) {
+      // T1 exceeded → fallback UI. Retry re-arms T1; "go to list" bails
+      // out to the agents page (onboarding-scenarios.md §5.3.3 edge 1).
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <p className="text-[var(--text-muted)] text-sm font-medium">
+            {t('onboarding.starting.timeoutTitle')}
+          </p>
+          <p className="text-[var(--text-dim)] text-xs max-w-sm">
+            {t('onboarding.starting.timeoutDescription')}
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setAgentStartupTimedOut(false)}
+              className="px-4 py-2 text-xs rounded-lg bg-[var(--onboarding-accent)] text-white hover:opacity-90 transition-opacity"
+            >
+              {t('onboarding.starting.retry')}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/agents')}
+              className="px-4 py-2 text-xs rounded-lg text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors"
+            >
+              {t('onboarding.starting.goToList')}
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <div className="flex items-center gap-1.5">
+          <span
+            className="inline-block w-2 h-2 rounded-full bg-[var(--onboarding-accent)]"
+            style={{ animation: 'pulse-dot 1.4s ease-in-out infinite', animationDelay: '0s' }}
+          />
+          <span
+            className="inline-block w-2 h-2 rounded-full bg-[var(--onboarding-accent)]"
+            style={{ animation: 'pulse-dot 1.4s ease-in-out infinite', animationDelay: '0.2s' }}
+          />
+          <span
+            className="inline-block w-2 h-2 rounded-full bg-[var(--onboarding-accent)]"
+            style={{ animation: 'pulse-dot 1.4s ease-in-out infinite', animationDelay: '0.4s' }}
+          />
+        </div>
+        <p className="text-[var(--text-dim)] text-sm">{t('onboarding.starting.loading')}</p>
+      </div>
+    )
   }
 
   return (

@@ -4,12 +4,40 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import type { Session, SessionSummary, AgentConfig, TmuxStatus, SessionOrigin } from '../types'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import type { Session, SessionSummary, AgentConfig, TmuxStatus, SessionOrigin, ParsedEvent } from '../types'
 import { t } from '../i18n'
 import { ChatTimeline } from '../components/ChatTimeline'
 import { FilePreview } from '../components/FilePreview'
 import { kbFetch } from '../lib/kbFetch'
+
+/**
+ * S2 safety timeout (T2) for the onboarding first-session loading state
+ * machine (onboarding-scenarios.md §5.3.3). After this budget the
+ * `awaitingFirstResponse` spinner is force-cleared so it cannot linger
+ * if the agent never replies.
+ */
+export const AWAITING_FIRST_RESPONSE_TIMEOUT_MS = 90000
+
+/**
+ * Whether the onboarding first-response wait (S2) should clear based on
+ * the session's content / status.
+ *
+ * Pure so it is unit-testable. Clears when (i) an assistant or tool_use
+ * event has appeared, or (ii) the status moved on to `thinking` /
+ * `ready`. The third clear condition — the T2 safety timeout — is
+ * time-based and handled by the effect, not this predicate
+ * (onboarding-scenarios.md §5.3.3, BL-2026-294).
+ */
+export function shouldClearAwaitingFirstResponse(session: {
+  events: { type: ParsedEvent['type'] }[]
+  status: Session['status']
+}): boolean {
+  const hasResponse = session.events.some(
+    (e) => e.type === 'assistant' || e.type === 'tool_use',
+  )
+  return hasResponse || session.status === 'thinking' || session.status === 'ready'
+}
 
 interface SessionDetailPageProps {
   sessions: SessionSummary[]
@@ -58,7 +86,41 @@ export function SessionDetailPage({
 }: SessionDetailPageProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
+
+  // S2 of the onboarding first-session loading state machine
+  // (onboarding-scenarios.md §5.3.3). AgentDetailPage's Path B hands off
+  // `pendingFirstResponse` via router state when it redirects to the
+  // freshly-created concierge session. The new session's JSONL was
+  // restored as historical, so `status` sits at `idle` until Kobi's
+  // first reply and the status-driven typing indicator never fires;
+  // `awaitingFirstResponse` keeps the indicator lit across that gap.
+  const [awaitingFirstResponse, setAwaitingFirstResponse] = useState(
+    () =>
+      (location.state as { pendingFirstResponse?: boolean } | null)
+        ?.pendingFirstResponse === true,
+  )
+
+  // Arm the T2 safety timeout once when the wait begins. Depending only
+  // on `awaitingFirstResponse` (not on the session) keeps a single timer
+  // alive across session updates instead of resetting it on every event.
+  useEffect(() => {
+    if (!awaitingFirstResponse) return
+    const timer = setTimeout(
+      () => setAwaitingFirstResponse(false),
+      AWAITING_FIRST_RESPONSE_TIMEOUT_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [awaitingFirstResponse])
+
+  // Clear as soon as a response appears or the status moves on.
+  useEffect(() => {
+    if (!awaitingFirstResponse || !currentSession) return
+    if (shouldClearAwaitingFirstResponse(currentSession)) {
+      setAwaitingFirstResponse(false)
+    }
+  }, [awaitingFirstResponse, currentSession])
 
   // --- New session creation logic ---
   const pendingAgentIdRef = useRef<string | null>(null)
@@ -233,6 +295,7 @@ export function SessionDetailPage({
         draftValue={getDraft(currentSession.id)}
         onDraftChange={(value) => setDraft(currentSession.id, value)}
         activityLine={agentActivities[currentSession.id]}
+        awaitingFirstResponse={awaitingFirstResponse}
         theme={theme}
       />
       {previewFilePath && (

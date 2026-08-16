@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-08-16
+
+### Security
+
+- Resolved every outstanding high-severity Dependabot advisory by raising
+  dependency floors to patched releases. No major version was crossed and no
+  source change was needed:
+  - js-yaml 4.2.0 → 4.3.1 (frontmatter/agent YAML; merge-key DoS).
+  - react-router 7.17.0 → 7.18.2 (routing; CSRF bypass in RSC mode, and a
+    path-matching inefficiency allowing unauthenticated denial of service).
+  - undici → 7.29.0 and postcss → 8.5.26 (dev-only; cross-request cache
+    poisoning and sourceMappingURL path traversal respectively), shell-quote →
+    1.10.0 (dev-only; quadratic `parse()`). None is shipped to users.
+
+  The 0.2.13 known issue is now closed: the transitive js-yaml 3.14.2 pulled in
+  by gray-matter is pinned to 3.15.1 through a nested `overrides` entry, which
+  patches that copy without forcing gray-matter onto the 4.x API it cannot use.
+
+- Moderate and low advisories that were resolvable inside the existing ranges
+  were cleared in the same pass: nanoid 3.3.18, dompurify 3.4.13 and
+  body-parser 2.3.0. `npm audit` now reports no vulnerabilities.
+
+- CI now fails on high-severity advisories that have a published fix, so an
+  actionable advisory reaches whoever is working on the branch instead of
+  waiting to be noticed on the security tab. Advisories with no available fix
+  are reported without blocking, since no action would resolve them.
+
+### Fixed
+
+- Onboarding: finishing the wizard with the concierge ("Kobi") enabled no
+  longer freezes for up to a minute before the session screen appears. The
+  new-session request now returns as soon as it is accepted and runs the
+  agent startup and first-message send in the background, instead of blocking
+  the response until the agent is ready.
+- Onboarding: the first concierge session no longer looks unresponsive while
+  Kobi prepares its first reply. The typing indicator now stays lit from the
+  moment the session opens until the first response arrives, and a startup
+  loading screen (with a timeout fallback) is shown while the agent is
+  launching.
+
 ## [0.2.13] - 2026-06-27
 
 ### Added

@@ -21,6 +21,29 @@ import { t } from '../i18n'
 type ViewMode = 'summary' | 'detail'
 type NewTopicState = 'idle' | 'input' | 'sending'
 
+/**
+ * Whether the typing indicator should be shown.
+ *
+ * Extracted as a pure predicate so the OR condition is unit-testable.
+ * `awaitingFirstResponse` covers the onboarding first-session window
+ * (S2) where the watcher restores the new JSONL as historical and the
+ * session sits at `status='idle'` until Kobi's first reply, so the
+ * status-driven conditions never fire (BL-2026-294,
+ * onboarding-scenarios.md §5.3.3).
+ */
+export function shouldShowTypingIndicator(args: {
+  isSending: boolean
+  status: Session['status']
+  awaitingFirstResponse?: boolean
+}): boolean {
+  return (
+    args.isSending ||
+    args.status === 'thinking' ||
+    args.status === 'waiting' ||
+    args.awaitingFirstResponse === true
+  )
+}
+
 interface ChatTimelineProps {
   session: Session
   agentConfig: AgentConfig
@@ -65,9 +88,18 @@ interface ChatTimelineProps {
    * `useIPC.agentActivities[session.id]`.
    */
   activityLine?: string
+  /**
+   * S2 of the onboarding first-session loading state machine
+   * (onboarding-scenarios.md §5.3.3). When true, the typing indicator
+   * is shown even though `status` is still `idle` — the new session's
+   * JSONL was restored as historical, so the status-driven conditions
+   * never fire until Kobi's first reply. Defaults to false; existing
+   * callers keep their previous behaviour (BL-2026-294).
+   */
+  awaitingFirstResponse?: boolean
 }
 
-export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onSendError, onInterrupt, agentName, agentColor, theme = 'dark', draftValue, onDraftChange, activityLine }: ChatTimelineProps) {
+export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, onReload, onStartNewTopic, agentId, isPendingNewSession, onContinueSession, onFilePathClick, onSendError, onInterrupt, agentName, agentColor, theme = 'dark', draftValue, onDraftChange, activityLine, awaitingFirstResponse }: ChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const wasAtBottomRef = useRef(true)
@@ -383,7 +415,7 @@ export function ChatTimeline({ session, agentConfig, userConfig, onSendMessage, 
             from the agent's tmux pane next to the dots so the user can
             see whether Claude is reading a file, running a command, or
             generating a response — instead of just a silent pulse. */}
-        {(isSending || session.status === 'thinking' || session.status === 'waiting') && (
+        {shouldShowTypingIndicator({ isSending, status: session.status, awaitingFirstResponse }) && (
           <div className="flex justify-start mb-3">
             <div className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-[var(--bg-surface)] border border-[var(--border)] max-w-full">
               <div className="flex items-center gap-1.5 shrink-0">
