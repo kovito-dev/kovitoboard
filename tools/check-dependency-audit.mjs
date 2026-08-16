@@ -47,13 +47,26 @@ function fail(message) {
  * carrying `error` and no `vulnerabilities`. Parsing that as a report would
  * read as zero advisories and pass the gate, so every unexpected shape has to
  * fail closed instead of falling through to the success path.
+ *
+ * The call reaches the registry, so it is bounded: a registry that accepts the
+ * connection and then stalls would otherwise hold a runner until the job-level
+ * limit expires. Timing out is itself a failure to read the advisory list, so
+ * it lands on the same fail-closed path.
  */
+const AUDIT_TIMEOUT_MS = 120_000
+
 function readAuditReport() {
   const result = spawnSync('npm', ['audit', '--json'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    timeout: AUDIT_TIMEOUT_MS,
   })
 
+  // A timeout surfaces as both `error` and `signal`, so check it first to
+  // report the cause rather than the mechanism.
+  if (result.error?.code === 'ETIMEDOUT' || (result.signal && result.error)) {
+    fail(`npm did not finish within ${AUDIT_TIMEOUT_MS / 1000}s`)
+  }
   if (result.error) fail(`npm could not be run (${result.error.message})`)
   if (result.signal) fail(`npm was terminated by ${result.signal}`)
   if (!result.stdout?.trim()) {

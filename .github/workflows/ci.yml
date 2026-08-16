@@ -103,6 +103,9 @@ jobs:
   security-audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    # Backstop for anything the script's own registry timeout cannot catch;
+    # the job only checks out, sets up Node and reads the lockfile.
+    timeout-minutes: 10
     # Advisories against the committed lockfile are otherwise only visible on
     # the repository's security tab, which nobody is required to open: a batch
     # of high-severity advisories once sat unaddressed for three weeks. Failing
