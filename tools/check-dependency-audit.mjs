@@ -27,26 +27,60 @@
  * vulnerabilities excepted" policy.
  */
 
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 
 const BLOCKING_SEVERITIES = new Set(['high', 'critical'])
 
+function fail(message) {
+  console.error(`\nDependency audit did not complete: ${message}`)
+  console.error('Treating this as a failure -- a gate that cannot read the')
+  console.error('advisory list must not report the dependencies as clean.')
+  process.exit(1)
+}
+
 /**
  * `npm audit` exits non-zero whenever it finds anything, so a non-zero exit is
- * the normal path rather than an error. The JSON report is still on stdout; a
- * genuine failure (no network, malformed lockfile) leaves stdout empty, which
- * is the case worth rethrowing.
+ * the normal path rather than an error signal, and the exit code alone cannot
+ * separate "found advisories" from "could not look".
+ *
+ * Operational failures are JSON too: an unreachable registry prints an object
+ * carrying `error` and no `vulnerabilities`. Parsing that as a report would
+ * read as zero advisories and pass the gate, so every unexpected shape has to
+ * fail closed instead of falling through to the success path.
  */
 function readAuditReport() {
-  try {
-    return execFileSync('npm', ['audit', '--json'], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    })
-  } catch (error) {
-    if (error.stdout) return error.stdout
-    throw error
+  const result = spawnSync('npm', ['audit', '--json'], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+
+  if (result.error) fail(`npm could not be run (${result.error.message})`)
+  if (result.signal) fail(`npm was terminated by ${result.signal}`)
+  if (!result.stdout?.trim()) {
+    fail(`npm produced no report (exit ${result.status})\n${result.stderr ?? ''}`)
   }
+
+  let report
+  try {
+    report = JSON.parse(result.stdout)
+  } catch {
+    fail(`npm produced output that is not JSON (exit ${result.status})`)
+  }
+
+  if (report.error) {
+    const detail = report.error.summary ?? report.error.code ?? JSON.stringify(report.error)
+    fail(`npm reported an error instead of a report (${detail})`)
+  }
+  // `vulnerabilities` and `metadata` are both present on every successful
+  // report, including a clean one, where `vulnerabilities` is an empty object.
+  if (typeof report.vulnerabilities !== 'object' || report.vulnerabilities === null) {
+    fail('the report has no `vulnerabilities` section')
+  }
+  if (typeof report.metadata !== 'object' || report.metadata === null) {
+    fail('the report has no `metadata` section')
+  }
+
+  return report
 }
 
 /**
@@ -84,8 +118,8 @@ function printGroup(heading, entries) {
   }
 }
 
-const report = JSON.parse(readAuditReport())
-const vulnerabilities = Object.values(report.vulnerabilities ?? {})
+const report = readAuditReport()
+const vulnerabilities = Object.values(report.vulnerabilities)
 
 const severe = vulnerabilities.filter((entry) => BLOCKING_SEVERITIES.has(entry.severity))
 const actionable = severe.filter((entry) => entry.fixAvailable !== false)
