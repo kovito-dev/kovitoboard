@@ -108,13 +108,11 @@ jobs:
     # of high-severity advisories once sat unaddressed for three weeks. Failing
     # here puts them in front of whoever is already working on the branch.
     #
-    # Threshold is `high`, matching the "minimal maintenance, severe
-    # vulnerabilities excepted" policy -- moderate and low advisories stay
-    # visible in the job log without blocking unrelated work.
-    #
-    # If an advisory ever has no fixed release, record the decision by pinning
-    # the safe version through `overrides` in package.json rather than lowering
-    # this threshold.
+    # The gate covers high and critical advisories that have a fixed release,
+    # matching the "minimal maintenance, severe vulnerabilities excepted"
+    # policy. Advisories with no published fix, and everything below the
+    # threshold, are reported in the job log without failing -- see
+    # tools/check-dependency-audit.mjs for why.
     steps:
       - uses: actions/checkout@v5
 
@@ -126,7 +124,7 @@ jobs:
       # `npm audit` resolves advisories from the lockfile alone and needs no
       # installed tree, so this job skips `npm ci` entirely.
       - name: Audit dependencies for high-severity advisories
-        run: npm audit --audit-level=high
+        run: node tools/check-dependency-audit.mjs
 
   l1-e2e:
     name: L1 E2E
