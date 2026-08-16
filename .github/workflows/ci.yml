@@ -100,6 +100,34 @@ jobs:
       - name: Run unit tests
         run: npm run test
 
+  security-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    # Advisories against the committed lockfile are otherwise only visible on
+    # the repository's security tab, which nobody is required to open: a batch
+    # of high-severity advisories once sat unaddressed for three weeks. Failing
+    # here puts them in front of whoever is already working on the branch.
+    #
+    # Threshold is `high`, matching the "minimal maintenance, severe
+    # vulnerabilities excepted" policy -- moderate and low advisories stay
+    # visible in the job log without blocking unrelated work.
+    #
+    # If an advisory ever has no fixed release, record the decision by pinning
+    # the safe version through `overrides` in package.json rather than lowering
+    # this threshold.
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      # `npm audit` resolves advisories from the lockfile alone and needs no
+      # installed tree, so this job skips `npm ci` entirely.
+      - name: Audit dependencies for high-severity advisories
+        run: npm audit --audit-level=high
+
   l1-e2e:
     name: L1 E2E
     # Branch-scoped execution: run only on pushes to the integration branches
