@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-09-08
+
+### Security
+
+- Raised the browserslist floor to `^4.28.7`, clearing two high-severity
+  advisories. A `browserslist-stats.json` file placed anywhere between the
+  project root and the filesystem root is auto-discovered on every
+  `browserslist()` call, and a poisoned one crashes the process or rewrites an
+  object's prototype; separately, the query cache grew without eviction until
+  the process ran out of memory. The copy is a transitive development
+  dependency reached through `@babel/helper-compilation-targets`, so the
+  exposed surface is the build and CI rather than anything shipped to users.
+  The floor is expressed through `overrides` so it survives lockfile
+  regeneration, and the caret keeps it a floor rather than a pin.
+
+- Cleared the two moderate qs advisories in the same pass by resolving to
+  6.16.0: an array-limit bypass through comma-separated bracket keys, and a
+  denial of service via an attacker-controlled `isBuffer`. That version already
+  satisfied the ranges express and body-parser declare, so no new constraint
+  was introduced. `npm audit` now reports no vulnerabilities.
+
 ## [0.2.14] - 2026-08-16
 
 ### Security
